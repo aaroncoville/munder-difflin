@@ -24,6 +24,7 @@ import {
   addWorktree, removeWorktree, worktreeHasUnintegratedWork, worktreeIsGcSafe,
   getLogGraph, getCommitFiles, getFileAtRev, compareRefs, listWorktrees, checkoutRef
 } from './git';
+import { recordWorktreeOrigin, forgetWorktreeOrigin, repairMissingWorktree } from './worktreeRepair';
 import { HiveManager, type AgentMeta, type HiveMessage, type HiveTask } from './hive';
 import { HookServer } from './hooks';
 import { CircuitBreaker, type BreakerInput } from './breaker';
@@ -355,6 +356,17 @@ const worktreePaths = new Map<string, string>();
  *  `git worktree remove` from the parent tree, not the worktree itself). */
 const worktreeOrigins = new Map<string, string>();
 
+/** Is `p` one of OUR isolated-agent worktrees — i.e. under `<harnessHome>/worktrees`?
+ *  Only those are ours to recreate when they go missing; an ordinary project cwd the
+ *  user mistyped or unmounted must keep failing with pty.ts's plain error. */
+function isAgentWorktreePath(p: string): boolean {
+  try {
+    const home = readConfig().harnessHome;
+    if (!home) return false;
+    return resolve(p).startsWith(resolve(join(home, 'worktrees')) + sep);
+  } catch { return false; }
+}
+
 /** A live god-triggered ephemeral worker, tracked from spawn to teardown. */
 interface WorkerRec {
   workerId: string;       // == the PTY id == hive agent id (`worker-<reqId>`)
@@ -540,6 +552,11 @@ async function finalizeWorkerWorktree(wtPath: string, origCwd: string, worker: W
     }
     const r = await removeWorktree(origCwd, wtPath);
     if (!r.ok) { console.error('[worker] removeWorktree failed:', r.error); return; }
+    // Retired for good (the worker is ephemeral and its work is integrated), so
+    // drop its sidecar entry. NOT done on the normal-agent teardown above: that
+    // removal is exactly the one a later restart has to repair, and forgetting
+    // the origin there would strand the agent in the bug this fix exists for.
+    forgetWorktreeOrigin(wtPath);
     // Worktree is gone (clean/integrated at teardown), but DEFER its scratch-dir
     // cleanup to the throttled GC sweep rather than deleting it synchronously here:
     // HIVE_ROOT/agents/<id> holds the worker's memory.md and the MemPalace miner
@@ -2534,6 +2551,28 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // returned to the caller so the renderer records the same absolute path.
   opts.cwd = expandTilde(opts.cwd);
   if (opts.hive) opts.hive = { ...opts.hive, cwd: expandTilde(opts.hive.cwd) };
+  // ── MISSING AGENT WORKTREE → RECREATE IT BEFORE SPAWNING ────────────────────
+  // teardownPty force-removes an isolated agent's worktree the moment its PTY
+  // dies, but the agent RECORD keeps that worktree path as its cwd — so the next
+  // restart / model change / auto-revive spawned into a directory that no longer
+  // exists and died with `cwd does not exist`. Recreate it here, on the agent's
+  // own `agent/<id>` branch (so committed work comes back with it), while the cwd
+  // is still just a string. On failure we REFUSE the spawn rather than silently
+  // falling back to the shared checkout: an isolated agent loose in the base repo
+  // can clobber the very work isolation exists to protect.
+  if (!existsSync(opts.cwd) && isAgentWorktreePath(opts.cwd)) {
+    const repair = await repairMissingWorktree(opts.cwd, worktreeOrigins.get(opts.id));
+    if (!repair.ok) {
+      console.error('[worktree] repair failed:', repair.error);
+      return { ok: false, error: repair.error };
+    }
+    if (repair.recreated) {
+      console.log(`[worktree] recreated missing agent worktree ${opts.cwd} on ${repair.branch}`);
+      worktreePaths.set(opts.id, opts.cwd);
+      worktreeOrigins.set(opts.id, repair.origCwd);
+      recordWorktreeOrigin(opts.cwd, repair.origCwd);
+    }
+  }
   // Which CLI is this? Explicit wins; else inferred from the binary
   // (claude/codex/grok/agy). Non-Claude providers skip every Claude-only spawn step
   // below. Persist the resolved provider onto opts (+ hive meta) so the registry
@@ -2630,6 +2669,10 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
           opts.cwd = wtPath;
           worktreePaths.set(opts.id, wtPath);
           worktreeOrigins.set(opts.id, origCwd);
+          // Persist origCwd to the on-disk sidecar too: both maps are cleared at
+          // teardown, so this is the only pointer back to the parent repo that
+          // survives long enough for a later restart to REPAIR this worktree.
+          recordWorktreeOrigin(wtPath, origCwd);
         } else {
           console.error('[worktree] addWorktree failed:', wt.error);
         }
@@ -4642,6 +4685,7 @@ async function gcPreservedWorktrees(): Promise<void> {
       //     hand per the preserve note) → just reclaim the scratch dir + drop tracking.
       if (!existsSync(e.wtPath)) {
         removeWorkerScratch(e.workerId);
+        forgetWorktreeOrigin(e.wtPath); // gone for good (removed by hand or at teardown)
         preservedWorktrees.delete(key);
         console.log(`[worker gc] ${e.workerId}: worktree already gone — reclaimed scratch`);
         continue;
@@ -4653,6 +4697,7 @@ async function gcPreservedWorktrees(): Promise<void> {
       if (!safe.gc) continue; // keep — fail-safe
       const r = await removeWorktree(e.origCwd, e.wtPath);
       if (!r.ok) { console.error(`[worker gc] removeWorktree failed (keeping ${e.workerId}):`, r.error); continue; }
+      forgetWorktreeOrigin(e.wtPath); // reclaimed for good — no repair will follow
       removeWorkerScratch(e.workerId);
       preservedWorktrees.delete(key);
       console.log(`[worker gc] reclaimed ${e.workerId} (${safe.detail})`);
