@@ -129,10 +129,11 @@ test('the label refuses to show a grant the disk did not accept', async () => {
 });
 
 test('a failed write leaves the label alone and says so', async () => {
+  // A disk that never accepts the write, and never claims it did.
   global.window = {
     cth: {
       updateConfig: async () => { throw new Error('EACCES'); },
-      getConfig: async () => ({ mcpDefaults: { [HIVE_MEMORY]: { enabled: true } } })
+      getConfig: async () => ({ mcpDefaults: {} })
     }
   };
   const inst = mount(McpDefaultsSettings, { config: { mcpDefaults: {} } });
