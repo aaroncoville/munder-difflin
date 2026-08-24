@@ -143,19 +143,30 @@ export function mergeHireMcpDefaults(
  * consumer a single value to read, so "I forgot one field" stops being possible.
  */
 export function resolveHireDefaults(
-  raw: { provider?: unknown; model?: unknown; name?: unknown; character?: unknown; accent?: unknown },
-  manifest?: { provider?: string; model?: string; name?: string; character?: string; accent?: string }
-): { provider?: string; model?: string; name?: string; character?: string; accent?: string } {
+  raw: { provider?: unknown; model?: unknown; name?: unknown; character?: unknown; accent?: unknown; tokenCap?: unknown },
+  manifest?: { provider?: string; model?: string; name?: string; character?: string; accent?: string; tokenCap?: number }
+): { provider?: string; model?: string; name?: string; character?: string; accent?: string; tokenCap?: number } {
   // A request value counts only when it is a non-empty string: `""` is not a
   // stated choice, and letting it through would mean a hire silently lost a field
   // to an empty one.
   const req = (v: unknown): string | undefined =>
     typeof v === 'string' && v.trim() ? v.trim() : undefined;
+  // Same rule for the numeric ceiling: only a positive finite number is a stated
+  // choice, so 0/NaN/"4000000" fall through to the manifest instead of quietly
+  // cancelling the hire's cap. The manifest value is already range-checked by
+  // validateHireManifest, so nothing unbounded can arrive that way.
+  const reqCap = (v: unknown): number | undefined =>
+    typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : undefined;
   return {
     provider: req(raw.provider) ?? manifest?.provider,
     model: req(raw.model) ?? manifest?.model,
     name: req(raw.name) ?? manifest?.name,
     character: req(raw.character) ?? manifest?.character,
-    accent: req(raw.accent) ?? manifest?.accent
+    accent: req(raw.accent) ?? manifest?.accent,
+    // T-062: the cap used to be read straight off the spawn-request at the call
+    // site, so a manifest ceiling was silently ignored and a request that OMITTED
+    // tokenCap produced an UNCAPPED worker — the safe-looking spawn was the
+    // unsafe one. Resolving it here makes it obey the same request-wins rule.
+    tokenCap: reqCap(raw.tokenCap) ?? manifest?.tokenCap
   };
 }
