@@ -212,8 +212,14 @@ function shortRand(): string {
  *  agents took the hive's .git to 7.5GB, at which point git's own auto-gc tried to
  *  repack it and took 22GB of RAM doing so — the machine swapped, the app stopped
  *  responding. None of it was ever wanted in history: it is Codex's private
- *  scratch state, and it stays on disk (so resume still works) either way. */
-const MINE_IGNORE_LINES = ['settings.json', 'cursor.json', 'inbox/', 'outbox/', '.codex/'];
+ *  scratch state, and it stays on disk (so resume still works) either way.
+ *
+ *  `.claude/` is the Claude-side equivalent: every agent dir carries ~17 identical
+ *  harness-provided skills under `.claude/skills/`, so mining them wrote the same
+ *  SKILL.md boilerplate into the shared palace once per agent. That volume drowned
+ *  the floor's actual notes — a `mempalace wake-up` digest came back as mostly
+ *  skill fragments — so it is excluded to keep recall about what agents learned. */
+const MINE_IGNORE_LINES = ['settings.json', 'cursor.json', 'inbox/', 'outbox/', '.codex/', '.claude/'];
 
 /** Idempotently ensure `<agentDir>/.gitignore` excludes the non-memory files.
  *  Append-only: writes only the missing lines, leaving any existing entries. */
