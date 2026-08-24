@@ -4749,6 +4749,10 @@ async function gcPreservedWorktrees(): Promise<void> {
       // (a) Worktree already gone (removed at clean teardown, or god removed it by
       //     hand per the preserve note) → just reclaim the scratch dir + drop tracking.
       if (!existsSync(e.wtPath)) {
+        // T-048: retain memory BEFORE the scratch dir is deleted. The mine loop runs
+        // every 10 min; the GC sweep fires every 60 s — memory would otherwise evaporate
+        // in the gap. retainWorker is a no-op when mempalace is absent or disabled.
+        if (e.scratchDir) await memory.retainWorker(e.workerId, e.scratchDir);
         removeWorkerScratch(e.workerId);
         forgetWorktreeOrigin(e.wtPath); // gone for good (removed by hand or at teardown)
         preservedWorktrees.delete(key);
@@ -4763,6 +4767,8 @@ async function gcPreservedWorktrees(): Promise<void> {
       const r = await removeWorktree(e.origCwd, e.wtPath);
       if (!r.ok) { console.error(`[worker gc] removeWorktree failed (keeping ${e.workerId}):`, r.error); continue; }
       forgetWorktreeOrigin(e.wtPath); // reclaimed for good — no repair will follow
+      // T-048: retain memory before the scratch dir is removed (same race as path (a)).
+      if (e.scratchDir) await memory.retainWorker(e.workerId, e.scratchDir);
       removeWorkerScratch(e.workerId);
       preservedWorktrees.delete(key);
       console.log(`[worker gc] reclaimed ${e.workerId} (${safe.detail})`);

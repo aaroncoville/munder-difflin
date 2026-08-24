@@ -362,6 +362,26 @@ export class MemoryManager {
     return fresh;
   }
 
+  /**
+   * One-shot mine of a single worker's memory, called on the REAP path BEFORE
+   * the caller deletes the scratch directory. Bypasses the mtime-based skip so
+   * recent changes are never silently lost; degrades to a no-op when mempalace
+   * is absent or disabled rather than throwing. Idempotent — mempalace mine
+   * dedups, so a double call is safe.
+   *
+   * T-048: gcPreservedWorktrees calls this before removeWorkerScratch so that
+   * a reaped worker's notes survive the ~60 s GC window even when the 10-minute
+   * mine loop hasn't fired yet.
+   */
+  async retainWorker(workerId: string, agentDir: string): Promise<void> {
+    if (!this.active() || !this.bin()) return;
+    if (!existsSync(join(agentDir, 'memory.md'))) return;
+    // Force re-mine even when the mtime hasn't changed since last pass — the
+    // worker may have written new notes between mine ticks.
+    this.lastMined.delete(workerId);
+    await this.mineAgent(agentDir, workerId);
+  }
+
   private mineAgent(agentDir: string, id: string): Promise<void> {
     return new Promise((resolve) => {
       const bin = this.bin();
