@@ -55,3 +55,23 @@ test('whitespace-only steers are ignored and never fill the queue', () => {
   assert.equal(control.snapshot('dev9').pendingSteers, 1);
   assert.equal(control.takeSteer('dev9'), 'real guidance');
 });
+
+// T-047: Hindsight MCP destructive tools must be denied even for an agent that has
+// NO control entry yet — the default-ALLOW hole that the module-level MCP_DENY set closes.
+test('toolDecision denies Hindsight destructive MCP tools for an agent with no control entry', () => {
+  const control = new ControlRegistry();
+  // This agent id has never been seen — map.get returns undefined.
+  const deleteBank = control.toolDecision('brand-new-agent', 'mcp__munder_hive_memory__delete_bank');
+  assert.equal(deleteBank.deny, true, 'delete_bank must be denied even with no control entry');
+  assert.ok(deleteBank.reason, 'a reason string must accompany the denial');
+
+  const clearMems = control.toolDecision('brand-new-agent', 'mcp__munder_hive_memory__clear_memories');
+  assert.equal(clearMems.deny, true, 'clear_memories must be denied even with no control entry');
+
+  const deleteDoc = control.toolDecision('brand-new-agent', 'mcp__munder_hive_memory__delete_document');
+  assert.equal(deleteDoc.deny, true, 'delete_document must be denied even with no control entry');
+
+  // Sanity: a safe read tool on the same agent must still be ALLOWED (no control entry → no deny).
+  const search = control.toolDecision('brand-new-agent', 'mcp__munder_hive_memory__search');
+  assert.equal(search.deny, false, 'read-only hive-memory tools must not be caught by the deny set');
+});

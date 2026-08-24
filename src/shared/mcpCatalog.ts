@@ -149,6 +149,17 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     spec: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-brave-search'], env: { BRAVE_API_KEY: '' } },
     tier: 'secret',
     defaultEnabled: false
+  },
+  // ─── Hive memory (Hindsight/MemPalace) — write tier, hard prerequisite for T-037 ──
+  {
+    id: 'hive-memory',
+    label: 'Hive Memory (MemPalace)',
+    description: 'Shared semantic memory palace for the agent hive. Includes destructive operations (delete_bank, clear_memories, delete_document) — write tier; requires explicit consent.',
+    // mempalace-mcp reads MEMPALACE_PALACE_PATH from the environment automatically;
+    // the --palace flag can override it at consent time if needed.
+    spec: { command: 'mempalace-mcp', args: [] },
+    tier: 'write',
+    defaultEnabled: false
   }
 ];
 

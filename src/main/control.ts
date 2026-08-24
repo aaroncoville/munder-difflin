@@ -24,6 +24,22 @@
  *  drop from the front (FIFO) so a busy agent still hears the most recent note. */
 const MAX_PENDING_STEERS = 20;
 
+/**
+ * Module-level deny set for MCP tools that must never be callable, even by an
+ * agent that has no control entry yet. Checked BEFORE the per-agent map lookup
+ * so the default-ALLOW early-return (map.get undefined) cannot bypass it.
+ *
+ * Tools are fully-qualified (`mcp__munder_<id>__<tool>`) as delivered by Claude
+ * Code's PreToolUse hook — hive.ts namespaces every catalog server as `munder-<id>`.
+ * These are the three Hindsight (hive-memory) destructive operations; the read
+ * tools (search, wake-up, get, list) are NOT listed and remain gatable per-agent.
+ */
+const MCP_DENY = new Set([
+  'mcp__munder_hive_memory__delete_bank',
+  'mcp__munder_hive_memory__clear_memories',
+  'mcp__munder_hive_memory__delete_document',
+]);
+
 export interface AgentControlSnapshot {
   paused: boolean;
   halted: boolean;
@@ -105,6 +121,7 @@ export class ControlRegistry {
 
   /** Whether a tool call should be denied (paused agent, or this tool gated). */
   toolDecision(id: string, tool: string): { deny: boolean; reason?: string } {
+    if (tool && MCP_DENY.has(tool)) return { deny: true, reason: `Tool ${tool} is permanently denied — Hindsight destructive operations are not permitted.` };
     const c = this.map.get(id);
     if (!c) return { deny: false };
     if (c.paused) return { deny: true, reason: 'Paused by operator — resume from the floor to continue.' };
