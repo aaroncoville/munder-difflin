@@ -74,4 +74,21 @@ test('toolDecision denies Hindsight destructive MCP tools for an agent with no c
   // Sanity: a safe read tool on the same agent must still be ALLOWED (no control entry → no deny).
   const search = control.toolDecision('brand-new-agent', 'mcp__munder_hive_memory__search');
   assert.equal(search.deny, false, 'read-only hive-memory tools must not be caught by the deny set');
+
+  // T-047 — the gate must not depend on how Claude Code normalises `-` in the server
+  // segment. Asserting only the spelling the implementation happens to use would pass
+  // trivially and still ship a gate that never fires in production, so assert BOTH.
+  const hyphenated = control.toolDecision('brand-new-agent', 'mcp__munder-hive-memory__delete_bank');
+  assert.equal(hyphenated.deny, true, 'hyphenated server segment must also be denied');
+  const hyphenClear = control.toolDecision('brand-new-agent', 'mcp__munder-hive-memory__clear_memories');
+  assert.equal(hyphenClear.deny, true, 'hyphenated clear_memories must also be denied');
+  const hyphenSearch = control.toolDecision('brand-new-agent', 'mcp__munder-hive-memory__search');
+  assert.equal(hyphenSearch.deny, false, 'hyphenated read tool must still not be denied');
+
+  // Guard against an over-broad matcher: a same-named tool on a DIFFERENT server is
+  // not ours to block, and blanket-denying by bare tool name would break other servers.
+  const otherServer = control.toolDecision('brand-new-agent', 'mcp__munder-filesystem__delete_document');
+  assert.equal(otherServer.deny, false, 'delete_document on another server must not be denied');
+  const bareName = control.toolDecision('brand-new-agent', 'delete_bank');
+  assert.equal(bareName.deny, false, 'unqualified tool name must not be denied');
 });
