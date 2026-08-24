@@ -21,16 +21,19 @@ import { quarantineDirsToReap, quarantineStampMs, nextMineDelayMs } from './pala
 
 /** Non-memory files `mempalace mine` must not ingest: the Claude Code hooks
  *  config (a large JSON blob that swamps the wake-up digest), the cursor, raw
- *  inbox/outbox message JSON, and a Codex worker's private CODEX_HOME. `mempalace
- *  mine` honors .gitignore, so we drop one in each agent dir rather than touch the
- *  mine command.
+ *  inbox/outbox message JSON, a Codex worker's private CODEX_HOME, and the
+ *  Claude-side `.claude/` (its ~17 harness-provided skills are identical in every
+ *  agent dir, so mining them indexed the same SKILL.md boilerplate once per agent
+ *  until it dominated the digest over the floor's real notes). `mempalace mine`
+ *  honors .gitignore, so we drop one in each agent dir rather than touch the mine
+ *  command.
  *
  *  MUST STAY IN SYNC with MINE_IGNORE_LINES in hive.ts — that copy is written when
  *  an agent spawns, this one on every mine cycle, and only this one reaches agents
  *  that are not currently running. See hive.ts for why `.codex/` matters beyond
  *  mempalace: it is also what stopped the hive's git repo from versioning every
  *  Codex transcript and sqlite log into a 7.5GB history. */
-const MINE_IGNORE_LINES = ['settings.json', 'cursor.json', 'inbox/', 'outbox/', '.codex/'];
+const MINE_IGNORE_LINES = ['settings.json', 'cursor.json', 'inbox/', 'outbox/', '.codex/', '.claude/'];
 
 /** Idempotently ensure `<agentDir>/.gitignore` excludes the non-memory files.
  *  Writes only the missing lines (append-only) so it's safe to call every cycle. */
