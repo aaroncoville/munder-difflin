@@ -24,6 +24,26 @@
 
 export type McpTier = 'safe-readonly' | 'write' | 'secret';
 
+/** stdio launch spec: the MCP server is started as a child process. */
+export interface McpStdioSpec {
+  command: string;
+  args: string[];
+  /** Required env (e.g. an API token). Present only on write/secret entries; the
+   *  value is supplied via consent, never hard-coded here. */
+  env?: Record<string, string>;
+}
+
+/** SSE (HTTP) transport spec: the MCP server is already running and reachable
+ *  at a URL. `buildDefaultMcpServers` emits `{ type: 'sse', url }` for these
+ *  entries. Used for Hindsight (hive-memory), which runs as a sidecar HTTP
+ *  server on loopback:8888. */
+export interface McpSseSpec {
+  type: 'sse';
+  url: string;
+}
+
+export type McpSpec = McpStdioSpec | McpSseSpec;
+
 export interface McpCatalogEntry {
   /** Stable catalog id (also the consent key in `config.mcpDefaults`). The merge
    *  step namespaces the written server id (e.g. `munder-<id>`) to avoid clobbering
@@ -33,15 +53,10 @@ export interface McpCatalogEntry {
   label: string;
   /** One-line description for the consent UI / hire import preview. */
   description: string;
-  /** The MCP stdio server launch spec. `filesystem`/`git` carry a placeholder cwd
-   *  arg that Workstream 3 replaces with the agent cwd at merge time. */
-  spec: {
-    command: string;
-    args: string[];
-    /** Required env (e.g. an API token). Present only on write/secret entries; the
-     *  value is supplied via consent, never hard-coded here. */
-    env?: Record<string, string>;
-  };
+  /** The MCP server transport spec. stdio (command+args) or SSE (url). For
+   *  stdio entries, `filesystem`/`git` carry a `<cwd>` placeholder arg that
+   *  Workstream 3 replaces with the agent cwd at merge time. */
+  spec: McpSpec;
   tier: McpTier;
   /** Seed for `config.mcpDefaults[id].enabled`. Always === (tier === 'safe-readonly'). */
   defaultEnabled: boolean;
@@ -150,14 +165,16 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     tier: 'secret',
     defaultEnabled: false
   },
-  // ─── Hive memory (Hindsight/MemPalace) — write tier, hard prerequisite for T-037 ──
+  // ─── Hive memory (Hindsight) — write tier, hard prerequisite for T-037 ──────
   {
     id: 'hive-memory',
-    label: 'Hive Memory (MemPalace)',
-    description: 'Shared semantic memory palace for the agent hive. Includes destructive operations (delete_bank, clear_memories, delete_document) — write tier; requires explicit consent.',
-    // mempalace-mcp reads MEMPALACE_PALACE_PATH from the environment automatically;
-    // the --palace flag can override it at consent time if needed.
-    spec: { command: 'mempalace-mcp', args: [] },
+    label: 'Hive Memory (Hindsight)',
+    description: 'Shared semantic memory bank for the agent hive (Hindsight). Includes destructive operations (delete_bank, clear_memories, delete_document) — write tier; requires explicit consent. Read tools (search, list_banks) are safe; destructive tools are permanently denied by the harness gate (T-047).',
+    // Hindsight runs as a sidecar HTTP server on loopback port 8888 (SSE transport).
+    // Wire as SSE so agents reach it without spawning a second process.
+    // NEVER change the id — buildDefaultMcpServers namespaces it `munder-hive-memory`,
+    // which is the exact name the T-047 deny gate covers.
+    spec: { type: 'sse', url: 'http://127.0.0.1:8888/mcp/hive-memory' },
     tier: 'write',
     defaultEnabled: false
   }

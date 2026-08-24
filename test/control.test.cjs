@@ -108,3 +108,41 @@ test('toolDecision denies Hindsight destructive MCP tools for an agent with no c
     }
   }
 });
+
+// T-037: the catalog entry for hive-memory must use HTTP/SSE transport so agents
+// reach the running Hindsight server (loopback :8888). stdio `mempalace-mcp` is
+// gone; spec.url is the new shape.
+test('hive-memory catalog entry uses SSE transport pointing at the loopback Hindsight server', () => {
+  const { mcpCatalogEntry } = loadTs('src/shared/mcpCatalog.ts');
+  const entry = mcpCatalogEntry('hive-memory');
+  assert.ok(entry, 'hive-memory must exist in the catalog');
+  assert.ok('url' in entry.spec, 'hive-memory spec must be SSE (url field), not stdio (command field)');
+  assert.equal(entry.spec.url, 'http://127.0.0.1:8888/mcp/hive-memory',
+    'SSE url must point at the loopback Hindsight server');
+});
+
+// T-037 deny-gate regression: catalog wiring must produce `munder-hive-memory`
+// (the server name the T-047 deny gate covers). If a future change routes
+// hive-memory outside the catalog, or renames the id, this test fails before
+// the gate silently stops firing.
+test('catalog-wired hive-memory produces the server name the deny gate covers', () => {
+  const { mcpCatalogEntry } = loadTs('src/shared/mcpCatalog.ts');
+  const entry = mcpCatalogEntry('hive-memory');
+  assert.ok(entry, 'hive-memory must be in the catalog');
+
+  // buildDefaultMcpServers namespaces every catalog entry as `munder-${id}`.
+  // The deny gate covers 'munder-hive-memory' and its _-normalised form.
+  const serverName = `munder-${entry.id}`;
+  assert.equal(serverName, 'munder-hive-memory',
+    'catalog wiring must produce exactly the server name the deny gate covers');
+
+  const control = new ControlRegistry();
+  for (const s of [serverName, serverName.replace(/-/g, '_')]) {
+    for (const tool of ['delete_bank', 'clear_memories', 'delete_document']) {
+      assert.equal(
+        control.toolDecision('any-agent', `mcp__${s}__${tool}`).deny, true,
+        `deny gate must fire for mcp__${s}__${tool}`
+      );
+    }
+  }
+});
