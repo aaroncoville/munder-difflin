@@ -4749,6 +4749,13 @@ async function gcPreservedWorktrees(): Promise<void> {
       // (a) Worktree already gone (removed at clean teardown, or god removed it by
       //     hand per the preserve note) → just reclaim the scratch dir + drop tracking.
       if (!existsSync(e.wtPath)) {
+        // T-048: retain memory BEFORE the scratch dir is deleted. Fail toward keeping:
+        // if the mine fails or times out, leave the entry for the next sweep rather than
+        // deleting and losing memory. Consistent with the surrounding fail-safe pattern.
+        if (e.scratchDir) {
+          const retained = await memory.retainWorker(e.workerId, e.scratchDir);
+          if (!retained) { console.warn(`[worker gc] ${e.workerId}: retain failed — deferring scratch removal`); continue; }
+        }
         removeWorkerScratch(e.workerId);
         forgetWorktreeOrigin(e.wtPath); // gone for good (removed by hand or at teardown)
         preservedWorktrees.delete(key);
@@ -4763,6 +4770,12 @@ async function gcPreservedWorktrees(): Promise<void> {
       const r = await removeWorktree(e.origCwd, e.wtPath);
       if (!r.ok) { console.error(`[worker gc] removeWorktree failed (keeping ${e.workerId}):`, r.error); continue; }
       forgetWorktreeOrigin(e.wtPath); // reclaimed for good — no repair will follow
+      // T-048: retain before removal — same fail-safe as path (a). On failure/timeout,
+      // leave the entry for the next sweep; do NOT delete and silently discard memory.
+      if (e.scratchDir) {
+        const retained = await memory.retainWorker(e.workerId, e.scratchDir);
+        if (!retained) { console.warn(`[worker gc] ${e.workerId}: retain failed — deferring scratch removal`); continue; }
+      }
       removeWorkerScratch(e.workerId);
       preservedWorktrees.delete(key);
       console.log(`[worker gc] reclaimed ${e.workerId} (${safe.detail})`);
