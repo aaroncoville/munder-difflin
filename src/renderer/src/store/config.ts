@@ -185,9 +185,14 @@ export const CODEX_MODELS: ModelOption[] = [
   // harness's `config.defaultModel`; the pickers mark that one separately, and
   // labelling both "default" is what made the two impossible to tell apart.
   { id: undefined, label: 'CLI default' },
-  { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
-  { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra' },
-  { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna' }
+  // Verified against codex-cli 0.149.0 via `model/list` on `codex app-server`.
+  // Terra is the CLI's own default; Sol is the only entry here that a ChatGPT
+  // login CANNOT use (API-key billing only) — hence the label. See the
+  // auth-mode note on the codex preset in shared/agentProvider.ts.
+  { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra (default)' },
+  { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna (fast/cheap)' },
+  { id: 'gpt-5.5', label: 'GPT-5.5 (frontier)' },
+  { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol (API key only)' }
 ];
 
 /** Models offered when an agent runs on the Antigravity CLI (`agy`). agy's

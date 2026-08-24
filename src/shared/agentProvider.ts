@@ -226,9 +226,22 @@ export const AGENT_PROVIDER_PRESETS: AgentProviderPreset[] = [
     canReceiveInbox: true,
     initialPromptFlag: undefined,
     positionalInitialPrompt: true,
-    // Codex's long-context coding model for the orchestrator role. // TODO-verify
-    // the exact codex CLI model id (couldn't install the codex CLI to confirm).
-    recommendedOrchestratorModel: 'gpt-5-codex',
+    // Codex's orchestrator model. VERIFIED against codex-cli 0.149.0 by querying
+    // the CLI's own `model/list` over `codex app-server` (free, no model spend —
+    // repeat it if this ever looks stale). The old value here, `gpt-5-codex`, is
+    // not a slug the CLI has ever shipped: a god on Codex was being launched as
+    // `codex --model gpt-5-codex` and every turn 400'd.
+    //
+    // The available slugs DEPEND ON AUTH MODE, which is the trap:
+    //   ChatGPT login (`codex login`, the common case) → gpt-5.6-terra (the CLI's
+    //     own default), gpt-5.6-luna (fast/cheap), gpt-5.5 (frontier), and the
+    //     deprecated gpt-5.4-mini. `gpt-5.6-sol` is REJECTED here with
+    //     "not supported when using Codex with a ChatGPT account" — it is an
+    //     API-key-billing slug only, so it must not be the preset default.
+    //   OPENAI_API_KEY → additionally gpt-5.6-sol (quality-first flagship).
+    // gpt-5.6-terra is therefore the one recommendation valid under BOTH modes.
+    // Keep this in lockstep with CODEX_MODELS in renderer/src/store/config.ts.
+    recommendedOrchestratorModel: 'gpt-5.6-terra',
     // Codex resumes via a SUBCOMMAND, not a flag: `codex resume [OPTIONS]
     // [SESSION_ID]`. A `--resume <id>` flag does not exist, which is why restarts
     // used to silently start a brand-new session instead of continuing.
