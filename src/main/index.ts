@@ -25,6 +25,7 @@ import {
   getLogGraph, getCommitFiles, getFileAtRev, compareRefs, listWorktrees, checkoutRef
 } from './git';
 import { recordWorktreeOrigin, forgetWorktreeOrigin, repairMissingWorktree } from './worktreeRepair';
+import { linkWorktreeDeps } from './worktreeDeps';
 import { HiveManager, type AgentMeta, type HiveMessage, type HiveTask } from './hive';
 import { HookServer } from './hooks';
 import { CircuitBreaker, type BreakerInput } from './breaker';
@@ -2678,6 +2679,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
           // teardown, so this is the only pointer back to the parent repo that
           // survives long enough for a later restart to REPAIR this worktree.
           recordWorktreeOrigin(wtPath, origCwd);
+          await linkWorktreeDeps(origCwd, wtPath).catch(e => console.error('[worktree] dep-link failed:', e));
         } else {
           console.error('[worktree] addWorktree failed:', wt.error);
         }
@@ -4709,7 +4711,10 @@ async function processSpawnRequest(filePath: string): Promise<void> {
           : '')
         + '\n\n'
       : '';
-    const suffix = `\n\n[CAPABILITIES] Before you start, consult your capability catalog — run the \`/capabilities\` skill (or read \`$AGENT_DIR/.claude/skills/capabilities/SKILL.md\`). It lists your temporal date-range skills (\`/today\`, \`/last30Days\`, \`/lastQuarter\`, …) and the integrations available to you (reached via the loopback broker) and how to call each. For any time-scoped work, resolve the dates with those skills instead of computing them by hand.\n\n[WORKER COMPLETION] When finished, signal done by sending ONE outbox message to god with "act":"done" and a short result summary — that releases this ephemeral worker (terminal closed; your branch is handed to god). Do NOT push to any remote; god is the sole integrator.`;
+    const envNote = res.worktreePath
+      ? `\n\n[ENVIRONMENT] You are running in an isolated git worktree. Your \`node_modules\` is a SYMLINK to the base checkout's \`node_modules\` (${cwd}/node_modules). DO NOT run \`npm install\` or \`npm ci\` in this worktree — that replaces the symlink with a full install (2–4 min, ~1 GB, breaks other workers). If the symlink is missing, run \`npm run typecheck\` and tests from the base checkout \`${cwd}\` instead, or ask god to restore it.`
+      : '';
+    const suffix = `${envNote}\n\n[CAPABILITIES] Before you start, consult your capability catalog — run the \`/capabilities\` skill (or read \`$AGENT_DIR/.claude/skills/capabilities/SKILL.md\`). It lists your temporal date-range skills (\`/today\`, \`/last30Days\`, \`/lastQuarter\`, …) and the integrations available to you (reached via the loopback broker) and how to call each. For any time-scoped work, resolve the dates with those skills instead of computing them by hand.\n\n[WORKER COMPLETION] When finished, signal done by sending ONE outbox message to god with "act":"done" and a short result summary — that releases this ephemeral worker (terminal closed; your branch is handed to god). Do NOT push to any remote; god is the sole integrator.`;
     hive.send({ to: workerId, conversation: `worker-${reqId}`, act: 'request', subject: meta.name, body: `${prefix}${hireIntro}${objective}${suffix}` }, 'god');
   } catch (e) {
     console.error('[worker] dispatch send failed:', e);
