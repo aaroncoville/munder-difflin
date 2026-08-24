@@ -4684,9 +4684,11 @@ async function processSpawnRequest(filePath: string): Promise<void> {
   } catch { /* window torn down */ }
 
   // Register for done-scan / idle-reap / token-cap / safe teardown (pty id == workerId).
-  // tokenCap is optional plumbing (default unlimited) — only a positive finite cap is kept.
-  const tokenCap = typeof raw.tokenCap === 'number' && Number.isFinite(raw.tokenCap) && raw.tokenCap > 0
-    ? raw.tokenCap : undefined;
+  // tokenCap is optional plumbing (default unlimited) — only a positive finite cap is
+  // kept. It comes from `eff`, NOT from `raw`: reading the request directly here is
+  // what made a hire's declared ceiling unenforceable, so that a spawn-request which
+  // simply omitted tokenCap launched an UNCAPPED worker (T-062).
+  const tokenCap = eff.tokenCap;
   liveWorkers.set(workerId, { workerId, reqId, name: meta.name, slack, baseBranch, spawnedAt: Date.now(), tokenCap });
 
   // Dispatch the objective via the standard inbox path (zero new transport),

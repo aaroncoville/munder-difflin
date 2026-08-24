@@ -15,6 +15,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { readFileSync } = require('node:fs');
 const loadTs = require('./load-ts.cjs');
 
 const { mergeHireMcpDefaults, resolveHireManifestPath, resolveHireDefaults } = loadTs('src/main/hireSpawn.ts');
@@ -107,14 +108,14 @@ test('the request wins on every field it states', () => {
     { provider: 'codex', model: 'm-req', name: 'n-req', character: 'c-req', accent: 'a-req' },
     { provider: 'claude', model: 'm-hire', name: 'n-hire', character: 'c-hire', accent: 'a-hire' }
   );
-  assert.deepEqual(eff, { provider: 'codex', model: 'm-req', name: 'n-req', character: 'c-req', accent: 'a-req' });
+  assert.deepEqual(eff, { provider: 'codex', model: 'm-req', name: 'n-req', character: 'c-req', accent: 'a-req', tokenCap: undefined });
 });
 
 test('the manifest fills every field the request leaves unset', () => {
   const eff = resolveHireDefaults({}, {
-    provider: 'codex', model: 'm-hire', name: 'n-hire', character: 'c-hire', accent: 'a-hire'
+    provider: 'codex', model: 'm-hire', name: 'n-hire', character: 'c-hire', accent: 'a-hire', tokenCap: undefined
   });
-  assert.deepEqual(eff, { provider: 'codex', model: 'm-hire', name: 'n-hire', character: 'c-hire', accent: 'a-hire' });
+  assert.deepEqual(eff, { provider: 'codex', model: 'm-hire', name: 'n-hire', character: 'c-hire', accent: 'a-hire', tokenCap: undefined });
   assert.equal(eff.provider, 'codex', "the exact regression: a codex hire must not resolve to claude");
 });
 
@@ -123,10 +124,64 @@ test('an empty or whitespace request value is not a stated choice', () => {
     { provider: '', model: '   ', name: '', character: null, accent: undefined },
     { provider: 'codex', model: 'm-hire', name: 'n-hire', character: 'c-hire', accent: 'a-hire' }
   );
-  assert.deepEqual(eff, { provider: 'codex', model: 'm-hire', name: 'n-hire', character: 'c-hire', accent: 'a-hire' });
+  assert.deepEqual(eff, { provider: 'codex', model: 'm-hire', name: 'n-hire', character: 'c-hire', accent: 'a-hire', tokenCap: undefined });
 });
 
 test('with no manifest at all, nothing is invented', () => {
   assert.deepEqual(resolveHireDefaults({ provider: 'codex' }, undefined),
-    { provider: 'codex', model: undefined, name: undefined, character: undefined, accent: undefined });
+    { provider: 'codex', model: undefined, name: undefined, character: undefined, accent: undefined, tokenCap: undefined });
+});
+
+
+// ── tokenCap precedence (T-062: spend control) ──────────────────────────────
+// A manifest's `tokenCap` was never consulted on spawn: the cap came solely from
+// the spawn-request JSON, so a hire that declares a ceiling launched UNCAPPED
+// whenever the request omitted one — and omitting it is the safe-looking choice.
+// tokenCap now resolves through the same one place as every other hire field.
+// The numbers below are arbitrary literals; nothing here is shared with the
+// implementation, which carries no cap constant of its own.
+
+test('a request token cap wins over the manifest (both set)', () => {
+  const eff = resolveHireDefaults({ tokenCap: 250000 }, { tokenCap: 4000000 });
+  assert.equal(eff.tokenCap, 250000, 'the request states a ceiling; the manifest is only a default');
+});
+
+test('the manifest token cap applies when the request omits it', () => {
+  // THE BUG. Before the fix this resolved to undefined and the worker ran uncapped.
+  const eff = resolveHireDefaults({}, { tokenCap: 4000000 });
+  assert.equal(eff.tokenCap, 4000000, 'a hire that declares a ceiling must never spawn uncapped');
+});
+
+test('a request token cap applies with no manifest at all', () => {
+  const eff = resolveHireDefaults({ tokenCap: 250000 }, undefined);
+  assert.equal(eff.tokenCap, 250000);
+});
+
+test('a non-positive or non-numeric request cap is not a stated choice', () => {
+  // Same rule as the string fields: an unusable request value must fall back to
+  // the manifest, not silently disable the hire's ceiling.
+  for (const bad of [0, -1, NaN, Infinity, '4000000', null, true]) {
+    assert.equal(resolveHireDefaults({ tokenCap: bad }, { tokenCap: 4000000 }).tokenCap, 4000000,
+      `tokenCap ${String(bad)} must fall through to the manifest`);
+  }
+});
+
+test('with a cap nowhere, none is invented', () => {
+  assert.equal(resolveHireDefaults({}, {}).tokenCap, undefined);
+  assert.equal(resolveHireDefaults({}, undefined).tokenCap, undefined);
+});
+
+test('the spawn path registers the RESOLVED cap, not the raw request one', () => {
+  // The call site is where the bug actually lived, and index.ts imports electron
+  // so it cannot be loaded here. Same source-assertion pattern hire-import.test.cjs
+  // uses for the hire:openFile handler: pin the real line rather than restate it.
+  const source = readFileSync('src/main/index.ts', 'utf8');
+  const start = source.indexOf('// Register for done-scan / idle-reap / token-cap');
+  const end = source.indexOf('liveWorkers.set(', start);
+  assert.ok(start >= 0 && end > start, 'worker registration block is present');
+  const block = source.slice(start, end);
+  assert.match(block, /const tokenCap = eff\.tokenCap;/,
+    'the cap must come from resolveHireDefaults so a manifest ceiling is honoured');
+  assert.doesNotMatch(block, /raw\.tokenCap/,
+    'reading the spawn-request directly is what let a hire spawn uncapped');
 });
