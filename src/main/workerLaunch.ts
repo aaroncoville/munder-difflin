@@ -24,6 +24,11 @@ export function buildWorkerLaunch(opts: {
   defaultCommand?: string;
   /** The app's auto (skip-permissions) setting. */
   autoMode: boolean;
+  /** `commandFlags` from a hire manifest, appended after the request's own flags.
+   *  Safe by construction: the ONLY route into this field is
+   *  `validateHireManifest`, whose default-deny SAFE_FLAG_NAMES allowlist rejects
+   *  the whole manifest on anything else. */
+  hireFlags?: readonly string[];
 }): WorkerLaunch {
   let command =
     typeof opts.requestCommand === 'string' && opts.requestCommand.trim()
@@ -52,12 +57,14 @@ export function buildWorkerLaunch(opts: {
   // renderer's spawn flows use, and hand the flags over as argv.
   const tokens = tokenizeCommand(command);
   const bin = tokens[0] || command;
-  const flags = tokens.slice(1);
+  // A hire's flags ride BEHIND the request's own, so an explicit per-task flag is
+  // the one the CLI sees first, and so the `--model` dedupe below considers both.
+  const flags = [...tokens.slice(1), ...(opts.hireFlags ?? [])];
   // A separate `model` field only applies when the command line didn't pick a
   // model itself (spawnAgentCore likewise skips its default-model injection
   // when argv already carries --model).
   const model =
     typeof opts.requestModel === 'string' && opts.requestModel.trim() ? opts.requestModel.trim() : '';
   const args = [...flags, ...(model && !flags.includes('--model') ? ['--model', model] : [])];
-  return { bin, args, command };
+  return { bin, args, command: [bin, ...args].join(' ') };
 }
