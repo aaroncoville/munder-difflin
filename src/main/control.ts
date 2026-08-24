@@ -24,6 +24,24 @@
  *  drop from the front (FIFO) so a busy agent still hears the most recent note. */
 const MAX_PENDING_STEERS = 20;
 
+/**
+ * T-047 — Hindsight destructive tools, denied permanently and for EVERY agent.
+ *
+ * Matched on the fully-qualified MCP name, which arrives as `mcp__<server>__<tool>`
+ * with the server namespaced `munder-<id>` (hive.ts). Claude Code's normalisation of
+ * `-` in the server segment is not something we control or want to bet on, so the
+ * comparison folds `-` to `_` first: both `mcp__munder-hive-memory__delete_bank` and
+ * `mcp__munder_hive_memory__delete_bank` are caught. Betting on one spelling would
+ * yield a green test suite and a gate that never fires.
+ */
+const MCP_DENY_SERVER = 'munder_hive_memory';
+const MCP_DENY_TOOLS = new Set(['delete_bank', 'clear_memories', 'delete_document']);
+
+function isDeniedMcpTool(tool: string): boolean {
+  const m = /^mcp__(.+?)__(.+)$/.exec(tool.replace(/-/g, '_'));
+  return !!m && m[1] === MCP_DENY_SERVER && MCP_DENY_TOOLS.has(m[2]);
+}
+
 export interface AgentControlSnapshot {
   paused: boolean;
   halted: boolean;
@@ -105,6 +123,7 @@ export class ControlRegistry {
 
   /** Whether a tool call should be denied (paused agent, or this tool gated). */
   toolDecision(id: string, tool: string): { deny: boolean; reason?: string } {
+    if (tool && isDeniedMcpTool(tool)) return { deny: true, reason: `Tool ${tool} is permanently denied — Hindsight destructive operations are not permitted.` };
     const c = this.map.get(id);
     if (!c) return { deny: false };
     if (c.paused) return { deny: true, reason: 'Paused by operator — resume from the floor to continue.' };
