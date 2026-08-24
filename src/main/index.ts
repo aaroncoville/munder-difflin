@@ -62,6 +62,7 @@ import * as integrations from './integrations';
 import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
+import { loadHirePlan, mergeHireMcpDefaults, type HirePlan } from './hireSpawn';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, type WorkerWakeFacts } from './workerWake';
 import { inboxNudgeText } from '../shared/hiveNudge';
@@ -2522,7 +2523,11 @@ function findCodexHomeForSession(sessionId: string, siblingsRoot: string): strin
 
 /** Spawn options shared by the `pty:spawn` IPC handler and the god-triggered
  *  ephemeral-worker watcher. */
-type AgentSpawnOptions = SpawnOptions & { hive?: AgentMeta; isolate?: boolean; resume?: boolean; requireResume?: boolean; resumeSessionId?: string; provider?: AgentProvider; noAutoInstall?: boolean };
+type AgentSpawnOptions = SpawnOptions & { hive?: AgentMeta; isolate?: boolean; resume?: boolean; requireResume?: boolean; resumeSessionId?: string; provider?: AgentProvider; noAutoInstall?: boolean;
+  /** Per-spawn MCP consent map, overriding the global one for THIS spawn only.
+   *  Set by the hire path (already tier-filtered by mergeHireMcpDefaults, which
+   *  cannot arm a write/secret server). Unset everywhere else → global config. */
+  mcpDefaults?: { [id: string]: { enabled: boolean } } };
 
 ipcMain.handle('pty:spawn', async (evt, opts: AgentSpawnOptions) => {
   if (!opts || typeof opts.id !== 'string' || typeof opts.cwd !== 'string' || typeof opts.command !== 'string') {
@@ -2713,7 +2718,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
           kgCliPath: knowledge.env().KG_CLI,
           theme: readConfig().terminalTheme ?? 'light',
           // W3 — default-MCP consent state + the bundled skills source dir.
-          mcpDefaults: readConfig().mcpDefaults,
+          mcpDefaults: opts.mcpDefaults ?? readConfig().mcpDefaults,
           skillsDir: skillsResourceDir()
         }
       );
@@ -4443,6 +4448,11 @@ interface SpawnRequest {
   slack?: { channel: string; thread_ts: string };     // reply target + where failures surface
   isolate?: boolean;                                   // default true (fresh worktree)
   tokenCap?: number;                                   // optional per-worker token cap (advisory P1)
+  /** Hire manifest id under HIVE_ROOT/hires/ (bare id or `<id>.hire.json`). When
+   *  set, the worker spawns AS that hire: name/provider/model/flags/appearance and
+   *  the safe-readonly half of its MCP set. The request still wins on every field
+   *  it sets itself — a hire is a default, not an override. */
+  hire?: string;
   // Appearance on the office floor. Both optional and both validated renderer-side
   // against the real cast and accent lists, so a bad value degrades to the default
   // rather than breaking the card.
@@ -4466,6 +4476,12 @@ let workerTickRunning = false;
 function spawnRequestsDir(): string | null {
   const root = hive.root();
   return root ? join(root, 'spawn-requests') : null;
+}
+
+/** HIVE_ROOT/hires — where hire manifests live for the spawn-request path. */
+function hiresDir(): string | null {
+  const root = hive.root();
+  return root ? join(root, 'hires') : null;
 }
 
 /** Move a processed request out of the queue so it's never reprocessed. */
@@ -4555,16 +4571,36 @@ async function processSpawnRequest(filePath: string): Promise<void> {
   const cwd = typeof raw.cwd === 'string' && raw.cwd.trim() ? expandTilde(raw.cwd) : '';
   if (!cwd || !existsSync(cwd)) { fail(`"cwd" missing or not found (${cwd || 'unset'})`); return; }
 
+  // ── HIRE (T-045) ───────────────────────────────────────────────────────────
+  // `hire` turns an ad-hoc worker into an instance of a defined ROLE. Everything
+  // below treats the manifest as a DEFAULT: any field the request states itself
+  // still wins, so a hire never silently overrides an explicit per-task choice.
+  //
+  // A bad hire id REJECTS the spawn rather than degrading to a roleless worker:
+  // god asked for a role, and quietly delivering something else is how you get an
+  // agent doing the right task with the wrong instructions.
+  let hirePlan: HirePlan | undefined;
+  if (typeof raw.hire === 'string' && raw.hire.trim()) {
+    const dir = hiresDir();
+    if (!dir) { fail('"hire" requires a hive root'); return; }
+    const loaded = loadHirePlan(dir, raw.hire.trim());
+    if (!loaded.ok) { fail(loaded.error); return; }
+    hirePlan = loaded.plan;
+  }
+  const hm = hirePlan?.manifest;
+  const provider = (raw.provider ?? hm?.provider) as AgentProvider | undefined;
+
   // Request line → executable + argv (auto-mode inheritance, tokenization,
   // model-flag dedupe). Pure and unit-tested — see workerLaunch.ts for why this
   // translation earned a test.
   const cfgSpawn = readConfig();
   const launch = buildWorkerLaunch({
     requestCommand: raw.command,
-    requestProvider: raw.provider,
-    requestModel: raw.model,
+    requestProvider: provider,
+    requestModel: raw.model ?? hm?.model,
     defaultCommand: cfgSpawn.defaultCommand,
-    autoMode: !!cfgSpawn.autoMode
+    autoMode: !!cfgSpawn.autoMode,
+    hireFlags: hm?.commandFlags
   });
   const bin = launch.bin;
   // Missing-CLI → FAIL FAST. A headless worker has no human to watch an installer,
@@ -4578,9 +4614,15 @@ async function processSpawnRequest(filePath: string): Promise<void> {
 
   const meta: AgentMeta = {
     id: workerId,
-    name: typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : `Worker ${reqId.slice(0, 12)}`,
-    provider: raw.provider,
+    name: typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim()
+      : (hm?.name?.trim() || `Worker ${reqId.slice(0, 12)}`),
+    provider,
+    // Keep role 'worker' even for a hire: role drives EPHEMERALITY (reaping,
+    // liveWorkers, worktree teardown), not identity. A hired worker is still a
+    // worker that leaves when done — the manifest supplies who it is, via
+    // capabilities and the goal/description seeded into its dispatch.
     role: 'worker',
+    capabilities: hm?.capabilities,
     cwd
   };
   // Phase 2: grant this worker a broker capability over the currently-enabled
@@ -4597,7 +4639,12 @@ async function processSpawnRequest(filePath: string): Promise<void> {
   const spawnOpts: AgentSpawnOptions = {
     id: workerId, cwd, command: bin, cols: 120, rows: 32,
     args: launch.args,
-    hive: meta, isolate, provider: raw.provider, env: brokerEnv
+    hive: meta, isolate, provider, env: brokerEnv,
+    // Second consent gate: mergeHireMcpDefaults re-tier-checks every id, so a
+    // manifest can only ever add safe-readonly servers, and an explicit human
+    // choice in the global map (either way) is left exactly as the human set it.
+    // `hirePlan.mcpSkipped` is what was withheld — reported below, never armed.
+    ...(hirePlan ? { mcpDefaults: mergeHireMcpDefaults(readConfig().mcpDefaults, hirePlan.mcpEnable) } : {})
   };
 
   let res: { ok: boolean; error?: string; worktreePath?: string };
@@ -4625,8 +4672,8 @@ async function processSpawnRequest(filePath: string): Promise<void> {
       command: launch.command,
       role: meta.role,
       worktreePath: res.worktreePath,
-      character: typeof raw.character === 'string' ? raw.character : undefined,
-      accent: typeof raw.accent === 'string' ? raw.accent : undefined
+      character: typeof raw.character === 'string' ? raw.character : hm?.character,
+      accent: typeof raw.accent === 'string' ? raw.accent : hm?.accent
     });
   } catch { /* window torn down */ }
 
@@ -4644,13 +4691,25 @@ async function processSpawnRequest(filePath: string): Promise<void> {
     const prefix = slack
       ? buildAutonomousRequestProtocol(slack.channel, slack.thread_ts, slackReplyScriptPath())
       : '[AUTONOMOUS WORKER TASK — no interactive human is watching. Work autonomously; do not ask interactive questions.] The task starts now: ';
+    // A hire's standing goal/description leads its very first prompt — that is what
+    // makes this a ROLE and not just a worker with a nicer name. `mcpSkipped` is
+    // surfaced to the agent too, so it knows a server it was designed around was
+    // deliberately withheld and does not silently behave as if it had it.
+    const hireIntro = hm
+      ? `[ROLE] You are ${hm.name}${hm.description ? ` — ${hm.description}` : ''}.`
+        + (hm.goal ? `\n[STANDING GOAL] ${hm.goal}` : '')
+        + (hirePlan && hirePlan.mcpSkipped.length
+          ? `\n[WITHHELD] These MCP servers your role asks for were NOT enabled (they need the human's explicit consent, and a spawn-request is not consent): ${hirePlan.mcpSkipped.join(', ')}. Work without them and say so if the task genuinely needs one.`
+          : '')
+        + '\n\n'
+      : '';
     const suffix = `\n\n[CAPABILITIES] Before you start, consult your capability catalog — run the \`/capabilities\` skill (or read \`$AGENT_DIR/.claude/skills/capabilities/SKILL.md\`). It lists your temporal date-range skills (\`/today\`, \`/last30Days\`, \`/lastQuarter\`, …) and the integrations available to you (reached via the loopback broker) and how to call each. For any time-scoped work, resolve the dates with those skills instead of computing them by hand.\n\n[WORKER COMPLETION] When finished, signal done by sending ONE outbox message to god with "act":"done" and a short result summary — that releases this ephemeral worker (terminal closed; your branch is handed to god). Do NOT push to any remote; god is the sole integrator.`;
-    hive.send({ to: workerId, conversation: `worker-${reqId}`, act: 'request', subject: meta.name, body: `${prefix}${objective}${suffix}` }, 'god');
+    hive.send({ to: workerId, conversation: `worker-${reqId}`, act: 'request', subject: meta.name, body: `${prefix}${hireIntro}${objective}${suffix}` }, 'god');
   } catch (e) {
     console.error('[worker] dispatch send failed:', e);
   }
 
-  console.log(`[worker] spawned ${workerId} (cwd=${cwd}, base=${baseBranch}${slack ? ', slack' : ''})`);
+  console.log(`[worker] spawned ${workerId} (cwd=${cwd}, base=${baseBranch}${slack ? ', slack' : ''}${hm ? `, hire=${hm.name}` : ''})`);
   archiveRequest(filePath, '.done');
 }
 
