@@ -132,7 +132,9 @@ test('retainWorker returns true when mine succeeds (caller may then remove scrat
   fs.writeFileSync(path.join(agentDir, 'memory.md'), '## Notes\nAll good.\n');
 
   const memory = makeManager(t, { home, agentDir });
-  memory.mineAgent = async () => { /* successful mine — no-op stub */ };
+  // Must resolve TRUE: mineAgent now reports outcome, and a stub returning
+  // undefined would read as failure — which is the contract working as intended.
+  memory.mineAgent = async () => true;
 
   const ok = await memory.retainWorker('worker-ok', agentDir);
 
@@ -188,4 +190,36 @@ test('retainWorker returns false when mine times out — scratch dir survives th
 
   assert.equal(retained, false, 'retainWorker must return false when the mine times out');
   assert.ok(fs.existsSync(memoryMd), 'memory.md must survive a timeout — never delete after a stall');
+});
+
+// ── the failure that actually happens (god, round 3) ────────────────────────
+// The earlier failure tests stubbed mineAgent to THROW. The real mineAgent never
+// throws: on a non-zero exit or a spawn error it logs and RESOLVES. So a stub that
+// throws exercises behaviour production does not have, and the likeliest real
+// failure — mempalace exiting non-zero — sailed through as "retained" and deleted
+// the memory anyway. mineAgent now resolves false on those paths, and retainWorker
+// reads the boolean rather than merely surviving the timeout race.
+
+function setup(t) {
+  const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-retain-'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-home-'));
+  fs.writeFileSync(path.join(agentDir, 'memory.md'), '## notes\nsomething worth keeping\n');
+  return { agentDir, home, memory: makeManager(t, { home, agentDir }) };
+}
+
+test('retainWorker returns false when the mine RESOLVES failure (non-zero exit), not only when it hangs', async (t) => {
+  const { agentDir, memory } = setup(t);
+  // Exactly what the real mineAgent now does on a bad exit code or spawn error.
+  memory.mineAgent = async () => false;
+
+  const retained = await memory.retainWorker('worker-mine-exits-nonzero', agentDir);
+  assert.equal(retained, false, 'a mine that RESOLVES failure must not report safe-to-delete');
+  assert.ok(fs.existsSync(path.join(agentDir, 'memory.md')), 'memory.md must survive a failed mine');
+});
+
+test('retainWorker still returns true on a clean mine', async (t) => {
+  const { agentDir, memory } = setup(t);
+  memory.mineAgent = async () => true;
+  assert.equal(await memory.retainWorker('worker-mine-ok', agentDir), true,
+    'a clean mine must report safe-to-delete, or nothing would ever be reclaimed');
 });

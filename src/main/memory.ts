@@ -397,7 +397,10 @@ export class MemoryManager {
     // worker may have written new notes between mine ticks.
     this.lastMined.delete(workerId);
     try {
-      await Promise.race([
+      // The race gives us the TIMEOUT half; the boolean gives us the FAILED-MINE
+      // half. A non-zero exit is far likelier than a 30s hang, so reading the
+      // return value is the part that matters most here.
+      const mined = await Promise.race([
         this.mineAgent(agentDir, workerId),
         new Promise<never>((_, reject) => {
           // Intentionally NOT unreffed: retainWorker runs inside the GC sweep,
@@ -410,6 +413,10 @@ export class MemoryManager {
           );
         })
       ]);
+      if (!mined) {
+        console.error(`[memory] retainWorker ${workerId}: mine reported failure — scratch preserved for next GC sweep`);
+        return false;
+      }
       return true;
     } catch (e) {
       console.error(
@@ -420,10 +427,18 @@ export class MemoryManager {
     }
   }
 
-  private mineAgent(agentDir: string, id: string): Promise<void> {
+  /**
+   * Run one `mempalace mine` pass.
+   *
+   * Resolves TRUE on a clean exit and FALSE when the mine actually failed — a
+   * non-zero exit or a spawn error. It never REJECTS, which is why T-048's
+   * retainWorker must read the boolean: an `await` that always succeeds is not a
+   * safety barrier, and the caller's next act is deleting the worker's memory.
+   */
+  private mineAgent(agentDir: string, id: string): Promise<boolean> {
     return new Promise((resolve) => {
       const bin = this.bin();
-      if (!bin) { resolve(); return; }
+      if (!bin) { resolve(true); return; } // nothing to mine — not a failure
       ensureMineIgnore(agentDir); // keep settings.json / cursor / messages out of the index
       // stdin closed (mempalace can prompt); mempalace dedups so re-mining is safe.
       const proc = spawn(bin, ['mine', agentDir, '--wing', id, '--agent', id], {
@@ -445,10 +460,12 @@ export class MemoryManager {
         if (code !== 0) {
           console.error(`[memory] mine ${id} exited ${code}: ${err.slice(-300)}`);
           this.lastMined.delete(id); // let the next tick retry
+          resolve(false);
+          return;
         }
-        resolve();
+        resolve(true);
       });
-      proc.on('error', () => { clearTimeout(timer); this.lastMined.delete(id); resolve(); });
+      proc.on('error', () => { clearTimeout(timer); this.lastMined.delete(id); resolve(false); });
     });
   }
 
