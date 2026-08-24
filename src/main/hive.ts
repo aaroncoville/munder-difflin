@@ -733,7 +733,7 @@ export class HiveManager {
     if (!isHiveAwareProvider(meta.provider)) {
       const preset = providerPreset(meta.provider ?? 'claude');
       const flag = preset.initialPromptFlag;
-      const prompt = this.injectedPrompt(meta, dir, root, opts.semanticMemory ?? false, opts.knowledgeGraph ?? false, opts.kgCliPath);
+      const prompt = this.injectedPrompt(meta, dir, root, opts.semanticMemory ?? false, opts.knowledgeGraph ?? false, opts.kgCliPath, opts.mcpDefaults?.['hive-memory']?.enabled);
       // agy, codex, and grok expose a Claude-style lifecycle-hook surface, so each
       // gets the SAME live status + Stop→inbox-drain Claude does — selected by the
       // preset's `hookBridge`. agy needs a translating shim (its hook stdin/stdout
@@ -859,7 +859,7 @@ export class HiveManager {
     const args: string[] = [];
     if (!claudeProvider) return { args, env };
 
-    args.push('--append-system-prompt', this.injectedPrompt(meta, dir, root, opts.semanticMemory ?? false, opts.knowledgeGraph ?? false, opts.kgCliPath));
+    args.push('--append-system-prompt', this.injectedPrompt(meta, dir, root, opts.semanticMemory ?? false, opts.knowledgeGraph ?? false, opts.kgCliPath, opts.mcpDefaults?.['hive-memory']?.enabled));
 
     // Phase 1 — autonomy: attach lifecycle hooks via --settings (no edits to the
     // user's repo) so the agent reports activity and drains its inbox on Stop.
@@ -1097,8 +1097,8 @@ export class HiveManager {
   private buildDefaultMcpServers(
     cwd: string,
     cfg: McpDefaultsMap
-  ): Record<string, { command: string; args: string[]; env?: Record<string, string> }> {
-    const out: Record<string, { command: string; args: string[]; env?: Record<string, string> }> = {};
+  ): Record<string, { command: string; args: string[]; env?: Record<string, string> } | { type: 'sse'; url: string }> {
+    const out: Record<string, { command: string; args: string[]; env?: Record<string, string> } | { type: 'sse'; url: string }> = {};
     for (const e of MCP_CATALOG) {
       const consented = cfg?.[e.id]?.enabled;
       const enabled = consented ?? e.defaultEnabled;
@@ -1107,14 +1107,20 @@ export class HiveManager {
       // never ride in on a default (the catalog already ships these OFF, but this
       // guards a hand-edited/partial mcpDefaults map too).
       if (e.tier !== 'safe-readonly' && consented !== true) continue;
-      // Replace the `<cwd>` placeholder (filesystem/git) with the agent cwd at merge
-      // time so these stay strictly workspace-scoped.
-      const args = e.spec.args.map((a) => (a === '<cwd>' ? cwd : a));
-      out[`munder-${e.id}`] = {
-        command: e.spec.command,
-        args,
-        ...(e.spec.env ? { env: e.spec.env } : {})
-      };
+      if ('url' in e.spec) {
+        // SSE transport: the server is already running at a URL; emit the SSE entry
+        // directly. No <cwd> substitution — SSE servers are not workspace-scoped.
+        out[`munder-${e.id}`] = { type: 'sse', url: e.spec.url };
+      } else {
+        // stdio transport: launch as a child process. Replace the `<cwd>` placeholder
+        // (filesystem/git) with the agent cwd so these stay strictly workspace-scoped.
+        const args = e.spec.args.map((a) => (a === '<cwd>' ? cwd : a));
+        out[`munder-${e.id}`] = {
+          command: e.spec.command,
+          args,
+          ...(e.spec.env ? { env: e.spec.env } : {})
+        };
+      }
     }
     return out;
   }
@@ -1294,18 +1300,33 @@ export class HiveManager {
     root: string,
     semanticMemory: boolean,
     knowledgeGraph: boolean,
-    kgCliPath?: string
+    kgCliPath?: string,
+    hindsight?: boolean
   ): string {
     // Native-separator path helpers — see the 🪟 note above.
     const inDir = (...parts: string[]): string => join(dir, ...parts);
     const inRoot = (...parts: string[]): string => join(root, ...parts);
     const ctxLine = 'LIVE CONTEXT: each agent row in the LIVE ROSTER carries a `ctx NN%` tag — its live context-window occupancy. Treat it as the real headroom signal when routing: prefer an agent with a LOW `ctx` for a big task; treat a HIGH `ctx` (near 100%) as busy rather than idle, even if the cumulative token count looks modest.';
 
+    // T-037: Hindsight is the primary recall source; mempalace CLI is the fallback.
+    // Neither: no recall line.  Hindsight only: MCP tools only.  Both: MCP tools +
+    // mempalace fallback.  Mempalace only: mempalace CLI only (legacy path).
+    // FRESHNESS NOTE: Hindsight and mempalace are authoritative for long-term
+    // learning but NOT for fast-moving facts (roster, active tasks, recent decisions).
+    // Always verify fast-moving state from live files (fleet.json, tasks.json, inbox).
+    const hindsightLine = hindsight
+      ? 'Semantic memory: the hive shares a Hindsight memory bank, available as the `munder-hive-memory` MCP server. At task start, use the `search` or `search_bank` tool to recall relevant past knowledge. Destructive operations (delete_bank, clear_memories, delete_document) are permanently denied by the harness — do not attempt them. Recall is good for durable facts (decisions, patterns, gotchas); it is NOT authoritative for fast-moving state (live roster, active tasks, very recent events) — verify those from live files.'
+      : '';
     const memoryLine = semanticMemory
-      // The palace location is named, not spelled as `$MEMPALACE_PALACE_PATH`:
-      // `mempalace` reads that env var itself, and the POSIX `$` form was noise
-      // (or an empty expansion) for a Windows agent that tried to use it literally.
-      ? 'Semantic memory: the whole hive shares a searchable MemPalace at the path in your MEMPALACE_PALACE_PATH environment variable. To recall relevant past knowledge across the team, run `mempalace search "<query>"`; run `mempalace wake-up` at the start of a task for a memory digest. Your notes in memory.md are mined into the palace automatically — write durable facts there.'
+      ? hindsight
+        // When both are available, Hindsight MCP is primary; mempalace CLI is fallback
+        // (e.g. when the MCP server is unreachable or for a broad freeform digest).
+        ? 'MemPalace fallback: if the Hindsight MCP server is unreachable, fall back to `mempalace search "<query>"` or `mempalace wake-up` for a memory digest. Your notes in memory.md are mined into the palace automatically — write durable facts there.'
+        // Hindsight not available — mempalace CLI only (legacy path, kept stable).
+        // The palace location is named, not spelled as `$MEMPALACE_PALACE_PATH`:
+        // `mempalace` reads that env var itself, and the POSIX `$` form was noise
+        // (or an empty expansion) for a Windows agent that tried to use it literally.
+        : 'Semantic memory: the whole hive shares a searchable MemPalace at the path in your MEMPALACE_PALACE_PATH environment variable. To recall relevant past knowledge across the team, run `mempalace search "<query>"`; run `mempalace wake-up` at the start of a task for a memory digest. Your notes in memory.md are mined into the palace automatically — write durable facts there.'
       : '';
     // Enterprise Knowledge Graph (opt-in). Volatile-free: the bundled-node launcher
     // and the KG CLI are both fixed absolute paths for an install, so baking them
@@ -1355,6 +1376,7 @@ export class HiveManager {
       `3. To ask another agent for something or share information, write ONE message JSON into ${inDir('outbox')} (schema in PROTOCOL.md). NEVER write into another agent's folder — the orchestrator delivers your outbox.`,
       '4. At the END of a task, append what you learned to memory.md so future-you remembers.',
       guardrailsLine,
+      hindsightLine,
       memoryLine,
       knowledgeLine,
       godLine,
@@ -2519,15 +2541,32 @@ request is NOT failed or deleted, it waits in \`spawn-requests/\` and runs if th
 If a request of yours has sat there without moving, that is why, and it is a decision to raise with the
 human rather than retry. Route work to an agent already on the floor first either way.
 
-## Semantic memory (optional — when \`mempalace\` is installed)
-When \`MEMPALACE_PALACE_PATH\` is set in your environment, the hive shares a
-searchable MemPalace and you have the \`mempalace\` CLI:
-- \`mempalace search "<query>"\` — recall relevant past knowledge across the whole
-  team by meaning (not just keywords). Add \`--wing <agent-id>\` to scope to one
-  agent, \`--results N\` to widen.
-- \`mempalace wake-up\` — a short digest of what matters, good at the start of a task.
+## Semantic memory — Hindsight (primary) + MemPalace (fallback)
 
-Your \`memory.md\` is mined into the palace automatically, so the durable facts you
+**Hindsight** is the hive's primary recall source. Claude workers access it via the
+\`munder-hive-memory\` MCP server (auto-wired when the operator enables it):
+- \`search\` or \`search_bank\` — recall relevant past knowledge by meaning.
+- Good for: durable facts, decisions, patterns, gotchas written into memory.md.
+- NOT authoritative for fast-moving state (live roster, active tasks, very recent
+  events) — verify those from live files (fleet.json, tasks.json, inbox).
+- Destructive tools (\`delete_bank\`, \`clear_memories\`, \`delete_document\`) are
+  permanently denied by the harness gate — do not attempt them.
+
+**Codex workers** (no MCP): recall via curl instead:
+\`\`\`sh
+curl -s -X POST http://127.0.0.1:8888/mcp/hive-memory \\
+  -H 'Content-Type: application/json' \\
+  -d '{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"search","arguments":{"query":"<your query>"}}}'
+\`\`\`
+Parse the SSE response line beginning with \`data:\` as JSON; the results are in
+\`result.content[0].text\`. Only use read tools this way.
+
+**MemPalace CLI** (when \`mempalace\` is installed — fallback if Hindsight unreachable):
+- \`mempalace search "<query>"\` — recall by meaning. \`--wing <agent-id>\` scopes to
+  one agent, \`--results N\` widens the result set.
+- \`mempalace wake-up\` — a short digest, good at the start of a task.
+
+Your \`memory.md\` is mined into the palace automatically — the durable facts you
 write there become searchable by every agent. You don't run \`mine\` yourself.
 `;
 
