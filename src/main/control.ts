@@ -29,17 +29,25 @@ const MAX_PENDING_STEERS = 20;
  *
  * Matched on the fully-qualified MCP name, which arrives as `mcp__<server>__<tool>`
  * with the server namespaced `munder-<id>` (hive.ts). Claude Code's normalisation of
- * `-` in the server segment is not something we control or want to bet on, so the
- * comparison folds `-` to `_` first: both `mcp__munder-hive-memory__delete_bank` and
+ * `-` in the server segment is not something we control or want to bet on, so BOTH
+ * spellings are listed: `mcp__munder-hive-memory__delete_bank` and
  * `mcp__munder_hive_memory__delete_bank` are caught. Betting on one spelling would
- * yield a green test suite and a gate that never fires.
+ * yield a green test suite and a gate that never fires. Segments are matched
+ * exactly — the tool half is never normalised, so a distinct hyphenated tool name
+ * on this server is NOT swept up.
  */
-const MCP_DENY_SERVER = 'munder_hive_memory';
+const MCP_DENY_SERVERS = new Set(['munder-hive-memory', 'munder_hive_memory']);
 const MCP_DENY_TOOLS = new Set(['delete_bank', 'clear_memories', 'delete_document']);
 
 function isDeniedMcpTool(tool: string): boolean {
-  const m = /^mcp__(.+?)__(.+)$/.exec(tool.replace(/-/g, '_'));
-  return !!m && m[1] === MCP_DENY_SERVER && MCP_DENY_TOOLS.has(m[2]);
+  // Split on the literal `__` and match each segment EXACTLY. An earlier version
+  // folded `-` to `_` across the whole string, which over-matched in two ways
+  // review caught: a genuinely distinct hyphenated tool (`delete-bank`) on this
+  // server would have been denied, and a future catalog id spelled `hive_memory`
+  // would have folded onto the same key as `hive-memory`. Listing the two server
+  // spellings is what the fold was actually for, and costs nothing.
+  const m = /^mcp__(.+?)__(.+)$/.exec(tool);
+  return !!m && MCP_DENY_SERVERS.has(m[1]) && MCP_DENY_TOOLS.has(m[2]);
 }
 
 export interface AgentControlSnapshot {

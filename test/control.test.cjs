@@ -91,4 +91,20 @@ test('toolDecision denies Hindsight destructive MCP tools for an agent with no c
   assert.equal(otherServer.deny, false, 'delete_document on another server must not be denied');
   const bareName = control.toolDecision('brand-new-agent', 'delete_bank');
   assert.equal(bareName.deny, false, 'unqualified tool name must not be denied');
+
+  // Review of PR #2: the first version folded `-` to `_` across the WHOLE name, so
+  // it normalised the tool segment too. `delete-bank` is a DIFFERENT tool from
+  // `delete_bank`; denying it would block something we were never asked to block.
+  // Segments are matched exactly now — only the two server spellings are accepted.
+  const hyphenTool = control.toolDecision('brand-new-agent', 'mcp__munder-hive-memory__delete-bank');
+  assert.equal(hyphenTool.deny, false, 'a distinct hyphenated TOOL name must not be swept up');
+  const hyphenTool2 = control.toolDecision('brand-new-agent', 'mcp__munder-hive-memory__clear-memories');
+  assert.equal(hyphenTool2.deny, false, 'clear-memories is not clear_memories');
+  // ...while the real names still are, in both server spellings.
+  for (const server of ['munder-hive-memory', 'munder_hive_memory']) {
+    for (const tool of ['delete_bank', 'clear_memories', 'delete_document']) {
+      assert.equal(control.toolDecision('brand-new-agent', `mcp__${server}__${tool}`).deny, true,
+        `mcp__${server}__${tool} must still be denied`);
+    }
+  }
 });
