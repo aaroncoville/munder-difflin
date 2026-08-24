@@ -114,3 +114,78 @@ test('retainWorker is a no-op when memory is not active (no CLI or disabled)', a
 
   assert.equal(log.length, 0, 'retainWorker must not crash when mempalace is absent');
 });
+
+// ── god's T-048 review steer ─────────────────────────────────────────────────
+// "On retain failure or timeout, DO NOT DELETE. Keep the scratch dir and leave
+// the entry for a later sweep. Failing toward KEEPING the directory is
+// consistent with the surrounding fail-safe code."
+//
+// retainWorker must return boolean — true = retained (or no-op), false = failed.
+// The GC caller checks the return value; a false stops it from calling
+// removeWorkerScratch. The two tests below are RED on the current code because
+// (1) retainWorker returns void not boolean, and (2) the timeout is not bounded.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('retainWorker returns true when mine succeeds (caller may then remove scratch)', async (t) => {
+  const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-retain-ok-'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-home-ok-'));
+  fs.writeFileSync(path.join(agentDir, 'memory.md'), '## Notes\nAll good.\n');
+
+  const memory = makeManager(t, { home, agentDir });
+  memory.mineAgent = async () => { /* successful mine — no-op stub */ };
+
+  const ok = await memory.retainWorker('worker-ok', agentDir);
+
+  // THIS LINE FAILS on current code: retainWorker returns undefined, not true.
+  assert.equal(ok, true, 'retainWorker must return true on success so the caller knows it may delete');
+});
+
+test('retainWorker returns false when mine throws — scratch dir must NOT be removed', async (t) => {
+  // This is the key safety property: if the mine fails (palace locked, CLI
+  // crash, or timeout), the GC sweep must leave the scratch dir alone and retry
+  // on the next tick, exactly like the surrounding fail-safe code does for
+  // removeWorktree errors and gc-safe check failures.
+  const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-retain-fail-'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-home-fail-'));
+  const memoryMd = path.join(agentDir, 'memory.md');
+  fs.writeFileSync(memoryMd, '## Worker notes\nImportant findings — must not be lost.\n');
+
+  const memory = makeManager(t, { home, agentDir });
+  // Simulate a failing mine (palace locked, CLI crash, etc.)
+  memory.mineAgent = async () => { throw new Error('palace write lock held by another process'); };
+
+  const retained = await memory.retainWorker('worker-mine-fails', agentDir);
+
+  // retainWorker must return false — THIS FAILS on current code (returns void).
+  assert.equal(retained, false, 'retainWorker must return false when mine throws');
+
+  // The scratch dir must still exist. In the real GC code, the caller checks the
+  // return value and skips removeWorkerScratch when it is false — so the directory
+  // survives for the next sweep to retry. We assert the file is still intact here
+  // to make the expected contract explicit.
+  assert.ok(fs.existsSync(memoryMd), 'memory.md must be intact after a failed retain — never silently discard');
+});
+
+test('retainWorker returns false when mine times out — scratch dir survives the bounded wait', async (t) => {
+  // The mine loop uses MINE_TIMEOUT_MS (10 min) because first runs download the
+  // embedding model. retainWorker runs on the GC sweep path (inside the worker
+  // tick); it must use a MUCH shorter cap so a slow/hung CLI never stalls worker
+  // processing for minutes. On timeout, return false (keep for next sweep).
+  //
+  // retainWorker accepts an optional timeoutMs parameter so tests can exercise
+  // the timeout path without waiting 30 s. We pass 50 ms here.
+  const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-retain-timeout-'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-home-timeout-'));
+  const memoryMd = path.join(agentDir, 'memory.md');
+  fs.writeFileSync(memoryMd, '## Notes\nDo not stall the worker tick.\n');
+
+  const memory = makeManager(t, { home, agentDir });
+  // Simulate a mine that never resolves (hung CLI).
+  memory.mineAgent = () => new Promise(() => { /* never resolves */ });
+
+  // retainWorker must return false — THIS FAILS on current code (void + no timeout).
+  const retained = await memory.retainWorker('worker-hung-mine', agentDir, 50);
+
+  assert.equal(retained, false, 'retainWorker must return false when the mine times out');
+  assert.ok(fs.existsSync(memoryMd), 'memory.md must survive a timeout — never delete after a stall');
+});
