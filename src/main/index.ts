@@ -62,7 +62,7 @@ import * as integrations from './integrations';
 import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
-import { loadHirePlan, mergeHireMcpDefaults, type HirePlan } from './hireSpawn';
+import { loadHirePlan, mergeHireMcpDefaults, resolveHireDefaults, type HirePlan } from './hireSpawn';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, type WorkerWakeFacts } from './workerWake';
 import { inboxNudgeText } from '../shared/hiveNudge';
@@ -4588,7 +4588,11 @@ async function processSpawnRequest(filePath: string): Promise<void> {
     hirePlan = loaded.plan;
   }
   const hm = hirePlan?.manifest;
-  const provider = (raw.provider ?? hm?.provider) as AgentProvider | undefined;
+  // One pure place resolves request-vs-manifest precedence for EVERY field, so a
+  // consumer can never read the request's value and forget the hire's (review of
+  // PR #1 found exactly that on the floor broadcast).
+  const eff = resolveHireDefaults(raw, hm);
+  const provider = eff.provider as AgentProvider | undefined;
 
   // Request line → executable + argv (auto-mode inheritance, tokenization,
   // model-flag dedupe). Pure and unit-tested — see workerLaunch.ts for why this
@@ -4597,7 +4601,7 @@ async function processSpawnRequest(filePath: string): Promise<void> {
   const launch = buildWorkerLaunch({
     requestCommand: raw.command,
     requestProvider: provider,
-    requestModel: raw.model ?? hm?.model,
+    requestModel: eff.model,
     defaultCommand: cfgSpawn.defaultCommand,
     autoMode: !!cfgSpawn.autoMode,
     hireFlags: hm?.commandFlags
@@ -4614,8 +4618,7 @@ async function processSpawnRequest(filePath: string): Promise<void> {
 
   const meta: AgentMeta = {
     id: workerId,
-    name: typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim()
-      : (hm?.name?.trim() || `Worker ${reqId.slice(0, 12)}`),
+    name: eff.name?.trim() || `Worker ${reqId.slice(0, 12)}`,
     provider,
     // Keep role 'worker' even for a hire: role drives EPHEMERALITY (reaping,
     // liveWorkers, worktree teardown), not identity. A hired worker is still a
@@ -4667,13 +4670,16 @@ async function processSpawnRequest(filePath: string): Promise<void> {
     liveWebContents()?.send('hive:agentSpawned', {
       id: workerId,
       name: meta.name,
-      provider: raw.provider ?? 'claude',
+      // The HIRE's provider, not just the request's: a codex hire with no explicit
+      // request provider was broadcast (and so restored after a restart) as claude,
+      // while actually launching under codex. Caught in review of PR #1.
+      provider: provider ?? 'claude',
       cwd: res.worktreePath ?? cwd,
       command: launch.command,
       role: meta.role,
       worktreePath: res.worktreePath,
-      character: typeof raw.character === 'string' ? raw.character : hm?.character,
-      accent: typeof raw.accent === 'string' ? raw.accent : hm?.accent
+      character: eff.character,
+      accent: eff.accent
     });
   } catch { /* window torn down */ }
 

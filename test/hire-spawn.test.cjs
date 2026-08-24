@@ -17,26 +17,33 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const loadTs = require('./load-ts.cjs');
 
-const { mergeHireMcpDefaults, resolveHireManifestPath } = loadTs('src/main/hireSpawn.ts');
+const { mergeHireMcpDefaults, resolveHireManifestPath, resolveHireDefaults } = loadTs('src/main/hireSpawn.ts');
 const { buildWorkerLaunch } = loadTs('src/main/workerLaunch.ts');
+const { MCP_CATALOG } = loadTs('src/shared/mcpCatalog.ts');
 
-// From src/shared/mcpCatalog.ts: safe-readonly vs secret.
-const SAFE = 'context7';
-const SECRET = 'github-token';
+// DERIVED from the catalog, never copied literals. Review of PR #1 caught the
+// copied-literal version, and rightly: a test that hardcodes the same ids the
+// implementation classifies keeps passing when the catalog's tiers change
+// underneath it, which is the one moment it most needs to fail. This is the same
+// defect god flagged in someone else's work the same morning.
+const SAFE = MCP_CATALOG.find((e) => e.tier === 'safe-readonly').id;
+const UNSAFE = MCP_CATALOG.filter((e) => e.tier !== 'safe-readonly').map((e) => e.id);
+assert.ok(SAFE, 'catalog must contain at least one safe-readonly entry');
+assert.ok(UNSAFE.length, 'catalog must contain at least one write/secret entry');
 
-test('a manifest can never arm a write/secret MCP server', () => {
-  const out = mergeHireMcpDefaults(undefined, [SECRET, 'db', 'email-calendar', 'search-with-key']);
-  // Nothing safe was asked for, so the base is returned untouched — and crucially
-  // no secret id appears anywhere.
-  for (const id of [SECRET, 'db', 'email-calendar', 'search-with-key']) {
+test('a manifest can never arm ANY write/secret MCP server in the catalog', () => {
+  // Every non-safe id, not a sample: a new secret entry added to the catalog
+  // tomorrow is covered by this test today.
+  const out = mergeHireMcpDefaults(undefined, UNSAFE);
+  for (const id of UNSAFE) {
     assert.equal(out?.[id], undefined, `${id} must never be enabled by a manifest`);
   }
 });
 
 test('a mixed request enables only the safe half', () => {
-  const out = mergeHireMcpDefaults({}, [SAFE, SECRET]);
+  const out = mergeHireMcpDefaults({}, [SAFE, ...UNSAFE]);
   assert.deepEqual(out[SAFE], { enabled: true }, 'safe-readonly id should be enabled');
-  assert.equal(out[SECRET], undefined, 'secret id must be dropped, not enabled');
+  for (const id of UNSAFE) assert.equal(out[id], undefined, `${id} must be dropped, not enabled`);
 });
 
 test("an explicit human 'off' outranks the manifest", () => {
@@ -86,4 +93,40 @@ test('no hire flags is identical to the pre-hire behaviour', () => {
   const withNone = buildWorkerLaunch({ requestCommand: 'claude --verbose', autoMode: false });
   const withEmpty = buildWorkerLaunch({ requestCommand: 'claude --verbose', autoMode: false, hireFlags: [] });
   assert.deepEqual(withEmpty, withNone);
+});
+
+
+// ── precedence (regression: PR #1 review) ───────────────────────────────────
+// A codex hire with no request provider launched under codex but was BROADCAST
+// as claude, so a restart restored it as the wrong CLI. The bug was one consumer
+// reading the request's value and forgetting the manifest's. These pin the rule
+// itself rather than any one call site.
+
+test('the request wins on every field it states', () => {
+  const eff = resolveHireDefaults(
+    { provider: 'codex', model: 'm-req', name: 'n-req', character: 'c-req', accent: 'a-req' },
+    { provider: 'claude', model: 'm-hire', name: 'n-hire', character: 'c-hire', accent: 'a-hire' }
+  );
+  assert.deepEqual(eff, { provider: 'codex', model: 'm-req', name: 'n-req', character: 'c-req', accent: 'a-req' });
+});
+
+test('the manifest fills every field the request leaves unset', () => {
+  const eff = resolveHireDefaults({}, {
+    provider: 'codex', model: 'm-hire', name: 'n-hire', character: 'c-hire', accent: 'a-hire'
+  });
+  assert.deepEqual(eff, { provider: 'codex', model: 'm-hire', name: 'n-hire', character: 'c-hire', accent: 'a-hire' });
+  assert.equal(eff.provider, 'codex', "the exact regression: a codex hire must not resolve to claude");
+});
+
+test('an empty or whitespace request value is not a stated choice', () => {
+  const eff = resolveHireDefaults(
+    { provider: '', model: '   ', name: '', character: null, accent: undefined },
+    { provider: 'codex', model: 'm-hire', name: 'n-hire', character: 'c-hire', accent: 'a-hire' }
+  );
+  assert.deepEqual(eff, { provider: 'codex', model: 'm-hire', name: 'n-hire', character: 'c-hire', accent: 'a-hire' });
+});
+
+test('with no manifest at all, nothing is invented', () => {
+  assert.deepEqual(resolveHireDefaults({ provider: 'codex' }, undefined),
+    { provider: 'codex', model: undefined, name: undefined, character: undefined, accent: undefined });
 });

@@ -128,3 +128,34 @@ export function mergeHireMcpDefaults(
   }
   return out;
 }
+
+
+/**
+ * Field-by-field precedence between a spawn-request and a hire manifest.
+ *
+ * The rule is one line — **the request wins on anything it states; the manifest
+ * is only a default** — but it has to be applied at EVERY consumer, and review of
+ * PR #1 found a site that had been missed: the floor broadcast still read the
+ * request's provider, so a codex hire with no explicit request provider launched
+ * under codex and was restored as claude after a restart.
+ *
+ * Resolving all of it in one pure place makes the rule testable and gives every
+ * consumer a single value to read, so "I forgot one field" stops being possible.
+ */
+export function resolveHireDefaults(
+  raw: { provider?: unknown; model?: unknown; name?: unknown; character?: unknown; accent?: unknown },
+  manifest?: { provider?: string; model?: string; name?: string; character?: string; accent?: string }
+): { provider?: string; model?: string; name?: string; character?: string; accent?: string } {
+  // A request value counts only when it is a non-empty string: `""` is not a
+  // stated choice, and letting it through would mean a hire silently lost a field
+  // to an empty one.
+  const req = (v: unknown): string | undefined =>
+    typeof v === 'string' && v.trim() ? v.trim() : undefined;
+  return {
+    provider: req(raw.provider) ?? manifest?.provider,
+    model: req(raw.model) ?? manifest?.model,
+    name: req(raw.name) ?? manifest?.name,
+    character: req(raw.character) ?? manifest?.character,
+    accent: req(raw.accent) ?? manifest?.accent
+  };
+}
