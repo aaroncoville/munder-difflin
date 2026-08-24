@@ -82,6 +82,7 @@ import {
 import { buildMissingCliScript, chooseInstallRung } from './cliInstall';
 import { detectNodeVersion, nodeIsUsable, resolveNodeInstaller } from './nodeInstall';
 import { toolCatalog, type ToolStatus } from '../shared/toolCatalog';
+import { effectiveWorkerTokenCap } from '../shared/tokenCaps';
 import { listLocalSkills, loadCatalog, installSkill, uninstallSkill, type LocalSkill } from './skills';
 import { loadHero } from './hero';
 import {
@@ -4805,10 +4806,10 @@ async function ephemeralWorkerTick(): Promise<void> {
     const cfg = readConfig();
     const maxWorkers = Math.max(1, cfg.maxConcurrentWorkers ?? 4);
     const idleTimeoutMs = Math.max(1, cfg.workerIdleTimeoutMinutes ?? 20) * 60_000;
-    // Per-worker token cap. 0 = UNLIMITED (the default — wired but never throttles
-    // unless a positive cap is set per-request or via defaultWorkerTokenCap).
-    const defaultTokenCap = typeof cfg.defaultWorkerTokenCap === 'number' && cfg.defaultWorkerTokenCap > 0
-      ? cfg.defaultWorkerTokenCap : 0;
+    // Per-worker token cap. A worker's own spawn-request cap wins; otherwise the
+    // config default applies (10M unless someone set defaultWorkerTokenCap).
+    // 0 there = UNLIMITED, the deliberate escape hatch.
+    const defaultTokenCap = cfg.defaultWorkerTokenCap;
 
     // (1) Finish or reap. Each release calls teardownPty EXPLICITLY after the
     //     kill, like every other kill site: ptyManager.kill() deletes the session
@@ -4830,7 +4831,7 @@ async function ephemeralWorkerTick(): Promise<void> {
       }
       // Token-cap reap (default-off plumbing). An effective cap > 0 → reap when the
       // worker's cumulative token use exceeds it; its committed work is preserved.
-      const tokenCap = (rec.tokenCap && rec.tokenCap > 0) ? rec.tokenCap : defaultTokenCap;
+      const tokenCap = effectiveWorkerTokenCap(rec.tokenCap, defaultTokenCap);
       if (tokenCap > 0) {
         const used = workerTokensUsed(workerId);
         if (used > tokenCap) {
@@ -4935,12 +4936,11 @@ interface PreservedSnapshot {
 /** List live ephemeral workers (+ preserved worktrees awaiting GC) for the tab. */
 ipcMain.handle('workers:list', (): { live: WorkerSnapshot[]; preserved: PreservedSnapshot[]; maxWorkers: number } => {
   const cfg = readConfig();
-  const defaultCap = typeof cfg.defaultWorkerTokenCap === 'number' && cfg.defaultWorkerTokenCap > 0
-    ? cfg.defaultWorkerTokenCap : 0;
+  const defaultCap = cfg.defaultWorkerTokenCap;
   const now = Date.now();
   const live: WorkerSnapshot[] = [...liveWorkers.values()].map((rec) => {
     const idle = ptyManager.idleFor(rec.workerId);
-    const effCap = (rec.tokenCap && rec.tokenCap > 0) ? rec.tokenCap : (defaultCap > 0 ? defaultCap : 0);
+    const effCap = effectiveWorkerTokenCap(rec.tokenCap, defaultCap);
     return {
       workerId: rec.workerId,
       reqId: rec.reqId,
