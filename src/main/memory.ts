@@ -81,6 +81,15 @@ const MINE_INTERVAL_MS = 600_000;
 // so there is nothing here worth making recall half an hour stale for.
 const MINE_BACKOFF_MAX_MS = 1_800_000;
 const MINE_TIMEOUT_MS = 10 * 60_000; // hard cap per mine (first run downloads the embedding model)
+/**
+ * Separate, shorter cap for the teardown-path retain (T-048). The mine loop's
+ * 10-minute cap exists because first runs lazily download the embedding model;
+ * that is acceptable in the background but NOT on the GC sweep path, which runs
+ * inside the worker tick. A 30-second wall-clock cap bounds the worst-case stall
+ * on that path; on timeout, retainWorker returns false so the caller keeps the
+ * scratch dir for a later sweep rather than deleting and losing memory.
+ */
+const RETAIN_TIMEOUT_MS = 30_000;
 /** mempalace's device "auto" picks the CoreML execution provider on Apple
  *  Silicon, and CoreML runs the quantized embeddinggemma ONNX graph partially
  *  (330/1647 nodes) with fp16 partitions that overflow → EVERY vector comes
@@ -364,22 +373,51 @@ export class MemoryManager {
 
   /**
    * One-shot mine of a single worker's memory, called on the REAP path BEFORE
-   * the caller deletes the scratch directory. Bypasses the mtime-based skip so
-   * recent changes are never silently lost; degrades to a no-op when mempalace
-   * is absent or disabled rather than throwing. Idempotent — mempalace mine
-   * dedups, so a double call is safe.
+   * the caller deletes the scratch directory. Returns true when the mine
+   * succeeded (or when there is nothing to mine), false when it failed or timed
+   * out. The caller MUST check the return value: a false means keep the scratch
+   * dir for the next GC sweep; deleting on a false silently reintroduces the
+   * data-loss this method exists to prevent.
    *
-   * T-048: gcPreservedWorktrees calls this before removeWorkerScratch so that
-   * a reaped worker's notes survive the ~60 s GC window even when the 10-minute
-   * mine loop hasn't fired yet.
+   * Uses RETAIN_TIMEOUT_MS (30 s), NOT MINE_TIMEOUT_MS (10 min). The mine loop
+   * uses the long cap because first runs download the embedding model; that is
+   * acceptable in a background loop but would stall the worker tick for up to
+   * ten minutes, which is not. On timeout → false → keep for next sweep.
+   *
+   * An optional `timeoutMs` override exists for tests (pass a short value so
+   * the timeout path completes in milliseconds, not 30 s).
+   *
+   * T-048: gcPreservedWorktrees awaits this before removeWorkerScratch on both
+   * GC removal paths and continues (skips deletion) when false is returned.
    */
-  async retainWorker(workerId: string, agentDir: string): Promise<void> {
-    if (!this.active() || !this.bin()) return;
-    if (!existsSync(join(agentDir, 'memory.md'))) return;
+  async retainWorker(workerId: string, agentDir: string, timeoutMs = RETAIN_TIMEOUT_MS): Promise<boolean> {
+    if (!this.active() || !this.bin()) return true; // no-op: nothing to mine, ok to proceed
+    if (!existsSync(join(agentDir, 'memory.md'))) return true; // no memory to retain
     // Force re-mine even when the mtime hasn't changed since last pass — the
     // worker may have written new notes between mine ticks.
     this.lastMined.delete(workerId);
-    await this.mineAgent(agentDir, workerId);
+    try {
+      await Promise.race([
+        this.mineAgent(agentDir, workerId),
+        new Promise<never>((_, reject) => {
+          // Intentionally NOT unreffed: retainWorker runs inside the GC sweep,
+          // so the event loop is already kept alive by the worker tick. Unreffing
+          // here would let the loop drain in isolated unit tests before the timer
+          // fires, causing a spurious "Promise still pending" cancellation.
+          setTimeout(
+            () => reject(new Error(`retainWorker ${workerId}: timed out after ${timeoutMs}ms`)),
+            timeoutMs
+          );
+        })
+      ]);
+      return true;
+    } catch (e) {
+      console.error(
+        `[memory] retainWorker ${workerId}: failed — scratch preserved for next GC sweep:`,
+        e instanceof Error ? e.message : e
+      );
+      return false;
+    }
   }
 
   private mineAgent(agentDir: string, id: string): Promise<void> {
