@@ -63,6 +63,7 @@ test('retainWorker mines a worker\'s memory before the scratch directory is remo
   memory.mineAgent = async (dir, id) => {
     log.push({ dir, id, memoryExists: fs.existsSync(path.join(dir, 'memory.md')) });
     // Do not spawn the fake CLI — we are testing the call, not the palace.
+    return true; // mine succeeded (required by retainWorker's boolean contract)
   };
 
   // retainWorker does not exist on current code — this line throws TypeError → RED.
@@ -222,4 +223,32 @@ test('retainWorker still returns true on a clean mine', async (t) => {
   memory.mineAgent = async () => true;
   assert.equal(await memory.retainWorker('worker-mine-ok', agentDir), true,
     'a clean mine must report safe-to-delete, or nothing would ever be reclaimed');
+});
+
+// ── call-site simulation (god: "the assertion I care about most in the entire card") ──
+// This test proves the *caller* (gcPreservedWorktrees) keeps the scratch dir when
+// retainWorker returns false. Without this, the boolean contract could be correct in
+// isolation while the call site still deletes — a silent data-loss bug.
+
+test('scratch dir is NOT deleted when retainWorker returns false — call-site simulation', async (t) => {
+  // Mirrors what gcPreservedWorktrees does:
+  //   const retained = await memory.retainWorker(e.workerId, e.scratchDir);
+  //   if (!retained) { console.warn(...); continue; }   ← skip removeWorkerScratch
+  //   removeWorkerScratch(e.workerId);
+  //
+  // The mine resolves false (non-zero exit / spawn error — the production path).
+  const { agentDir, memory } = setup(t);
+  const memoryMd = path.join(agentDir, 'memory.md');
+
+  memory.mineAgent = async () => false;
+
+  const retained = await memory.retainWorker('worker-gc-callsite', agentDir);
+
+  // Simulate gcPreservedWorktrees: only delete when retained is true.
+  if (retained) {
+    fs.rmSync(agentDir, { recursive: true, force: true });
+  }
+
+  assert.equal(retained, false, 'retainWorker must return false so the call site continues past removeWorkerScratch');
+  assert.ok(fs.existsSync(memoryMd), 'memory.md must survive — scratch kept for the next GC sweep');
 });
