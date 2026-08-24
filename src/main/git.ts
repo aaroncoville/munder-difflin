@@ -1,9 +1,11 @@
 import { spawn } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
+import { basename, dirname, join, resolve } from 'node:path';
 import { safeJoin } from './fs';
 
 /** Run git in `cwd` with `args`. Returns stdout text or an error. */
-function runGit(cwd: string, args: string[], timeoutMs = 8000): Promise<{
+export function runGit(cwd: string, args: string[], timeoutMs = 8000): Promise<{
   ok: true; stdout: string;
 } | { ok: false; error: string }> {
   return new Promise((resolve) => {
@@ -229,7 +231,7 @@ export async function mainRepoRoot(cwd: string): Promise<string | null> {
 }
 
 /** Derive a safe `agent/<id>` branch name from a worktree path's basename. */
-function agentBranchFor(wtPath: string): string {
+export function agentBranchFor(wtPath: string): string {
   const base = wtPath.split(/[\\/]/).filter(Boolean).pop() ?? 'agent';
   const slug = base.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'agent';
   return `agent/${slug}`;
@@ -258,6 +260,48 @@ export async function removeWorktree(
   const res = await runGit(cwd, ['worktree', 'remove', '--force', wtPath]);
   if (res.ok) return { ok: true };
   return { ok: false, error: res.error };
+}
+
+/** The branch a fresh agent worktree should be cut from: the source repo's own
+ *  checked-out branch — exactly what spawn-time isolation uses. Falls back to
+ *  whichever of `main`/`master` exists when HEAD is detached or unreadable, and
+ *  to plain `main` when neither does (git's own default for a new repo). */
+export async function defaultBaseBranch(cwd: string): Promise<string> {
+  const br = await getBranch(cwd);
+  if ('current' in br && br.current) return br.current;
+  for (const name of ['main', 'master']) {
+    if ((await runGit(cwd, ['rev-parse', '--verify', '--quiet', `refs/heads/${name}`])).ok) return name;
+  }
+  return 'main';
+}
+
+/** Canonicalize a path for comparison against git's own worktree listing: git
+ *  reports the REAL path while callers hold the one they were handed, and on
+ *  macOS a temp/`/var` path differs from its `/private/var` realpath. The
+ *  worktree may already be gone (that is the case we are asked about), so fall
+ *  back to canonicalizing its parent and re-appending the basename. */
+function canonicalPath(p: string): string {
+  const abs = resolve(p);
+  try { return realpathSync.native(abs); } catch { /* gone — try its parent */ }
+  try { return join(realpathSync.native(dirname(abs)), basename(abs)); } catch { return abs; }
+}
+
+/** Does `cwd`'s repo still have a worktree record for `wtPath`? True even when
+ *  the directory itself is gone — that stale record is exactly what makes a
+ *  later `worktree add` on the same path refuse. */
+export async function isRegisteredWorktree(cwd: string, wtPath: string): Promise<boolean> {
+  const list = await listWorktrees(cwd);
+  if (!Array.isArray(list)) return false;
+  const want = canonicalPath(wtPath);
+  return list.some(w => canonicalPath(w.path) === want);
+}
+
+/** Drop worktree records whose directory no longer exists. Never touches a live
+ *  worktree — git's own precondition for pruning a record is that its path is
+ *  already gone. */
+export async function pruneWorktrees(cwd: string): Promise<{ ok: boolean; error?: string }> {
+  const res = await runGit(cwd, ['worktree', 'prune']);
+  return res.ok ? { ok: true } : { ok: false, error: res.error };
 }
 
 /** Does this worktree hold work that must NOT be auto-discarded? `keep` is true if
