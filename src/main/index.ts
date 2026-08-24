@@ -448,6 +448,14 @@ function teardownPty(id: string): void {
     try { workerWake.forget(agentId, id); } catch { /* best-effort */ }
     // Drop breaker state so a dead agent can't leak/zombie a tripped level.
     try { breaker.forget(agentId); } catch { /* best-effort */ }
+    // …and the USAGE counter the breaker's per-agent token cap is measured off.
+    // breaker.forget() alone was not enough: the level is re-DERIVED on the next
+    // beat from telemetry's cumulative per-agent sample, which outlived the PTY.
+    // A respawned agent (same id) therefore re-tripped its cap immediately,
+    // against tokens its dead predecessor spent. Lifetime SPEND is untouched —
+    // cost-ledger.jsonl is on disk and CostLedgerTotals already folds counter
+    // resets (this looks exactly like an app restart to it).
+    try { telemetry.forgetAgent(agentId); } catch { /* best-effort */ }
     // W1 — kill this agent's proxy-bridge sidecar (qwen), if any, so a dead
     // PTY never leaves an orphan loopback listener. No-op for non-proxy agents.
     try { hive.stopProxyBridge(agentId); } catch (e) { console.error('[hive] stopProxyBridge failed:', e); }

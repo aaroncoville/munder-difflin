@@ -206,6 +206,28 @@ export class TelemetryCollector {
     return () => this.apiErrorSubs.delete(cb);
   }
 
+  /** Drop ALL in-memory usage/span state for an agent.
+   *
+   *  Called on PTY death (alongside `breaker.forget`) so a RESPAWN of the same
+   *  agent id starts its counters at zero. `AgentUsageSample` is what the
+   *  breaker compares against `agentTokenCaps`, and it is aggregated from these
+   *  maps; without this reset a respawned agent inherited its dead
+   *  predecessor's lifetime total and the cap re-tripped on the first beat.
+   *
+   *  Spend history is NOT lost: `cost-ledger.jsonl` keeps every appended sample
+   *  and `CostLedgerTotals` already treats a counter DECREASE as a reset (the
+   *  same signature an app restart produces), so lifetime usd still folds
+   *  correctly across the reset.
+   *
+   *  Spans go too — a fresh session must not read as "progressing" off the dead
+   *  session's tool activity in the breaker's no-progress arm. */
+  forgetAgent(agentId: string): void {
+    const set = this.agentSessions.get(agentId);
+    if (set) for (const sid of set) this.sessions.delete(sid);
+    this.agentSessions.delete(agentId);
+    this.spans.delete(agentId);
+  }
+
   /** Recent tool spans for the per-agent waterfall (#7B.2), oldest→newest. */
   getSpans(agentId: string): ToolSpan[] {
     return this.spans.get(agentId)?.slice() ?? [];
