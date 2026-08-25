@@ -39,6 +39,17 @@ rebases onto upstream cheap, and keeps the diff small enough to be reviewed on i
 
 `main` tracks upstream. **`origin` IS the third-party upstream — never push to it.**
 
+**Agents never open PRs against upstream (or any third-party repo).** Agents may open PRs only
+against Aaron's own repos and forks. Upstream PRs are opened by Aaron himself — prepare the
+branch and the template-shaped body on the fork, then hand it over. (Aaron, 2026-08-25.)
+
+**CLAUDE.md and `docs/superpowers/` are fork-only and must never appear in a PR diff.** They
+live as local-only commits on this checkout's `main`, which is why every contribution branch
+must be cut from **`fork/main`** (fetch it first), never from local `main` — a branch cut from
+local `main` silently carries the fork-only commits into its PR. Before pushing any branch,
+check: `git diff fork/main...HEAD --stat` must list only the files your change intends.
+(Aaron, 2026-08-25; PR #18 shipped CLAUDE.md by exactly this mistake and was rebased.)
+
 Branch contribution work off `main`. Because we are synced with upstream, any conflict you hit
 while re-applying an older change is a **real** conflict against current upstream code, not a
 stale-base artifact — resolving it properly *is* the port, and it only has to be done once.
