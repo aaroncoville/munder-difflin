@@ -123,3 +123,55 @@ export function restorePlacement(
 
   return { seatIndex, spawnTile };
 }
+
+/**
+ * The placement to seed a character with on this mount, with the god rule
+ * applied — what `addCharacter` actually calls.
+ *
+ * The seat and the position are separate rules and only the SEAT is Michael's.
+ * Seat 0 is the god desk and `claimSeat` is the one place that rule lives, so
+ * the god's remembered seat is dropped here and re-dealt there rather than
+ * being restored (which would put a second copy of the rule on this path). His
+ * POSITION is orthogonal, and restoring it is the whole point of the feature on
+ * the agent most likely to be on screen: excluding the god from both halves
+ * meant Michael marched in through the office door on every single eviction.
+ */
+export function seedPlacement(
+  snapshot: SceneSnapshot | null | undefined,
+  theme: string,
+  agent: { id: string; isGod?: boolean },
+  floor: FloorProbe
+): { seatIndex: number | null; spawnTile: SnapshotTile | null } | null {
+  const restored = restorePlacement(snapshot, theme, agent.id, floor);
+  if (!restored) return null;
+  return agent.isGod ? { seatIndex: null, spawnTile: restored.spawnTile } : restored;
+}
+
+/**
+ * Fold a fresh capture into the one already remembered.
+ *
+ * Characters are built asynchronously (`await theme.cast.getFrames`), so an
+ * eviction STORM — a second context loss inside the ~1.5s rebuild delay — can
+ * tear a mount down before any of its characters exist. Capturing that mount
+ * yields `{ theme, agents: {} }`, and assigning it straight onto the ref would
+ * write an empty snapshot over a good one: the next rebuild would then be a full
+ * cold start with everyone walking in through the door, which is exactly the
+ * jank T-071 exists to remove. It is a LOSS, not a leak — and the storm is
+ * precisely the case the feature targets, so it matters more than its narrow
+ * window suggests.
+ *
+ * Keeping the older entries is safe because a placement is only ever consulted
+ * for an agent still in the store: an agent that left leaves a dead entry that
+ * `syncAgents` never looks up and that holds no seat claim.
+ *
+ * A THEME CHANGE still discards outright. Seat indices and tiles index ONE map,
+ * so merging across themes would resurrect office placements onto the spaceship
+ * and seat agents inside walls — including when the new capture is empty.
+ */
+export function mergeSceneSnapshot(
+  previous: SceneSnapshot | null | undefined,
+  fresh: SceneSnapshot
+): SceneSnapshot {
+  if (!previous || previous.theme !== fresh.theme || !previous.agents) return fresh;
+  return { theme: fresh.theme, agents: { ...previous.agents, ...fresh.agents } };
+}

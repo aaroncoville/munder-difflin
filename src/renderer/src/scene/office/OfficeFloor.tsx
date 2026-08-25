@@ -13,7 +13,7 @@ import { pickSoloLine, pickExchange, type BreakSpot } from './cafeteriaLines';
 import { colors } from '@/design/tokens';
 import { loadTheme, resolveThemeMap, themeTilesetUrls } from './themeLoader';
 import { installContextLossRecovery } from './glRecovery';
-import { captureSceneSnapshot, restorePlacement, type SceneSnapshot } from './sceneRestore';
+import { captureSceneSnapshot, mergeSceneSnapshot, seedPlacement, type SceneSnapshot } from './sceneRestore';
 import type { Tile, Facing, ErrandKind, ErrandSpot } from './themeRegistry';
 
 // The map, tileset atlases, desk-claim order, errand spots, coffee-economy
@@ -1384,15 +1384,14 @@ export function OfficeFloor() {
         // A rebuild (a lost GL context, or a remount on the same theme) puts
         // everyone back at the desk they had, standing where they were, instead
         // of dealing out fresh desks and marching everybody in through the door
-        // again. Michael's room is not restorable — seat 0 is his by rule, and
-        // claimSeat is the one place that rule lives.
-        const restored = agent.isGod
-          ? null
-          : restorePlacement(sceneSnapshotRef.current, officeTheme, agent.id, {
-              seatCount: seatTiles.length,
-              isSeatFree: (i) => !seatClaims.has(i),
-              isWalkable: (x, y) => mapRenderer.isWalkable(x, y),
-            });
+        // again. Michael's ROOM is not restorable — seat 0 is his by rule and
+        // claimSeat is the one place that rule lives — but his POSITION is:
+        // seedPlacement drops the god's seat and keeps his tile.
+        const restored = seedPlacement(sceneSnapshotRef.current, officeTheme, agent, {
+          seatCount: seatTiles.length,
+          isSeatFree: (i) => !seatClaims.has(i),
+          isWalkable: (x, y) => mapRenderer.isWalkable(x, y),
+        });
         // Claimed synchronously, BEFORE the await below: two agents mounting at
         // once must not both see the same chair as free.
         let seatIndex: number | null;
@@ -1760,8 +1759,15 @@ export function OfficeFloor() {
         // on a dead scene can resurrect it, which is worse than any reset.
         (a as any).__glRecovery?.();
         // Then remember where everyone was, so the next mount can put them back.
+        // MERGED, not assigned: an eviction storm can tear this mount down before
+        // its characters finished building, and that capture is empty — writing
+        // it over a good snapshot would cold-start the next rebuild. A theme
+        // change still discards outright; mergeSceneSnapshot handles both.
         try {
-          sceneSnapshotRef.current = captureSceneSnapshot(officeTheme, runtimes);
+          sceneSnapshotRef.current = mergeSceneSnapshot(
+            sceneSnapshotRef.current,
+            captureSceneSnapshot(officeTheme, runtimes)
+          );
         } catch (err) {
           console.warn('[OfficeFloor] could not snapshot the floor:', err);
         }

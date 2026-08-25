@@ -169,7 +169,8 @@ test('a seat freed mid-restore is restorable by the agent that remembers it', ()
 test('restorePlacement has no seat-0 rule of its own — Michael is protected by the caller', () => {
   // Documents WHERE the invariant lives. claimSeat is the only place that knows
   // seat 0 is the god desk, and OfficeFloor keeps the god off this path entirely
-  // (`agent.isGod ? null : restorePlacement(...)`). This module will hand seat 0
+  // (seedPlacement nulls the god's seat before the caller sees it). This module
+  // will hand seat 0
   // to anyone who remembers it, so that caller-side guard is load-bearing.
   const snap = captureSceneSnapshot('office', new Map([['someone', rt(0, 4, 4)]]));
   assert.equal(restorePlacement(snap, 'office', 'someone', floor()).seatIndex, 0,
@@ -184,8 +185,11 @@ test('seat 0 survives contention because no ordinary agent can ever remember it'
     path.join(__dirname, '..', 'src/renderer/src/scene/office/OfficeFloor.tsx'), 'utf8');
   assert.match(src, /for \(let i = 1; i < seatTiles\.length; i\+\+\)/,
     'claimSeat no longer starts at 1 — a non-god can now hold seat 0 and restore into it');
-  assert.match(src, /agent\.isGod\s*\n?\s*\?\s*null\s*\n?\s*:\s*restorePlacement/,
-    'the god is no longer excluded from the restore path — seat 0 is contestable');
+  // T-071 follow-up (F1): the god is no longer excluded from the restore
+  // WHOLESALE — he keeps his position — but seedPlacement still drops his seat,
+  // so seat 0 is only ever dealt by claimSeat. See office-scene-restore-f1f2.
+  assert.match(src, /const restored = seedPlacement\(/,
+    'the god rule left seedPlacement — a restored god seat would make seat 0 contestable');
 });
 
 // ───────────────────────────────────────────────────────────────────────────
