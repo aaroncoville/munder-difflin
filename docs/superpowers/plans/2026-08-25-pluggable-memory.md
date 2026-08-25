@@ -19,7 +19,7 @@
 - Shim failure mode: backend unreachable → print exactly one line and `exit 0`.
 - All new claims in comments must be dated and scoped (house rule; see spec's Hindsight section).
 - Tests must assert EFFECTS, not proxies; expect both removal- and substitution-mutation review in QA.
-- Run before every commit: `npm run typecheck && npm run test:focused` (baseline 553 passing on this branch's base).
+- Run before every commit: `npm run typecheck && npm run test:focused` (baseline 552 passing at this branch's base — always trust the branch-base count you measure over this number).
 
 ---
 
