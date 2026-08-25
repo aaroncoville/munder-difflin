@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { HarnessConfig } from '@/store/config';
 import { MCP_CATALOG, type McpTier } from '@shared/mcpCatalog';
+import { applyToggle, resolveEnabledFor } from './mcpToggleLogic';
 
 export interface McpDefaultsSettingsProps {
   config: HarnessConfig;
@@ -28,16 +29,36 @@ const labelStyle: React.CSSProperties = {
 
 export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
   const [note, setNote] = useState('');
+  // Seeded from the prop, then replaced by what the DISK reports after each
+  // toggle. Rendering from the prop alone was T-057: the write landed and the
+  // control kept showing the stale value.
+  const [mcpDefaults, setMcpDefaults] = useState(config.mcpDefaults ?? {});
 
-  const enabledFor = (id: string): boolean =>
-    config.mcpDefaults?.[id]?.enabled ?? MCP_CATALOG.find((e) => e.id === id)?.defaultEnabled ?? false;
+  // …and re-seeded from disk on every MOUNT. The prop alone is not enough:
+  // SettingsModal renders this panel only while the Connections section is
+  // open, and its `config` is App's, loaded once at start-up and never
+  // refreshed after a save (see the same note at SettingsModal.tsx:444). So
+  // switching sections and coming back remounts against a config object that
+  // still says the grant never happened — which is T-057 all over again, on a
+  // grant that IS on disk. A consent control has to read the grant, not
+  // remember it.
+  useEffect(() => {
+    let alive = true;
+    window.cth.getConfig()
+      .then((c) => { if (alive) setMcpDefaults((c as HarnessConfig).mcpDefaults ?? {}); })
+      .catch(() => { /* keep the prop-seeded value */ });
+    return () => { alive = false; };
+  }, []);
+
+  const enabledFor = (id: string): boolean => resolveEnabledFor(mcpDefaults, id);
 
   const toggle = async (id: string) => {
     const next = !enabledFor(id);
     try {
-      await window.cth.updateConfig({
-        mcpDefaults: { ...(config.mcpDefaults ?? {}), [id]: { enabled: next } }
-      });
+      setMcpDefaults(await applyToggle(id, next, mcpDefaults, {
+        updateConfig: window.cth.updateConfig,
+        getConfig: window.cth.getConfig
+      }));
       setNote(`${id}: ${next ? 'enabled' : 'disabled'}`);
       setTimeout(() => setNote(''), 1800);
     } catch {
