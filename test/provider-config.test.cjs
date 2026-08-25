@@ -87,7 +87,7 @@ test('model picker options stay provider-specific', () => {
   );
   assert.deepEqual(
     modelsForProvider('codex').map((model) => model.id),
-    [undefined, 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']
+    [undefined, 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.6-sol']
   );
   assert.deepEqual(
     modelsForProvider('grok').map((model) => model.id),
@@ -107,6 +107,37 @@ test('model picker options stay provider-specific', () => {
     [undefined, 'auto', 'pro', 'flash', 'flash-lite']
   );
   assert.deepEqual(modelsForProvider('custom'), []);
+});
+
+// The codex picker carries an auth-mode trap that a flat id-list cannot express:
+// `gpt-5.6-sol` bills against an API key and is REJECTED under a ChatGPT login,
+// so it must stay OFFERED (users with a key want it) but must never be what we
+// RECOMMEND. Recommending a slug the picker does not offer is exactly how
+// `gpt-5-codex` shipped and 400'd every turn. Slugs are spelled out literally
+// here on purpose — importing them from the catalog would make this test agree
+// with the catalog by construction and protect nothing.
+test('codex recommends a pickable model and keeps the API-key-only one offered', () => {
+  const codexIds = modelsForProvider('codex').map((model) => model.id);
+  const apiKeyOnly = 'gpt-5.6-sol';
+
+  const sol = modelsForProvider('codex').find((model) => model.id === apiKeyOnly);
+  assert.ok(sol, `${apiKeyOnly} must stay in the codex picker — API-key users pick it`);
+  assert.match(
+    sol.label,
+    /API key/i,
+    `${apiKeyOnly} must be labelled API-key-only; a ChatGPT login is rejected on it`
+  );
+
+  const recommended = providerPreset('codex').recommendedOrchestratorModel;
+  assert.ok(
+    codexIds.includes(recommended),
+    `codex recommends ${recommended}, which its own picker does not offer`
+  );
+  assert.notEqual(
+    recommended,
+    apiKeyOnly,
+    `codex must not recommend ${apiKeyOnly}: a ChatGPT login 400s on every turn`
+  );
 });
 
 test('Command Center model choices round-trip provider and model', () => {
