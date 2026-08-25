@@ -132,8 +132,13 @@ export class MemoryManager {
    *  quarantined again. A count would be useless: the reaper deletes them. */
   private lastQuarantineTs = 0;
   private initStarted = false;
-  /** True while a mineNow() pass is in flight — serializes palace writers. */
+  /** True while a mine pass is in flight — serializes palace writers. */
   private mining = false;
+  /** Wake-ups for writers QUEUED behind the current holder. mineNow drops its
+   *  turn (the next tick is 10 min away), but retainWorker cannot: returning
+   *  false defers a scratch deletion to the next sweep, and on a busy floor
+   *  "the loop is mining" is true often enough that it would never converge. */
+  private mineWaiters: Array<() => void> = [];
   /** agentId → memory.md mtimeMs at last successful mine (skip unchanged). */
   private lastMined = new Map<string, number>();
 
@@ -294,6 +299,28 @@ export class MemoryManager {
 
   // — mining (store) —
 
+  /** Take the palace's single-writer lock, WAITING for any in-flight holder.
+   *  Every path that spawns `mempalace mine` must go through here or through
+   *  `mining` directly — a writer that skips the guard makes the other one fail
+   *  with "held by another writer", and on the retain path the loser is a reaped
+   *  worker's memory. Callers that must not block check `mining` and bail first. */
+  private async acquireMineLock(): Promise<void> {
+    while (this.mining) {
+      await new Promise<void>((resolve) => { this.mineWaiters.push(resolve); });
+    }
+    this.mining = true;
+  }
+
+  /** Release the lock and wake everyone queued. Exactly one of them wins the
+   *  re-check in `acquireMineLock`; the rest queue again. MUST run in a
+   *  `finally` — a lock left held silently stops every future mine. */
+  private releaseMineLock(): void {
+    this.mining = false;
+    const waiting = this.mineWaiters;
+    this.mineWaiters = [];
+    for (const wake of waiting) wake();
+  }
+
   /** Mine every agent whose memory changed since last time, one at a time.
    *  The palace permits a single writer, so mines MUST be serialized — firing
    *  them concurrently makes all but one fail with "held by another writer".
@@ -320,7 +347,7 @@ export class MemoryManager {
         await this.mineAgent(agentDir, id); // one writer at a time
       }
     } finally {
-      this.mining = false;
+      this.releaseMineLock();
     }
     // Every pass above may have left another copy behind, and whether it did
     // decides how long we wait before the next one.
@@ -400,15 +427,33 @@ export class MemoryManager {
       // The race gives us the TIMEOUT half; the boolean gives us the FAILED-MINE
       // half. A non-zero exit is far likelier than a 30s hang, so reading the
       // return value is the part that matters most here.
+      // T-065: the mine loop and this GC-sweep path are two writers to a palace
+      // that permits ONE. Take the same lock mineNow takes — but WAIT for it
+      // rather than early-returning: a false here defers the scratch deletion,
+      // and a floor busy enough to keep the loop mining would defer it forever.
+      // The wait is inside the race, so the 30 s cap bounds lock + mine together.
+      let abandoned = false;
       const mined = await Promise.race([
-        this.mineAgent(agentDir, workerId),
+        (async () => {
+          await this.acquireMineLock();
+          try {
+            // The race already settled on the timeout; hold nothing, mine nothing.
+            if (abandoned) return false;
+            return await this.mineAgent(agentDir, workerId);
+          } finally {
+            this.releaseMineLock();
+          }
+        })(),
         new Promise<never>((_, reject) => {
           // Intentionally NOT unreffed: retainWorker runs inside the GC sweep,
           // so the event loop is already kept alive by the worker tick. Unreffing
           // here would let the loop drain in isolated unit tests before the timer
           // fires, causing a spurious "Promise still pending" cancellation.
           setTimeout(
-            () => reject(new Error(`retainWorker ${workerId}: timed out after ${timeoutMs}ms`)),
+            () => {
+              abandoned = true; // so a lock acquired after this point is released, not leaked
+              reject(new Error(`retainWorker ${workerId}: timed out after ${timeoutMs}ms`));
+            },
             timeoutMs
           );
         })
