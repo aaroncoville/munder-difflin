@@ -13,6 +13,7 @@ import { pickSoloLine, pickExchange, type BreakSpot } from './cafeteriaLines';
 import { colors } from '@/design/tokens';
 import { loadTheme, resolveThemeMap, themeTilesetUrls } from './themeLoader';
 import { installContextLossRecovery } from './glRecovery';
+import { captureSceneSnapshot, restorePlacement, type SceneSnapshot } from './sceneRestore';
 import type { Tile, Facing, ErrandKind, ErrandSpot } from './themeRegistry';
 
 // The map, tileset atlases, desk-claim order, errand spots, coffee-economy
@@ -160,6 +161,11 @@ export function OfficeFloor() {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const appRef = useRef<Application | null>(null);
   const mountIdRef = useRef(0);
+  // Where everyone was standing when the last scene was torn down. A ref, not
+  // state: the effect below RE-RUNS on a rebuild, so anything held in its
+  // closure dies with the scene — only a ref crosses the gap. Seeded by the
+  // cleanup, read by addCharacter. See sceneRestore.ts.
+  const sceneSnapshotRef = useRef<SceneSnapshot | null>(null);
   // Bumped when the WebGL context is evicted; a dep of the effect below, so the
   // whole scene is torn down and rebuilt through the existing mount path rather
   // than through a second, parallel recovery routine.
@@ -1375,7 +1381,27 @@ export function OfficeFloor() {
       const addCharacter = async (agent: Agent) => {
         const charName = theme.cast.byName[agent.character] ? agent.character : theme.cast.defaultCharacter;
         const member = theme.cast.byName[charName];
-        const seatIndex = claimSeat(agent);
+        // A rebuild (a lost GL context, or a remount on the same theme) puts
+        // everyone back at the desk they had, standing where they were, instead
+        // of dealing out fresh desks and marching everybody in through the door
+        // again. Michael's room is not restorable — seat 0 is his by rule, and
+        // claimSeat is the one place that rule lives.
+        const restored = agent.isGod
+          ? null
+          : restorePlacement(sceneSnapshotRef.current, officeTheme, agent.id, {
+              seatCount: seatTiles.length,
+              isSeatFree: (i) => !seatClaims.has(i),
+              isWalkable: (x, y) => mapRenderer.isWalkable(x, y),
+            });
+        // Claimed synchronously, BEFORE the await below: two agents mounting at
+        // once must not both see the same chair as free.
+        let seatIndex: number | null;
+        if (restored?.seatIndex != null) {
+          seatIndex = restored.seatIndex;
+          seatClaims.add(seatIndex);
+        } else {
+          seatIndex = claimSeat(agent);
+        }
         const seatTile: Tile = (seatIndex != null ? seatTiles[seatIndex] : undefined)
           ?? mapRenderer.getSpawnPoint('entrance')
           ?? { x: 2, y: 2 };
@@ -1393,7 +1419,10 @@ export function OfficeFloor() {
           frames,
           seatTile,
           seatDirection: facingForSeat(seatTile),
-          spawnTile: entrance, // walk in from the office door
+          // Walk in from the office door on a genuine first appearance; on a
+          // rebuild, reappear where this agent already was. applyState below
+          // then snaps it straight into its seat rather than walking it there.
+          spawnTile: restored?.spawnTile ?? entrance,
           glowColor: hexNum(colors.accent[agent.accent]) ?? hexToNumber(member.shirt),
           onClick: (id) => useStore.getState().select(id),
         });
@@ -1727,7 +1756,15 @@ export function OfficeFloor() {
       mountIdRef.current++;
       const a = appRef.current;
       if (a) {
+        // The recovery uninstall goes FIRST and unconditionally: a listener left
+        // on a dead scene can resurrect it, which is worse than any reset.
         (a as any).__glRecovery?.();
+        // Then remember where everyone was, so the next mount can put them back.
+        try {
+          sceneSnapshotRef.current = captureSceneSnapshot(officeTheme, runtimes);
+        } catch (err) {
+          console.warn('[OfficeFloor] could not snapshot the floor:', err);
+        }
         (a as any).__resize?.disconnect?.();
         try { (a as any).__unsub?.(); } catch { /* noop */ }
         try { (a as any).__offMessage?.(); } catch { /* noop */ }
