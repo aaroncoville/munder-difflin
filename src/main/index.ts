@@ -2597,11 +2597,9 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // its own worktree on an `agent/<id>` branch so it can't clobber other agents'
   // (or the user's) working tree. Best-effort — a failure falls back to the
   // shared cwd rather than blocking the spawn.
-  // NOTE (tracked, not yet hardened): the restore flow passes isolate:false and
-  // re-enters the existing worktree by cwd, so it never reaches here. But a stale
-  // `isolate:true` recipe spawned against an already-existing worktree path would
-  // make addWorktree below conflict (path/branch exists) and fall back to the base
-  // cwd — reuse-existing-worktree handling here is the follow-up.
+  // Restores re-enter an existing worktree by cwd. When that worktree was pruned,
+  // the renderer requests isolation against the base repo, so addWorktree below
+  // recreates it instead of spawning the agent in the shared checkout.
   if (opts.isolate === true && await isRepo(opts.cwd)) {
     try {
       const origCwd = opts.cwd;

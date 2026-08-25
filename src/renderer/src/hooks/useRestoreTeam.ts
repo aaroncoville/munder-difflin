@@ -2,6 +2,7 @@ import { useEffect, useSyncExternalStore } from 'react';
 import { useStore, type Agent } from '@/store/store';
 import { buildSpawnCommand, inferAgentProvider, tokenizeCommand, type HarnessConfig } from '@/store/config';
 import { roleForHiveSpawn } from '@shared/agentRole';
+import { restoredWorktreeResult, restoreWorktreePlan } from './restoreWorktree';
 
 /** "Restore team" — respawn every worker from the previous session.
  *
@@ -116,40 +117,39 @@ export function useRestoreTeam(config?: HarnessConfig | null): RestoreTeamState 
           // add` would conflict with the existing path/branch, and re-isolating would
           // also lose the worktree's uncommitted work. cwd = the worktree means
           // resume + seedSessionTranscript land in the CORRECT checkout.
-          // But the user may have manually pruned/deleted the worktree between runs —
-          // gitIsRepo (git rev-parse) returns false for a missing/invalid dir, so
-          // fall back to the base repo cwd rather than spawning into a dead path.
-          let cwd = a.cwd;
-          let worktreeGone = false;
-          if (a.worktreePath) {
-            if (await window.cth.gitIsRepo(a.worktreePath)) {
-              cwd = a.worktreePath;
-            } else {
-              worktreeGone = true;
-              console.warn(`[restore] worktree gone for ${a.id} (${a.worktreePath}); falling back to base repo ${a.cwd}`);
-            }
+          // A worktree can be pruned between sessions. Recreate its isolation instead
+          // of visibly degrading the restored agent into the shared base checkout.
+          const worktreeIsRepo = a.worktreePath
+            ? await window.cth.gitIsRepo(a.worktreePath)
+            : false;
+          const worktree = restoreWorktreePlan(a.cwd, a.worktreePath, worktreeIsRepo);
+          if (a.worktreePath && !worktreeIsRepo) {
+            console.warn(`[restore] worktree missing for ${a.id} (${a.worktreePath}); recreating isolation from ${a.cwd}`);
           }
           const res = await window.cth.spawnPty({
             id: ptyId,
-            cwd,
+            cwd: worktree.cwd,
             command: exe,
             provider,
             args,
             cols: 100,
             rows: 30,
-            // Worktree (if any) already exists on disk — cd into it, don't create a
-            // new one (re-isolating would conflict on the existing path/branch and
-            // lose its uncommitted work).
-            isolate: false,
+            // Resume an existing worktree in place, or recreate isolation if it was
+            // removed between sessions.
+            isolate: worktree.isolate,
             // Continue the worker's prior CLI session if one was recorded — the
             // main process picks the provider's resume flag (Claude --resume,
             // agy --conversation) and for Claude reattaches the transcript. The
             // agent id is preserved across restart, so its registry entry,
             // memory.md and inbox reattach by id. No-op without a recorded session.
             resume: true,
-            hive: { id: a.id, name: a.name, provider, cwd, role: roleForHiveSpawn(a) }
+            hive: { id: a.id, name: a.name, provider, cwd: worktree.cwd, role: roleForHiveSpawn(a) }
           });
           if (res.ok) {
+            const restoredWorktree = restoredWorktreeResult(worktree, res.worktreePath, a.worktreePath);
+            if (worktree.isolate && !res.worktreePath) {
+              console.warn(`[restore] worktree recreation failed for ${a.id}; using base repo ${a.cwd}`);
+            }
             restored++;
             return {
                 ...a,
@@ -157,12 +157,8 @@ export function useRestoreTeam(config?: HarnessConfig | null): RestoreTeamState 
                 ptyId,
                 archived: false,
                 status: 'idle',
-                // Surface the worktree fallback on the floor card; otherwise normal.
-                action: worktreeGone ? 'worktree gone — using base repo' : 'starting up',
-                // The worktree is no longer on disk — drop it so this agent is treated
-                // as a plain base-cwd agent going forward (a future restore won't keep
-                // re-probing a dead path).
-                worktreePath: worktreeGone ? undefined : a.worktreePath,
+                action: restoredWorktree.action,
+                worktreePath: restoredWorktree.worktreePath,
                 // Crush spawns bare (no positional protocol) and hands the seed back
                 // here; useHive types it after boot. Re-seeding a resumed worker is
                 // idempotent (it just re-reads its inbox per protocol). (ondev-b)

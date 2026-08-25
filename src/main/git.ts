@@ -237,15 +237,20 @@ function agentBranchFor(wtPath: string): string {
 
 /** Provision an isolated git worktree for an agent at `wtPath`, branching off
  *  `baseBranch`. Tries to create a fresh `agent/<id>` branch first; if that
- *  branch already exists, falls back to checking out `baseBranch` directly. */
+ *  branch already exists, reattaches that agent branch — which is what lets a
+ *  restored agent recover a worktree that was removed between sessions, since
+ *  removal leaves the branch behind. A consequence worth knowing: a fresh spawn
+ *  that recycles an agent id whose branch survived starts from that branch's old
+ *  tip rather than from `baseBranch`. */
 export async function addWorktree(
   cwd: string, wtPath: string, baseBranch: string
 ): Promise<{ ok: boolean; error?: string }> {
   const branch = agentBranchFor(wtPath);
   const fresh = await runGit(cwd, ['worktree', 'add', wtPath, '-b', branch, baseBranch]);
   if (fresh.ok) return { ok: true };
-  // Branch likely already exists (or the path is taken) — retry without -b.
-  const fallback = await runGit(cwd, ['worktree', 'add', wtPath, baseBranch]);
+  // A removed worktree leaves its branch behind. Reattach it rather than the base
+  // branch, which is already checked out by the main worktree.
+  const fallback = await runGit(cwd, ['worktree', 'add', wtPath, branch]);
   if (fallback.ok) return { ok: true };
   return { ok: false, error: fallback.error };
 }
