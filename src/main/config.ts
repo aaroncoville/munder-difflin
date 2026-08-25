@@ -267,10 +267,13 @@ export interface HarnessConfig {
   /** Default per-worker TOTAL-token cap (input+output+cache) applied to every
    *  god-triggered ephemeral worker; a worker's own spawn-request `tokenCap`
    *  overrides it. When the effective cap is exceeded the worker is reaped (its
-   *  committed work preserved) and god is informed. This is PLUMBING for a later
-   *  budget feature: per the human directive there is NO per-worker cap today, so
-   *  the default is 0 = UNLIMITED — the mechanism is wired but never throttles
-   *  unless someone explicitly sets a positive cap (per request or here). */
+   *  committed work preserved) and god is informed. Defaults to 10_000_000 — a
+   *  runaway worker is throttled by default. 0 = UNLIMITED remains available as
+   *  an EXPLICIT decision; a malformed value (negative/NaN/string) also resolves
+   *  to unlimited rather than to a nonsense cap (see resolveDefaultWorkerTokenCap
+   *  in src/shared/tokenCaps.ts, which every call site goes through).
+   *  NOTE: a config.json that already persists this key keeps its stored value —
+   *  changing this default only reaches installs that never set one. */
   defaultWorkerTokenCap?: number;
   /** Circuit-breaker thresholds (Lane A #6.6b). Unset = conservative defaults. */
   circuitBreaker?: CircuitBreakerConfig;
@@ -437,7 +440,13 @@ const DEFAULTS: HarnessConfig = {
   maxConcurrentWorkers: 4,
   workerIdleTimeoutMinutes: 20,
   integrations: [],
-  defaultWorkerTokenCap: 0, // 0 = unlimited (human directive: NO per-worker cap)
+  // 10M total tokens (input+output+cache) per god-triggered ephemeral worker.
+  // Human directive 2026-08-24 (Aaron): "Without a tokenCap I think 10M is a
+  // sensible default." This SUPERSEDES the earlier "NO per-worker cap" directive,
+  // which was written when a cap could only arrive on a spawn-request, so 0 meant
+  // "not throttling yet". Now an UNCAPPED worker is a decision, not an omission:
+  // set this to 0 to get unlimited back explicitly.
+  defaultWorkerTokenCap: 10_000_000,
   semanticMemory: true,
   embeddingModel: 'minilm',
   missions: [OPS_STANDUP_MISSION],
