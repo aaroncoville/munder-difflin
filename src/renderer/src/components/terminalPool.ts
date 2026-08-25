@@ -586,6 +586,30 @@ function leaseWebglRenderer(entry: TerminalEntry): void {
   }
 }
 
+/** Find the live WebGL2 context an addon renderer is drawing into, so teardown
+ *  can explicitly release it. @xterm/addon-webgl's dispose() tears down its
+ *  renderer and removes its canvases but never calls loseContext(), so the
+ *  underlying context lingers past the addon that owned it (xterm/xterm.js#6068).
+ *  On a floor where agents are switched repeatedly, each switch disposes one
+ *  renderer and leases another, so these orphan contexts pile up until Chromium
+ *  hits its live-context cap (~16) and evicts an older one — often the office
+ *  floor's own context — blacking out a terminal or the scene. Losing the context
+ *  ourselves frees it immediately instead of waiting on GC.
+ *
+ *  Scoped to THIS terminal's element and matched by an active webgl2 context, so
+ *  it can never touch another terminal's or the scene's context. Returns null when
+ *  no live webgl2 canvas is present (the DOM renderer is in use, or it is gone). */
+function webglContextOf(term: Terminal): WebGL2RenderingContext | null {
+  const el = term.element;
+  if (!el) return null;
+  for (const canvas of Array.from(el.querySelectorAll('canvas'))) {
+    let gl: WebGL2RenderingContext | null = null;
+    try { gl = canvas.getContext('webgl2'); } catch { gl = null; }
+    if (gl && !gl.isContextLost()) return gl;
+  }
+  return null;
+}
+
 /** Release the WebGL lease so an off-screen terminal isn't holding a GPU context
  *  that an on-screen one needs. xterm falls back to the DOM renderer, which is
  *  fine for a terminal nobody is looking at; the next attach takes a fresh
@@ -594,7 +618,11 @@ function releaseWebglRenderer(entry: TerminalEntry): void {
   const webgl = entry.webgl;
   if (!webgl) return;
   entry.webgl = undefined;
+  // Capture the context BEFORE dispose (dispose may detach the canvas), then
+  // release it explicitly — dispose() alone leaks it (see webglContextOf).
+  const gl = webglContextOf(entry.term);
   try { webgl.dispose(); } catch { /* noop */ }
+  try { gl?.getExtension('WEBGL_lose_context')?.loseContext(); } catch { /* noop */ }
   // The DOM renderer that takes over inherits xterm's cached cell metrics, which
   // may be stale by the time this terminal is shown again.
   entry.needsRendererRepaint = true;
@@ -739,7 +767,11 @@ export function disposeTerminal(ptyId: string): void {
   const entry = pool.get(ptyId);
   if (!entry) return;
   entry.unsub.forEach((u) => { try { u(); } catch { /* noop */ } });
+  // Release the GPU context the webgl addon leaves behind; dispose() alone leaks
+  // it (see webglContextOf). Captured before dispose in case it detaches the canvas.
+  const gl = webglContextOf(entry.term);
   try { entry.webgl?.dispose(); } catch { /* noop */ }
+  try { gl?.getExtension('WEBGL_lose_context')?.loseContext(); } catch { /* noop */ }
   try { entry.term.dispose(); } catch { /* noop */ }
   entry.host.remove();
   pool.delete(ptyId);
