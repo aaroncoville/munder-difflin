@@ -67,14 +67,58 @@ Assert the **actual property**, not its neighbour. And watch for the same defect
 form: a value written to disk that nothing is ever told to read is the same bug wearing a
 different hat.
 
+## CONTRIBUTING.md is the contract — read it, follow it exactly
+
+`CONTRIBUTING.md` and `.github/PULL_REQUEST_TEMPLATE.md` are upstream's rules, not suggestions.
+They are stricter than most projects and they close PRs rather than negotiate. The ones that
+will bite:
+
+**Evidence is mandatory and CI-enforced.** Every PR needs a **before** and an **after** under
+the exact `### Before` / `### After` headings — the `PR evidence` check reads those headings and
+blocks merge without them. Two images under one heading does not pass.
+
+**"My change has no UI" is not an exemption.** It changes the form of the evidence:
+
+| Kind of change | Evidence |
+|---|---|
+| Visual | The same view twice — same window size, same theme, same data |
+| Bug fix | The bug happening, then the same steps not producing it |
+| Terminal / CLI | A recording, or the output pasted as text |
+| Performance | The measurement before and after, same machine |
+| Crash / hang | The failure, then the same path completing |
+| Test-only | The suite red, then the suite green |
+
+**Plan for evidence before you write the code.** If your change can only be demonstrated in a
+running app with a GPU, you cannot capture it yourself — say so early and hand over exact
+reproduction steps for someone who can. Do not discover this at PR time.
+
+**One change per PR.** A fix plus a refactor plus a rename is three PRs. This is listed under
+what gets closed, not what gets a comment.
+
+**Large architectural changes need an issue or discussion agreed BEFORE the code is written.**
+Upstream would rather say no to a paragraph than to a week of work.
+
+Also: link the issue (`Closes #123`), say which OS you tested on, never force-push after review
+has started, and never put credentials, internal metrics, or private data in a commit message —
+a pushed message is public and permanent.
+
 ## Verification
+
+All three must pass, and all three are on the PR checklist:
 
 ```
 npm run typecheck     # node + web; must be 0 errors
-node --test test/*.test.cjs
+npm run test:focused  # the suite
+npm run build         # a production build must succeed
 npm run dev           # electron-vite dev — this is the running app
-npm run build
 ```
+
+Any new UI must derive from the design tokens in `DESIGN.md` / `src/renderer/src/design/tokens.ts`
+— no ad-hoc colors, spacing, or fonts. `tokens.ts` and `tokens.css` are mirrored: change one,
+change both.
+
+**Read your own diff before opening anything.** Debug logging, commented-out code, and
+reformatting of files you did not otherwise touch all get a PR sent back.
 
 **Measure the baseline on the exact ref you branched from, before you change anything.** Then
 report counts as **"N of M"** — "594 of 595, with one pre-existing failure" beats "tests pass",
