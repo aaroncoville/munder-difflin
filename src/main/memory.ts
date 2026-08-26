@@ -2,7 +2,9 @@
 import { existsSync, statSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { MemPalaceAdapter } from './memPalaceAdapter';
-import type { MemoryBackend } from './memoryBackend';
+import { HindsightAdapter } from './hindsightAdapter';
+import type { BackendId, MemoryBackend, MemorySettings } from './memoryBackend';
+export type { MemorySettings } from './memoryBackend';
 export { mempalaceDevice, type EmbeddingModel } from './memPalaceAdapter';
 import type { EmbeddingModel } from './memPalaceAdapter';
 
@@ -22,8 +24,7 @@ function ensureMineIgnore(agentDir: string): void {
   try { writeFileSync(path, prefix + missing.join('\n') + '\n', 'utf8'); } catch { /* best-effort */ }
 }
 
-export interface MemorySettings { enabled: boolean; model: EmbeddingModel; }
-export interface MemoryStatus { available: boolean; enabled: boolean; active: boolean; initialized: boolean; palacePath: string | null; model: EmbeddingModel; bin: string | null; }
+export interface MemoryStatus { available: boolean; enabled: boolean; active: boolean; initialized: boolean; palacePath: string | null; backend: BackendId; location: string | null; model: EmbeddingModel; bin: string | null; }
 const MINE_INTERVAL_MS = 600_000;
 
 export class MemoryManager {
@@ -33,28 +34,59 @@ export class MemoryManager {
   private initStarted = false;
   private mining = false;
   private lastMined = new Map<string, number>();
-  private readonly backend: MemoryBackend;
-  constructor(private getHome: () => string | null, private getSettings: () => MemorySettings) {
-    this.backend = new MemPalaceAdapter(() => this.palacePath(), () => this.model());
+  private backend: MemoryBackend;
+  constructor(
+    private getHome: () => string | null,
+    private getSettings: () => MemorySettings,
+    private makeBackend: (id: BackendId) => MemoryBackend = (id) =>
+      id === 'hindsight'
+        ? new HindsightAdapter(() => this.getSettings().hindsight, () => this.getHome())
+        : new MemPalaceAdapter(() => this.palacePath(), () => this.model())
+  ) {
+    this.backend = this.makeBackend(this.getSettings().backend);
   }
   palacePath(): string | null { const home = this.getHome(); return home ? join(home, 'palace') : null; }
-  bin(): string | null { return (this.backend as MemPalaceAdapter).bin(); }
-  available(): boolean { return this.bin() !== null; }
+  bin(): string | null { return this.backend.status(this.enabled(), this.getHome()).bin; }
+  available(): boolean { return this.backend.available(); }
   enabled(): boolean { return this.getSettings().enabled; }
   active(): boolean { return this.available() && this.enabled() && this.getHome() !== null; }
-  model(): EmbeddingModel { return this.getSettings().model === 'embeddinggemma' ? 'embeddinggemma' : 'minilm'; }
+  model(): EmbeddingModel { return this.getSettings().mempalace.model === 'embeddinggemma' ? 'embeddinggemma' : 'minilm'; }
   status(): MemoryStatus {
     const status = this.backend.status(this.enabled(), this.getHome());
-    return { available: this.available(), enabled: status.enabled, active: this.active(), initialized: status.initialized, palacePath: status.location, model: status.model === 'embeddinggemma' ? 'embeddinggemma' : 'minilm', bin: this.bin() };
+    return {
+      available: status.available, enabled: status.enabled, active: status.active, initialized: status.initialized,
+      // A remote backend has no palace directory; `location` is where its
+      // memories actually live, and callers that want a path must not be handed
+      // a server URL dressed up as one.
+      palacePath: status.backend === 'mempalace' ? status.location : null,
+      backend: status.backend, location: status.location,
+      model: status.model === 'embeddinggemma' ? 'embeddinggemma' : 'minilm', bin: status.bin
+    };
   }
   env(): Record<string, string> { return this.active() ? this.backend.agentEnv() : {}; }
   resetBinCache(): void { this.backend.resetCaches(); }
   start(): void {
-    if (!this.active() || this.initStarted || !this.getHome() || !this.palacePath()) return;
+    if (this.initStarted || !this.enabled() || !this.getHome()) return;
+    // A backend that only learns its availability from an async probe cannot be
+    // available yet — arming it IS what starts the probe. A local CLI backend
+    // answers synchronously, so it stays dark until its CLI is really there.
+    if (!this.backend.probesAsync && (!this.active() || !this.palacePath())) return;
     this.initStarted = true; this.backend.init(); this.startMineLoop();
   }
   stop(): void { this.mineStopped = true; if (this.mineTimer) { clearTimeout(this.mineTimer); this.mineTimer = null; } }
-  refresh(): MemoryStatus { this.resetBinCache(); this.start(); return this.status(); }
+  refresh(): MemoryStatus { this.swapBackendIfChanged(); this.resetBinCache(); this.start(); return this.status(); }
+  /** Adopt the backend the settings now name. Switching means starting over:
+   *  the new backend holds none of the old one's memories, so every agent's
+   *  memory.md has to be mined into it from scratch. */
+  private swapBackendIfChanged(): void {
+    const wanted = this.getSettings().backend;
+    if (wanted === this.backend.id) return;
+    if (this.mineTimer) { clearTimeout(this.mineTimer); this.mineTimer = null; }
+    this.backend = this.makeBackend(wanted);
+    this.lastMined.clear();
+    this.initStarted = false;
+    this.mineDelayMs = MINE_INTERVAL_MS;
+  }
   private startMineLoop(): void {
     if (this.mineTimer) return;
     const tick = () => { void this.mineNow().finally(() => { if (this.mineStopped) return; this.mineTimer = setTimeout(tick, this.mineDelayMs); this.mineTimer.unref?.(); }); };

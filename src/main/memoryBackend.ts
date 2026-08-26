@@ -27,4 +27,16 @@ export interface MemoryBackend {
   agentEnv(): Record<string, string>;
   resetCaches(): void;
   postMinePass?(): { backoffAdviceMs: number };
+  /** True when availability can only be learned from an async probe, so the
+   *  manager must arm the backend before `available()` can ever say yes. A
+   *  local CLI backend leaves this unset: it knows synchronously. */
+  readonly probesAsync?: boolean;
+}
+
+/** The persisted, backend-aware shape of the memory settings. */
+export interface MemorySettings {
+  enabled: boolean;
+  backend: BackendId;
+  mempalace: { model: 'minilm' | 'embeddinggemma' };
+  hindsight: { url: string; bank: string };
 }

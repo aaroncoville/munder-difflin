@@ -77,6 +77,9 @@ export interface HarnessConfig {
   mcpDefaults?: { [id: string]: { enabled: boolean } };
   semanticMemory: boolean;
   embeddingModel: 'minilm' | 'embeddinggemma';
+  memoryBackend?: 'mempalace' | 'hindsight';
+  hindsightUrl?: string;
+  hindsightBank?: string;
   missions?: ScheduledMission[];
   opsStandupSeeded?: boolean;
   heartbeatSeeded?: boolean;
