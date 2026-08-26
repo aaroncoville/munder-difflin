@@ -7,6 +7,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const sourceAssert = require('./source-assert.cjs');
 
 const { linkWorktreeDeps, unlinkWorktreeDeps } = loadTs('src/main/worktreeDeps.ts');
 const { removeWorktree } = loadTs('src/main/git.ts');
@@ -167,32 +168,17 @@ test('does not remove a worktree node_modules link to another directory', async 
 });
 
 test('wires dependency linking into successful isolated worktree creation', () => {
-  const indexSource = fs.readFileSync(path.join(__dirname, '..', 'src/main/index.ts'), 'utf8');
-  const activeSource = indexSource
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .split('\n')
-    .filter((line) => !line.trimStart().startsWith('//'))
-    .join('\n');
-
-  assert.match(activeSource, /from ['"]\.\/worktreeDeps['"]/);
-  const successBranch = activeSource.slice(
-    activeSource.indexOf('if (wt.ok)'),
-    activeSource.indexOf('} else {', activeSource.indexOf('if (wt.ok)'))
-  );
+  const src = sourceAssert.activeSource('src/main/index.ts');
+  assert.match(src, /from ['"]\.\/worktreeDeps['"]/);
+  const successBranch = sourceAssert.boundedSlice(src, 'if (wt.ok)', '} else {');
   assert.match(successBranch, /await linkWorktreeDeps\(origCwd, wtPath\)/);
 });
 
 test('removes linked dependencies before worker retention checks', () => {
-  const indexSource = fs.readFileSync(path.join(__dirname, '..', 'src/main/index.ts'), 'utf8');
-  const activeSource = indexSource
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .split('\n')
-    .filter((line) => !line.trimStart().startsWith('//'))
-    .join('\n');
-
-  const beforeRetention = activeSource.slice(0, activeSource.indexOf('const work = await worktreeHasUnintegratedWork'));
+  const src = sourceAssert.activeSource('src/main/index.ts');
+  const beforeRetention = src.slice(0, src.indexOf('const work = await worktreeHasUnintegratedWork'));
   assert.match(beforeRetention, /await unlinkWorktreeDeps\(origCwd, wtPath\)/);
-  const beforeGc = activeSource.slice(0, activeSource.indexOf('safe = await worktreeIsGcSafe'));
+  const beforeGc = src.slice(0, src.indexOf('safe = await worktreeIsGcSafe'));
   assert.match(beforeGc, /await unlinkWorktreeDeps\(e\.origCwd, e\.wtPath\)/);
 });
 

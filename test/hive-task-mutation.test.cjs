@@ -14,6 +14,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const sourceAssert = require('./source-assert.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 
@@ -110,14 +111,12 @@ test('renderer task actions never send a whole stale ledger back to main', () =>
 });
 
 test('webhook dispatch appends via atomic addTask, not a stale whole-ledger rewrite', () => {
-  const root = path.resolve(__dirname, '..');
-  const main = fs.readFileSync(path.join(root, 'src/main/index.ts'), 'utf8');
-  const fn = main.slice(main.indexOf('function dispatchWebhookWork'),
-    main.indexOf('function handleWebhookMessage'));
+  const src = sourceAssert.activeSource('src/main/index.ts');
   // The card must be appended through hive.addTask(card) — which reads the LATEST
   // on-disk ledger and is idempotent by task id — never through a re-read of a
   // snapshot the caller happened to hold, which would overwrite a concurrently
   // added card (the 2026-08-15 regression this suite guards).
+  const fn = sourceAssert.boundedSlice(src, 'function dispatchWebhookWork', 'function handleWebhookMessage');
   assert.match(fn, /hive\.addTask\s*\(card\)/,
     'dispatchWebhookWork must add the card via the atomic addTask');
   assert.doesNotMatch(fn, /writeTasks\s*\(\[\s*\.\.\.existing/,
