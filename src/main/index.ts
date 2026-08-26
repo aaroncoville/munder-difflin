@@ -4399,7 +4399,7 @@ completionWatcher.start();
 interface SpawnRequest {
   id?: string;
   objective?: string;
-  command?: string;                                   // engine CLI; default = config.defaultCommand
+  command?: string;                                   // engine CLI; default = `provider`'s preset binary, else config.defaultCommand
   provider?: AgentProvider;                           // optional explicit provider
   model?: string;                                     // optional --model override (Claude)
   cwd?: string;                                        // repo the worker (and its worktree) runs in
