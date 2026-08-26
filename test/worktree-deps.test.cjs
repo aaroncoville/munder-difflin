@@ -10,7 +10,7 @@ const loadTs = require('./load-ts.cjs');
 const sourceAssert = require('./source-assert.cjs');
 
 const { linkWorktreeDeps, unlinkWorktreeDeps } = loadTs('src/main/worktreeDeps.ts');
-const { removeWorktree } = loadTs('src/main/git.ts');
+const { addWorktree: addWorktreeTS, removeWorktree } = loadTs('src/main/git.ts');
 
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 
@@ -185,4 +185,25 @@ test('removes linked dependencies before worker retention checks', () => {
 test('uses a Windows junction for the directory link', () => {
   const src = sourceAssert.activeSource('src/main/worktreeDeps.ts');
   assert.match(src, /process\.platform === ['"]win32['"] \? ['"]junction['"] :/);
+});
+
+test('recovers from a stale registration left by rm -rf instead of git worktree remove', async () => {
+  // When a worktree directory is deleted with rm -rf the git registration in
+  // .git/worktrees/ survives. Both addWorktree attempts fail because git sees
+  // the path as still registered. prune before the retry clears the stale entry
+  // so the recreation succeeds.
+  const { repo, wtRoot } = makeHarness();
+  const wtPath = addWorktree(repo, wtRoot, 'agent-prune');
+
+  // Simulate rm -rf: remove the directory WITHOUT going through git.
+  fs.rmSync(wtPath, { recursive: true, force: true });
+  assert.equal(fs.existsSync(wtPath), false, 'directory must be gone');
+  // Git still knows about it — the registration is now stale.
+  const listBefore = git(repo, 'worktree', 'list', '--porcelain');
+  assert.match(listBefore, /agent-prune/, 'stale registration must be present before prune');
+
+  // Recreate via addWorktreeTS — must succeed even though the registration is stale.
+  const result = await addWorktreeTS(repo, wtPath, 'main');
+  assert.deepEqual(result, { ok: true }, 'addWorktree must succeed after pruning the stale entry');
+  assert.equal(fs.existsSync(wtPath), true, 'worktree directory must exist after recreation');
 });
