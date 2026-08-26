@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron';
 import type { AgentProvider } from '../shared/agentProvider';
+import { CATALOG_CAPABLE_PROVIDERS, type ModelCatalogResult } from '../shared/modelCatalog';
+export type { ModelCatalogResult } from '../shared/modelCatalog';
 import type { HireManifest } from '../shared/hire';
 export type { HireManifest } from '../shared/hire';
 import type { IntegrationRecord, IntegrationTemplate } from '../shared/integrations';
@@ -589,6 +591,15 @@ const api = {
    *  resume auto-fill), or null if the id is invalid/unknown. */
   resolveSessionCwd: (sessionId: string): Promise<string | null> =>
     ipcRenderer.invoke('session:resolveCwd', sessionId),
+  /** Ask a provider for the models this account can run right now. Resolves to
+   *  { error } instead of rejecting, so the picker can keep its built-in list
+   *  and say why. */
+  refreshModels: (provider: string): Promise<ModelCatalogResult | { error: string }> =>
+    ipcRenderer.invoke('models:refresh', provider),
+  /** Providers `refreshModels` can actually answer for — the picker only offers
+   *  a Refresh control for these. Copied out of the shared list so the renderer
+   *  reads a plain array across the bridge. */
+  catalogCapableProviders: [...CATALOG_CAPABLE_PROVIDERS] as string[],
   onPtyData: (id: string, cb: (data: string) => void): (() => void) => {
     const channel = `pty:data:${id}`;
     const listener = (_e: IpcRendererEvent, data: string) => cb(data);

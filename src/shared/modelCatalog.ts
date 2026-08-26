@@ -21,6 +21,12 @@ export interface ModelCatalogResult {
   default?: string;
 }
 
+/** Providers that can report a live model list. Everything else keeps the
+ *  built-in picker list. It lives in the shared module because BOTH sides need
+ *  it — main to route a refresh, the renderer to decide whether offering one
+ *  makes sense — and the preload bridge may not import from main to get it. */
+export const CATALOG_CAPABLE_PROVIDERS = ['codex'] as const;
+
 export interface ModelCatalogProvider {
   /** The live catalog, or null when it is unsupported or unreachable — the
    *  caller then falls back to the built-in list. Never throws for an expected

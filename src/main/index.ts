@@ -11,6 +11,7 @@ import { homedir } from 'node:os';
 import { request as httpsRequest } from 'node:https';
 import { PtyManager, type SpawnOptions } from './pty';
 import { resolveCommand as resolveCliCommand } from './shellEnv';
+import { refreshModels } from './modelCatalogRegistry';
 import { initAutoUpdater, abortPendingRestart } from './updater';
 import { RealtimeFloorWatcher } from './realtimeFloorWatcher';
 import {
@@ -2919,6 +2920,13 @@ ipcMain.handle('pty:kill', (_evt, id: string) => {
   return res;
 });
 ipcMain.handle('pty:list', () => ptyManager.list());
+
+// Ask a provider for the models the user's account can actually run right now,
+// so the picker isn't limited to a list hardcoded at release time. Resolves to
+// { error } rather than rejecting: the renderer keeps its built-in list and
+// shows the reason.
+ipcMain.handle('models:refresh', (_evt, provider: unknown) =>
+  refreshModels(typeof provider === 'string' ? provider : ''));
 
 // Resolve a pasted Claude session id to the cwd it originally ran in, so the Add
 // Agent dialog can auto-fill the folder for a resume (#2 zero-step resume). Reads
