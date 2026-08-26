@@ -23,13 +23,25 @@ const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 
 const { MemoryManager } = loadTs('src/main/memory.ts');
+const { MemPalaceAdapter } = loadTs('src/main/memPalaceAdapter.ts');
 
 /** A manager over an empty temp home whose CLI resolution we control. */
 function managerWithCli(t, opts = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-memory-'));
   const state = { bin: opts.bin ?? null, enabled: opts.enabled !== false };
-  const memory = new MemoryManager(() => home, () => ({ enabled: state.enabled, model: 'minilm' }));
-  memory.bin = () => state.bin; // the real one shells out to `which mempalace`
+  const settings = {
+    enabled: state.enabled, backend: 'mempalace',
+    mempalace: { model: 'minilm' }, hindsight: { url: 'http://127.0.0.1:8888', bank: 'hive-memory' }
+  };
+  const memory = new MemoryManager(
+    () => home,
+    () => ({ ...settings, enabled: state.enabled }),
+    () => {
+      const adapter = new MemPalaceAdapter(() => path.join(home, 'palace'), () => 'minilm');
+      adapter.bin = () => state.bin; // the real one shells out to `which mempalace`
+      return adapter;
+    }
+  );
   t.after(() => { memory.stop(); fs.rmSync(home, { recursive: true, force: true }); });
   return { memory, state, home };
 }

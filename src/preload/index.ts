@@ -274,6 +274,9 @@ export interface HarnessConfig {
   mcpDefaults?: { [id: string]: { enabled: boolean } };
   semanticMemory: boolean;
   embeddingModel: 'minilm' | 'embeddinggemma';
+  memoryBackend?: 'mempalace' | 'hindsight';
+  hindsightUrl?: string;
+  hindsightBank?: string;
   missions?: ScheduledMission[];
   opsStandupSeeded?: boolean;
   heartbeatSeeded?: boolean;
@@ -334,9 +337,23 @@ export interface MemoryStatus {
   enabled: boolean;
   active: boolean;
   initialized: boolean;
+  /** The palace directory — null for a backend that keeps memories on a server. */
   palacePath: string | null;
+  /** Which engine is answering: the local CLI or a Hindsight server. */
+  backend: 'mempalace' | 'hindsight';
+  /** Where those memories live, in whatever form the backend has: a palace path
+   *  or a `<url> · <bank>` pair. */
+  location: string | null;
   model: 'minilm' | 'embeddinggemma';
   bin: string | null;
+}
+
+/** What a Hindsight endpoint probe found, echoing back what it reached. */
+export interface MemoryConnectionTest {
+  ok: boolean;
+  detail: string;
+  url: string;
+  bank: string;
 }
 
 /** Enterprise Knowledge Graph — corpus status, one document, and a search hit. */
@@ -771,6 +788,10 @@ const api = {
 
   // ─── Semantic memory (MemPalace CLI) ─────────────────────────────────────
   memoryStatus: (): Promise<MemoryStatus> => ipcRenderer.invoke('hive:memoryStatus'),
+  /** Probe a Hindsight server before committing to it. The panel must render
+   *  what this resolves to, not what is in its own inputs. */
+  memoryTestConnection: (url: string, bank: string): Promise<MemoryConnectionTest> =>
+    ipcRenderer.invoke('hive:memoryTestConnection', url, bank),
   /** Which external tools (uv, mempalace, git, each agent engine) are actually
    *  present on this machine, with a platform-resolved install command each. */
   toolsStatus: (): Promise<ToolStatus[]> => ipcRenderer.invoke('tools:status'),

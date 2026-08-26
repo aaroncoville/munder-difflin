@@ -11,6 +11,7 @@ import {
 } from '../shared/agentProvider';
 import { defaultMcpDefaults } from '../shared/mcpCatalog';
 import { MAX_AGENT_TOKEN_CAP } from '../shared/tokenCaps';
+import type { MemorySettings } from './memoryBackend';
 import { expandTilde, normalizeHiveHome } from './fs';
 import type { IntegrationRecord } from '../shared/integrations';
 import {
@@ -219,6 +220,13 @@ export interface HarnessConfig {
   semanticMemory: boolean;
   /** Embedding model for the palace: lightweight 'minilm' or multilingual 'embeddinggemma'. */
   embeddingModel: 'minilm' | 'embeddinggemma';
+  /** Which engine backs semantic memory: the local MemPalace CLI or a Hindsight
+   *  server over HTTP. Absent = 'mempalace', the only backend that existed before. */
+  memoryBackend?: 'mempalace' | 'hindsight';
+  /** Base URL of the Hindsight server, used only when memoryBackend is 'hindsight'. */
+  hindsightUrl?: string;
+  /** Which bank on that server holds the hive's memories. */
+  hindsightBank?: string;
   /** Recurring auto-dispatch missions handled by the scheduler. */
   missions?: ScheduledMission[];
   /** One-time guard: has the built-in hourly ops standup been seeded into an
@@ -581,6 +589,50 @@ function migrateTriggersV1(cfg: HarnessConfig): HarnessConfig {
     // migration retries on the next launch rather than on every single read.
     return cfg;
   }
+}
+
+/** Where a Hindsight server is expected when none has been configured. */
+export const DEFAULT_HINDSIGHT_URL = 'http://127.0.0.1:8888';
+export const DEFAULT_HINDSIGHT_BANK = 'hive-memory';
+
+/**
+ * Fold whatever is persisted into the backend-aware `MemorySettings` shape.
+ *
+ * Memory settings have never been stored as one object — they are flat keys on
+ * the config (`semanticMemory`, `embeddingModel`, and now `memoryBackend` and
+ * the Hindsight endpoint). So this is a read-time normaliser rather than a
+ * rewrite-on-disk migration: the flat keys stay the persisted form and adding a
+ * backend does not invalidate a config written by an older build.
+ *
+ * It accepts the already-normalised shape too and returns it unchanged, so it
+ * is safe to apply more than once, and it accepts anything at all — a corrupt
+ * config must still boot the app, with memory simply off.
+ */
+export function migrateMemorySettings(old: unknown): MemorySettings {
+  const src: Record<string, unknown> =
+    old && typeof old === 'object' && !Array.isArray(old) ? (old as Record<string, unknown>) : {};
+  const nested = (key: string): Record<string, unknown> => {
+    const value = src[key];
+    return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  };
+  const text = (...candidates: unknown[]): string | null => {
+    for (const c of candidates) if (typeof c === 'string' && c.trim()) return c.trim();
+    return null;
+  };
+  const enabled = src.enabled ?? src.semanticMemory;
+  const model = nested('mempalace').model ?? src.model ?? src.embeddingModel;
+  const backend = src.backend ?? src.memoryBackend;
+  return {
+    // Absent means "nothing was ever configured", which is not consent to run.
+    // A stored `true`/`false` is honoured either way.
+    enabled: enabled === undefined ? false : enabled !== false,
+    backend: backend === 'hindsight' ? 'hindsight' : 'mempalace',
+    mempalace: { model: model === 'embeddinggemma' ? 'embeddinggemma' : 'minilm' },
+    hindsight: {
+      url: text(nested('hindsight').url, src.hindsightUrl) ?? DEFAULT_HINDSIGHT_URL,
+      bank: text(nested('hindsight').bank, src.hindsightBank) ?? DEFAULT_HINDSIGHT_BANK
+    }
+  };
 }
 
 export function readConfig(): HarnessConfig {
