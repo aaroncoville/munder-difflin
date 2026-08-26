@@ -27,6 +27,20 @@ function runGit(cwd: string, args: string[], timeoutMs = 8000): Promise<{
   });
 }
 
+/**
+ * The URL configured for a remote — `origin` unless told otherwise.
+ *
+ * Separate from the rest of this module's readers because it answers a question
+ * about where the repo came from rather than about its contents.
+ */
+export async function getRemoteUrl(cwd: string, remote = 'origin'): Promise<
+  { ok: true; url: string } | { ok: false; error: string }
+> {
+  const res = await runGit(cwd, ['remote', 'get-url', remote]);
+  if (!res.ok) return res;
+  return { ok: true, url: res.stdout.trim() };
+}
+
 export interface GitBranchInfo {
   current: string | null;
   detached: boolean;
