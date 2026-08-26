@@ -26,6 +26,7 @@ import {
   getLogGraph, getCommitFiles, getFileAtRev, compareRefs, listWorktrees, checkoutRef
 } from './git';
 import { linkWorktreeDeps, unlinkWorktreeDeps } from './worktreeDeps';
+import { saveAskAttachment } from './askAttachments';
 import { HiveManager, type AgentMeta, type HiveMessage, type HiveTask } from './hive';
 import { HookServer } from './hooks';
 import { CircuitBreaker, type BreakerInput } from './breaker';
@@ -3378,6 +3379,17 @@ ipcMain.handle('hive:setArchived', (_evt, id: unknown, archived: unknown) => {
   hive.setArchived(id, archived === true);
   return { ok: true };
 });
+// Images attached to an ASK ME answer. The renderer sends BYTES and a task id
+// and nothing else — the path, the file name and the extension are all decided
+// in askAttachments.ts, which sniffs the leading bytes to decide whether this is
+// an image at all. See that module for why none of that can be delegated to the
+// caller.
+ipcMain.handle('ask:attachImage', (_evt, taskId: unknown, bytes: unknown) => {
+  const root = hive.root();
+  if (!root) return { ok: false, error: 'hive disabled (no harnessHome)' };
+  return saveAskAttachment({ hiveRoot: root, taskId, bytes });
+});
+
 ipcMain.handle('hive:patchAgentRole', (_evt, id: unknown, role: unknown) => {
   if (typeof id !== 'string') return { ok: false, error: 'invalid id' };
   if (typeof role !== 'string') return { ok: false, error: 'invalid role' };

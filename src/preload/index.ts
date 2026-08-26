@@ -1078,6 +1078,15 @@ const api = {
   hiveDeleteTask: (id: string): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke('hive:deleteTask', id),
 
+  /** Store one image attached to an ASK ME answer and return the path it was
+   *  written to. The renderer supplies the bytes only: main sniffs the format,
+   *  enforces the size cap, and generates the whole path itself. */
+  askAttachImage: (
+    taskId: string,
+    bytes: Uint8Array
+  ): Promise<{ ok: true; path: string } | { ok: false; error: string }> =>
+    ipcRenderer.invoke('ask:attachImage', taskId, bytes),
+
   // ─── Scheduled missions (recurring auto-dispatch) ──────────────────────────
   listMissions: (): Promise<ScheduledMission[]> => ipcRenderer.invoke('missions:list'),
   saveMissions: (missions: ScheduledMission[]): Promise<{ ok: boolean }> =>

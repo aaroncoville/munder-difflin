@@ -158,6 +158,14 @@ export type SidebarTab = 'terminal' | 'messages' | 'traces' | 'git';
  *  spawn errored). The empty-floor UI shows a loader while 'booting' so users
  *  don't see the "add agent" prompt before Michael has clocked in. */
 export type GodStatus = 'booting' | 'ready' | 'failed';
+/** One image already written into the hive for an unsent ASK ME answer. */
+export interface AnswerAttachment {
+  /** Absolute path the main process chose — what the agent is told to open. */
+  path: string;
+  /** data: URL of the same bytes, for the chip preview only. */
+  thumb: string;
+}
+
 
 interface State {
   agents: Agent[];
@@ -248,6 +256,15 @@ interface State {
    *  unmounts the ask-me view) doesn't eat a half-typed answer. */
   answerDrafts: Record<string, string>;
   setAnswerDraft: (taskId: string, text: string) => void;
+  /** Images already stored in the hive for an unsent ASK ME answer, keyed by
+   *  task id. `path` is what the answer carries to the agent; `thumb` is a
+   *  data URL kept only so the chip can show a preview before sending. Lives
+   *  beside the drafts for the same reason they do — unmounting the ask-me view
+   *  must not silently drop what the user attached. */
+  answerAttachments: Record<string, AnswerAttachment[]>;
+  addAnswerAttachment: (taskId: string, attachment: AnswerAttachment) => void;
+  removeAnswerAttachment: (taskId: string, path: string) => void;
+  clearAnswerAttachments: (taskId: string) => void;
   /** Unsent composer drafts, per agent — so switching agents (which remounts the
    *  composer) doesn't eat what the user was typing. */
   drafts: Record<string, string>;
@@ -839,6 +856,23 @@ export const useStore = create<State>((set, get) => ({
   answerDrafts: {},
   setAnswerDraft: (taskId, text) =>
     set((s) => ({ answerDrafts: { ...s.answerDrafts, [taskId]: text } })),
+  answerAttachments: {},
+  addAnswerAttachment: (taskId, attachment) =>
+    set((s) => ({
+      answerAttachments: {
+        ...s.answerAttachments,
+        [taskId]: [...(s.answerAttachments[taskId] ?? []), attachment]
+      }
+    })),
+  removeAnswerAttachment: (taskId, path) =>
+    set((s) => ({
+      answerAttachments: {
+        ...s.answerAttachments,
+        [taskId]: (s.answerAttachments[taskId] ?? []).filter((a) => a.path !== path)
+      }
+    })),
+  clearAnswerAttachments: (taskId) =>
+    set((s) => ({ answerAttachments: { ...s.answerAttachments, [taskId]: [] } })),
   drafts: {},
   setDraft: (agentId, text) =>
     set((s) => ({ drafts: { ...s.drafts, [agentId]: text } })),

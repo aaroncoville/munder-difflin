@@ -127,6 +127,15 @@ const WRITE_FLAGS =
   constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | (constants.O_NOFOLLOW | 0);
 
 /**
+ * Create-only variant: O_EXCL makes the kernel refuse the open if ANYTHING is
+ * already at that name — including a symlink, which O_EXCL rejects even when
+ * O_NOFOLLOW is unavailable. That is what a caller generating a fresh file name
+ * needs and O_TRUNC is not: truncating means "whatever is there, overwrite it".
+ */
+const CREATE_FLAGS =
+  constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW | 0);
+
+/**
  * Open a path that `safeResolve` has ALREADY cleared, for reading.
  *
  * Exported, and the only way any main-process module opens a confined path,
@@ -141,6 +150,22 @@ const WRITE_FLAGS =
  */
 export function openForRead(abs: string): Promise<FileHandle> {
   return open(abs, READ_FLAGS);
+}
+
+/**
+ * Open a path that `safeResolve` has ALREADY cleared, creating it and failing if
+ * it exists.
+ *
+ * The sibling of `openForRead` for the write direction, and exported for the
+ * same reason: the guard and the open are two separate resolutions of the same
+ * name, so the open has to refuse an escape on its own. A caller that picks an
+ * unused file name and then reaches for a plain `writeFile` has checked one path
+ * and written another — and if what appeared in between is a symlink, the bytes
+ * land at its target. `EEXIST` here is not an error so much as an answer: that
+ * name is taken, pick the next one.
+ */
+export function openForCreate(abs: string): Promise<FileHandle> {
+  return open(abs, CREATE_FLAGS, 0o666);
 }
 
 export interface DirEntry {

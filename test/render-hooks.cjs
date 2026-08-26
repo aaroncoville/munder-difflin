@@ -29,9 +29,16 @@ const seed = (spec, exports) => {
 seed('react', {
   useState: (init) => HOST.useState(init),
   useEffect: (fn, deps) => HOST.useEffect(fn, deps),
+  // A layout effect is an effect here — nothing measures a real layout.
+  useLayoutEffect: (fn, deps) => HOST.useEffect(fn, deps),
   useRef: (init) => HOST.useRef(init),
   useMemo: (fn) => fn(),
-  useCallback: (fn) => fn
+  useCallback: (fn) => fn,
+  // Devtools-only; the store shims below call it on every read.
+  useDebugValue: () => {},
+  // Enough of the contract for a store to be read: the snapshot IS the value,
+  // and re-rendering is the test's job (`render()`), not a subscription's.
+  useSyncExternalStore: (_subscribe, getSnapshot) => getSnapshot()
 });
 
 const jsx = (type, props, key) => ({ type, props: props ?? {}, key: key ?? null });
