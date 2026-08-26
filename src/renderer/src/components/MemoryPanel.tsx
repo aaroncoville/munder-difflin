@@ -10,7 +10,7 @@ interface MemoryStatus {
   palacePath: string | null;
   backend: BackendId;
   location: string | null;
-  model: 'minilm' | 'embeddinggemma';
+  model: 'minilm' | 'embeddinggemma' | null;
   bin: string | null;
 }
 
@@ -107,7 +107,7 @@ export function MemoryPanel() {
   };
 
   const active = status?.active;
-  const pill = active ? `🧠 memory · ${status?.model}` : '🧠 memory';
+  const pill = active && status?.model ? `🧠 memory · ${status.model}` : '🧠 memory';
 
   // One clear state line: is memory working, off, or not set up?
   const onServer = status?.backend === 'hindsight';

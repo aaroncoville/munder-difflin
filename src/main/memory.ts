@@ -24,7 +24,7 @@ function ensureMineIgnore(agentDir: string): void {
   try { writeFileSync(path, prefix + missing.join('\n') + '\n', 'utf8'); } catch { /* best-effort */ }
 }
 
-export interface MemoryStatus { available: boolean; enabled: boolean; active: boolean; initialized: boolean; palacePath: string | null; backend: BackendId; location: string | null; model: EmbeddingModel; bin: string | null; }
+export interface MemoryStatus { available: boolean; enabled: boolean; active: boolean; initialized: boolean; palacePath: string | null; backend: BackendId; location: string | null; model: EmbeddingModel | null; bin: string | null; }
 const MINE_INTERVAL_MS = 600_000;
 
 export class MemoryManager {
@@ -60,11 +60,18 @@ export class MemoryManager {
       // a server URL dressed up as one.
       palacePath: status.backend === 'mempalace' ? status.location : null,
       backend: status.backend, location: status.location,
-      model: status.model === 'embeddinggemma' ? 'embeddinggemma' : 'minilm', bin: status.bin
+      model: status.model === null ? null : status.model === 'embeddinggemma' ? 'embeddinggemma' : 'minilm', bin: status.bin
     };
   }
   env(): Record<string, string> { return this.active() ? this.backend.agentEnv() : {}; }
-  resetBinCache(): void { this.backend.resetCaches(); }
+  resetBinCache(): void {
+    // Async-probing backends (e.g. Hindsight) latch their health result across
+    // calls — wiping it via resetCaches() clears availability until the next
+    // async probe completes.  MemPalace is sync and MUST be reset each poll to
+    // detect a newly-installed CLI binary.  Callers (refresh, tools:status) must
+    // not bypass this method to reach resetCaches() directly.
+    if (!this.backend.probesAsync) this.backend.resetCaches();
+  }
   start(): void {
     if (this.initStarted || !this.enabled() || !this.getHome()) return;
     // A backend that only learns its availability from an async probe cannot be
@@ -74,7 +81,17 @@ export class MemoryManager {
     this.initStarted = true; this.backend.init(); this.startMineLoop();
   }
   stop(): void { this.mineStopped = true; if (this.mineTimer) { clearTimeout(this.mineTimer); this.mineTimer = null; } }
-  refresh(): MemoryStatus { this.swapBackendIfChanged(); this.resetBinCache(); this.start(); return this.status(); }
+  async refresh(): Promise<MemoryStatus> {
+    this.swapBackendIfChanged();
+    this.resetBinCache();
+    this.start();
+    // For async backends, await the probe so the very first poll after switching
+    // reflects actual server state rather than the initial false healthy flag.
+    if (this.backend.probesAsync && !this.backend.available()) {
+      await this.backend.probeHealth?.();
+    }
+    return this.status();
+  }
   /** Adopt the backend the settings now name. Switching means starting over:
    *  the new backend holds none of the old one's memories, so every agent's
    *  memory.md has to be mined into it from scratch. */
