@@ -69,6 +69,9 @@ export class MemPalaceAdapter implements MemoryBackend {
     const palace = this.getPalacePath();
     if (!palace || !this.available()) return {};
     return {
+      // How the standalone hive-memory shim learns which backend to talk to.
+      // Without it the shim has no backend and degrades to its unavailable line.
+      HIVE_MEMORY_BACKEND: this.id,
       MEMPALACE_PALACE_PATH: palace,
       MEMPALACE_EMBEDDING_MODEL: this.getModel(),
       ...(MEMPALACE_DEVICE ? { MEMPALACE_EMBEDDING_DEVICE: MEMPALACE_DEVICE } : {})

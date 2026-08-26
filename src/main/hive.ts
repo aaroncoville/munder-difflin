@@ -696,7 +696,9 @@ export class HiveManager {
       AGENT_ID: meta.id,
       AGENT_NAME: meta.name,
       HIVE_ROOT: root,
-      AGENT_DIR: dir
+      AGENT_DIR: dir,
+      // Scopes the hive-memory shim's recalls to this agent's own memories.
+      HIVE_MEMORY_AGENT: meta.id
     };
     // The bundled-node launcher, so an agent can run the hive's .cjs helpers (KG
     // CLI, Slack reply helper) even when `node` is not on its PATH. Invoking the
