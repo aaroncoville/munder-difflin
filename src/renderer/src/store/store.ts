@@ -974,9 +974,15 @@ export const useStore = create<State>((set, get) => ({
     // a fallback that is no longer on screen.
     modelErrors: { ...s.modelErrors, [provider]: '' }
   })),
-  setModelError: (provider, message) => set((s) => ({
-    modelErrors: { ...s.modelErrors, [provider]: message }
-  })),
+  setModelError: (provider, message) => set((s) => {
+    // A failure must drop the previous answer, not just annotate it. The
+    // fallback contract is "a refresh that produced nothing shows the built-in
+    // list", and an account list from an earlier refresh is exactly the kind of
+    // stale snapshot that contract exists to keep off screen — it reads as
+    // current while the note beside it says the refresh failed.
+    const { [provider]: _dropped, ...liveModels } = s.liveModels;
+    return { liveModels, modelErrors: { ...s.modelErrors, [provider]: message } };
+  }),
   hireQueue: EMPTY_HIRE_QUEUE,
   enqueuePendingHires: (manifests) => set((s) => ({
     hireQueue: enqueueHires(s.hireQueue, manifests)

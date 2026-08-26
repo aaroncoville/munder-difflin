@@ -165,3 +165,29 @@ test('a live list survives closing and reopening the modal', async () => {
   assert.ok(chips(second.tree).includes(LIVE_ONLY),
     'the refreshed list must outlive the modal that fetched it');
 });
+
+test('a refresh that fails after one succeeded falls back to the built-in list', async () => {
+  // The interesting failure is not the cold one: it is the second refresh, when
+  // a live list is already on screen. An account can lose access to a model
+  // between two clicks, so a list that was correct a minute ago is exactly the
+  // one a failure must not leave standing.
+  const answers = [LIVE, { error: 'Couldn\'t reach codex — showing the built-in list.' }];
+  fakeBridge(async () => answers.shift());
+  const inst = openEngineSection();
+
+  refreshControl(inst.tree).node.props.onClick();
+  await settle();
+  assert.ok(chips(inst.render()).includes(LIVE_ONLY),
+    'sanity: the first refresh must put the account list on screen');
+
+  refreshControl(inst.tree).node.props.onClick();
+  await settle();
+  const tree = inst.render();
+
+  assert.ok(chips(tree).includes(STATIC_LABEL),
+    'a failed refresh must revert to the built-in list, not keep the earlier account list');
+  assert.ok(!chips(tree).includes(LIVE_ONLY),
+    'a model only the now-unreachable answer knew about must not survive the failure');
+  assert.ok(text(tree).join(' ').includes('showing the built-in list'),
+    'the user must be told why the list changed back');
+});
