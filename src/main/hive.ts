@@ -419,6 +419,17 @@ export class HiveManager {
     }
   }
 
+  private writeMemoryShim(): void {
+    const root = this.root();
+    if (!root) return;
+    try {
+      const source = join(__dirname, '../../resources/hive-memory.cjs');
+      const target = join(root, 'bin', process.platform === 'win32' ? 'hive-memory.cjs' : 'hive-memory');
+      writeFileSync(target, readFileSync(source, 'utf8'), 'utf8');
+      if (process.platform !== 'win32') chmodSync(target, 0o755);
+    } catch (e) { console.error('[hive] writeMemoryShim failed:', e); }
+  }
+
   /** The launcher path if it is actually on disk, else null (→ callers fall back
    *  to bare `node`, i.e. exactly the pre-fix behavior — never worse than before). */
   private nodeLauncher(): string | null {
@@ -561,6 +572,7 @@ export class HiveManager {
     // The bundled-node launcher every shim above is invoked through — MUST be
     // written before any hook installer runs (they probe for it).
     this.writeNodeLauncher();
+    this.writeMemoryShim();
     // …and the PATH-visible `node` fallback for the agent's OWN subprocesses.
     this.writeRuntimeShims();
 
@@ -684,7 +696,9 @@ export class HiveManager {
       AGENT_ID: meta.id,
       AGENT_NAME: meta.name,
       HIVE_ROOT: root,
-      AGENT_DIR: dir
+      AGENT_DIR: dir,
+      // Scopes the hive-memory shim's recalls to this agent's own memories.
+      HIVE_MEMORY_AGENT: meta.id
     };
     // The bundled-node launcher, so an agent can run the hive's .cjs helpers (KG
     // CLI, Slack reply helper) even when `node` is not on its PATH. Invoking the
@@ -1296,10 +1310,7 @@ export class HiveManager {
     const ctxLine = 'LIVE CONTEXT: each agent row in the LIVE ROSTER carries a `ctx NN%` tag — its live context-window occupancy. Treat it as the real headroom signal when routing: prefer an agent with a LOW `ctx` for a big task; treat a HIGH `ctx` (near 100%) as busy rather than idle, even if the cumulative token count looks modest.';
 
     const memoryLine = semanticMemory
-      // The palace location is named, not spelled as `$MEMPALACE_PALACE_PATH`:
-      // `mempalace` reads that env var itself, and the POSIX `$` form was noise
-      // (or an empty expansion) for a Windows agent that tried to use it literally.
-      ? 'Semantic memory: the whole hive shares a searchable MemPalace at the path in your MEMPALACE_PALACE_PATH environment variable. To recall relevant past knowledge across the team, run `mempalace search "<query>"`; run `mempalace wake-up` at the start of a task for a memory digest. Your notes in memory.md are mined into the palace automatically — write durable facts there.'
+      ? 'Semantic memory: the whole hive shares searchable semantic memory. To recall relevant past knowledge across the team, run `hive-memory search "<query>"`; run `hive-memory wake-up` at the start of a task for a memory digest. Your notes in memory.md are indexed automatically — write durable facts there.'
       : '';
     // Enterprise Knowledge Graph (opt-in). Volatile-free: the bundled-node launcher
     // and the KG CLI are both fixed absolute paths for an install, so baking them
@@ -2513,15 +2524,14 @@ request is NOT failed or deleted, it waits in \`spawn-requests/\` and runs if th
 If a request of yours has sat there without moving, that is why, and it is a decision to raise with the
 human rather than retry. Route work to an agent already on the floor first either way.
 
-## Semantic memory (optional — when \`mempalace\` is installed)
-When \`MEMPALACE_PALACE_PATH\` is set in your environment, the hive shares a
-searchable MemPalace and you have the \`mempalace\` CLI:
-- \`mempalace search "<query>"\` — recall relevant past knowledge across the whole
+## Semantic memory (optional)
+The hive shares searchable semantic memory through the \`hive-memory\` command:
+- \`hive-memory search "<query>"\` — recall relevant past knowledge across the whole
   team by meaning (not just keywords). Add \`--wing <agent-id>\` to scope to one
   agent, \`--results N\` to widen.
-- \`mempalace wake-up\` — a short digest of what matters, good at the start of a task.
+- \`hive-memory wake-up\` — a short digest of what matters, good at the start of a task.
 
-Your \`memory.md\` is mined into the palace automatically, so the durable facts you
+Your \`memory.md\` is indexed automatically, so the durable facts you
 write there become searchable by every agent. You don't run \`mine\` yourself.
 `;
 

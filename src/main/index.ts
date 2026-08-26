@@ -15,7 +15,8 @@ import { initAutoUpdater, abortPendingRestart } from './updater';
 import { RealtimeFloorWatcher } from './realtimeFloorWatcher';
 import {
   readConfig, writeConfig, setAgentTokenCap, resetConfig, ensureHarnessHome, ensureClaudePermissionsAccepted,
-  modelForRole, OPS_STANDUP_MISSION, HEARTBEAT_MISSION, COMPACT_MAINTENANCE_MISSION, type HarnessConfig, type ScheduledMission
+  modelForRole, OPS_STANDUP_MISSION, HEARTBEAT_MISSION, COMPACT_MAINTENANCE_MISSION, migrateMemorySettings,
+  type HarnessConfig, type ScheduledMission
 } from './config';
 import { listDir, readFileText, readFileBinary, writeFileText, statAbs, expandTilde } from './fs';
 import { normalizeWeekly, weeklyDelayMs } from '../shared/weeklySchedule';
@@ -24,11 +25,13 @@ import {
   addWorktree, removeWorktree, worktreeHasUnintegratedWork, worktreeIsGcSafe,
   getLogGraph, getCommitFiles, getFileAtRev, compareRefs, listWorktrees, checkoutRef
 } from './git';
+import { linkWorktreeDeps, unlinkWorktreeDeps } from './worktreeDeps';
 import { HiveManager, type AgentMeta, type HiveMessage, type HiveTask } from './hive';
 import { HookServer } from './hooks';
 import { CircuitBreaker, type BreakerInput } from './breaker';
 import type { UsageProvider } from './usage';
 import { MemoryManager } from './memory';
+import { testHindsightConnection } from './hindsightAdapter';
 import { KnowledgeManager } from './knowledge';
 import { MemoryReflector, type ReflectSettings } from './reflect';
 import { PersistStore } from './db';
@@ -303,7 +306,7 @@ const hookServer = new HookServer(
 );
 const memory = new MemoryManager(
   () => readConfig().harnessHome,
-  () => { const c = readConfig(); return { enabled: c.semanticMemory !== false, model: c.embeddingModel ?? 'minilm' }; }
+  () => migrateMemorySettings(readConfig())
 );
 // Enterprise Knowledge Graph — file-backed store + agent CLI (default OFF).
 const knowledge = new KnowledgeManager();
@@ -448,6 +451,8 @@ function teardownPty(id: string): void {
     try { workerWake.forget(agentId, id); } catch { /* best-effort */ }
     // Drop breaker state so a dead agent can't leak/zombie a tripped level.
     try { breaker.forget(agentId); } catch { /* best-effort */ }
+    // A replacement using this id needs a new usage counter, not the dead PTY's.
+    try { telemetry.forgetAgent(agentId); } catch { /* best-effort */ }
     // W1 — kill this agent's proxy-bridge sidecar (qwen), if any, so a dead
     // PTY never leaves an orphan loopback listener. No-op for non-proxy agents.
     try { hive.stopProxyBridge(agentId); } catch (e) { console.error('[hive] stopProxyBridge failed:', e); }
@@ -512,6 +517,8 @@ function informGod(subject: string, body: string, slack?: { channel: string; thr
  *  (fail-safe — never auto-discard possibly-valuable work). */
 async function finalizeWorkerWorktree(wtPath: string, origCwd: string, worker: WorkerRec): Promise<void> {
   try {
+    const deps = await unlinkWorktreeDeps(origCwd, wtPath);
+    if (!deps.ok) console.error('[worktree] dependency unlink failed:', deps.error);
     const work = await worktreeHasUnintegratedWork(wtPath, worker.baseBranch);
     if (work.keep) {
       console.warn(`[worker] PRESERVING worktree with unintegrated work: ${wtPath} (${work.detail})`);
@@ -2622,6 +2629,8 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
           opts.cwd = wtPath;
           worktreePaths.set(opts.id, wtPath);
           worktreeOrigins.set(opts.id, origCwd);
+          const deps = await linkWorktreeDeps(origCwd, wtPath);
+          if (!deps.ok) console.error('[worktree] dependency link failed:', deps.error);
         } else {
           console.error('[worktree] addWorktree failed:', wt.error);
         }
@@ -3488,6 +3497,12 @@ ipcMain.handle('hive:searchMemory', (_evt, query: unknown, wing: unknown) => {
 ipcMain.handle('hive:memoryWakeUp', (_evt, wing: unknown) =>
   memory.wakeUp(typeof wing === 'string' ? wing : undefined));
 ipcMain.handle('hive:mineNow', () => { memory.mineNow(); return { ok: true }; });
+// Probe a Hindsight server the user has typed in but not committed to. The
+// panel renders what THIS returns, so the answer has to describe the endpoint
+// it actually reached — echoing the url and bank back stops the UI reporting a
+// success for one server next to an address the user has since edited.
+ipcMain.handle('hive:memoryTestConnection', (_evt, url: unknown, bank: unknown) =>
+  testHindsightConnection(typeof url === 'string' ? url : '', typeof bank === 'string' ? bank : ''));
 // Condense memory.md on demand: an explicit id condenses that one agent (skips
 // the size trigger — a "condense now" button); no id runs a full threshold scan.
 ipcMain.handle('memory:reflectNow', (_evt, id: unknown) =>
@@ -4639,6 +4654,8 @@ async function gcPreservedWorktrees(): Promise<void> {
         continue;
       }
       // (b) Still on disk → reclaim ONLY when provably integrated + clean.
+      const deps = await unlinkWorktreeDeps(e.origCwd, e.wtPath);
+      if (!deps.ok) { console.error('[worker gc] dependency unlink failed (keeping):', deps.error); continue; }
       let safe: { gc: boolean; detail: string };
       try { safe = await worktreeIsGcSafe(e.wtPath, e.baseBranch); }
       catch (err) { console.error('[worker gc] gc-safe check threw (keeping):', err); continue; }
