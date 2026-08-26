@@ -31,6 +31,10 @@ export interface MemoryBackend {
    *  manager must arm the backend before `available()` can ever say yes. A
    *  local CLI backend leaves this unset: it knows synchronously. */
   readonly probesAsync?: boolean;
+  /** Backends that probesAsync must implement this: await the pending health
+   *  check so the caller can block until availability is known. Safe to call
+   *  concurrently — in-flight probes are de-duped by the implementation. */
+  probeHealth?(): Promise<boolean>;
 }
 
 /** The persisted, backend-aware shape of the memory settings. */

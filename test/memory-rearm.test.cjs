@@ -49,24 +49,24 @@ function managerWithCli(t, opts = {}) {
 /** The mine loop is armed exactly when its interval handle exists. */
 const armed = (memory) => memory.mineTimer !== null;
 
-test('a poll before mempalace is installed reports "not available" and arms nothing', (t) => {
+test('a poll before mempalace is installed reports "not available" and arms nothing', async (t) => {
   const { memory } = managerWithCli(t);
 
-  const status = memory.refresh();
+  const status = await memory.refresh();
 
   assert.equal(status.available, false);
   assert.equal(status.active, false);
   assert.equal(armed(memory), false);
 });
 
-test('a poll AFTER mempalace appears arms the mine loop that boot had to skip', (t) => {
+test('a poll AFTER mempalace appears arms the mine loop that boot had to skip', async (t) => {
   const { memory, state } = managerWithCli(t);
 
   memory.start();                    // boot: mempalace not installed yet
   assert.equal(armed(memory), false, 'nothing to start');
 
   state.bin = '/fake/bin/mempalace'; // the user installs it while the app runs
-  const status = memory.refresh();
+  const status = await memory.refresh();
 
   assert.equal(status.available, true);
   assert.equal(status.active, true);
@@ -84,10 +84,10 @@ test('polling again never starts a second mine loop', (t) => {
   assert.equal(memory.mineTimer, first, 'the palace permits a single writer — one loop only');
 });
 
-test('memory turned off in settings stays off however often it is polled', (t) => {
+test('memory turned off in settings stays off however often it is polled', async (t) => {
   const { memory } = managerWithCli(t, { bin: '/fake/bin/mempalace', enabled: false });
 
-  const status = memory.refresh();
+  const status = await memory.refresh();
 
   assert.equal(status.available, true, 'the CLI is there…');
   assert.equal(status.enabled, false, '…but the user said no');
