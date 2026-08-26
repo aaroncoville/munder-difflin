@@ -199,6 +199,35 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
   const [description, setDescription] = useState(pendingHire?.description ?? 'a fresh harness');
   const [hireMeta, setHireMeta] = useState<HireManifest | null>(pendingHire);
 
+  // The provider's live catalog, once this session has asked for one, and why
+  // the last ask came back empty. Both are session state on purpose: the list
+  // is a snapshot of one moment, so refreshing once is enough for every agent
+  // hired afterwards, and nothing stale survives a restart.
+  const liveModels = useStore(s => s.liveModels);
+  const modelErrors = useStore(s => s.modelErrors);
+  const setLiveModels = useStore(s => s.setLiveModels);
+  const setModelError = useStore(s => s.setModelError);
+  const [refreshing, setRefreshing] = useState(false);
+  const live = liveModels[provider];
+  const modelError = modelErrors[provider];
+  // Only some CLIs can report their account's models; for the rest a Refresh
+  // button could only ever fail, so it is not offered.
+  const canRefreshModels = window.cth.catalogCapableProviders.includes(provider);
+  /** Ask the provider what this account can run right now. A failure is not an
+   *  error state for the picker — it keeps the built-in list and says why. */
+  const refreshModelList = async () => {
+    setRefreshing(true);
+    try {
+      const result = await window.cth.refreshModels(provider);
+      if ('error' in result) setModelError(provider, result.error);
+      else setLiveModels(provider, result);
+    } catch (e) {
+      setModelError(provider, e instanceof Error ? e.message : String(e));
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   // Picking a model rebuilds the command; the command field stays editable for
   // power users (it's the source of truth for the actual spawn).
   const pickModel = (id?: string) => {
@@ -906,16 +935,26 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                     {preset.supportsModel && <Row label="Model">
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                         {(() => {
+                          const known = modelsForProvider(provider);
+                          // A refreshed list REPLACES the hardcoded one — showing both
+                          // would put retired models next to current ones with no way
+                          // to tell which is which. The no---model entry is kept: it is
+                          // a harness choice, not a model the provider lists, so it
+                          // cannot come back in the live answer and dropping it would
+                          // make "let the CLI decide" unreachable after a refresh.
+                          const base = live
+                            ? [...known.filter((m) => m.id === undefined), ...live.models]
+                            : known;
                           // An imported hire may name a model newer than this picker's
                           // hardcoded list (e.g. claude-fable-5). Surface it as a real,
                           // selected card instead of leaving the picker looking unset —
                           // the command field already carries it either way.
-                          const known = modelsForProvider(provider);
-                          return model && !known.some((m) => m.id === model)
-                            ? [...known, { id: model, label: `${model} (from hire)` }]
-                            : known;
+                          return model && !base.some((m) => m.id === model)
+                            ? [...base, { id: model, label: `${model} (from hire)` }]
+                            : base;
                         })().map((m) => {
                           const active = (model ?? '') === (m.id ?? '');
+                          const isProviderDefault = live?.default !== undefined && m.id === live.default;
                           return (
                             <button
                               key={m.label}
@@ -931,11 +970,33 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                                 color: 'var(--cth-ink-900)', cursor: 'pointer', border: 'none'
                               }}
                             >
-                              {m.label}
+                              {isProviderDefault ? `${m.label} · default` : m.label}
                             </button>
                           );
                         })}
                       </div>
+                      {canRefreshModels && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 2 }}>
+                          <PixelButton
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => { void refreshModelList(); }}
+                            disabled={refreshing}
+                          >
+                            {refreshing ? 'refreshing…' : 'refresh models'}
+                          </PixelButton>
+                          <span style={{
+                            fontFamily: 'var(--cth-font-ui)', fontSize: 11,
+                            color: 'var(--cth-ink-500)', lineHeight: '16px'
+                          }}>
+                            {modelError
+                              ? modelError
+                              : live
+                                ? 'Live list from your account.'
+                                : 'Ask this CLI which models your account can run.'}
+                          </span>
+                        </div>
+                      )}
                     </Row>}
 
                     {/* OSS-model quick-picks (ondev-c) — local + third-party-provider

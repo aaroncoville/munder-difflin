@@ -5,6 +5,7 @@ import type { ThemeId } from '@/scene/office/themeRegistry';
 import type { StatusKind } from '@/components/PixelBadge';
 import type { AgentProvider } from '@shared/agentProvider';
 import type { HireManifest } from '@shared/hire';
+import type { ModelCatalogResult } from '@shared/modelCatalog';
 import {
   EMPTY_HIRE_QUEUE,
   clearHireQueue,
@@ -301,6 +302,17 @@ interface State {
   /** Clear an agent's entire pending queue. */
   clearQueue: (agentId: string) => void;
   setAddAgentOpen: (open: boolean) => void;
+  /** A provider's live model list, once the user has asked for one, keyed by
+   *  provider id. Session-only and deliberately NOT persisted: it is a snapshot
+   *  of what an account could run at one moment, and a stale snapshot restored
+   *  at launch would be indistinguishable from a fresh one. Absent = the picker
+   *  shows its built-in list. */
+  liveModels: Record<string, ModelCatalogResult>;
+  /** Why the last refresh for a provider produced nothing, shown beside the
+   *  built-in list it fell back to. Same session-only lifetime. */
+  modelErrors: Record<string, string>;
+  setLiveModels: (provider: string, result: ModelCatalogResult) => void;
+  setModelError: (provider: string, message: string) => void;
   /** Validated manifests waiting for one-at-a-time human review. */
   hireQueue: HireReviewQueue;
   enqueuePendingHires: (manifests: readonly HireManifest[]) => void;
@@ -954,6 +966,17 @@ export const useStore = create<State>((set, get) => ({
       return { agents, feeds, selectedId, restorableAgents, fullscreenAgentId };
     }),
   setAddAgentOpen: (open) => set({ addAgentOpen: open }),
+  liveModels: {},
+  modelErrors: {},
+  setLiveModels: (provider, result) => set((s) => ({
+    liveModels: { ...s.liveModels, [provider]: result },
+    // A success clears the previous failure's note; leaving it up would explain
+    // a fallback that is no longer on screen.
+    modelErrors: { ...s.modelErrors, [provider]: '' }
+  })),
+  setModelError: (provider, message) => set((s) => ({
+    modelErrors: { ...s.modelErrors, [provider]: message }
+  })),
   hireQueue: EMPTY_HIRE_QUEUE,
   enqueuePendingHires: (manifests) => set((s) => ({
     hireQueue: enqueueHires(s.hireQueue, manifests)
