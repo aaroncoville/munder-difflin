@@ -104,3 +104,56 @@ test('main and renderer split with the SAME tokenizer (shared module)', () => {
   // renderer's. One example locks the routing through the shared function.
   assert.deepEqual(tokenizeCommand(`a "b c" 'd e' f`), ['a', 'b c', 'd e', 'f']);
 });
+
+/**
+ * A request that names a provider but no command used to resolve the command
+ * from the GLOBAL default and then bolt the PROVIDER's auto flag onto it. With
+ * today's presets that is `claude -a never -s workspace-write`, and claude
+ * answers it with `error: unknown option '-a'` and exits inside 150ms — long
+ * before the worker can read its objective, while its request archives as done.
+ *
+ * The flags below are spelled out rather than read from the preset on purpose:
+ * a test that asks the implementation what it expects cannot fail.
+ */
+test('a provider-only request resolves that provider\'s binary, not the global default', () => {
+  const l = launch({ requestProvider: 'codex', defaultCommand: 'claude', autoMode: true });
+  assert.equal(l.bin, 'codex');
+  assert.deepEqual(l.args, ['-a', 'never', '-s', 'workspace-write']);
+  assert.equal(l.command, 'codex -a never -s workspace-write');
+});
+
+test('a provider-only request still carries its model override', () => {
+  const l = launch({
+    requestProvider: 'codex',
+    requestModel: 'gpt-5.6-sol',
+    defaultCommand: 'claude',
+    autoMode: true
+  });
+  assert.equal(l.bin, 'codex');
+  assert.deepEqual(l.args, ['-a', 'never', '-s', 'workspace-write', '--model', 'gpt-5.6-sol']);
+});
+
+test('an explicit command in the request still wins over the provider preset', () => {
+  const l = launch({
+    requestCommand: 'my-codex-wrapper',
+    requestProvider: 'codex',
+    defaultCommand: 'claude',
+    autoMode: true
+  });
+  assert.equal(l.bin, 'my-codex-wrapper');
+  assert.deepEqual(l.args, ['-a', 'never', '-s', 'workspace-write']);
+});
+
+test('a request with no provider is unchanged: the global default still applies', () => {
+  const l = launch({ defaultCommand: 'claude', autoMode: true });
+  assert.equal(l.bin, 'claude');
+  assert.deepEqual(l.args, ['--permission-mode', 'bypassPermissions']);
+  assert.equal(launch({ defaultCommand: 'codex --full-auto' }).bin, 'codex');
+  assert.equal(launch({}).bin, 'claude');
+});
+
+test('a "custom" provider with no command falls back to the global default', () => {
+  // The custom preset has no binary of its own; the configured default is all
+  // there is, and losing it would spawn nothing at all.
+  assert.equal(launch({ requestProvider: 'custom', defaultCommand: 'my-tool' }).bin, 'my-tool');
+});
