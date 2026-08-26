@@ -1,4 +1,7 @@
 import { spawn } from 'node:child_process';
+import { getRemoteUrl } from './git';
+import { issueHostFor, parseGitRemoteHost } from './gitHost';
+import { listGitLabIssues } from './gitlab';
 
 /** A GitHub issue, normalized for the renderer (labels/assignees flattened to names). */
 export interface GHIssue {
@@ -22,13 +25,44 @@ interface RawGHIssue {
 }
 
 /**
+ * List up to 30 issues in the repo at `cwd`, using whichever forge its `origin`
+ * remote points at.
+ *
+ * The forge's own CLI does the fetching and owns authentication, so the only
+ * decision made here is which one to run. An unrecognised host is reported as
+ * such rather than guessed at — running the wrong client against the wrong API
+ * produces a confusing failure instead of an actionable one.
+ *
+ * Returns `{ ok: false, error }` on any failure so callers never have to
+ * try/catch.
+ */
+export async function listIssues(cwd: string): Promise<{ ok: boolean; issues?: GHIssue[]; error?: string }> {
+  const remote = await getRemoteUrl(cwd);
+  if (!remote.ok) return { ok: false, error: `could not read the 'origin' remote: ${remote.error}` };
+
+  switch (issueHostFor(remote.url)) {
+    case 'github': return listGitHubIssues(cwd);
+    case 'gitlab': return listGitLabIssues(cwd);
+    default: {
+      // The host, never the URL: a remote can carry a personal access token,
+      // and this string is rendered in the app and pasted into bug reports.
+      const host = parseGitRemoteHost(remote.url);
+      return {
+        ok: false,
+        error: `Fetching issues supports github.com and gitlab.com; the 'origin' remote points at ${host ? `'${host}'` : 'a URL with no recognisable host'}.`
+      };
+    }
+  }
+}
+
+/**
  * List up to 30 issues in the repo at `cwd` via the `gh` CLI.
  *
  * Returns `{ ok: false, error }` on any failure — spawn error (e.g. `gh` not
  * installed), non-zero exit (e.g. unauthenticated / not a repo), or a JSON
  * parse failure — so callers never have to try/catch.
  */
-export function listIssues(cwd: string): Promise<{ ok: boolean; issues?: GHIssue[]; error?: string }> {
+function listGitHubIssues(cwd: string): Promise<{ ok: boolean; issues?: GHIssue[]; error?: string }> {
   return new Promise((resolve) => {
     const proc = spawn(
       'gh',
