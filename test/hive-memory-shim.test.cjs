@@ -71,3 +71,31 @@ test('unreachable hindsight degrades to the one-line fallback', async () => {
 
   assert.equal(out, 'memory recall unavailable — continue without it\n');
 });
+
+// The recall response carries per-result scores in a `scores` object whose
+// `final` member is the ranked value; a flat `score` is not part of the shape.
+test('hindsight search renders the final score from the scores object', async (t) => {
+  const server = http.createServer((req, res) => {
+    if (req.method !== 'POST' || req.url !== '/v1/default/banks/test-bank/memories/recall') {
+      res.statusCode = 404;
+      res.end();
+      return;
+    }
+    req.resume();
+    req.on('end', () => {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ results: [{ text: 'A useful memory', scores: { final: 0.91, semantic: 0.42 } }] }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const { port } = server.address();
+
+  const out = await runShim({
+    HIVE_MEMORY_BACKEND: 'hindsight',
+    HINDSIGHT_URL: `http://127.0.0.1:${port}`,
+    HINDSIGHT_BANK: 'test-bank'
+  }, ['search', 'budget']);
+
+  assert.match(out, /A useful memory {2}\(score 0\.91\)/);
+});

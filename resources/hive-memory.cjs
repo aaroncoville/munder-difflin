@@ -29,5 +29,10 @@ fetch(`${process.env.HINDSIGHT_URL}/v1/default/banks/${process.env.HINDSIGHT_BAN
 }).then(async (response) => {
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   const body = await response.json();
-  for (const hit of body.results || []) console.log(`— ${hit.text || ''}${hit.score == null ? '' : `  (score ${hit.score})`}`);
+  for (const hit of body.results || []) {
+    // Recall ranks each result with a `scores` object; `final` is the value the
+    // ordering is based on. Older/simpler responses carry a flat `score` instead.
+    const score = hit.scores?.final ?? hit.score;
+    console.log(`— ${hit.text || ''}${score == null ? '' : `  (score ${score})`}`);
+  }
 }).catch(unavailable).finally(() => clearTimeout(timer));
