@@ -11,11 +11,10 @@
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
+const sourceAssert = require('./source-assert.cjs');
 
 const read = (rel) => {
-  const src = fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+  const src = sourceAssert.activeSource(rel);
   const m = src.match(/const MINE_IGNORE_LINES = (\[[^\]]*\]);/);
   assert.ok(m, `MINE_IGNORE_LINES not found in ${rel}`);
   return JSON.parse(m[1].replace(/'/g, '"'));

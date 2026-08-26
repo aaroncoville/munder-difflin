@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const sourceAssert = require('./source-assert.cjs');
 
 // analytics.ts reads __POSTHOG_KEY__ (an electron-vite `define`, absent here)
 // and constructs a real PostHog client. Both are stubbed BEFORE the module is
@@ -396,7 +397,7 @@ test('updater.ts still emits the exact lines via reads', () => {
   // via parses updater.log rather than adding a marker, which is what lets the
   // 0.4.4 -> 0.4.5 hop be measured at all. The cost of that choice is this
   // coupling, so it fails here rather than silently degrading the metric.
-  const src = fs.readFileSync(path.join(__dirname, '..', 'src/main/updater.ts'), 'utf8');
+  const src = sourceAssert.activeSource('src/main/updater.ts');
   assert.ok(
     src.includes('logLine(`update downloaded: ${info.version}'),
     'updater.ts no longer logs "update downloaded: <version>" — update analytics.ts LOG_DOWNLOADED'
@@ -427,7 +428,7 @@ test('the manual-download breadcrumb matches the URL the badge actually opens', 
   // updater.ts must match what installerUrl() hands the badge, or the one
   // release we spend waiting for it buys nothing.
   const { installerUrl, REPO } = loadTs('src/shared/updateState.ts');
-  const src = fs.readFileSync(path.join(__dirname, '..', 'src/main/updater.ts'), 'utf8');
+  const src = sourceAssert.activeSource('src/main/updater.ts');
   assert.ok(
     src.includes('logLine(`manual download opened: ${asset[1]}`)'),
     'updater.ts no longer logs the manual download — 0.4.6 via loses the manual path'

@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const loadTs = require('./load-ts.cjs');
+const sourceAssert = require('./source-assert.cjs');
 
 const { TelemetryCollector } = loadTs('src/main/telemetry.ts');
 
@@ -90,19 +91,9 @@ test('forgetAgent keeps usage for other agents', async (t) => {
 });
 
 test('teardown resets telemetry when it forgets breaker state', () => {
-  const indexPath = require('node:path').join(__dirname, '..', 'src', 'main', 'index.ts');
-  const rawSource = require('node:fs').readFileSync(indexPath, 'utf8');
-  const activeSource = rawSource
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .split('\n')
-    .map((line) => line.replace(/\/\/.*$/, ''))
-    .join('\n');
+  const src = sourceAssert.activeSource('src/main/index.ts');
   // Bounded to the teardown block: an unbounded slice would also match the call
   // if it were moved into any later function in the file.
-  const start = activeSource.indexOf('breaker.forget(agentId)');
-  const end = activeSource.indexOf('hive.stopProxyBridge(agentId)', start);
-  assert.ok(start !== -1 && end > start, 'teardown block not found in index.ts');
-  const afterBreakerReset = activeSource.slice(start, end);
-
+  const afterBreakerReset = sourceAssert.boundedSlice(src, 'breaker.forget(agentId)', 'hive.stopProxyBridge(agentId)');
   assert.match(afterBreakerReset, /telemetry\.forgetAgent\(agentId\)/);
 });
