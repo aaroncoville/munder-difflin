@@ -6,6 +6,7 @@ const { mkdtempSync, readFileSync, writeFileSync, rmSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const sourceAssert = require('./source-assert.cjs');
 
 const { readHireManifestFiles } = loadTs('src/main/hire.ts');
 
@@ -47,10 +48,13 @@ test('batch errors identify the file without exposing its parent directory', () 
 });
 
 test('Electron picker and IPC validate the full selection rather than file zero', () => {
-  const source = readFileSync('src/main/index.ts', 'utf8');
-  const start = source.indexOf("ipcMain.handle('hire:openFile'");
-  const end = source.indexOf('\n/**', start);
-  const handler = source.slice(start, end);
+  // activeSource preserves string positions (comment chars → spaces),
+  // so raw and src share index coordinates. Use raw only for the JSDoc boundary.
+  const raw = readFileSync(join(__dirname, '..', 'src/main/index.ts'), 'utf8');
+  const src = sourceAssert.activeSource('src/main/index.ts');
+  const start = src.indexOf("ipcMain.handle('hire:openFile'");
+  const end = raw.indexOf('\n/**', start);
+  const handler = src.slice(start, end);
   assert.ok(start >= 0 && end > start, 'hire import IPC handler is present');
   assert.match(handler, /properties:\s*\['openFile', 'multiSelections'\]/);
   assert.match(handler, /readHireManifestFiles\(res\.filePaths\)/);
@@ -58,35 +62,31 @@ test('Electron picker and IPC validate the full selection rather than file zero'
 });
 
 test('renderer wiring appends every cold-start and runtime arrival', () => {
-  const app = readFileSync('src/renderer/src/App.tsx', 'utf8');
+  const app = sourceAssert.activeSource('src/renderer/src/App.tsx');
   assert.match(app, /enqueuePendingHires\(\[m\]\)/);
   assert.match(app, /enqueuePendingHires\(queued\)/);
   assert.doesNotMatch(app, /queued\[queued\.length\s*-\s*1\]/);
 });
 
 test('closing a hire review clears the remaining batch', () => {
-  const app = readFileSync('src/renderer/src/App.tsx', 'utf8');
+  const app = sourceAssert.activeSource('src/renderer/src/App.tsx');
   assert.match(app, /const closeAddAgentReview = \(\) => \{[\s\S]*?clearPendingHires\(\);[\s\S]*?setAddAgentOpen\(false\);[\s\S]*?\}/);
   assert.match(app, /<AddAgentModal[\s\S]*?onClose=\{closeAddAgentReview\}/);
 });
 
 test('review UI exposes progress and an explicit skip without auto-spawn', () => {
-  const modal = readFileSync('src/renderer/src/components/AddAgentModal.tsx', 'utf8');
+  const modal = sourceAssert.activeSource('src/renderer/src/components/AddAgentModal.tsx');
   assert.match(modal, /hireQueueProgress\(hireQueue\)/);
   assert.match(modal, />skip hire<\/PixelButton>/);
   assert.match(modal, /finishPendingHire\(\)/);
-  const start = modal.indexOf('const importHire = async');
-  const end = modal.indexOf('const submit = async', start);
-  const importFlow = modal.slice(start, end);
+  const importFlow = sourceAssert.boundedSlice(modal, 'const importHire = async', 'const submit = async');
   assert.match(importFlow, /enqueuePendingHires\(res\.manifests\)/);
   assert.doesNotMatch(importFlow, /spawnPty/);
 });
 
 test('batch token caps persist atomically before review advances', () => {
-  const modal = readFileSync('src/renderer/src/components/AddAgentModal.tsx', 'utf8');
-  const start = modal.indexOf('const submit = async');
-  const end = modal.indexOf('\n  return (', start);
-  const submitFlow = modal.slice(start, end);
+  const modal = sourceAssert.activeSource('src/renderer/src/components/AddAgentModal.tsx');
+  const submitFlow = sourceAssert.boundedSlice(modal, 'const submit = async', '\n  return (');
   const persistCap = submitFlow.indexOf('await window.cth.setAgentTokenCap');
   const advance = submitFlow.indexOf('advanceHireReview()');
 
@@ -99,10 +99,13 @@ test('batch token caps persist atomically before review advances', () => {
 });
 
 test('Command Center sets and clears one cap through the atomic IPC', () => {
-  const panel = readFileSync('src/renderer/src/components/CommandCenterPanel.tsx', 'utf8');
-  const start = panel.indexOf('const setAgentCap =');
-  const end = panel.indexOf('\n\n  // The token meter', start);
-  const capFlow = panel.slice(start, end);
+  // activeSource preserves string positions (comment chars → spaces),
+  // so raw and src share index coordinates. Use raw for the comment boundary.
+  const raw = readFileSync(join(__dirname, '..', 'src/renderer/src/components/CommandCenterPanel.tsx'), 'utf8');
+  const src = sourceAssert.activeSource('src/renderer/src/components/CommandCenterPanel.tsx');
+  const start = src.indexOf('const setAgentCap =');
+  const end = raw.indexOf('\n\n  // The token meter', start);
+  const capFlow = src.slice(start, end);
 
   assert.ok(start >= 0 && end > start, 'Command Center cap handler is present');
   assert.match(capFlow, /window\.cth\.setAgentTokenCap\(id, tokens\)/);

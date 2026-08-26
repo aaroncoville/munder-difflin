@@ -183,7 +183,6 @@ test('removes linked dependencies before worker retention checks', () => {
 });
 
 test('uses a Windows junction for the directory link', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'src/main/worktreeDeps.ts'), 'utf8');
-
-  assert.match(source, /process\.platform === ['"]win32['"] \? ['"]junction['"] :/);
+  const src = sourceAssert.activeSource('src/main/worktreeDeps.ts');
+  assert.match(src, /process\.platform === ['"]win32['"] \? ['"]junction['"] :/);
 });

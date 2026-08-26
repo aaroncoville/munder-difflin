@@ -21,6 +21,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const loadTs = require('./load-ts.cjs');
+const sourceAssert = require('./source-assert.cjs');
 
 const { extractDropHtml, buildDropSrcDoc } = loadTs('src/shared/releaseDrop.ts');
 
@@ -101,13 +102,9 @@ test('the document is self-contained and declares its charset before content', (
 // Only the ATTRIBUTE is inspected, never the file text — the doc block above it
 // names allow-scripts and allow-same-origin precisely to say they are banned,
 // and a grep over prose would fail on the warning rather than on a real grant.
-const readDrop = () => require('node:fs').readFileSync(
-  require('node:path').join(__dirname, '..', 'src/renderer/src/components/ReleaseDrop.tsx'),
-  'utf8'
-);
-
 test('ReleaseDrop grants allow-popups and nothing else', () => {
-  const attrs = [...readDrop().matchAll(/sandbox="([^"]*)"/g)].map((m) => m[1]);
+  const src = sourceAssert.activeSource('src/renderer/src/components/ReleaseDrop.tsx');
+  const attrs = [...src.matchAll(/sandbox="([^"]*)"/g)].map((m) => m[1]);
   // Exactly one frame, granting exactly one capability. allow-scripts alone is
   // already arbitrary code in the frame; paired with allow-same-origin it lets
   // the frame delete its own sandbox. allow-top-navigation would let a release
@@ -121,10 +118,10 @@ test('ReleaseDrop grants allow-popups and nothing else', () => {
 // open links at all. The ONE control the chrome owns is close: a modal this
 // large with no visible way out is a trap, and Esc alone is invisible.
 test('ReleaseDrop renders no action buttons, only a close', () => {
-  const src = readDrop();
+  const src = sourceAssert.activeSource('src/renderer/src/components/ReleaseDrop.tsx');
   const buttons = src.match(/<button\b[\s\S]*?>/g) ?? [];
   assert.equal(buttons.length, 1, 'the release drop must carry exactly one chrome button');
   assert.ok(/aria-label="Close/.test(buttons[0]), 'the only chrome button must be the close');
-  assert.ok(!/Star|Restart|Later|Download|Open release/i.test(src.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '')),
+  assert.ok(!/Star|Restart|Later|Download|Open release/i.test(src),
     'no release action may be a chrome button');
 });

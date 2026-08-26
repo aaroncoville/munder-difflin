@@ -86,15 +86,14 @@ test('patch refuses an unknown card without rewriting the ledger', (t) => {
 });
 
 test('renderer task actions never send a whole stale ledger back to main', () => {
-  const root = path.resolve(__dirname, '..');
-  const preload = fs.readFileSync(path.join(root, 'src/preload/index.ts'), 'utf8');
-  const main = fs.readFileSync(path.join(root, 'src/main/index.ts'), 'utf8');
+  const preload = sourceAssert.activeSource('src/preload/index.ts');
+  const main = sourceAssert.activeSource('src/main/index.ts');
   const sources = [
     'src/renderer/src/components/AskMeTab.tsx',
     'src/renderer/src/components/TaskDetailOverlay.tsx',
     'src/renderer/src/components/TasksKanban.tsx',
     'src/renderer/src/hooks/useHive.ts'
-  ].map((file) => fs.readFileSync(path.join(root, file), 'utf8'));
+  ].map((file) => sourceAssert.activeSource(file));
 
   for (const source of sources) {
     assert.doesNotMatch(source, /hiveWriteTasks\s*\(/,
