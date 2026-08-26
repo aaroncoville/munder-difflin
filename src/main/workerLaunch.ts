@@ -3,7 +3,12 @@
  * pure function: this exact translation silently killed real workers for days
  * while reporting success, which is what earned it a unit test.
  */
-import { autoModeFlagForProvider, inferAgentProvider } from '../shared/agentProvider';
+import {
+  autoModeFlagForProvider,
+  defaultCommandForProvider,
+  inferAgentProvider,
+  normalizeAgentProvider
+} from '../shared/agentProvider';
 import { tokenizeCommand } from '../shared/commandLine';
 
 export interface WorkerLaunch {
@@ -25,10 +30,23 @@ export function buildWorkerLaunch(opts: {
   /** The app's auto (skip-permissions) setting. */
   autoMode: boolean;
 }): WorkerLaunch {
+  // Which BINARY the request means, in precedence order: the command the request
+  // spells out, else the named provider's own preset binary, else the app-wide
+  // default. That middle rung is the whole point — a request naming a provider
+  // but no command used to fall straight through to the global default and then
+  // get the PROVIDER'S auto flag bolted onto it below, producing a command line
+  // no CLI accepts (`claude --dangerously-bypass-approvals-and-sandbox`, which
+  // claude rejects as an unknown option and exits 1 within a second of spawn).
+  // The `custom` provider has no binary of its own, so it keeps the default —
+  // that is what defaultCommandForProvider's fallback is for.
+  const requested = normalizeAgentProvider(opts.requestProvider);
+  const fallbackCommand = opts.defaultCommand ?? 'claude';
   let command =
     typeof opts.requestCommand === 'string' && opts.requestCommand.trim()
       ? opts.requestCommand.trim()
-      : (opts.defaultCommand ?? 'claude');
+      : requested
+        ? defaultCommandForProvider(requested, fallbackCommand) || fallbackCommand
+        : fallbackCommand;
   // Inherit the app's auto (skip-permissions) mode when the request takes no
   // stance of its own: a headless worker has no human to click through tool
   // prompts, so without the flag it stalls at the first ask until the idle
