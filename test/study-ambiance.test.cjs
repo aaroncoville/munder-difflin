@@ -171,3 +171,86 @@ test('the layer has exactly one place that destroys the application', () => {
   assert.equal((layer.match(/\.destroy\(/g) ?? []).length, 1,
     'destruction has more than one call site again');
 });
+
+test('an unmount during init waits for pixi before destroying it', async () => {
+  // A pixi Application only has a renderer once `init` has resolved, and its
+  // `destroy` goes straight through that renderer — so destroying one while
+  // `init` is still in flight throws, and the throw comes out of React's
+  // cleanup, where a decoration failing takes the unmount down with it. The
+  // fake below is that shape and nothing else: its `destroy` throws until the
+  // flag `init` sets is set.
+  const { buildOrDestroy } = loadTs('src/renderer/src/scene/study/AmbianceLayer.tsx');
+
+  let destroyed = 0;
+  let attached = 0;
+  const application = {
+    ready: false,
+    destroy() {
+      if (!this.ready) throw new TypeError("Cannot read properties of undefined (reading 'destroy')");
+      destroyed++;
+    }
+  };
+  let finishInit;
+  const initialising = new Promise((resolve) => { finishInit = resolve; });
+  let held = null;
+
+  const built = buildOrDestroy(() => application, (h) => { held = h; }, async (app, owned) => {
+    const wanted = await owned.initialize(async () => {
+      await initialising;
+      app.ready = true;
+    });
+    if (!wanted) return;
+    attached++;
+  });
+
+  // The unmount lands while init is still in flight — the whole window this
+  // guard exists for.
+  assert.doesNotThrow(() => held.release(), 'cleanup threw destroying a half-built application');
+  assert.equal(destroyed, 0, 'destroyed before it could survive being destroyed');
+
+  finishInit();
+  await built;
+  assert.equal(destroyed, 1, 'the application init finished building was never destroyed');
+  assert.equal(attached, 0, 'an application nobody was waiting for was attached and started');
+
+  held.release();
+  assert.equal(destroyed, 1, 'a later cleanup destroyed it a second time');
+});
+
+test('an init that rejects reports its own failure, not a destroy on nothing', async () => {
+  // `init` allocating the GL context and then failing leaves an application
+  // that never got a renderer. Destroying it there throws a TypeError from
+  // inside the cleanup path, and that TypeError is what the caller sees
+  // instead of the WebGL failure that actually happened.
+  const { buildOrDestroy } = loadTs('src/renderer/src/scene/study/AmbianceLayer.tsx');
+
+  let destroyed = 0;
+  const application = {
+    ready: false,
+    destroy() {
+      if (!this.ready) throw new TypeError("Cannot read properties of undefined (reading 'destroy')");
+      destroyed++;
+    }
+  };
+  let held = null;
+
+  await assert.rejects(
+    buildOrDestroy(() => application, (h) => { held = h; }, async (_app, owned) => {
+      await owned.initialize(async () => { throw new Error('WebGL unsupported'); });
+      throw new Error('setup ran on an application that never initialised');
+    }),
+    /WebGL unsupported/,
+    'destroying a half-built application masked the failure that caused it'
+  );
+  assert.equal(destroyed, 0, 'an application with no renderer was destroyed through anyway');
+  assert.doesNotThrow(() => held.release(), 'cleanup after a failed init threw');
+});
+
+test('the layer initialises pixi through the guard, not around it', () => {
+  // `application.init` awaited directly leaves the release with nothing valid
+  // to destroy for the entire time it is in flight, which is the window an
+  // unmount is most likely to land in.
+  const layer = strip(read('src/renderer/src/scene/study/AmbianceLayer.tsx'));
+  assert.match(layer, /initialize\(\s*\(\)\s*=>\s*application\.init\(/,
+    'init is awaited outside the guard that defers destruction until it settles');
+});

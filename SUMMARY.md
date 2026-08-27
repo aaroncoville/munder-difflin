@@ -324,6 +324,97 @@ into a hundred phantom failures. A bare `node --test` in a worktree that has
 lost its link reports whole files as failures with `Cannot find module
 'typescript'` — which looks nothing like a missing symlink.
 
+## Rework round, second pass
+
+One review finding, one commit — the tip of this branch:
+
+    fix(study): an unmount mid-init destroyed an uninitialised Application
+
+### 5 — The handle published before `init` could not honour a release
+
+Handing the caller its handle before the first await (fix 4 above) closed the
+leak and opened a smaller hole underneath it, because it assumed a constructed
+`Application` can be destroyed. It cannot. In pixi v8 the constructor assigns
+only `stage`; `init` is what assigns `this.renderer`; and `destroy` ends with
+an unconditional `this.renderer.destroy(rendererDestroyOptions)`. Between the
+constructor and `init` resolving there is no renderer, so the public `destroy`
+throws a `TypeError` rather than freeing anything. (`node_modules/pixi.js/lib/
+app/Application.mjs` — checked against the version installed here, not from
+memory.)
+
+Two paths went through that gap:
+
+- **An unmount while `autoDetectRenderer` was still pending.** React's cleanup
+  calls `release`, `release` called `destroy`, and the `TypeError` came out of
+  the cleanup — where a decoration failing takes the unmount with it. This is
+  the ordinary case, not an exotic one: the whole point of the handle being
+  published early is that it is reachable during `init`.
+- **`init` rejecting.** The build's failure path called `release`, which threw
+  on the way out and replaced the WebGL failure with a `TypeError` about
+  reading `destroy` of `undefined` — the one message that says nothing about
+  what went wrong.
+
+`release` is now a *request*. `buildOrDestroy` tracks whether the value can
+currently survive its own `destroy`, and the build declares the step that makes
+it briefly unable to by running it through `held.initialize(...)`:
+
+- a release arriving during `initialize` is remembered, not performed, and is
+  honoured the moment `init` resolves — before anything is attached or started,
+  and exactly once;
+- `initialize` then returns `false`, which is how the build knows to stop
+  rather than parent an orphan into a detached node;
+- an `initialize` that rejects leaves the value undestroyable for good and lets
+  the rejection travel unchanged. There is no public call that takes down a
+  half-initialised `Application`, so the only thing a second `destroy` could
+  add is a second error covering the first.
+
+Outside a declared `initialize` window the default is still "destroyable", so a
+build that fails anywhere else destroys what it built exactly as before —
+silently declining to destroy is the leak this function exists to close, and it
+is the failure mode worth defaulting against. There is no await between the
+handle being published and the build entering `initialize`, so the Application
+is never actually reachable during the instant before that window opens.
+
+### Break-it-to-prove-it
+
+| Change | Test that went red |
+|---|---|
+| `release` destroys regardless of readiness (the reported bug) | `an unmount during init waits for pixi before destroying it`, `an init that rejects reports its own failure, not a destroy on nothing` |
+| A rejected `initialize` marks the value destroyable anyway | `an init that rejects reports its own failure, not a destroy on nothing` |
+| `initialize` forgets a release that arrived while it was in flight | `an unmount during init waits for pixi before destroying it` |
+| The layer awaits `application.init` outside the guard again | `the layer initialises pixi through the guard, not around it` |
+
+The forcing test uses a fake whose `destroy` throws until `init` has set its
+readiness flag, which is the one property of the real `Application` that
+matters here. A fake that tolerates being destroyed early cannot fail on this
+bug, which is why the previous round's tests were green over it.
+
+### Verification
+
+```
+node --test test/*.test.cjs        # exit 1, from the pre-existing failures below
+# 0cb6b642 (the ref this fix started from): 1030 of 1067
+# this tip:                                 1033 of 1070
+# 35 failures + 1 cancelled + 1 skip on both; failure set diffed line by line
+# and identical. All three new passes are the three new tests.
+
+npm run typecheck                  # node + web, 0 errors
+```
+
+The 35 remain the memory and hindsight backend suites, which need a server this
+environment does not have running. Both refs were measured in the same shell,
+minutes apart, each with the `node_modules` symlink re-created immediately
+beforehand and `NODE_PATH` set, for the reason recorded at the end of the
+previous round.
+
+Not verified here: the fix in the running app. Confirming that an occult-theme
+room unmounted mid-`init` no longer throws from React's cleanup needs a display
+and a real WebGL context, neither of which exists in this environment. The
+reproduction is: open a Study room under the occult theme and resize or switch
+theme within the first frames of the canvas appearing — before, that logged a
+`TypeError` from the cleanup; after, it should log nothing and leave no canvas
+behind.
+
 ## Parked questions
 
 1. **A `completedAt` on the task ledger.** The shelf's age window can only be

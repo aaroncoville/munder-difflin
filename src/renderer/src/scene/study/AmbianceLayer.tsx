@@ -108,9 +108,25 @@ interface Destroyable {
  * cleanup can both reach the same resource, in either order — an unmount that
  * lands between `init` rejecting and the catch running is exactly that race —
  * and destroying a pixi Application twice is an error of its own.
+ *
+ * `release` is also a *request*. A half-constructed resource is not always able
+ * to survive its own `destroy`, and asking it to anyway throws from wherever
+ * the request came from — which is React's cleanup. So a request arriving
+ * during `initialize` is held until that step has settled and destruction is
+ * meaningful again.
  */
 export interface Held<T> {
   value: T;
+  /**
+   * Run the one step that leaves `value` unable to be destroyed, and report
+   * whether the caller should carry on building.
+   *
+   * `false` means a release arrived while the step was in flight: it has been
+   * honoured now that it can be, and there is nothing left to build on. A
+   * rejection travels unchanged — the value never reached a state its own
+   * `destroy` handles, so nothing is destroyed and nothing masks the failure.
+   */
+  initialize: (step: () => Promise<void>) => Promise<boolean>;
   release: () => void;
 }
 
@@ -138,16 +154,43 @@ export async function buildOrDestroy<T extends Destroyable>(
   build: (value: T, held: Held<T>) => Promise<void>
 ): Promise<void> {
   const value = construct();
+  // Can `value.destroy` be called at all right now? Assume yes, because a
+  // resource that cannot be destroyed cannot be released either, and silently
+  // declining to destroy is the leak this whole function exists to close. The
+  // build declares its own exception by running the step through `initialize`
+  // — for a pixi Application that is `init`, because `Application.destroy`
+  // reaches through `this.renderer`, and `this.renderer` is assigned by `init`
+  // and by nothing else. There is no await between `hold` below and the build
+  // entering `initialize`, so the Application is never actually reachable
+  // during the moment before that window opens.
+  let destroyable = true;
+  let requested = false;
   let released = false;
+  const destroy = (): void => {
+    if (released || !destroyable) return;
+    released = true;
+    // `true` removes the canvas from the DOM with it; the options object
+    // takes the display objects and their textures down too. Leaving either
+    // behind leaks a WebGL context per room, and a house has ten rooms.
+    value.destroy(true, { children: true, texture: true });
+  };
   const held: Held<T> = {
     value,
+    initialize: async (step) => {
+      destroyable = false;
+      // A rejection leaves `destroyable` false for good, deliberately: there is
+      // no public call that takes down a half-initialised Application, so the
+      // only thing another `destroy` would add is a second error on top of the
+      // first one.
+      await step();
+      destroyable = true;
+      if (!requested) return true;
+      destroy();
+      return false;
+    },
     release: () => {
-      if (released) return;
-      released = true;
-      // `true` removes the canvas from the DOM with it; the options object
-      // takes the display objects and their textures down too. Leaving either
-      // behind leaks a WebGL context per room, and a house has ten rooms.
-      value.destroy(true, { children: true, texture: true });
+      requested = true;
+      destroy();
     }
   };
   hold(held);
@@ -190,17 +233,21 @@ export function AmbianceLayer({ room, view }: AmbianceLayerProps): JSX.Element |
         () => new PIXI.Application(),
         (h) => { held = h; },
         async (application, owned) => {
-          await application.init({
+          // `init` is the step after which an Application can be destroyed and
+          // before which it cannot, so it is the step the guard runs. An
+          // unmount landing in here is held until the line below.
+          const wanted = await owned.initialize(() => application.init({
             width: Math.round(view.w),
             height: Math.round(view.h),
             backgroundAlpha: 0,
             antialias: true,
             autoDensity: true,
             resolution: window.devicePixelRatio || 1
-          });
-          // Unmounted while pixi was initialising: destroy what we just built
-          // rather than parenting an orphan into a detached node.
-          if (!alive) { owned.release(); return; }
+          }));
+          // Unmounted while pixi was initialising: it has just been destroyed,
+          // now that destroying it is possible, and there is nothing to parent
+          // into a detached node.
+          if (!wanted) return;
 
           // Input belongs to the DOM. 'none' is pixi's own opt-out, on top of the
           // host's `pointer-events: none` — the canvas must be invisible to the
