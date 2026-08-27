@@ -507,46 +507,17 @@ test('an empty house is still a house', async () => {
     studyRoom.rooms.length, 'an empty house has all its rooms');
 });
 
-test('a portrait dropped into the pack lands on the cards', async () => {
-  // The pack ships empty, so nothing about an empty house can tell whether the
-  // scene consults the portrait mapping at all — and a mapping nobody calls
-  // fails silently on the day the art arrives. This drops a real file into the
-  // real directory, regenerates the real index, and looks at the cards.
-  const { execFileSync } = require('node:child_process');
-  const packDir = path.join(ASSETS, 'portraits');
-  const dropped = path.join(packDir, 'test-portrait.png');
-  const regenerate = () => execFileSync(process.execPath, ['make-portrait-index.cjs'], { cwd: packDir });
-  const reload = () => {
-    loadTs.fresh('src/renderer/src/scene/study/portraits.index.ts');
-    loadTs.fresh('src/renderer/src/scene/study/portraits.ts');
-    return loadTs.fresh(SCENE);
-  };
-  try {
-    fs.copyFileSync(path.join(ASSETS, 'room-desk-a.png'), dropped);
-    regenerate();
-    const { StudyScene: Reloaded } = reload();
-
-    global.window = {
-      localStorage: { getItem: () => 'occult', setItem: () => {}, removeItem: () => {} },
-      cth: { hiveTasks: async () => ({ tasks: [] }) }
-    };
-    global.document = { documentElement: { dataset: {} } };
-    useStore.setState({ agents: [], archivedAgents: [], restorableAgents: [] });
-    useStore.getState().addAgent(person('w-1'));
-    const view = mount(Reloaded, {});
-    scenes.push(view);
-    await settle();
-    view.render();
-
-    const card = one(view.tree, (n) => n.type === AgentCard);
-    assert.ok(card, 'a card is in the house');
-    assert.match(String(card.props.portraitSrc), /test-portrait\.png$/,
-      'the card wears the portrait that was just added to the pack');
-  } finally {
-    fs.rmSync(dropped, { force: true });
-    regenerate();
-    reload(); // leave the shipped (empty) pack loaded for anything after this
-  }
+test('the cards wear the shipped pack', async () => {
+  // A mapping nobody calls fails silently, and an empty house cannot tell the
+  // difference — so this looks at a real card and checks the face on it came
+  // out of the pack the app actually bundles.
+  const { PORTRAIT_FILES } = loadTs('src/renderer/src/scene/study/portraits.ts');
+  assert.ok(PORTRAIT_FILES.length > 0, 'the shipped pack is empty');
+  const { view } = await inhabit({ agents: [person('w-1')] });
+  const card = one(view.tree, (n) => n.type === AgentCard);
+  assert.ok(card, 'a card is in the house');
+  assert.ok(PORTRAIT_FILES.includes(card.props.portraitSrc),
+    'the scene does not put the pack on the cards');
 });
 
 test('the only unexpandable wrapper is the one that owns a canvas', () => {

@@ -51,12 +51,70 @@ dress this app in the idiom of the Secret Histories at all.
    - artwork generated for this project.
 
    Every file's provenance is recorded in the table below as it lands. A
-   portrait with no row here has not been cleared. The pack ships empty, and an
-   empty pack is a supported state: cards fall back to a monogram.
+   portrait with no row here has not been cleared, and a test holds the table
+   against the directory in both directions — so a portrait cannot ship without
+   a row, and a row cannot outlive the file it clears. An empty pack remains a
+   supported state: cards fall back to a monogram.
+
+   The 48 portraits below are the **people** cards of the community asset
+   pack. The pack also contains aspect, faction and element cards (`cult*`,
+   `way*`, `edge`, `forge`, `grail`, `heart`, `knock`, `lantern`, `moth`,
+   `winter` and the rest). Those are deliberately NOT here: they are
+   iconography rather than portraits, and an assistant wearing the Moth aspect
+   card is not a picture of anybody. The included set is exactly the checked-in
+   spawn name pool, so a worker summoned with a name from it always finds the
+   face that name belongs to.
 
    | Portrait file | Provenance |
    |---|---|
-   | _(none yet)_ | — |
+   | `aladim.png` | Sixth History community asset pack |
+   | `arunpeel.png` | Sixth History community asset pack |
+   | `auclair.png` | Sixth History community asset pack |
+   | `bechet.png` | Sixth History community asset pack |
+   | `chaima.png` | Sixth History community asset pack |
+   | `christopher.png` | Sixth History community asset pack |
+   | `clifton.png` | Sixth History community asset pack |
+   | `clovette.png` | Sixth History community asset pack |
+   | `connielee.png` | Sixth History community asset pack |
+   | `dominykas.png` | Sixth History community asset pack |
+   | `dorothy.png` | Sixth History community asset pack |
+   | `elridge.png` | Sixth History community asset pack |
+   | `enid.png` | Sixth History community asset pack |
+   | `fascination.png` | Sixth History community asset pack — reserved as the orchestrator's portrait |
+   | `gorgiou.png` | Sixth History community asset pack |
+   | `gristwood.png` | Sixth History community asset pack |
+   | `jannings.png` | Sixth History community asset pack |
+   | `jc.png` | Sixth History community asset pack |
+   | `laidlaw.png` | Sixth History community asset pack |
+   | `leo.png` | Sixth History community asset pack |
+   | `marinette.png` | Sixth History community asset pack |
+   | `medea.png` | Sixth History community asset pack |
+   | `medusa.png` | Sixth History community asset pack |
+   | `mireya.png` | Sixth History community asset pack |
+   | `morgan.png` | Sixth History community asset pack |
+   | `naenia.png` | Sixth History community asset pack |
+   | `neville.png` | Sixth History community asset pack |
+   | `orsolina.png` | Sixth History community asset pack |
+   | `poppy.png` | Sixth History community asset pack |
+   | `porter.png` | Sixth History community asset pack |
+   | `renira.png` | Sixth History community asset pack |
+   | `rose.png` | Sixth History community asset pack |
+   | `saliba.png` | Sixth History community asset pack |
+   | `slee.png` | Sixth History community asset pack |
+   | `spencerhobson.png` | Sixth History community asset pack |
+   | `sulochana.png` | Sixth History community asset pack |
+   | `sylvia.png` | Sixth History community asset pack |
+   | `teresa.png` | Sixth History community asset pack |
+   | `tristran.png` | Sixth History community asset pack |
+   | `tryphon.png` | Sixth History community asset pack |
+   | `valciane.png` | Sixth History community asset pack |
+   | `vasil.png` | Sixth History community asset pack |
+   | `victor.png` | Sixth History community asset pack |
+   | `violet.png` | Sixth History community asset pack |
+   | `wakefield.png` | Sixth History community asset pack |
+   | `welland.png` | Sixth History community asset pack |
+   | `ysabet.png` | Sixth History community asset pack |
+   | `zulfiya.png` | Sixth History community asset pack |
 
 7. **Comply with local law.** Noted.
 
