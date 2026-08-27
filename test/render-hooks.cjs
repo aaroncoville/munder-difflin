@@ -44,6 +44,13 @@ seed('react', {
   useSyncExternalStore: (_subscribe, getSnapshot) => getSnapshot()
 });
 
+// A portal is a placement, not a transformation: it renders its children
+// somewhere else in the document. There is no document here, so the children
+// ARE the answer — and seeding this is what lets a component that portals (a
+// popover, a tooltip) be required at all, since the real react-dom reads
+// react's internals and this host has none.
+seed('react-dom', { createPortal: (children) => children });
+
 const jsx = (type, props, key) => ({ type, props: props ?? {}, key: key ?? null });
 seed('react/jsx-runtime', { jsx, jsxs: jsx, Fragment: Symbol.for('react.fragment') });
 

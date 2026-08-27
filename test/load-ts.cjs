@@ -101,6 +101,18 @@ loadTs.fresh = function loadTsFresh(relativePath) {
 };
 
 /**
+ * Forget every module loaded so far, so the next load re-evaluates from source.
+ *
+ * `fresh` is not enough on its own for a module that reads its state ONCE, as
+ * it is evaluated — the app theme is read out of localStorage at that moment —
+ * because the component under test reaches it through its own cached import.
+ * Clearing the whole graph is what lets one case run under a second theme.
+ */
+loadTs.reset = function loadTsReset() {
+  cache.clear();
+};
+
+/**
  * Stand a module in for one the harness cannot load.
  *
  * Not every module under `src/` is loadable outside a bundler: the office floor
