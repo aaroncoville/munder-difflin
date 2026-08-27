@@ -100,4 +100,20 @@ loadTs.fresh = function loadTsFresh(relativePath) {
   return loadFile(filename);
 };
 
+/**
+ * Stand a module in for one the harness cannot load.
+ *
+ * Not every module under `src/` is loadable outside a bundler: the office floor
+ * pulls in Pixi and a handful of Vite `?url` asset imports, and requiring it
+ * here fails before a single assertion runs. Seeding the cache lets a test load
+ * the REAL module that imports it — which is the thing under test — while the
+ * unloadable dependency is a component the test can recognise in the tree.
+ *
+ * `loadTs.fresh(relativePath)` puts the real module back.
+ */
+loadTs.stub = function loadTsStub(relativePath, exports) {
+  cache.set(path.resolve(__dirname, '..', relativePath), { exports });
+  return exports;
+};
+
 module.exports = loadTs;
