@@ -14,11 +14,15 @@
  * The orchestrator's own face is not on the wall: it is reserved, and the
  * orchestrator is not somebody you summon.
  */
-import { PORTRAIT_FILES, PORTRAIT_NAMES, GOD_PORTRAIT } from '@/scene/study/portraits';
+import {
+  GOD_PORTRAIT, PORTRAIT_FILES, PORTRAIT_NAMES, portraitLabel
+} from '@/scene/study/portraits';
 
 export interface PortraitPickerProps {
-  /** The portrait's name, or undefined when nothing has been chosen yet. */
+  /** The portrait's name, lower-cased, or undefined when nothing has been
+   *  chosen yet — the pack's own spelling, not the one on the tile. */
   selected: string | undefined;
+  /** Handed the name as it should be written into the roster. */
   onPick: (name: string) => void;
 }
 
@@ -48,8 +52,8 @@ export function PortraitPicker({ selected, onPick }: PortraitPickerProps): JSX.E
             key={p.name}
             data-portrait={p.name}
             aria-pressed={chosen}
-            title={p.name}
-            onClick={() => onPick(p.name)}
+            title={portraitLabel(p.name)}
+            onClick={() => onPick(portraitLabel(p.name))}
             style={{
               padding: 3,
               background: chosen ? 'var(--cth-cream-200)' : 'var(--cth-cream-100)',
@@ -81,7 +85,7 @@ export function PortraitPicker({ selected, onPick }: PortraitPickerProps): JSX.E
                 maxWidth: '100%'
               }}
             >
-              {p.name}
+              {portraitLabel(p.name)}
             </span>
           </button>
         );

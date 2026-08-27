@@ -63,7 +63,10 @@ test('choosing a face hands back the name it belongs to', () => {
   const inst = mount(PortraitPicker, { selected: undefined, onPick: (n) => picked.push(n) });
   const wall = tiles(inst.tree);
   wall[3].props.onClick();
-  assert.deepEqual(picked, [wall[3].props['data-portrait']]);
+  // The name, not a file or an index into the wall — how it is capitalised is
+  // the next test's business.
+  assert.equal(picked.length, 1);
+  assert.equal(picked[0].toLowerCase(), wall[3].props['data-portrait']);
 });
 
 test('the chosen face is the one that looks chosen', () => {
@@ -91,4 +94,43 @@ test('the accent colour default is left exactly where it was', () => {
   const src = strip(read('src/renderer/src/components/AddAgentModal.tsx'));
   assert.match(src, /ACCENTS\.includes\(a as AccentColorName\) \? \(a as AccentColorName\) : 'sky'/,
     'the default accent moved');
+});
+
+test('a face is offered, and hands back, the name written the way a name is', () => {
+  // The pack's files are lower case because files are, and the picker was
+  // handing that straight to the roster — so an assistant summoned from the
+  // wall was called `leo` while every one summoned from the pixel cast was
+  // called Jim. The file name is a file name; what goes in the roster is a
+  // person's name.
+  const inst = mount(PortraitPicker, { selected: undefined, onPick: () => {} });
+  const wall = tiles(inst.tree);
+  for (const tile of wall.slice(0, 6)) {
+    const shown = all(tile, (n) => typeof n.props?.children === 'string')
+      .map((n) => n.props.children).join('');
+    const file = tile.props['data-portrait'];
+    assert.equal(shown, file[0].toUpperCase() + file.slice(1),
+      `the wall offers ${file} under the name ${shown}`);
+  }
+
+  const picked = [];
+  const chooser = mount(PortraitPicker, { selected: undefined, onPick: (n) => picked.push(n) });
+  const tile = tiles(chooser.tree)[3];
+  const file = tile.props['data-portrait'];
+  tile.props.onClick();
+  assert.deepEqual(picked, [file[0].toUpperCase() + file.slice(1)]);
+});
+
+test('a capitalised name wears the face, and so does the lower-case one it replaces', () => {
+  // The capital is a display decision, so it must not be a matching one: the
+  // workers already on the floor were summoned before it and are named in
+  // lower case. Both spellings have to land on the same painting.
+  const { portraitFor } = loadTs('src/renderer/src/scene/study/portraits.ts');
+  const name = PORTRAIT_NAMES.find((n) => n !== GOD_PORTRAIT);
+  const capital = name[0].toUpperCase() + name.slice(1);
+  const face = portraitFor({ id: 'w-1', name: capital });
+  assert.ok(face, `${capital} wears no face at all`);
+  assert.equal(face, portraitFor({ id: 'w-2', name }),
+    'the same face, whichever way the name is written');
+  assert.equal(face, portraitFor({ id: 'w-3', name: `  ${capital.toUpperCase()} ` }),
+    'and however it is spaced or shouted');
 });

@@ -89,6 +89,22 @@ export function portraitNamed(
   return i === -1 ? undefined : files[i];
 }
 
+/**
+ * A portrait's name, written the way a person's name is written.
+ *
+ * The pack is named in lower case because its files are, and a file name is
+ * not a name: an assistant summoned from the wall of faces goes into the same
+ * roster as one summoned from the pixel cast, where the names are Jim and
+ * Michael. Only the first letter, because every face in the pack is one word.
+ *
+ * Display only. `portraitNamed` lower-cases what it is given before it looks,
+ * so capitalising here cannot cost an assistant its face — including the ones
+ * already on the floor, summoned in lower case before this existed.
+ */
+export function portraitLabel(name: string): string {
+  return name ? name[0].toUpperCase() + name.slice(1) : name;
+}
+
 /** The portrait for one assistant, from the shipped pack. */
 export function portraitFor(
   agent: { id: string; name: string; role?: string; isGod?: boolean }
