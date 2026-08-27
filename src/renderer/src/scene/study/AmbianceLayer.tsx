@@ -73,6 +73,27 @@ function usePageVisible(): boolean {
   return visible;
 }
 
+/**
+ * Start the pixi build-out, and let it fail.
+ *
+ * Two awaits in there can reject and neither is under this app's control: the
+ * dynamic `import()` (a chunk missing from a patched install, a renderer
+ * offline) and `Application.init` (a machine with no working WebGL context).
+ * Ambiance is decoration over a room that is already correct without it, so
+ * the only sensible outcome is a room with no ambiance — the failure is
+ * visible as the candles not lighting.
+ *
+ * What must NOT happen is the rejection escaping: unhandled, it reaches the
+ * window as an error report nobody can act on, and a host configured to treat
+ * unhandled rejections as fatal takes the whole renderer down over a
+ * decoration. Hence a catch that deliberately says nothing.
+ */
+export function startAmbiance(build: () => Promise<void>): void {
+  void build().catch(() => {
+    /* No ambiance. The room, the cards and the commissions are unaffected. */
+  });
+}
+
 export interface AmbianceLayerProps {
   room: Room;
   /** Where the room's panel image actually landed, in px. The canvas matches it
@@ -99,7 +120,7 @@ export function AmbianceLayer({ room, view }: AmbianceLayerProps): JSX.Element |
       stage: { addChild: (c: unknown) => void; eventMode?: string };
       ticker: { add: (f: (t: { deltaMS: number }) => void) => void } } | null = null;
 
-    void (async () => {
+    startAmbiance(async () => {
       const PIXI = await import('pixi.js');
       if (!alive) return;
       const application = new PIXI.Application();
@@ -161,7 +182,7 @@ export function AmbianceLayer({ room, view }: AmbianceLayerProps): JSX.Element |
       });
 
       app = application as unknown as typeof app;
-    })();
+    });
 
     return () => {
       alive = false;

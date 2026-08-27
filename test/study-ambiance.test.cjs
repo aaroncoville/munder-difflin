@@ -85,3 +85,37 @@ test('pixi is loaded lazily, so the office floor never pays for it', () => {
     'pixi is imported at module scope — every theme now bundles it eagerly');
   assert.match(layer, /import\(\s*'pixi\.js'\s*\)/, 'pixi is never actually loaded');
 });
+
+test('pixi failing to load costs the room its ambiance and nothing else', async () => {
+  // The layer loads pixi with a dynamic import and initialises WebGL, and both
+  // can reject — a missing chunk on a patched install, a machine with no
+  // working GL context. Ambiance is decoration over a room that is already
+  // correct without it, so the only right answer is to have no ambiance. An
+  // unhandled rejection instead reaches the window as an error nobody can act
+  // on, and under a strict handler takes the renderer down with it.
+  const { startAmbiance } = loadTs('src/renderer/src/scene/study/AmbianceLayer.tsx');
+
+  const seen = [];
+  const onUnhandled = (reason) => seen.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    assert.doesNotThrow(() => startAmbiance(async () => {
+      throw new Error('Failed to fetch dynamically imported module: pixi.js');
+    }), 'the failure escaped synchronously');
+    // Two turns: one for the rejection to settle, one for node to decide it
+    // was nobody's business.
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(seen, [], 'the pixi failure surfaced as an unhandled rejection');
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+});
+
+test('the layer starts pixi through the handler, not around it', () => {
+  // A catch that the effect does not go through is a catch on nothing.
+  const layer = strip(read('src/renderer/src/scene/study/AmbianceLayer.tsx'));
+  assert.match(layer, /startAmbiance\(/, 'the effect does not start pixi through the handler');
+  assert.doesNotMatch(layer, /void\s*\(async/,
+    'a bare fire-and-forget async body is back, with no rejection handler on it');
+});
