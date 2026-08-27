@@ -17,6 +17,15 @@
  * Deliberately NOT a React reimplementation: no reconciler, no batching, no
  * concurrent anything. `render()` is synchronous and re-runs the component with
  * the current hook slots — call it after an interaction to see the next frame.
+ *
+ * One thing React does that this host cannot: attach refs. React writes every
+ * `ref` in the tree BEFORE it runs the effects, so a component whose effect
+ * begins `const node = ref.current; if (!node) return;` is doing real work by
+ * the time its effect runs. Here `ref.current` is still null and that effect
+ * does nothing — so such a component would silently test as a component that
+ * renders and then sits there. `runEffects()` is the way out: take the ref off
+ * the rendered tree, hand it a stand-in node, `render()` again and run the
+ * effects against it.
  */
 
 let HOST = null;
@@ -100,11 +109,12 @@ function mount(Component, props) {
     try { tree = Component(props); } finally { HOST = null; }
     return tree;
   };
-  render();
   // Mount effects run once, after the first render — deps are ignored because
   // nothing here re-renders on its own.
-  const cleanups = effects.map((fn) => fn());
-  return { render, get tree() { return tree; }, cleanups };
+  const runEffects = () => effects.map((fn) => fn());
+  render();
+  const cleanups = runEffects();
+  return { render, runEffects, get tree() { return tree; }, cleanups };
 }
 
 /** Every element in the tree, each paired with the nearest ancestor that
