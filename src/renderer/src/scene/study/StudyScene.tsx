@@ -282,7 +282,9 @@ function DeskPlace({ agent, desk, onSelect }: {
         name={agent.name}
         role={agent.role}
         status={agent.status}
-        portraitSrc={portraitFor({ id: agent.id, name: agent.name, role: agent.role })}
+        portraitSrc={portraitFor({
+          id: agent.id, name: agent.name, role: agent.role, isGod: agent.isGod
+        })}
         box={card}
         onClick={onSelect}
       />

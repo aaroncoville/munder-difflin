@@ -24,6 +24,8 @@ export interface SceneAgent {
   name: string;
   role?: string;
   status: CardStatus;
+  /** The orchestrator, who sits at his own berth and wears his own portrait. */
+  isGod?: boolean;
   berthId: string;
   /**
    * How many assistants were already seated at that berth — 0 for the first.
@@ -205,6 +207,7 @@ export function projectScene(
       name: a.name,
       role: a.description || undefined,
       status: cardStatusOf(a),
+      isGod: a.isGod,
       berthId,
       stackIndex,
       speech: speechFor(a),

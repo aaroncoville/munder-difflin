@@ -520,6 +520,31 @@ test('the cards wear the shipped pack', async () => {
     'the scene does not put the pack on the cards');
 });
 
+test('an assistant named for a portrait wears that portrait', async () => {
+  // Membership alone would pass on a scene that ignored the name and hashed
+  // the id, so this pins the exact file the name rule owes.
+  const { portraitNamed } = loadTs('src/renderer/src/scene/study/portraits.ts');
+  const want = portraitNamed('leo');
+  assert.ok(want, 'the shipped pack has no leo to test against');
+  const { view } = await inhabit({ agents: [person('w-1', { name: 'leo' })] });
+  const card = one(view.tree, (n) => n.type === AgentCard);
+  assert.equal(card.props.portraitSrc, want, 'the card was dealt a face instead');
+});
+
+test('the orchestrator wears the face reserved for it', async () => {
+  // portraitFor reserves one portrait for the god, but it can only apply that
+  // rule if the scene tells it which card is the god's. Nothing else in the
+  // projection distinguishes that card, so a projection that drops the flag
+  // leaves the orchestrator dealt a worker's face and nothing complains.
+  const { portraitNamed, GOD_PORTRAIT } = loadTs('src/renderer/src/scene/study/portraits.ts');
+  const { view } = await inhabit({ agents: [person('god-1', { isGod: true }), person('w-1')] });
+  const cards = all(view.tree, (n) => n.type === AgentCard);
+  const god = cards.find((c) => c.props.name === 'GOD-1');
+  assert.ok(god, 'the god has a card');
+  assert.equal(god.props.portraitSrc, portraitNamed(GOD_PORTRAIT),
+    'the orchestrator was dealt a face instead of wearing its own');
+});
+
 test('the only unexpandable wrapper is the one that owns a canvas', () => {
   // AmbianceLayer takes useRef/useState/useEffect because it owns a pixi
   // application and a ticker; it is mounted and asserted properly in
