@@ -138,7 +138,7 @@ test('occult swaps the display face but keeps the CJK/Arabic fallback tail', () 
   assert.match(occult, /--cth-font-display:\s*"Cormorant SC",[^;]*"Noto Naskh Arabic"/);
   assert.match(occult, /--cth-text-display-lg:\s*22px/);
   assert.match(occult, /--cth-text-display-md:\s*16px/);
-  assert.match(occult, /--cth-text-display-sm:\s*11px/);
+  assert.match(occult, /--cth-text-display-sm:\s*12px/);
   assert.match(occult, /--cth-lh-display-lg:\s*26px/);
   assert.match(occult, /--cth-lh-display-sm:\s*15px/);
 });
