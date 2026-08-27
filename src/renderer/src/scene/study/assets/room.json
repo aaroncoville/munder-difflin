@@ -81,8 +81,10 @@
           "berth": { "id": "parlour-door", "x": 0.045, "y": 0.120, "w": 0.095, "h": 0.620 }
         }
       ],
+      "_lights": "Three chandeliers on the far wall, and the fire at the foot of the door. `kind` says which light burns as which: the hearth is a prop in this room rather than a room of its own, so nothing about the parlour itself says which of its four lights is the fire.",
       "lightPoints": [
-        { "x": 0.345, "y": 0.155 }, { "x": 0.505, "y": 0.075 }, { "x": 0.665, "y": 0.155 }
+        { "x": 0.345, "y": 0.155 }, { "x": 0.505, "y": 0.075 }, { "x": 0.665, "y": 0.155 },
+        { "x": 0.093, "y": 0.700, "kind": "hearth" }
       ]
     }
   ]

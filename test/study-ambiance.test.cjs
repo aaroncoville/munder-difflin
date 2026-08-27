@@ -13,6 +13,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+// Seeds `react` in the require cache, so it has to come before any component
+// module is loaded — including the one this file loads for its pure exports.
+const { mount } = require('./render-hooks.cjs');
 
 const read = (p) => fs.readFileSync(path.resolve(__dirname, '..', p), 'utf8');
 const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
@@ -317,4 +320,160 @@ test('the hearth is drawn as a glow, and driven by its own curve', () => {
   // An ember core under the halo: the hearth is the one light in the room with
   // a source you can see, and a flat wash over it loses that.
   assert.match(layer, /EMBER/, 'the hearth has no ember tint');
+});
+
+/**
+ * Mount the real layer over a real room, with a pixi that only writes things
+ * down.
+ *
+ * The arithmetic above is checked without pixi anywhere near the process, and
+ * that is most of what ambiance is — but a pure-function test cannot see which
+ * light the layer decides is which, and a source grep goes green on a call
+ * that is present and wired to the wrong thing. So this drives the actual
+ * component: a stand-in `pixi.js` records every circle drawn, where it was
+ * put, what colour it was filled and how bright it is on a given frame.
+ */
+function recordingPixi() {
+  const record = { graphics: [], ticks: [], destroyed: 0 };
+
+  class Graphics {
+    constructor() {
+      this.fills = [];
+      this.positioned = false;
+      this.at = { x: 0, y: 0 };
+      this.alpha = 1;
+      this.blendMode = null;
+      this.factor = 1;
+      this.pending = 0;
+      this.position = { set: (x, y) => { this.positioned = true; this.at = { x, y }; } };
+      this.scale = { set: (s) => { this.factor = s; } };
+      record.graphics.push(this);
+    }
+    circle(_x, _y, r) { this.pending = r; return this; }
+    fill(style) { this.fills.push({ r: this.pending, ...style }); return this; }
+    clear() { this.fills = []; return this; }
+  }
+
+  class Application {
+    constructor() {
+      const children = [];
+      this.stage = { eventMode: null, children, addChild: (c) => children.push(c) };
+      this.canvas = { style: {} };
+      this.ticker = { add: (fn) => record.ticks.push(fn) };
+    }
+    async init(options) { this.options = options; }
+    destroy() { record.destroyed++; }
+  }
+
+  return { record, module: { __esModule: true, Application, Graphics } };
+}
+
+/** Draw one room through the real layer and hand back what pixi was told. */
+async function paint(room, view) {
+  const { record, module } = recordingPixi();
+  const pixi = require.resolve('pixi.js');
+  const had = require.cache[pixi];
+  require.cache[pixi] = { id: pixi, filename: pixi, loaded: true, exports: module };
+  // `devicePixelRatio` is read straight off `window` while pixi initialises.
+  const hadWindow = 'window' in globalThis;
+  const previousWindow = globalThis.window;
+  globalThis.window = { devicePixelRatio: 1 };
+  try {
+    const { AmbianceLayer } = loadTs('src/renderer/src/scene/study/AmbianceLayer.tsx');
+    const layer = mount(AmbianceLayer, { room, view });
+    // React attaches refs before it runs effects; the host cannot, so the host
+    // element is handed over and the effects asked for again.
+    layer.tree.props.ref.current = { appendChild() {} };
+    layer.render();
+    const cleanups = layer.runEffects();
+    // The dynamic import of pixi and `init` are each a turn of the microtask
+    // queue; a few more than needed costs nothing.
+    for (let i = 0; i < 8; i++) await new Promise((r) => setImmediate(r));
+    return {
+      record,
+      glows: record.graphics.filter((g) => g.positioned),
+      tick: record.ticks[0],
+      stop: () => cleanups.forEach((fn) => fn && fn())
+    };
+  } finally {
+    globalThis.window = previousWindow;
+    if (!hadWindow) delete globalThis.window;
+    if (had) require.cache[pixi] = had;
+    else delete require.cache[pixi];
+  }
+}
+
+test('the house paints exactly one fire, and it is painted on the hearth', async () => {
+  // The hearth used to be a ROOM, and the layer gave the fire treatment to the
+  // first light of the room whose kind was `hearth`. Once the plan could stand
+  // an anchor inside somebody else's room the hearth became a prop, no room
+  // has that kind any more, and the test that a room-kind check is what picks
+  // the fire is the test that no fire is painted at all.
+  const { loadRoomManifest, anchorSeat } = loadTs('src/renderer/src/scene/study/roomManifest.ts');
+  const load = loadRoomManifest();
+  assert.equal(load.ok, true, load.ok ? '' : `room.json does not validate: ${load.error}`);
+  const manifest = load.manifest;
+
+  const view = { w: 520, h: 223 };
+  const fires = [];
+  const candles = [];
+  for (const room of manifest.rooms) {
+    const painted = await paint(room, view);
+    // 1000ms in: far enough from t=0 that the two curves have parted.
+    painted.tick({ deltaMS: 1000 });
+    painted.glows.forEach((g, i) => {
+      const hearth = Math.abs(g.alpha - A.hearthFlicker(1000)) < 1e-9;
+      (hearth ? fires : candles).push({ room, glow: g, index: i });
+    });
+    painted.stop();
+  }
+
+  assert.ok(candles.length > 0, 'no room in the house lit a candle');
+  assert.equal(fires.length, 1,
+    `the house painted ${fires.length} fires — every glow it drew is on the candle curve`);
+
+  const [fire] = fires;
+  // Where the fire is drawn is the whole point: the hearth is wherever the
+  // plan stands it, as a room of its own or as a prop on somebody's wall, and
+  // the light has to follow it there.
+  const seat = anchorSeat(manifest, 'hearth');
+  assert.equal(fire.room.id, seat.room.id,
+    `the fire burns in ${fire.room.id} and the hearth stands in ${seat.room.id}`);
+  const berth = seat.berth;
+  assert.ok(berth, 'the hearth has nowhere to stand');
+  assert.ok(
+    fire.glow.at.x >= berth.x * view.w && fire.glow.at.x <= (berth.x + berth.w) * view.w
+    && fire.glow.at.y >= berth.y * view.h && fire.glow.at.y <= (berth.y + berth.h) * view.h,
+    `the fire is drawn at (${fire.glow.at.x.toFixed(1)}, ${fire.glow.at.y.toFixed(1)}), `
+    + 'outside the hearth it is supposed to be burning in'
+  );
+
+  // A fire is not a big candle, and this is what the ambiance layer does about
+  // it that is visible in the drawing rather than in the curve: it throws
+  // further, and it has a hotter core the candles have no equivalent of.
+  const reach = (g) => Math.max(...g.fills.map((f) => f.r));
+  const candleReach = Math.max(...candles.map((c) => reach(c.glow)));
+  assert.ok(reach(fire.glow) > candleReach,
+    'the fire throws no further than a candle — it cannot read as lighting a room');
+  const colours = (g) => new Set(g.fills.map((f) => f.color));
+  const candleColours = new Set(candles.flatMap((c) => [...colours(c.glow)]));
+  const fireOnly = [...colours(fire.glow)].filter((c) => !candleColours.has(c));
+  assert.equal(fireOnly.length, 2,
+    'the fire is drawn in the candles\' own colours — no deeper light, no ember under it');
+});
+
+test('a glow knows whether it is a flame or a fire, and the cap still caps', () => {
+  const candle = { x: 0.1, y: 0.2, kind: 'candle' };
+  const fire = { x: 0.3, y: 0.4, kind: 'hearth' };
+  assert.deepEqual(A.glowsFor([candle, fire]), [
+    { x: 0.1, y: 0.2, hearth: false },
+    { x: 0.3, y: 0.4, hearth: true }
+  ]);
+  // Classifying does not buy a light an exemption from the cap: a room that
+  // marks more lights than it can afford still draws only what it can afford,
+  // and a fire marked past the cap is simply not drawn.
+  const many = [...new Array(A.GLOW_CAP).fill(candle), fire];
+  const drawn = A.glowsFor(many);
+  assert.equal(drawn.length, A.GLOW_CAP, 'classifying the lights lost the cap on them');
+  assert.equal(drawn.some((g) => g.hearth), false, 'a light past the cap was drawn anyway');
 });

@@ -19,6 +19,27 @@
  */
 import roomJson from './assets/room.json';
 
+/**
+ * How a light marked in a panel burns.
+ *
+ * A candle unless the plan says otherwise. The distinction used to be carried
+ * by the ROOM — the fire was the first light of the room whose kind was
+ * `hearth` — which only worked while a hearth was a whole room. A prop stands
+ * inside somebody else's panel, so a fire in the corner of a parlour is a
+ * light among that parlour's candles and nothing about the room it is in says
+ * which one it is. The plan has to say.
+ */
+export const LIGHT_KINDS = ['candle', 'hearth'] as const;
+
+export type LightKind = (typeof LIGHT_KINDS)[number];
+
+/** Where the ambiance layer hangs one glow, normalized to its own panel. */
+export interface LightPoint {
+  x: number;
+  y: number;
+  kind: LightKind;
+}
+
 /** A normalized rectangle inside one room's panel: origin plus size, all in 0..1. */
 export interface Berth {
   id: string;
@@ -81,7 +102,7 @@ export interface Room {
   /** Anchors that stand in this room rather than owning one. May be empty. */
   props: Prop[];
   /** Where the ambiance layer hangs this room's glows. May be empty. */
-  lightPoints: { x: number; y: number }[];
+  lightPoints: LightPoint[];
 }
 
 export interface RoomManifest {
@@ -133,7 +154,7 @@ function validateBerth(raw: unknown, roomId: string, what: string): Berth {
   return out;
 }
 
-function validateLightPoints(raw: unknown, roomId: string): { x: number; y: number }[] {
+function validateLightPoints(raw: unknown, roomId: string): LightPoint[] {
   const list = raw === undefined ? [] : raw;
   if (!Array.isArray(list)) throw new Error(`room manifest: ${roomId}.lightPoints must be an array`);
   return list.map((p, i) => {
@@ -144,7 +165,17 @@ function validateLightPoints(raw: unknown, roomId: string): { x: number; y: numb
         throw new Error(`room manifest: ${roomId}.lightPoints[${i}].${k} must be normalized to 0..1`);
       }
     }
-    return { x: q.x as number, y: q.y as number };
+    // Unmarked is a candle, because nearly every light in the house is one and
+    // an omitted field should mean the ordinary case. A misspelt one is not:
+    // `"kind": "herath"` would silently become another candle, and the missing
+    // fire is exactly the failure that is invisible until somebody looks at
+    // the running room.
+    const kind = q.kind === undefined ? 'candle' : (q.kind as LightKind);
+    if (!LIGHT_KINDS.includes(kind)) {
+      throw new Error(
+        `room manifest: ${roomId}.lightPoints[${i}].kind is unknown: ${JSON.stringify(q.kind)}`);
+    }
+    return { x: q.x as number, y: q.y as number, kind };
   });
 }
 

@@ -20,6 +20,7 @@
  *    field; the caps are what keeps "a lot of rooms" from meaning "a lot of
  *    particles per room times a lot of rooms".
  */
+import type { LightPoint } from './roomManifest';
 
 /** Dust motes per room. */
 export const MOTE_CAP = 24;
@@ -179,6 +180,28 @@ export function glowRings(radius: number, steps = 8): { r: number; alpha: number
 /** The lights a room actually draws, capped. */
 export function lightsFor<T>(points: readonly T[]): T[] {
   return points.slice(0, GLOW_CAP);
+}
+
+/** One glow the layer will draw: where it hangs in the panel, and how it burns. */
+export interface Glow {
+  x: number;
+  y: number;
+  /** A fire rather than a flame: the deeper colour, the wider throw, the ember
+   *  core and the slow curve all hang off this one bit. */
+  hearth: boolean;
+}
+
+/**
+ * The lights a room draws, capped and classified.
+ *
+ * Which light is the fire is a property of the LIGHT, and this is the whole
+ * reason: the hearth is an anchor the floor plan may stand inside somebody
+ * else's room, so the fire can be one glow among a parlour's candles. Asking
+ * the room what kind it is answers a question about the whole panel, and a
+ * panel with a fire in the corner of it has no kind that means "fire".
+ */
+export function glowsFor(points: readonly LightPoint[]): Glow[] {
+  return lightsFor(points).map((p) => ({ x: p.x, y: p.y, hearth: p.kind === 'hearth' }));
 }
 
 /**

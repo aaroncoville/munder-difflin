@@ -34,8 +34,8 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Room } from './roomManifest';
 import {
-  HEARTH_SPREAD, MOTE_CAP, ambianceEnabled, driftMotes, flicker, glowRings, hearthFlicker,
-  lightsFor, seedFor, seedMotes, type Mote
+  HEARTH_SPREAD, MOTE_CAP, ambianceEnabled, driftMotes, flicker, glowRings, glowsFor,
+  hearthFlicker, seedFor, seedMotes, type Mote
 } from './ambiance';
 
 interface ViewBox { x: number; y: number; w: number; h: number }
@@ -259,14 +259,15 @@ export function AmbianceLayer({ room, view }: AmbianceLayerProps): JSX.Element |
           application.canvas.style.pointerEvents = 'none';
           host.appendChild(application.canvas);
 
-          const lights = lightsFor(room.lightPoints ?? []);
-          // The hearth's own fire is the room's first marked light: the painting
-          // puts it in the grate, and it wants the deeper colour and a wider throw.
-          const isHearth = room.kind === 'hearth';
+          // Which light is the fire is carried by the light, not by the room:
+          // the hearth is an anchor the floor plan may stand inside somebody
+          // else's panel, so the fire can be one glow among a parlour's
+          // candles and the room it burns in has no kind that says so.
+          const lights = glowsFor(room.lightPoints ?? []);
 
           const scale = Math.min(view.w / 520, 1.6);
           const glows = lights.map((p, i) => {
-            const hearth = isHearth && i === 0;
+            const hearth = p.hearth;
             const g = new PIXI.Graphics();
             const radius = 18 * scale * (hearth ? HEARTH_SPREAD : 1);
             // Nested rings rather than one filled circle: a single disc has an
@@ -321,7 +322,7 @@ export function AmbianceLayer({ room, view }: AmbianceLayerProps): JSX.Element |
       held?.release();
       held = null;
     };
-  }, [room.id, room.kind, room.lightPoints, run, view.w, view.h]);
+  }, [room.id, room.lightPoints, run, view.w, view.h]);
 
   // Rendering nothing while the layer is off means no canvas, no context, and
   // no ticker — rather than a live canvas told to hold still.

@@ -322,3 +322,52 @@ test('the function rooms are gathered into one, so the reading rooms get the sto
   assert.ok(anchorRooms.length <= 3,
     `${anchorRooms.length} rooms hold nothing but props: ${anchorRooms.map((r) => r.id).join(', ')}`);
 });
+
+test('a light says how it burns, and an unrecognised answer is rejected', () => {
+  // Which light is the fire used to be a property of the ROOM — the first light
+  // of the room whose kind was `hearth`. A hearth that stands as a prop inside
+  // a parlour has no room of its own to be read off, so the light carries it.
+  const { validateRoomManifest } = loadTs(MANIFEST);
+
+  const lit = (points) => {
+    const plan = house();
+    plan.rooms[0].lightPoints = points;
+    return validateRoomManifest(plan).rooms[0].lightPoints;
+  };
+
+  // Unmarked is a candle: almost every light in the house is one, and an
+  // omitted field should mean the ordinary case rather than no case.
+  assert.deepEqual(lit([{ x: 0.2, y: 0.3 }]), [{ x: 0.2, y: 0.3, kind: 'candle' }]);
+  assert.deepEqual(
+    lit([{ x: 0.2, y: 0.3, kind: 'hearth' }, { x: 0.4, y: 0.5, kind: 'candle' }]),
+    [{ x: 0.2, y: 0.3, kind: 'hearth' }, { x: 0.4, y: 0.5, kind: 'candle' }]
+  );
+
+  // A misspelling must NOT fall through to the default. Silently demoting
+  // `herath` to a candle loses the house's only fire, and nothing says so
+  // until somebody looks at the running room.
+  assert.throws(() => lit([{ x: 0.2, y: 0.3, kind: 'herath' }]), /kind is unknown: "herath"/);
+  assert.throws(() => lit([{ x: 0.2, y: 0.3, kind: 'Hearth' }]), /kind is unknown/);
+  assert.throws(() => lit([{ x: 0.2, y: 0.3, kind: null }]), /kind is unknown/);
+});
+
+test('the house marks the hearth light in the panel the hearth stands in', () => {
+  // The plan is what says where the fire is, so this is the plan's half of it:
+  // exactly one marked fire in the house, in the room the hearth anchor stands
+  // in, inside the rectangle it stands on. The ambiance suite drives the layer
+  // and checks the light is actually drawn as one.
+  const { anchorSeat } = loadTs(MANIFEST);
+  const manifest = shippedHouse();
+
+  const fires = manifest.rooms.flatMap(
+    (r) => r.lightPoints.filter((p) => p.kind === 'hearth').map((p) => ({ room: r, point: p })));
+  assert.equal(fires.length, 1, `the house marks ${fires.length} fires`);
+
+  const seat = anchorSeat(manifest, 'hearth');
+  assert.equal(fires[0].room.id, seat.room.id, 'the fire is marked in a room with no hearth in it');
+  const b = seat.berth;
+  assert.ok(b, 'the hearth has nowhere to stand');
+  const { x, y } = fires[0].point;
+  assert.ok(x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h,
+    `the fire is marked at (${x}, ${y}), outside the hearth at (${b.x}, ${b.y}) ${b.w}x${b.h}`);
+});
