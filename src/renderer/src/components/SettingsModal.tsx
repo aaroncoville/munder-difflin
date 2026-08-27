@@ -21,6 +21,7 @@ import { OfficeThemePicker } from './OfficeThemePicker';
 import { McpDefaultsSettings } from './McpDefaultsSettings';
 import { IntegrationsRegistry } from './IntegrationsRegistry';
 import { AiEnginesSettings } from './AiEnginesSettings';
+import { SixthHistoryCredit } from './SixthHistoryCredit';
 import { REALTIME_MODEL } from '@shared/realtimePricing';
 import { RealtimeDevicePicker } from '@/realtime/DevicePicker';
 import { CostHud } from '@/realtime/CostHud';
@@ -2099,6 +2100,9 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                 display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 8,
                 background: 'var(--cth-cream-50)'
               }}>
+                {/* Renders only under the occult theme, whose licence requires
+                    the attribution to be displayed wherever the theme is. */}
+                <SixthHistoryCredit />
                 {saveNote && (
                   <span style={{ fontSize: 12, color: 'var(--cth-mint)' }}>{saveNote}</span>
                 )}

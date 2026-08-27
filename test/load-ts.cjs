@@ -29,6 +29,19 @@ function loadFile(filename) {
     cache.set(filename, json);
     return json.exports;
   }
+  // An asset import is a URL, not a module. Vite hands the component a string
+  // and copies the file; handing the bytes to transpileModule instead produces
+  // garbage that only explodes once the component renders. The path stands in
+  // for the bundler's URL — nothing under test can dereference it anyway.
+  if (/\.(png|jpe?g|gif|svg|webp|avif|woff2?)$/.test(filename)) {
+    // __esModule matters: with esModuleInterop a default import of a module
+    // without it compiles to `__importDefault(mod).default`, which wraps the
+    // whole exports object — the component would then receive `{default: ...}`
+    // where the bundler gives it a string.
+    const asset = { exports: { __esModule: true, default: filename } };
+    cache.set(filename, asset);
+    return asset.exports;
+  }
   const source = fs.readFileSync(filename, 'utf8');
   const output = ts.transpileModule(source, {
     compilerOptions: {
