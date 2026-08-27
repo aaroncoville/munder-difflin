@@ -40,7 +40,7 @@ import { bookSlot, type ArchivedThing } from './shelfBooks';
  */
 export const BOOK_TINT: Record<ArchivedThing['kind'], string> = {
   assistant: 'var(--cth-lilac-light)',
-  thing: 'var(--cth-peach-light)'
+  commission: 'var(--cth-peach-light)'
 };
 
 interface ViewBox { x: number; y: number; w: number; h: number }

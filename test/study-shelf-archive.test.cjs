@@ -191,7 +191,24 @@ test('the darkening is measured against the wall it actually lands on', () => {
   // Both kinds, because they were the two ends of the problem: the accents this
   // started on moved the slot 55% (lilac) and 40% (peach), and the peach one
   // was invisible where the lilac was merely weak.
-  for (const [kind, name] of Object.entries(src.BOOK_TINT)) {
+  //
+  // The kinds come from the archive itself rather than from the tint table's
+  // own keys. Reading the table's keys asks it whether it agrees with itself,
+  // which any table does; what a volume actually gets is `BOOK_TINT[kind]` for
+  // a kind the projection produced, and a table keyed by some other word
+  // answers that with `undefined` — no background at all.
+  const { archiveOf } = loadTs('src/renderer/src/scene/study/useSceneState.ts');
+  const kinds = [...new Set(archiveOf(
+    [{ id: 'a-1', name: 'gone' }],
+    [{ id: 't-1', title: 'done thing', status: 'done', dependsOn: [] }],
+    Date.now()
+  ).map((thing) => thing.kind))];
+  assert.deepEqual(kinds.sort(), ['assistant', 'commission'],
+    'the archive shelves something this test has never seen');
+
+  for (const kind of kinds) {
+    const name = src.BOOK_TINT[kind];
+    assert.ok(name, `a ${kind} volume has no tint, so it paints as no mark at all`);
     const tint = token(name.replace(/^var\(|\)$/g, ''));
     let before = 0;
     let after = 0;
