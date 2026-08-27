@@ -14,9 +14,10 @@
  * theme. Somebody reading the app in Arabic did not ask for it in English, so
  * the register is offered ONLY to a reader already in English.
  *
- * The switch is deliberately not persisted. It is a function of the theme, so
- * it recomputes on the next launch from the theme — which leaves whatever the
- * reader actually chose in Settings as the thing that survives a restart.
+ * The switch is deliberately not persisted. It is a function of the theme and
+ * the chosen language, so it recomputes on the next launch from both — which
+ * leaves whatever the reader actually chose in Settings as the thing that
+ * survives a restart.
  */
 import { useEffect } from 'react';
 import i18n from './index';
@@ -42,11 +43,42 @@ export function voiceFor(theme: string, current: string): string | null {
   return current === THEME_VOICE ? BASE : null;
 }
 
+/** The part of an i18next instance the watcher needs, so the rule can be run
+ *  against a stand-in and the subscription is testable without a bundler. */
+export interface VoiceI18n {
+  language: string;
+  changeLanguage(lng: string): unknown;
+  on(event: 'languageChanged', listener: (lng: string) => void): void;
+  off(event: 'languageChanged', listener: (lng: string) => void): void;
+}
+
+/**
+ * Hold `inst` to the rule for `theme` until the returned function is called.
+ *
+ * Both inputs to `voiceFor` move independently, so both have to be watched.
+ * The theme is the obvious one; the language is not, and reacting to the theme
+ * alone leaves a real gap: pick English in Settings while standing in the
+ * Study and you get plain English, with the house register arriving only
+ * whenever something else happened to re-run the effect.
+ *
+ * Answering `languageChanged` by calling `changeLanguage` does of course emit
+ * `languageChanged` again, and this settles rather than spinning for exactly
+ * one reason: `voiceFor` returns null once the language is already the one it
+ * would ask for. That null is the fixed point of the loop, not a nicety — the
+ * second hop is always the last one.
+ */
+export function watchVoice(theme: string, inst: VoiceI18n): () => void {
+  const apply = (): void => {
+    const next = voiceFor(theme, inst.language);
+    if (next) void inst.changeLanguage(next);
+  };
+  apply();
+  inst.on('languageChanged', apply);
+  return () => inst.off('languageChanged', apply);
+}
+
 /** Keep the app's voice in step with the theme. Called once, from `App`. */
 export function useThemeVoice(): void {
   const theme = useAppTheme();
-  useEffect(() => {
-    const next = voiceFor(theme, i18n.language);
-    if (next) void i18n.changeLanguage(next);
-  }, [theme]);
+  useEffect(() => watchVoice(theme, i18n), [theme]);
 }

@@ -93,6 +93,100 @@ test('the voice follows the theme without ever overwriting a chosen language', (
   assert.equal(voiceFor('light', 'en'), null);
 });
 
+/**
+ * An i18next stand-in: just enough of the instance for the watcher, and it
+ * records every language it was asked to change to so an update loop shows up
+ * as a growing list rather than as a stack overflow.
+ */
+function fakeI18n(language) {
+  const listeners = new Set();
+  return {
+    language,
+    changes: [],
+    changeLanguage(lng) {
+      this.language = lng;
+      this.changes.push(lng);
+      for (const fn of [...listeners]) fn(lng);
+    },
+    on(_event, fn) { listeners.add(fn); },
+    off(_event, fn) { listeners.delete(fn); },
+    listenerCount: () => listeners.size
+  };
+}
+
+test('choosing English inside the house is answered with the house register', () => {
+  // The theme is not the only thing that moves. A reader can pick their
+  // language in Settings while standing in the Study, and the rule has to run
+  // then too — reacting to the theme alone left them in plain English until
+  // something happened to re-run the effect.
+  const { watchVoice } = loadTs('src/renderer/src/i18n/useThemeVoice.ts');
+
+  const i18n = fakeI18n('ar');
+  const stop = watchVoice('occult', i18n);
+  assert.equal(i18n.language, 'ar', 'Arabic was overwritten on subscribe');
+
+  i18n.changeLanguage('en');
+  assert.equal(i18n.language, 'en-SH', 'English under the occult theme stayed plain');
+
+  stop();
+});
+
+test('a language that is not English is left alone, theme or no theme', () => {
+  const { watchVoice } = loadTs('src/renderer/src/i18n/useThemeVoice.ts');
+
+  for (const lng of ['ar', 'zh-CN']) {
+    const i18n = fakeI18n('en-SH');
+    const stop = watchVoice('occult', i18n);
+    i18n.changeLanguage(lng);
+    assert.equal(i18n.language, lng, `${lng} was taken away by the house`);
+    stop();
+  }
+});
+
+test('answering a language change does not start one', () => {
+  // The watcher reacts to languageChanged by calling changeLanguage, which
+  // emits languageChanged. That terminates only because the rule returns null
+  // once the language is already right — so count the hops, do not trust it.
+  const { watchVoice } = loadTs('src/renderer/src/i18n/useThemeVoice.ts');
+
+  const i18n = fakeI18n('en');
+  const stop = watchVoice('occult', i18n);
+  assert.deepEqual(i18n.changes, ['en-SH'], 'subscribing did not settle in one hop');
+
+  i18n.changes.length = 0;
+  i18n.changeLanguage('en');
+  assert.deepEqual(i18n.changes, ['en', 'en-SH'],
+    'the answer to a language change provoked another one');
+
+  stop();
+});
+
+test('the watcher lets go when the app does', () => {
+  // The hook re-subscribes on every theme change. A listener that outlives its
+  // effect would apply a stale theme's rule forever after.
+  const { watchVoice } = loadTs('src/renderer/src/i18n/useThemeVoice.ts');
+
+  const i18n = fakeI18n('en');
+  const stop = watchVoice('light', i18n);
+  assert.equal(i18n.listenerCount(), 1);
+  stop();
+  assert.equal(i18n.listenerCount(), 0, 'the watcher is still listening');
+
+  i18n.changeLanguage('en');
+  assert.equal(i18n.language, 'en', 'a released watcher still spoke');
+});
+
+test('the hook is the watcher, not a second copy of the rule', () => {
+  // The rule above is only worth testing if the hook is what runs it. A hook
+  // that re-implemented `voiceFor` in its own effect would pass every test on
+  // this page while reacting to nothing but the theme.
+  const { activeSource, boundedSlice } = require('./source-assert.cjs');
+  const body = boundedSlice(
+    activeSource('src/renderer/src/i18n/useThemeVoice.ts'),
+    'export function useThemeVoice', '\n}');
+  assert.match(body, /watchVoice\(/, 'the hook does not use the watcher');
+});
+
 test('the locale is registered, or nothing above it can resolve', () => {
   const index = read('src/renderer/src/i18n/index.ts').replace(/\/\*[\s\S]*?\*\//g, '');
   assert.match(index, /['"]en-SH['"]\s*:\s*{\s*translation:/, 'not in resources');
