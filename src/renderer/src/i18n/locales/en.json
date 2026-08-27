@@ -1091,7 +1091,7 @@
     "hideAgentList": "Hide the agent list — full-width terminal",
     "lightTheme": "Switch to the light theme",
     "darkTheme": "Switch to the dark theme",
-    "toggleTheme": "Toggle dark mode",
+    "occultTheme": "Switch to the occult theme",
     "exitFullscreen": "Exit focus mode (Esc)",
     "addAgent": "Add agent",
     "respawnTitle": "Respawn from last session: {{names}} — same ids, memory and inboxes reattach automatically",

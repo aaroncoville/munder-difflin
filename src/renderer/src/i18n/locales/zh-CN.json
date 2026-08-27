@@ -1091,7 +1091,7 @@
     "hideAgentList": "隐藏智能体列表——全宽终端",
     "lightTheme": "切换到浅色主题",
     "darkTheme": "切换到深色主题",
-    "toggleTheme": "切换深色模式",
+    "occultTheme": "切换到神秘学主题",
     "exitFullscreen": "退出聚焦模式（Esc）",
     "addAgent": "添加智能体",
     "respawnTitle": "从上次会话重新生成：{{names}}——ID 相同，记忆和收件箱会自动重新挂载",

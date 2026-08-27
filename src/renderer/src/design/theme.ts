@@ -56,6 +56,45 @@ export function toggleAppTheme(): AppTheme {
   return next;
 }
 
+/** What the one theme control shows and says, given where the ring stands. */
+export interface ThemeControlFace {
+  /** The theme a click moves to. */
+  next: AppTheme;
+  /** Glyph for the destination, in the title bar's existing text-glyph idiom. */
+  icon: string;
+  /** English wording, for the title bar, which is not wired to i18n. */
+  label: string;
+  /** The same wording as a translation key, for the fullscreen mirror. */
+  labelKey: string;
+}
+
+/**
+ * The ring has three stops but both controls presented it as a binary: under
+ * occult they showed a moon and said "dark theme" while a click went to light.
+ * Icon and wording now come from here, so the two controls cannot disagree
+ * with each other or with the cycle, and every state is one line to read.
+ */
+const CONTROL_FACE: Readonly<Record<AppTheme, ThemeControlFace>> = {
+  light: {
+    next: 'dark', icon: '☾',
+    label: 'Switch to the dark theme', labelKey: 'fullscreenTerminal.darkTheme'
+  },
+  dark: {
+    // A star rather than a candle: the title bar's glyphs are text at 13px in
+    // the UI face, and this one has to sit beside the sun and the moon.
+    next: 'occult', icon: '✦',
+    label: 'Switch to the occult theme', labelKey: 'fullscreenTerminal.occultTheme'
+  },
+  occult: {
+    next: 'light', icon: '☀',
+    label: 'Switch to the light theme', labelKey: 'fullscreenTerminal.lightTheme'
+  }
+};
+
+export function themeControlFace(current: AppTheme): ThemeControlFace {
+  return CONTROL_FACE[current];
+}
+
 /**
  * Terminals and TUIs only have two palettes. Occult borrows the dark one until
  * it grows a candlelit palette of its own, so every place that hands a theme to

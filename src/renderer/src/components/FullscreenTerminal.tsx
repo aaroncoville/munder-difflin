@@ -19,7 +19,7 @@ import { usePtyParser } from '@/hooks/usePtyParser';
 import { useRestoreTeam } from '@/hooks/useRestoreTeam';
 import { useTerminalFontSize } from './terminalFontSize';
 import { useHasTerminalDraft, disposeTerminal, reflowTerminal, notifyThemeChangeAll } from './terminalPool';
-import { useAppTheme, toggleAppTheme, terminalThemeFor } from '@/design/theme';
+import { useAppTheme, toggleAppTheme, terminalThemeFor, themeControlFace } from '@/design/theme';
 import type { HarnessConfig } from '@/store/config';
 import { useRtl } from '@/i18n/useDirection';
 
@@ -339,8 +339,8 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
               // running TUI. Both entry points must tell them.
               notifyThemeChangeAll(terminalThemeFor(next));
             }}
-            title={appThemeNow === 'dark' ? t('fullscreenTerminal.lightTheme') : t('fullscreenTerminal.darkTheme')}
-            aria-label={t('fullscreenTerminal.toggleTheme')}
+            title={t(themeControlFace(appThemeNow).labelKey)}
+            aria-label={t(themeControlFace(appThemeNow).labelKey)}
             style={{
               display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
               width: 28, height: 28, padding: 0,
@@ -350,7 +350,7 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
               color: 'var(--cth-ink-900)', fontSize: 13, lineHeight: 1
             }}
           >
-            {appThemeNow === 'dark' ? '☀' : '☾'}
+            {themeControlFace(appThemeNow).icon}
           </button>
           {/* Settings — the main title bar has it, so fullscreen must too:
               anything reachable in one mode and not the other is a trap. Uses

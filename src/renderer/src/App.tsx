@@ -20,7 +20,7 @@ import { QuitWarningModal, type ClosingTimeState } from '@/components/QuitWarnin
 import { CompletionToast } from '@/realtime/CompletionToast';
 import { UpdateToast } from '@/components/UpdateToast';
 import { UpdateBadge } from '@/components/UpdateBadge';
-import { useAppTheme, toggleAppTheme, terminalThemeFor } from '@/design/theme';
+import { useAppTheme, toggleAppTheme, terminalThemeFor, themeControlFace } from '@/design/theme';
 import { SettingsModal, type Section as SettingsSection } from '@/components/SettingsModal';
 import { PixelPanel } from '@/components/PixelPanel';
 import { PixelButton } from '@/components/PixelButton';
@@ -53,6 +53,9 @@ export function App() {
   const godStatus = useStore(s => s.godStatus);
   const fullscreenAgentId = useStore(s => s.fullscreenAgentId);
   const appThemeNow = useAppTheme();
+  // Icon and wording for the theme ring's next stop — shared with the
+  // fullscreen mirror so the two controls cannot say different things.
+  const themeFace = themeControlFace(appThemeNow);
   const sidebarWidth = useStore(s => s.sidebarWidth);
   const setSidebarWidth = useStore(s => s.setSidebarWidth);
   const ideOpen = useStore(s => s.ideOpen);
@@ -330,8 +333,8 @@ export function App() {
             // harness agents — the user's global Claude theme is never touched.
             void window.cth.updateConfig({ terminalTheme: terminalThemeFor(next) });
           }}
-          data-tip={appThemeNow === 'dark' ? 'Light theme' : 'Dark theme'}
-          aria-label="Toggle dark mode"
+          data-tip={themeFace.label}
+          aria-label={themeFace.label}
           style={{
             marginLeft: 'auto',
             display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
@@ -342,7 +345,7 @@ export function App() {
             color: 'var(--cth-ink-900)', fontSize: 13, lineHeight: 1
           }}
         >
-          {appThemeNow === 'dark' ? '☀' : '☾'}
+          {themeFace.icon}
         </button>
         {/* v0.3.4: the IDE button moved to agent level — every agent's header
             (sidebar detail, god Command Center, fullscreen) carries it. */}
