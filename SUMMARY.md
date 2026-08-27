@@ -1,9 +1,12 @@
 # Sixth History — the inhabited house, polish round
 
 Branch `agent/worker-medusa`, cut from `782c6657` (the merged Milestone 3 house).
-Twelve commits. Eleven of them answer a specific complaint from the person who
-sat in front of the running app; the twelfth is the test harness change one of
-them needed.
+Seventeen commits, this file among them. Eleven of them answer a specific
+complaint from the person who sat in front of the running app; two are test
+harness changes those needed. Of the remaining four, one is a defect the
+consolidation below introduced and hid, one takes out the artwork that same
+consolidation orphaned, and two are documentation — the round summary and this
+correction of it.
 
     b2e3a917 fix(theme): the candlelit terminal was a second near-black, not a second colour
     80127e66 fix(study): the hearth read as a circle blinking on the fire
@@ -17,6 +20,11 @@ them needed.
     42be2026 fix(summon): a face named the assistant after a file, in lower case
     332c86c3 test: the component host could not restage the world or hold a portal
     2cb8131c fix(study): the same assistant had two faces, one above the other
+    83abe3c5 docs: the branch summary described the milestone, not this round
+    0182c105 chore(art): the hearth and writing desk are props now, not paintings
+    d19bd3fd test(host): an effect that starts at a ref could never run
+    19c37fce fix(study): the fire went out when the hearth stopped being a room
+    (tip)    docs: this summary, rewritten for the round and corrected to count itself
 
 One theme runs through five of them and is worth stating once rather than five
 times. **The house is laid out at its natural size and letterboxed into the
@@ -243,34 +251,117 @@ painted for three props would seat them better, and the plan already supports it
 
 ---
 
+## What the refinement broke, and what it left behind
+
+Two things followed from folding four prop rooms into one parlour, and neither
+was visible from the diff that did it.
+
+### The fire went out
+
+`19c37fce`, with `d19bd3fd` underneath it.
+
+Finding 2 gave the hearth its own colour, its own reach and its own curve. The
+ambiance layer chose which light got them with `room.kind === 'hearth' && i === 0`
+— the first marked light of the room whose kind is `hearth`. That was true while
+every anchor owned a whole panel.
+
+After `abc8fbbc` **no room in the shipped plan has that kind**, so the condition
+is false for every room the house draws. `HEARTH`, `EMBER`, `HEARTH_SPREAD` and
+`hearthFlicker` became unreachable, and everything finding 2 was about was gone
+— the parlour lights its fire as one more candle.
+
+The room was the wrong thing to ask. A room kind describes a whole panel, and a
+panel with a fire in one corner and three chandeliers along the far wall has no
+kind that means "fire". So the LIGHT carries it: a `lightPoints` entry may name
+its `kind`, `glowsFor` classifies each light the layer is about to draw, and the
+fire follows the hearth wherever the plan stands it. Unmarked is a candle,
+because nearly every light in the house is one; unrecognised is rejected rather
+than defaulted, since `"kind": "herath"` quietly becoming another candle is this
+same failure returning invisibly. The parlour marks its fire at the foot of the
+door that closing time is, inside the berth the prop already stands on.
+
+**The suite had this covered and stayed green anyway**, which is the part worth
+keeping. The ambiance tests checked the curve arithmetic — correctly — and then
+grepped the layer's source for `hearthFlicker(` and `EMBER`. Both are still
+present in the source of a layer that can never reach them, so the assertion
+survived the feature's removal. The new test mounts the real component over each
+room of the real `room.json`, with a stand-in `pixi.js` that records what it is
+told to draw, and asserts the house paints exactly one glow on the fire curve,
+inside the hearth anchor's own berth, throwing further than any candle and in
+colours no candle uses. It finds none before the fix.
+
+`d19bd3fd` is what made that possible. The node:test React host renders a
+component and then runs its effects, but React writes every `ref` in the tree
+BEFORE the effects and this host wrote none — so any component whose effect
+starts `const node = ref.current; if (!node) return;` returned immediately and
+tested as a component that renders and then sits there. That is every canvas,
+chart, observer and media element in the codebase. `mount` now also returns
+`runEffects`, so a test can hand the ref a stand-in node and ask again.
+
+Six mutations were run against the green suite, and each took down exactly the
+cases it should:
+
+| mutation | red |
+|---|---|
+| key the fire on the room kind again | the rendered-fire case |
+| the plan stops marking the fire | the rendered-fire case and the plan's |
+| `glowsFor` calls everything a candle | the rendered-fire case and the unit |
+| the fire is marked away from the prop | the rendered-fire case and the plan's |
+| a misspelt kind falls through to a candle | the validation case |
+| `glowsFor` drops the glow cap | the unit case |
+
+### 2.7MB of paintings nothing paints
+
+`0182c105`. `room-hearth.png` and `room-writing-desk.png` were no longer named by
+any room in `room.json`, and `test/occult-art-sheets.test.cjs` — *"every painted
+panel the house names has a sheet, and every sheet a panel"* — had been failing
+on the reverse direction since `abc8fbbc`. Both panels and both prompt sheets are
+out. They stay recoverable from history, and each sheet records the model, prompt
+and reference digest, so a later art pass that wants a purpose-painted parlour can
+regenerate from them.
+
+---
+
 ## Verification
 
-Every number below was measured in this checkout, with `node_modules` symlinked
-from the base clone. The suite's real exit code is reported, not a summary line.
+Every number below was measured in this checkout, one ref after another in one
+shell, with `node_modules` symlinked from the base clone. The suite's real exit
+code is reported, not a summary line.
 
-| ref | | tests | pass | fail | cancelled | skipped | exit |
-|---|---|---|---|---|---|---|---|
-| `782c6657` | the round's base | 1074 | 1037 | 35 | 1 | 1 | 1 |
-| `42be2026` | before the last two commits | 1097 | 1059 | 36 | 1 | 1 | 1 |
-| `2cb8131c` | this tip | 1102 | **1064** | 36 | 1 | 1 | 1 |
+| ref | | tests | pass | fail | skipped | exit |
+|---|---|---|---|---|---|---|
+| `782c6657` | the round's base | 1074 | 1073 | 0 | 1 | 0 |
+| `42be2026` | before the last of the seven findings | 1097 | 1095 | 1 | 1 | 1 |
+| `2cb8131c` | the seven findings answered | 1102 | 1100 | 1 | 1 | 1 |
+| `0182c105` | the orphaned artwork out | 1102 | 1101 | 0 | 1 | 0 |
+| `19c37fce` | the fire relit — the last commit that touches code | 1106 | **1105** | 0 | 1 | **0** |
 
 ```
 npm run typecheck    # node + web, 0 errors
 npm run build        # exit 0
 ```
 
-**The failure set at this tip is identical to `42be2026`, name for name** — the
-two lists were diffed, not eyeballed. The five new passes are the five cases in
-`test/agent-face.test.cjs`.
+The one skip is the same case at every ref. The single failure at `42be2026` and
+`2cb8131c` is `test/occult-art-sheets.test.cjs` — the orphaned-artwork finding
+above — which `0182c105` closes; the suite has been green from there on.
 
-**The 35 failures on the round's base are not this round's, and they are not
-"tests pass" either.** They are, by suite: 26 in the memory / hindsight backend
-conformance suites, which need a server this shell has none of; 3 tilde-expansion
-cases (`statAbs`, `ensureHarnessHome`); 3 `forgetAgent` cost-lifetime cases; one
-hook-with-no-node-on-PATH case; and `test/proc-kill.test.cjs`, which is cancelled
-rather than failed. They are unchanged, one for one, at all three refs.
+**The four new tests at this tip** are the rendered-fire case, the `glowsFor`
+unit, and two in the manifest suite (a light's `kind` is validated, and the plan
+marks its fire in the panel the hearth stands in).
 
-### The last fix was mutated to prove its test bites
+**A note on where these numbers are measured.** An earlier revision of this file
+reported 35–36 failures at every ref and called them pre-existing and
+environmental. They were an artefact of the shell they were run in, not of any
+checkout: a sandbox that denies writes under `$HOME` and connections to
+localhost takes down the memory and hindsight backend conformance suites, the
+tilde-expansion cases, the `forgetAgent` cost-lifetime cases and the
+hook-with-no-node-on-PATH case, and cancels `test/proc-kill.test.cjs`. Run
+without those restrictions, every ref in the table above is exactly as clean as
+it looks. **A failure that moves when the shell moves is a fact about the shell**
+— worth saying out loud, because a reviewer who reproduces this under a sandbox
+will see the 35 again and should not mistake them for the branch.
+
+### Two fixes were mutated to prove their tests bite
 
 The earlier commits record their own red-first evidence in their messages; that
 is their authors' claim, not a measurement repeated here. For `2cb8131c`, four
@@ -284,28 +375,7 @@ exactly the cases it should and no others:
 | deal strangers by name instead of id | the stranger case only |
 | the strip goes back to `SpritePortrait` directly | the wiring case only |
 
----
-
-## One regression this round introduced, still open
-
-`test/occult-art-sheets.test.cjs` — *"every painted panel the house names has a
-sheet, and every sheet a panel"* — **passes on `782c6657` and fails from
-`abc8fbbc` onwards.** It is the one failure in the 36 that is ours.
-
-The consolidation folded the hearth and the writing desk into the parlour as
-props, so `room-hearth.png` (1.1MB) and `room-writing-desk.png` (1.6MB) are no
-longer painted by any room in `room.json`, while both PNGs and their prompt
-sheets are still in the tree. The test asserts both directions of that
-correspondence, and the reverse direction is now false.
-
-That is a real finding, not a stale test: 2.7MB of paintings ship in every build
-for rooms that no longer exist, and two prompt sheets describe panels the house
-does not use. **The remedy is a decision rather than a repair** — either the two
-panels and their sheets come out (they stay recoverable from history, and the
-sheets record model, prompt and reference digest, so they can be regenerated), or
-a later art pass repaints a purpose-built parlour panel and they are superseded
-then. Nothing was deleted here, because deleting approved artwork on a green-test
-errand is the wrong trade.
+`19c37fce` was mutated six ways; that table is in its own section above.
 
 ---
 
@@ -322,3 +392,15 @@ it has to be captured by someone with the app in front of them.
 The one exception is finding 7, which has a mechanical check: under the occult
 theme, the face on an assistant's card in the footer strip and the face on the
 same assistant in the room above it must be the same image.
+
+`19c37fce` is in the same position and is worth naming separately, because what
+can be checked here and what needs an eye come apart cleanly. **That the parlour
+paints a fire at all is now mechanical** — the layer is driven over the real
+floor plan and the glow it produces is measured. **Whether the fire looks right
+where it now stands is not.** The hearth anchor in the current art is the door
+out of the parlour, not a painted grate, so the fire's light falls at a doorway;
+that is the anchor the plan puts there and the light follows it correctly, but
+whether it reads as warmth or as a stray mark on the paint is a judgement to be
+made in front of the running app. If it reads wrong, the remedy is a coordinate
+in `room.json` or a parlour panel painted with a grate in it — the classification
+does not change either way.
