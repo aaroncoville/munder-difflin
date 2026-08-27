@@ -346,3 +346,154 @@ running and at least two assistants on the roster, then check:
 4. With a card in `doing`, its assistant has an open book; block it with a
    question and the book seals and the writing desk shows a count.
 5. Resize the window: cards and props stay on their desks at every aspect.
+
+---
+
+# Sixth History — Milestone 2, the Hush House refactor
+
+The scene design changed mid-build: the Study is no longer one painting with
+things placed on top of it. It is a **cross-section of a house** — flat and
+straight on, no perspective — where each room is its own panel, panels sit side
+by side to make a storey, and the storeys stack from the top of the building
+down with a band of masonry between them. A house taller than the window
+scrolls.
+
+One commit, `refactor(study): rooms replace the single backdrop`, on top of the
+eight task commits.
+
+## Gate
+
+| Check | Baseline (`4a4ff38f`, before any of M2) | Before the refactor | After |
+|---|---|---|---|
+| `npm run test:focused` | **913 of 913** | **973 of 973** | **983 of 983** pass, 0 fail |
+| `npm run typecheck` | 0 errors | 0 errors | 0 errors |
+| `npm run build` | succeeds | succeeds | succeeds |
+
+All three run unsandboxed. No pre-existing failures on any of the three refs,
+so nothing is being carried. The production bundle carries the change:
+`out/renderer/assets/index-*.js` contains `data-study-room` and all seven panel
+filenames (the flat placeholders are small enough that Vite inlines them as
+data URIs rather than emitting separate asset files).
+
+The refactor was written test-first like the tasks before it: the manifest
+tests were rewritten against the new shape and confirmed **RED, 12 of 12**
+before `roomManifest.ts` was touched; the scene tests likewise. Each finished
+piece was then **mutation-tested** — eight mutations, each confirmed to take the
+suite red and each reverted to green:
+
+| Mutation | Caught by |
+|---|---|
+| storeys sorted bottom-up | rooms are stacked in reading order |
+| the masonry bands dropped | …with masonry between the storeys |
+| `overflow-y: hidden` | the house scrolls vertically |
+| every room draws every seated assistant | a card is a child of its own room's panel |
+| the panel's view box doubled | the first worker sits at the first desk |
+| a room image with no import behind it | every panel … is on disk … and imported |
+| the archive given a click handler | the archive is a room you can read but not press |
+| berth ids checked per room instead of per house | two rooms claiming the same berth id are rejected |
+
+## What the model is now
+
+`assets/room.json` is `rooms[]` plus a house-level `bandThickness`. Each room is
+
+```
+{ id, kind, image, natural: { w, h }, row, col, berths: Berth[], lightPoints[] }
+```
+
+and every berth is normalized **within that room's panel**, not against a shared
+canvas. `kind` is what the room is for: eight `desk` rooms, one `godStudy`, and
+one room for each of the five props — `cardTable`, `writingDesk`, `almanac`,
+`hearth`, `shelves`. The shipped house is five storeys, read top to bottom:
+
+| Storey | Rooms |
+|---|---|
+| 0 | the archive, full width |
+| 1 | the card table, the almanac |
+| 2 | reading rooms 1–4 |
+| 3 | reading rooms 5–8 |
+| 4 | the god's study, the writing desk, the hearth |
+
+`validateRoomManifest` keeps every check it had and gains the ones the new shape
+makes possible: berth ids unique across the **whole house** (two rooms sharing
+one would draw the same assistant twice and make seating depend on iteration
+order), each berth checked against its own panel, the singleton kinds actually
+singular, the god's study actually holding a seat, and no two rooms standing on
+the same row and column. `deskRooms`, `deskBerths`, `godBerth`, `roomOfKind` and
+`houseRows` are the accessors everything else reads the house through.
+
+## What changed in the scene, and what did not
+
+**Unchanged, as required:** `AgentCard`, `DeskBook`, `SpeechScroll`,
+`portraits.ts`, `FloorHost.tsx`, and `App.tsx`. `berthToBox` and `containFit`
+keep their names, signatures and behaviour — they now run per panel instead of
+once over a backdrop.
+
+**`useSceneState` changed in one place only:** seating asks the manifest for
+`deskBerths(studyRoom)` and `godBerth(studyRoom)` instead of reading two fields
+off it. The rule is the same rule — roster order, the god in his own seat, the
+overflow sharing the last desk — but the berths now come from the reading rooms
+in the order the house is built, so adding a storey of desks extends the seating
+with no code change.
+
+**The props are rooms now.** There is no `AnchorZone` and no invisible rectangle
+over a painting: the room panel itself carries the label, the button semantics
+and the click, so clicking the card table's room *is* clicking the card table.
+Nothing can drift out of step with the art, because there is nothing to keep in
+step. The archive still renders without button semantics, for the same reason as
+before — the animation that would justify a control is M3.
+
+**The scene takes exactly one measurement:** the width of the scroll host. Every
+storey height and every panel box is arithmetic from that one number
+(`storeyHeight` solves for the height at which a storey's rooms exactly fill the
+width, capped at their natural height so a wide window cannot inflate the
+building). That keeps the room components hook-free, which is what lets a test
+walk through them, and makes the whole layout a pure function of the manifest.
+
+**Each panel still letterboxes its own image.** With the shipped placeholders
+the fit is exact, because every room in a storey shares a natural height. It
+stops being exact the moment real art arrives at a slightly different aspect,
+and then a panel is centred rather than stretched — which is the whole reason
+the math stayed.
+
+**Every room reserves its own ambiance slot**, `pointer-events: none` from the
+start, rather than one slot over the whole scene. M3's hearth glow belongs to
+the hearth's room; `lightPoints` moved from the house onto the rooms to match.
+
+## Superseded above
+
+These lines in the Milestone 2 section above are no longer true:
+
+- **Task 1 and Task 2 as described** — there is no single backdrop, no
+  `deskBerths`/`godBerth`/`anchors` on the manifest, and no
+  `backdrop-placeholder.png`. `make-placeholder-backdrop.cjs` is replaced by
+  `make-room-panels.cjs`, which paints one flat panel per room image at the
+  natural size the manifest declares, with a faint block under every berth and a
+  disc at every light point. Rooms sharing a file (the eight reading rooms do)
+  are drawn once, and a second room disagreeing about that file's natural size
+  is reported rather than silently redrawn.
+- **Deviation 6** (the placeholder backdrop ships with its generator) still
+  holds in spirit, for the new generator.
+- **Open question 4** (contain-fit letterbox bars at extreme aspects) is
+  answered by the new layout: the house fills the width and scrolls vertically,
+  so there are no bars at the scene level. The per-panel bars remain, but they
+  are a panel's worth of cream rather than the whole window's.
+- **Open question 1** (placeholder berth coordinates) still stands, restated:
+  the berths are now authored against small flat panels rather than one 1344×768
+  image. The numbers are placeholder; the shape is the contract.
+
+Everything else in the Milestone 2 section — the store selectors, the status
+collapse, the seating rules, the portrait index, `FloorHost`'s lazy office
+chunk, the anchor labels being English literals — is unaffected.
+
+## Manual QA (Aaron)
+
+As before, plus:
+
+6. The house reads as a cross-section: the archive along the top, the card table
+   and almanac beneath it, two storeys of reading rooms, and the god's study,
+   the writing desk and the hearth along the bottom, with mortar between the
+   storeys.
+7. Make the window short: the lower storeys are reachable by scrolling, and the
+   house never scrolls sideways.
+8. Make the window very wide: the storeys stop growing at their natural height
+   and centre, rather than the building growing without limit.
