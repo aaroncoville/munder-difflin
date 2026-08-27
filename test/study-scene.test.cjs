@@ -47,7 +47,7 @@ test('containFit letterboxes on the constraining axis', () => {
 
 // ─── The house ──────────────────────────────────────────────────────────────
 
-const { houseRows, deskBerths, deskRooms } = loadTs(MANIFEST);
+const { houseRows, deskBerths, deskRooms, roomOfKind } = loadTs(MANIFEST);
 
 /**
  * Every node in the tree, descending THROUGH the scene's presentational
@@ -325,6 +325,27 @@ test('the writing desk carries the count of letters waiting on the human', async
 
   const busy = await inhabit({ agents: [person('w-1')], tasks: [waiting(1), waiting(2)] });
   assert.equal(text(deskOf(busy.view)).join('').trim(), '2', 'two letters, shown as two');
+});
+
+test('a prop room shows its count where the painting puts the prop', async () => {
+  const { view } = await inhabit({
+    agents: [person('w-1')],
+    tasks: [{ id: 'a', status: 'todo', title: 'a', dependsOn: [] }]
+  });
+  // The counts belong ON the baize, not in the middle of the parlour's air:
+  // the room's own berth is where the painting puts the table, and the badge
+  // has to be projected against that panel's letterboxed box like any other
+  // position inside it.
+  const table = roomOfKind(studyRoom, 'cardTable');
+  const berth = table.berths[0];
+  assert.ok(berth, 'the parlour declares where its table is');
+  const want = berthToBox(berth, viewOf(table));
+  const badges = one(panelOf(view.tree, table.id), (n) => n.props?.['data-study-badges'] === '');
+  assert.deepEqual(
+    { left: badges.props.style.left, top: badges.props.style.top,
+      width: badges.props.style.width, height: badges.props.style.height },
+    want,
+    'the counts are laid over the baize the manifest points at');
 });
 
 test('the card table stacks mirror the kanban columns', async () => {

@@ -212,7 +212,6 @@ const KANBAN_COLUMNS = ['todo', 'doing', 'blocked', 'done'] as const;
 /** The badge row a prop room carries, centred over its panel. */
 const BADGES: React.CSSProperties = {
   position: 'absolute',
-  inset: 0,
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
@@ -221,6 +220,26 @@ const BADGES: React.CSSProperties = {
   fontSize: 'var(--cth-text-display-sm)',
   color: 'var(--cth-ink-900)'
 };
+
+/**
+ * The patch of a prop room's panel its count is laid over.
+ *
+ * A badge is a position inside the painting like any other, so it goes through
+ * the same projection a berth does. The room names ONE berth — the baize, the
+ * open almanac, the stack of petitions, the armchair — and the count sits on
+ * it, which is the difference between "3 tasks" printed on the card table and
+ * "3 tasks" floating in the middle of the parlour's wall.
+ *
+ * A prop room that names no berth falls back to its whole panel, because the
+ * centre of the room is the only honest guess when the manifest has not said
+ * where in it the prop stands.
+ */
+export function badgeBox(room: Room, view: ViewBox): React.CSSProperties {
+  const berth = room.berths[0];
+  if (!berth) return { inset: 0 };
+  const box = berthToBox(berth, view);
+  return { left: box.left, top: box.top, width: box.width, height: box.height };
+}
 
 /**
  * The measured width of the scroll host.
@@ -387,10 +406,11 @@ export function StudyScene(): JSX.Element {
     hearth: () => window.close()
   };
 
-  const badgesFor = (kind: AnchorKind): React.ReactNode => {
+  const badgesFor = (room: Room, kind: AnchorKind, view: ViewBox): React.ReactNode => {
+    const frame = { ...BADGES, ...badgeBox(room, view) };
     if (kind === 'cardTable') {
       return (
-        <div style={BADGES}>
+        <div data-study-badges="" style={frame}>
           {KANBAN_COLUMNS.map((column) => (
             <div
               key={column}
@@ -410,7 +430,7 @@ export function StudyScene(): JSX.Element {
     }
     if (kind === 'writingDesk' && scene.openAskCount > 0) {
       return (
-        <div style={BADGES}>
+        <div data-study-badges="" style={frame}>
           <div
             style={{
               padding: '1px 5px',
@@ -460,7 +480,7 @@ export function StudyScene(): JSX.Element {
         label={ANCHOR_LABEL[kind]}
         onClick={ANCHOR_CLICK[kind]}
       >
-        {badgesFor(kind)}
+        {(view: ViewBox) => badgesFor(room, kind, view)}
       </RoomPanel>
     );
   };
