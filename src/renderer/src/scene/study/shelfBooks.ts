@@ -89,8 +89,16 @@ export function shelfBooks(
 
 export interface Box { left: number; top: number; width: number; height: number }
 
-/** How wide and tall a book is, as a fraction of the panel. */
-const BOOK = { w: 0.028, h: 0.16 };
+/**
+ * How wide and tall a book is, as a fraction of the panel.
+ *
+ * Wider than a painted spine on this wall, deliberately. The house is drawn at
+ * its natural size and letterboxed into the window as one scaled drawing, so a
+ * mark 44 panel pixels across arrives about ten pixels wide — the same as the
+ * spines painted either side of it, which is exactly how a marked volume
+ * disappears into the shelf it is standing on.
+ */
+const BOOK = { w: 0.042, h: 0.20 };
 
 /**
  * Where the nth book sits on the shelf wall.

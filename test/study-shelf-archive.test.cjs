@@ -154,8 +154,88 @@ test('the books darken the painting rather than covering it', async () => {
   const view = await inhabit({ archived: [person('gone-1', { archived: true })] });
   const book = all(view.tree, (n) => n.props?.['data-shelf-book'] !== undefined)[0];
   assert.ok(book, 'no book');
-  // The shelves are painted PALE. A book drawn as an opaque patch would hide
-  // the painting it is meant to be pointing at; multiply darkens what is
-  // already there, which is the whole of Aaron's design for this wall.
+  // A book drawn as an opaque patch would hide the painting it is meant to be
+  // pointing at; multiply darkens what is already there.
   assert.equal(book.props.style.mixBlendMode, 'multiply');
+});
+
+test('the darkening is measured against the wall it actually lands on', () => {
+  // The wall this was designed for was assumed to be painted PALE, and it is
+  // not: room-shelves.png averages a luma of 61 out of 255, and the slots the
+  // books stand in average about 95. Multiplying a dark painting by a mid-tone
+  // accent moves it a few percent, which is why a marked volume was invisible
+  // among the painted spines. So the assertion is not "it multiplies" — it is
+  // how far the pixels under a book actually move.
+  const readPng = require('./read-png.cjs');
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const at = (p) => path.resolve(__dirname, '..', p);
+  const png = readPng(at('src/renderer/src/scene/study/assets/room-shelves.png'));
+  const room = JSON.parse(fs.readFileSync(
+    at('src/renderer/src/scene/study/assets/room.json'), 'utf8'))
+    .rooms.find((r) => r.id === 'shelves');
+  const css = fs.readFileSync(
+    at('src/renderer/src/design/occult/occult-tokens.css'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+  const token = (name) => {
+    const m = css.match(new RegExp(`${name}:\\s*#([0-9A-Fa-f]{6})`));
+    assert.ok(m, `${name} is not declared in the occult theme`);
+    return [0, 2, 4].map((i) => parseInt(m[1].slice(i, i + 2), 16));
+  };
+  const luma = ([r, g, b]) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
+
+  const src = loadTs('src/renderer/src/scene/study/ShelfArchive.tsx');
+  const view = { x: 0, y: 0, w: room.natural.w, h: room.natural.h };
+  const box = S.bookSlot(0, view, room.lightPoints);
+
+  // Both kinds, because they were the two ends of the problem: the accents this
+  // started on moved the slot 55% (lilac) and 40% (peach), and the peach one
+  // was invisible where the lilac was merely weak.
+  for (const [kind, name] of Object.entries(src.BOOK_TINT)) {
+    const tint = token(name.replace(/^var\(|\)$/g, ''));
+    let before = 0;
+    let after = 0;
+    let n = 0;
+    for (let y = Math.round(box.top); y < Math.round(box.top + box.height); y++) {
+      for (let x = Math.round(box.left); x < Math.round(box.left + box.width); x++) {
+        const px = png.at(x, y);
+        before += luma(px);
+        after += luma(px.map((c, i) => (c * tint[i]) / 255));
+        n++;
+      }
+    }
+    assert.ok(n > 0, 'the book covers no pixels of the painting');
+    const drop = 1 - after / before;
+    assert.ok(drop >= 0.7,
+      `a ${kind} volume darkens its slot by ${(drop * 100).toFixed(0)}% — `
+      + 'not enough to pick out among the painted spines');
+  }
+});
+
+test('a marked volume is bigger than a painted spine, and carries a gilt edge', async () => {
+  // At the scale the house is drawn at, a mark 44 panel-px wide arrives about
+  // ten pixels across — the same as the spines painted either side of it, so
+  // it reads as one more of them. It has to be wider than they are, and it has
+  // to carry something no painted spine has.
+  const room = JSON.parse(require('node:fs').readFileSync(
+    require('node:path').resolve(__dirname, '..',
+      'src/renderer/src/scene/study/assets/room.json'), 'utf8'))
+    .rooms.find((r) => r.id === 'shelves');
+  const view = { x: 0, y: 0, w: room.natural.w, h: room.natural.h };
+  const box = S.bookSlot(0, view, room.lightPoints);
+  assert.ok(box.width >= view.w * 0.038, `a volume is ${box.width.toFixed(0)} panel px wide`);
+  assert.ok(box.height >= view.h * 0.18, `a volume is ${box.height.toFixed(0)} panel px tall`);
+
+  const scene = await inhabit({ archived: [person('gone-1', { archived: true })] });
+  const gilt = all(scene.tree, (n) => n.props?.['data-shelf-gilt'] !== undefined);
+  assert.equal(gilt.length, 1, 'the volume has no gilt edge of its own');
+  // A SIBLING of the darkening patch, not a child of it: `mix-blend-mode` on
+  // the patch makes it a blend group, so gilt drawn inside it would be
+  // multiplied too — and multiply cannot lighten, so the gilt would come out
+  // as one more shade of the dark it is supposed to stand against.
+  assert.notEqual(gilt[0].props.style.mixBlendMode, 'multiply',
+    'the gilt is inside the darkening, where it can only ever be dark');
+  const book = all(scene.tree, (n) => n.props?.['data-shelf-book'] !== undefined)[0];
+  assert.ok(gilt[0].props.style.width >= book.props.style.width * 0.15,
+    'the gilt edge is a hairline the house scale erases');
 });
