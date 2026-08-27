@@ -36,6 +36,9 @@ seed('react', {
   useCallback: (fn) => fn,
   // Devtools-only; the store shims below call it on every read.
   useDebugValue: () => {},
+  // Memoization is a render-count concern; this host re-renders on demand, so
+  // the wrapper is the component itself.
+  memo: (Component) => Component,
   // Enough of the contract for a store to be read: the snapshot IS the value,
   // and re-rendering is the test's job (`render()`), not a subscription's.
   useSyncExternalStore: (_subscribe, getSnapshot) => getSnapshot()
@@ -43,6 +46,24 @@ seed('react', {
 
 const jsx = (type, props, key) => ({ type, props: props ?? {}, key: key ?? null });
 seed('react/jsx-runtime', { jsx, jsxs: jsx, Fragment: Symbol.for('react.fragment') });
+
+// The real react-i18next calls react.createContext at require time, and this
+// host has no contexts. Seed a translator that resolves the REAL English
+// catalog (with {{var}} interpolation), so tests assert the strings a user
+// actually sees — a renamed or missing key surfaces as the raw key on screen.
+const EN_CATALOG = require('../src/renderer/src/i18n/locales/en.json');
+const translate = (key, vars) => {
+  let s = key.split('.').reduce((o, k) => (o == null ? undefined : o[k]), EN_CATALOG);
+  if (typeof s !== 'string') return key;
+  if (vars) for (const [k, v] of Object.entries(vars)) s = s.split(`{{${k}}}`).join(String(v));
+  return s;
+};
+seed('react-i18next', {
+  useTranslation: () => ({ t: translate, i18n: { language: 'en' } }),
+  // i18n/index.ts calls i18next.use(initReactI18next) at module load; a shaped
+  // no-op keeps the real i18next happy without wiring a React context.
+  initReactI18next: { type: '3rdParty', init: () => {} }
+});
 
 /** Mount `Component` with `props`. Each call gets its own hook slots — mounting
  *  twice is a genuine REMOUNT, which is how the settings panel behaves when the

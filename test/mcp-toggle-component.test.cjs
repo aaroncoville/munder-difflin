@@ -104,7 +104,7 @@ test('clicking the toggle writes the merged map and re-renders from the disk rea
 
   assert.equal(buttonLabel(inst.render(), GITHUB_TOKEN), 'on',
     'the rendered label must follow the persisted config read');
-  assert.ok(text(inst.render()).join('').includes(`${GITHUB_TOKEN}: enabled`),
+  assert.ok(text(inst.render()).join('').includes(`${GITHUB_TOKEN}: on`),
     'the confirmation note must name what was granted');
 });
 
