@@ -34,8 +34,8 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Room } from './roomManifest';
 import {
-  MOTE_CAP, ambianceEnabled, driftMotes, flicker, lightsFor, seedFor, seedMotes,
-  type Mote
+  HEARTH_SPREAD, MOTE_CAP, ambianceEnabled, driftMotes, flicker, glowRings, hearthFlicker,
+  lightsFor, seedFor, seedMotes, type Mote
 } from './ambiance';
 
 interface ViewBox { x: number; y: number; w: number; h: number }
@@ -44,6 +44,8 @@ interface ViewBox { x: number; y: number; w: number; h: number }
 const CANDLE = 0xc9a227;
 /** The hearth's own light — deeper and redder than a candle. `--cth-coral`. */
 const HEARTH = 0xb0524e;
+/** The coal under it, hotter than the light it throws. `--cth-peach`. */
+const EMBER = 0xc98a4b;
 
 /** Does this machine want less movement? Read once per mount, and re-read on
  *  change, because somebody can turn it on while the app is open. */
@@ -262,16 +264,31 @@ export function AmbianceLayer({ room, view }: AmbianceLayerProps): JSX.Element |
           // puts it in the grate, and it wants the deeper colour and a wider throw.
           const isHearth = room.kind === 'hearth';
 
+          const scale = Math.min(view.w / 520, 1.6);
           const glows = lights.map((p, i) => {
+            const hearth = isHearth && i === 0;
             const g = new PIXI.Graphics();
-            const radius = (isHearth && i === 0 ? 34 : 18) * Math.min(view.w / 520, 1.6);
-            g.circle(0, 0, radius).fill({ color: isHearth && i === 0 ? HEARTH : CANDLE, alpha: 0.5 });
+            const radius = 18 * scale * (hearth ? HEARTH_SPREAD : 1);
+            // Nested rings rather than one filled circle: a single disc has an
+            // edge no matter how translucent it is, and the edge is what reads
+            // as a coloured sticker sitting on the paint.
+            for (const ring of glowRings(radius)) {
+              g.circle(0, 0, ring.r).fill({ color: hearth ? HEARTH : CANDLE, alpha: ring.alpha });
+            }
+            // The hearth alone gets an ember under its halo — a small, hotter
+            // core, so the fire has a visible source instead of being a wash of
+            // warm colour over the grate.
+            if (hearth) {
+              for (const ring of glowRings(radius * 0.34, 5)) {
+                g.circle(0, 0, ring.r).fill({ color: EMBER, alpha: ring.alpha });
+              }
+            }
             g.position.set(p.x * view.w, p.y * view.h);
             // Additive, so light adds to the paint underneath instead of sitting on
             // it as a disc of colour — the difference between a glow and a sticker.
             g.blendMode = 'add';
             application.stage.addChild(g);
-            return g;
+            return { g, hearth };
           });
 
           const motes: Mote[] = seedMotes(seedFor(room.id), MOTE_CAP, view);
@@ -283,11 +300,13 @@ export function AmbianceLayer({ room, view }: AmbianceLayerProps): JSX.Element |
           application.ticker.add((tick: { deltaMS: number }) => {
             t += tick.deltaMS;
             for (let i = 0; i < glows.length; i++) {
-              const f = flicker(t, i);
-              glows[i].alpha = f;
+              const { g, hearth } = glows[i];
+              const f = hearth ? hearthFlicker(t) : flicker(t, i);
+              g.alpha = f;
               // Breathing the radius as well as the alpha is what stops it reading
-              // as a light on a dimmer.
-              glows[i].scale.set(0.9 + f * 0.18);
+              // as a light on a dimmer. The hearth breathes a fraction of what a
+              // candle does: a flame moves, a fire's whole light does not.
+              g.scale.set(hearth ? 0.96 + f * 0.06 : 0.9 + f * 0.18);
             }
             driftMotes(motes, tick.deltaMS, view);
             dust.clear();

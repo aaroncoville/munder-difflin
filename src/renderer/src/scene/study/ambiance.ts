@@ -123,6 +123,59 @@ export function flicker(t: number, i: number): number {
   return 0.75 + 0.15 * a + 0.1 * b;
 }
 
+/**
+ * The hearth's brightness at time `t`.
+ *
+ * A separate curve from `flicker`, because a fire is not a big candle. The
+ * candle curve swings 0.5 → 1.0, which is a doubling of brightness, and on the
+ * hard-edged disc the hearth used to be drawn as it read as a circle being
+ * switched on and off over the grate. Firelight moves constantly and moves
+ * very little: the band here is a tenth as wide, the periods are seconds rather
+ * than fractions of one, and three superposed waves at unrelated frequencies
+ * keep it from settling into a loop the eye can find and start counting.
+ *
+ * Bounded to [0.80, 1.00] by construction — the amplitudes sum to 0.10 either
+ * side of 0.90 — and the largest step between two frames at 60Hz is under
+ * 0.003, which is what "no blink" means as a number.
+ */
+export function hearthFlicker(t: number): number {
+  return 0.90
+    + 0.045 * Math.sin(t / 1130)
+    + 0.032 * Math.sin(t / 701 + 1.3)
+    + 0.023 * Math.sin(t / 389 + 2.7);
+}
+
+/** How much wider than a candle the hearth throws its light. The fire has to
+ *  spill past the firebox it is painted inside, or it reads as a mark on the
+ *  painting rather than as the thing lighting the room. */
+export const HEARTH_SPREAD = 2.4;
+
+/**
+ * One glow, as nested rings from the outside in.
+ *
+ * A radial falloff without a gradient texture to keep per room. Additive
+ * blending sums the rings, so a quadratic alpha ramp over evenly spaced radii
+ * integrates to a soft centre-weighted glow — where a single filled circle,
+ * however translucent, has an edge, and an edge is what makes a light look
+ * like a sticker laid on the paint.
+ *
+ * The outermost ring is the radius asked for and is nearly invisible; the
+ * alphas sum to the brightness at the centre.
+ */
+export function glowRings(radius: number, steps = 8): { r: number; alpha: number }[] {
+  const CENTRE = 0.55;
+  let weight = 0;
+  for (let i = 1; i <= steps; i++) weight += i * i;
+  const rings: { r: number; alpha: number }[] = [];
+  for (let i = 0; i < steps; i++) {
+    rings.push({
+      r: radius * (1 - i / steps),
+      alpha: (CENTRE * (i + 1) * (i + 1)) / weight
+    });
+  }
+  return rings;
+}
+
 /** The lights a room actually draws, capped. */
 export function lightsFor<T>(points: readonly T[]): T[] {
   return points.slice(0, GLOW_CAP);

@@ -254,3 +254,67 @@ test('the layer initialises pixi through the guard, not around it', () => {
   assert.match(layer, /initialize\(\s*\(\)\s*=>\s*application\.init\(/,
     'init is awaited outside the guard that defers destruction until it settles');
 });
+
+test('the hearth breathes rather than blinks', () => {
+  // The hearth used to be the candle curve on a hard-edged disc: alpha swinging
+  // 0.5 → 1.0 is a two-to-one change in brightness, and on a shape with an edge
+  // that reads as a circle being switched on and off rather than as a fire.
+  // A fire's light moves, but it moves a LITTLE, and it never goes out.
+  const samples = [];
+  for (let t = 0; t < 20000; t += 16.7) samples.push(A.hearthFlicker(t));
+  assert.ok(samples.every((v) => v >= 0.78 && v <= 1),
+    `the hearth left its band (${Math.min(...samples).toFixed(3)}..${Math.max(...samples).toFixed(3)})`);
+  assert.ok(Math.min(...samples) < 0.88, 'the hearth is a lamp, not a fire');
+
+  // No step between two frames big enough to read as a flash. This is the
+  // assertion the old behaviour fails on hardest, and it is a property of the
+  // curve rather than of how it happens to be drawn.
+  let jump = 0;
+  for (let i = 1; i < samples.length; i++) jump = Math.max(jump, Math.abs(samples[i] - samples[i - 1]));
+  assert.ok(jump <= 0.012, `the hearth jumped ${jump.toFixed(4)} between two frames`);
+});
+
+test('the hearth never settles into a period you can count', () => {
+  // Superposed sinusoids at unrelated frequencies. One period that repeats
+  // inside twenty seconds is a loop the eye finds, and once found the fire
+  // stops being a fire.
+  const at = (t) => A.hearthFlicker(t);
+  for (let period = 200; period <= 20000; period += 200) {
+    let same = true;
+    for (let t = 0; t < 4000 && same; t += 97) {
+      if (Math.abs(at(t) - at(t + period)) > 1e-3) same = false;
+    }
+    assert.ok(!same, `the hearth repeats every ${period}ms`);
+  }
+});
+
+test('a glow has a soft edge, because a hard one is a sticker', () => {
+  // The falloff is built as nested rings rather than one filled circle: this is
+  // what makes it a glow and not a disc of colour, and it is arithmetic, so it
+  // is pinned here rather than eyeballed in a canvas.
+  const rings = A.glowRings(40);
+  assert.ok(rings.length >= 5, 'too few steps to read as a falloff');
+  for (let i = 1; i < rings.length; i++) {
+    assert.ok(rings[i].r < rings[i - 1].r, 'the rings are not nested outside-in');
+    assert.ok(rings[i].alpha > rings[i - 1].alpha, 'the falloff does not fall off');
+  }
+  assert.equal(rings[0].r, 40, 'the outermost ring is not the radius asked for');
+  assert.ok(rings[0].alpha <= 0.05, 'the outer edge is visible as an edge');
+  // Additive blending sums these, so the sum is the brightness at the centre.
+  const centre = rings.reduce((s, x) => s + x.alpha, 0);
+  assert.ok(centre > 0.3 && centre <= 1, `the centre sums to ${centre.toFixed(3)}`);
+});
+
+test('the hearth throws further than the firebox it sits in', () => {
+  assert.ok(A.HEARTH_SPREAD > 1.5,
+    'the hearth glow is no wider than a candle — it cannot read as a fire lighting a room');
+});
+
+test('the hearth is drawn as a glow, and driven by its own curve', () => {
+  const layer = strip(read('src/renderer/src/scene/study/AmbianceLayer.tsx'));
+  assert.match(layer, /glowRings\(/, 'the glows are still single filled discs');
+  assert.match(layer, /hearthFlicker\(/, 'the hearth still flickers on the candle curve');
+  // An ember core under the halo: the hearth is the one light in the room with
+  // a source you can see, and a flat wash over it loses that.
+  assert.match(layer, /EMBER/, 'the hearth has no ember tint');
+});
