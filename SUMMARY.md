@@ -1,447 +1,324 @@
-# Sixth History — Milestone 3 (The Inhabited House)
+# Sixth History — the inhabited house, polish round
 
-Branch `agent/worker-leo`, cut from `3d313d4d`. Ten commits: one for the plan,
-one per implementation task, and the portrait pack landing as three.
+Branch `agent/worker-medusa`, cut from `782c6657` (the merged Milestone 3 house).
+Twelve commits. Eleven of them answer a specific complaint from the person who
+sat in front of the running app; the twelfth is the test harness change one of
+them needed.
 
-    99651f1d docs(study): the implementation plan for the inhabited house
-    8e232cbd feat(i18n): the house speaks in its own register under the occult theme
-    cf26dd7a feat(theme): a candlelit palette for the terminal and the editor
-    096400a2 feat(icons): a gilt deco redraw of the icon set for the occult theme
-    bb6231a9 feat(study): candlelight, dust and hearth-smoke over the painted rooms
-    cac1c4a0 feat(study): the commissions on the card table open the card they name
-    5a57fcd4 feat(study): finished work darkens a book on the shelf wall
-    12ec2ec8 chore(study): the licensed portraits and their attribution
-    f3fa4f14 feat(study): an assistant named for a portrait wears it
-    a7a27b57 feat(study): choosing a face names the assistant it belongs to
+    b2e3a917 fix(theme): the candlelit terminal was a second near-black, not a second colour
+    80127e66 fix(study): the hearth read as a circle blinking on the fire
+    91e8e597 fix(study): one three-room storey shrank every room in the house
+    19ab1fea fix(study): the commissions on the card table could not be read
+    e77295ba fix(study): an archived volume was one more painted spine
+    67744e7c fix(study): a finished commission left no mark on the shelf
+    8f821259 feat(study): the floor plan may stand an anchor inside another room
+    abc8fbbc fix(study): a room apiece for the props cost the whole house a storey
+    2d984f10 fix(study): the count of waiting letters was printed at two pixels
+    42be2026 fix(summon): a face named the assistant after a file, in lower case
+    332c86c3 test: the component host could not restage the world or hold a portal
+    2cb8131c fix(study): the same assistant had two faces, one above the other
+
+One theme runs through five of them and is worth stating once rather than five
+times. **The house is laid out at its natural size and letterboxed into the
+window as ONE scaled drawing.** On a 1280x720 floor that scale is around 0.21.
+So any length written in CSS pixels inside the house — a font size from a token,
+a padding, a 1px inset edge — is not the length it says: it arrives at a fifth of
+it. Three separate complaints below ("cannot read the commissions", "cannot tell
+if a book is darkened", "the letter count is unreadable") are the same defect
+wearing three costumes, and the fix is always the same shape: size the thing as a
+fraction of the panel it is painted on, so it is scaled by exactly the number
+that scales everything else.
+
+---
+
+## The seven findings
+
+### 1. "the terminal looks the same black as before"
+
+`b2e3a917`. Not a wiring bug — the selector, the palette map and the effect that
+writes `term.options.theme` were all live. The occult ground was cloned from
+`--cth-paper-100`, a blue-violet `#262134`, which measures **1.11:1** against the
+dark theme's `#1A1A1F`. That is not a subtle difference, it is no difference.
+
+The theme's lightest surface is now a warm parchment `#312717` — one warm surface
+in an otherwise ink-blue ramp, deliberately, because it is what the terminal and
+the editor sit on and candlelight on parchment is what the theme depicts. 1.18:1
+against the dark ground *with a full warm/cool hue flip*, 11.2:1 under body ink,
+3.05:1 under border ink, so the theme's 3.0 floor for structural borders holds.
+ANSI black moved one step down so a program painting a black cell dims the
+parchment instead of punching a cold hole in it.
+
+The test asserts the property that was broken — that the two grounds are far
+enough apart to be *seen* as different — and reads the dark ground out of the
+view that paints it, so a constant shared with the implementation cannot hide the
+implementation moving.
+
+### 2. "the hearth ambiance is sort of just a flashing circle on the fire?"
+
+`80127e66`. It was one filled circle with a hard edge on a candle's brightness
+curve, which swings 0.5 to 1.0. Doubling the brightness of a shape *with an edge*
+is precisely what an eye reads as blinking.
+
+Three changes, all in what the light **is** rather than how often it is redrawn:
+glows got a falloff (`glowRings`, nested circles with a quadratic alpha ramp that
+additive blending sums into a soft centre-weighted glow — the edge is what made
+it read as applied rather than emitted); the hearth got its own curve
+(`hearthFlicker`, a band a tenth as wide as a candle's, 0.80–1.00, never zero,
+three superposed waves at unrelated frequencies so it never settles into a
+countable loop — largest step between two frames at 60Hz is under 0.003); and it
+throws further than the firebox, at 2.4 candles wide, with a hotter ember core so
+the light has a visible source. A flame moves; a fire's whole light does not.
+
+Asserted as arithmetic: the band it stays inside, the largest per-frame step, and
+that no period under twenty seconds repeats it.
+
+### 3. "the rooms are too small… maybe not have 3 in one row" and "cleaner wall borders/gutters between the rooms"
+
+`91e8e597`. The bottom storey held three rooms, which made the building 4728 wide
+by 3408 tall; every other storey held one or two and was centred inside that
+width with dead floor either side (the top storey used a third of it). Because
+the whole house is scaled by one number, **one three-room storey was shrinking
+every room in the building.**
+
+Two rooms per storey, five storeys, every storey spanning the house exactly:
+3190 by 3468, and a room goes from a third of the house's width to a half — 21%
+larger on a 900x800 floor.
+
+The gutters were a CSS `gap`, which paints nothing: whatever was behind the house
+showed between the rooms, so the cross-section had floors and no walls at all.
+Every division is now a painted band from one `MASONRY` style at one thickness —
+between storeys, between rooms, and around the outside — 18px so it reads at the
+scale the house is drawn at, with a repeating course pattern, which is what stops
+a flat bar reading as another gap. The outer wall is added into the natural size
+the letterbox measures, so the fit and the element's own width cannot disagree
+about whether the wall is inside the number.
+
+### 4. "clicked commissions open but I can't really see what they are"
+
+`19ab1fea`, and `2d984f10` for the same defect in the one place it was left.
+
+The cards were dealt into the painted baize itself, 337 by 50 panel pixels, so
+eight of them came out about **twenty by six screen pixels**; the number on each
+was a fixed 12px token, delivered at three or four. The dealing area is now a
+rectangle the cards can stand in (525 by 202 panel pixels, resting on the near
+half of the table and rising into the panelling behind it — what a card standing
+on a table looks like drawn straight on), a dealt card is 100 by 76, and the
+number is a fraction of the card rather than a token.
+
+The faces had to change with it: the number on a blocked card cleared 3.2:1 on
+the coral and **no ink in this palette clears 4.5:1 on it** — a saturated mid-tone
+leaves no room. Each card is now a deep paper ground with a parchment number at
+8.5:1 or better, carrying its status colour at full strength as a bar down its
+left edge, which reads faster at this size than a tinted rectangle did anyway.
+The faces are exported so the test measures every pair's contrast against the
+stylesheet rather than trusting that they look all right.
+
+`2d984f10` is the petitions badge: `--cth-text-display-sm` is 8px, delivered at
+**2.1**, with its 1px/5px padding at a quarter of a pixel. Now 45 panel pixels on
+an 87-pixel plate, arriving at 11.7 on the same floor. The test asserts the size
+is derived from the plate at all, and that what it comes to on a real window
+clears eight pixels — sizing it from a token again fails both.
+
+### 5. "I don't really know if the books are getting filled or darkened"
+
+`e77295ba`, and `67744e7c` for a second defect found underneath it.
+
+The design assumed the shelves were painted pale, so that darkening one volume
+would make it stand out. They are not: `room-shelves.png` averages a luma of
+**61 out of 255**, and the wall is fifty dark varied spines. Multiplying one by a
+mid-tone accent moved its slot 55% for an assistant and 40% for a commission —
+on that wall, not a mark, just another book. The volume was also 44 panel pixels
+wide, delivered at about ten: the same width as the spines painted either side.
+
+The tint moved to the deep end of the same two colour families (about 80% down —
+a hole in the shelf rather than another book in it), the volume got wider and
+taller than a painted spine, and the gilt spine edge — a 1px inset shadow the
+scale erased entirely — became a proportional band standing **outside** the
+darkening as a sibling. `mix-blend-mode` makes the patch its own blend group, so
+gilt drawn inside it was being multiplied along with everything else, and
+multiply cannot lighten: the one bright mark on the wall was coming out as
+another shade of the dark it existed to stand against.
+
+`67744e7c` is the second defect. `ArchivedThing['kind']` is
+`'commission' | 'assistant'` and the tint table was keyed `assistant` and
+`thing`, so a completed commission looked up `undefined` and got no background at
+all — an unpainted rectangle with gilt floating on nothing. The compiler had
+already caught this; the suite had not, **because the test read the tint table's
+own keys back out of it and measured whatever it found**, which asks a table
+whether it agrees with itself. It now takes the kinds from `archiveOf`, the
+projection that actually shelves things, and asserts a tint exists for each
+before measuring. Two lines of production code, and the test goes red on the old
+ones.
+
+### 6. "we should capitalize the first letter of the names"
+
+`42be2026`. Summoning from the wall of painted faces put `leo` in the roster;
+summoning from the pixel cast beside it put `Jim`. Same control, same field, two
+conventions — and the lower-case one then appeared on the card, in the strip, and
+in every message the assistant sent.
+
+The pack is named for its files, which are lower case because files are, and the
+picker handed that straight through. It is the right payload — naming the
+assistant after the portrait is the entire mechanism by which it then wears it —
+but a file name is not a name. `portraitLabel` capitalises the first letter, and
+only the first, because every face in the pack is one word.
+
+Matching deliberately did not change: `portraitNamed` already lower-cases what it
+is given, so the capital cannot cost anybody a face, including assistants already
+on the floor summoned in lower case. The test holds both spellings against the
+same painting — the assertion that fails if the capital leaks into the lookup.
+
+### 7. "the footer row portraits still show the old pictures"
+
+`2cb8131c`, with `332c86c3` underneath it.
+
+The card strip along the foot of the window was never part of the Study change
+and kept drawing recolored pixel sprites, so a worker on the painted floor and
+the same worker's card in the strip showed **two different people at once, one
+above the other**.
+
+The rule for which painted face an assistant wears is not duplicated here.
+`portraitFor` owns it — named for a face wears it, anyone else is dealt one from
+their id, the orchestrator's face reserved — and the floor already calls it. The
+new `AgentFace` is the one place both surfaces ask, because two call sites each
+picking a portrait is how they came apart to begin with. Light and dark fall
+through to the sprite they drew before, at the scale they drew it. The card now
+takes the agent's id: not displayed, but it is what a face is dealt from when the
+name matches nothing in the pack, and without it every stranger in the strip
+lands on the same portrait.
+
+`332c86c3` is the harness change that made this testable at all, and it is two
+limits that stop a component being *loaded*, not two awkward assertions. A module
+that reads its state once as it is evaluated — the app theme, out of localStorage
+— can only be observed in one state, because the component reaches it through its
+own cached import; `loadTs.reset()` clears the graph so the next load rebuilds
+it, which is what lets one file assert both the painted theme and the pixel one.
+And requiring any component that portals failed outright, because the real
+react-dom reads React's internals on load and the host seeds a hand-written React
+that has none; a portal is a placement, not a transformation, so with no document
+to place anything in its children are the answer.
+
+---
+
+## The refinement that arrived mid-round
+
+Finding 3 was answered twice. Two rooms per storey (`91e8e597`) made every room
+half the house's width instead of a third, but it also left the building five
+storeys tall — and four of the ten rooms held nothing but one clickable prop: a
+stack of letters, an open almanac, a baize table, a fire.
+
+`8f821259` and `abc8fbbc` are that second answer, and they are deliberately two
+commits: the mechanism, then the move.
+
+A room may now declare `props` — an anchor kind plus the berth in *this* panel it
+stands on. A prop berth is normalized and checked against its host's panel like
+any other and joins the house-wide berth-id list, because a prop is a place in
+the painting and two places sharing an id is the same silent collision it always
+was. The singleton rule counts an anchor wherever it stands, as a room of that
+kind or as a prop on somebody's wall, so the plan can gather its functions into
+one room without losing or duplicating something the scene navigates from.
+`anchorSeat` replaces `rooms.find(kind)`: a room-kind anchor seats at its first
+berth, which is where its badge already went, so the two cases are one lookup.
+
+Then the three function rooms whose props can share a wall moved into one
+parlour, on the panel that was the card table. The commissions stay on the baize
+the painting puts there, the petitions stack on the cabinet top against the far
+wall, and closing time became the door out of the room — which is what closing
+time is.
+
+Two rooms fewer, so four storeys instead of five: **3190 by 2778, and 0.259
+instead of 0.208 on a 1280x720 floor. Everything in the house is 24.8% bigger for
+it.** A dealt commission goes from 20.7x15.9 screen pixels to 25.9x19.9 and its
+number from 7.9 to 9.9; an archived spine goes from 13.7x27.9 to 17.1x34.8. The
+reading rooms gain the same quarter, which was the point.
+
+The parlour is itself a button, so a prop standing on it has to stop its click,
+or pressing the door would also open the board behind the window it just closed;
+the count badge stops taking the pointer for the same reason, or the middle of a
+prop would be the one part you cannot press.
+
+This is composed over an existing painting — the door and the cabinet are
+furniture being *read* as controls rather than painted to be them. A panel
+painted for three props would seat them better, and the plan already supports it.
+
+---
 
 ## Verification
 
-Measured on this branch's tip, in this checkout:
+Every number below was measured in this checkout, with `node_modules` symlinked
+from the base clone. The suite's real exit code is reported, not a summary line.
+
+| ref | | tests | pass | fail | cancelled | skipped | exit |
+|---|---|---|---|---|---|---|---|
+| `782c6657` | the round's base | 1074 | 1037 | 35 | 1 | 1 | 1 |
+| `42be2026` | before the last two commits | 1097 | 1059 | 36 | 1 | 1 | 1 |
+| `2cb8131c` | this tip | 1102 | **1064** | 36 | 1 | 1 | 1 |
 
 ```
-node --test test/*.test.cjs
-# tests 1056 · pass 1055 · fail 0 · cancelled 0 · skipped 1     (exit 0)
-
 npm run typecheck    # node + web, 0 errors
-npm run build        # succeeds; 48 portraits emitted as fingerprinted assets
+npm run build        # exit 0
 ```
 
-Two things about that line need saying plainly, because a green number nobody
-can reproduce is worth less than a red one.
+**The failure set at this tip is identical to `42be2026`, name for name** — the
+two lists were diffed, not eyeballed. The five new passes are the five cases in
+`test/agent-face.test.cjs`.
 
-**The baseline in the plan does not reproduce here.** The plan measured
-`962 of 998, with 35 failures` on `3d313d4d`, the 35 being memory and hindsight
-backend suites that need a server. In this environment those suites now pass —
-`memory-backend-conformance`, `memory-hindsight-status`, `hindsight-adapter`
-and the rest all ran and were green — so the run above is *stronger* than the
-recorded baseline, not weaker. The gate's "the same 35 pre-existing failures
-and no others" could therefore not be compared as written; what can be said is
-that there are **no failures at all**, and the exit code is 0.
+**The 35 failures on the round's base are not this round's, and they are not
+"tests pass" either.** They are, by suite: 26 in the memory / hindsight backend
+conformance suites, which need a server this shell has none of; 3 tilde-expansion
+cases (`statAbs`, `ensureHarnessHome`); 3 `forgetAgent` cost-lifetime cases; one
+hook-with-no-node-on-PATH case; and `test/proc-kill.test.cjs`, which is cancelled
+rather than failed. They are unchanged, one for one, at all three refs.
 
-**The one skip is deliberate and named.** `the pack is the pool a worker is
-summoned from` cross-checks the portrait names against the spawner's name pool,
-which lives in a different repository. It runs when pointed at one:
+### The last fix was mutated to prove its test bites
 
-```
-STUDY_PORTRAIT_NAME_POOL=<path to the pool> node --test test/study-portraits.test.cjs
-# tests 14 · pass 14 · fail 0 · skipped 0
-```
+The earlier commits record their own red-first evidence in their messages; that
+is their authors' claim, not a measurement repeated here. For `2cb8131c`, four
+mutations were run against a green suite in this checkout, and each took down
+exactly the cases it should and no others:
 
-That was run against the real pool file and passes: all 47 pool names have a
-face, and the pack holds nothing but those 47 plus the one reserved portrait.
-The in-repository half of the same rule — no aspect/faction iconography, every
-name typeable — is a separate test with no skip on it.
-
-## Per task
-
-### 1 — `en-SH`, the house speaks (`8e232cbd`)
-
-A **partial** locale, not a fork of the strings: it re-voices the spec's
-glossary nouns and the sentences they appear in, and every other key falls
-through to `en` by i18next's own `fallbackLng`. A key added upstream tomorrow
-costs this locale nothing. Flavour lives in nouns and never in what a control
-does — `Save` is still `Save`.
-
-### 2 — The candlelit terminal and editor (`cf26dd7a`)
-
-The obvious fix was the wrong one. `terminalThemeFor()` answers a question
-about **external** programs: it is written to running programs as DEC mode 2031
-(`CSI ? 997 ; 1 n` / `; 2 n` — the protocol has two values), and it is
-persisted as a config field the main process types and validates as
-`'light' | 'dark'`. Told `occult`, a spawned agent would act on a value its own
-schema rejects. So the candlelight went into a **new** selector,
-`terminalPaletteFor()`, read only inside the renderer. A TUI still hears
-`dark`, which the candlelit palette is.
-
-Monaco had only ever registered one theme, so a cream page opened in the middle
-of a night palette; it now gets the candlelit one under occult and dark keeps
-exactly what it had.
-
-### 3 — The deco icon set (`096400a2`)
-
-A second table of the same twenty-four names, same 16×16 viewBox, same
-`IconDef` shape, same `currentColor`. `Icon` picks the table by theme, so all
-~200 call sites are untouched and the pixel set stays byte-identical for light
-and dark.
-
-The rendering hint travels with the table, which is the easy thing to miss:
-`shapeRendering="crispEdges"` is what stops a 16px pixel glyph shimmering, and
-does the opposite to a swept curve — it turns it into a staircase. The pixel
-table keeps the hint; the deco table renders without it.
-
-### 4 — The ambiance layer (`bb6231a9`)
-
-Flicker, dust and hearth-smoke over the painted rooms. All the arithmetic is
-pure functions in `ambiance.ts`, because a particle field is impossible to
-check inside a renderer and trivial to check outside one. Three load-bearing
-properties: seeding is deterministic from the room id (a room that reseeds every
-render is a strobe), drift wraps rather than leaking (a leaking field looks
-right for a minute and is empty after an hour), and both counts are capped.
-
-`pixi` is a dynamic import inside the effect, so nobody outside this theme
-fetches it. Every `await` is followed by a liveness check and the application is
-destroyed from either side of the window — a leaked WebGL context per room per
-resize is a failure this codebase has had before. The canvas is unclickable by
-two independent mechanisms, because a canvas that took events would swallow the
-whole scene while looking perfectly correct.
-
-### 5 — The shelf archive (`5a57fcd4`)
-
-Concluded commissions and departed assistants darken a book on the shelf wall.
-The shelves are painted pale, so a book lights up by *darkening* — multiply in a
-warm ink with a gilt hairline — which also means it cannot cover the painting it
-points at, or sit visibly wrong when the art is repainted. Positions come from
-the room's own marked points, so a book stands on a shelf in the picture rather
-than at a guessed coordinate.
-
-The bound is where the honesty is; see the parked question below.
-
-A filesystem trap is recorded in that commit and is worth repeating: the pure
-half had to be `shelfBooks.ts`, not `shelfArchive.ts`, because next to
-`ShelfArchive.tsx` on a case-insensitive filesystem the two are the same path
-and a resolver preferring `.ts` hands the importer the wrong one. It failed
-silently, with the suite green, and would have worked on Linux.
-
-### 6 — Commissions you can pick up off the baize (`cac1c4a0`)
-
-The card table's four column totals become the commissions themselves, dealt
-onto the painted baize and numbered as the board numbers them. A click opens
-that commission through the same app-wide `openTaskDetail` overlay a kanban card
-opens — the Study is another way of looking at the same house, not a second
-house with surfaces to keep in step.
-
-The subtlety: a card sits *inside* a room, and the room is itself a button that
-opens the board. Without stopping the event, one click does both and the board
-opens on top of the detail. The test asserts the room handler did **not** fire,
-because the weaker assertion passes with the bug present.
-
-Bounded at eight — not a performance number, but how many cards fit on the
-painted table before they stop being separately clickable.
-
-### 7 — The portrait pack (`12ec2ec8`, `f3fa4f14`, `a7a27b57`)
-
-**The art (`12ec2ec8`).** The 48 people cards of the community pack, plus the
-regenerated static index the bundler needs to emit them. The pack's aspect,
-faction and element cards are deliberately excluded: they are iconography, and
-an assistant wearing the Moth aspect card is not a picture of anybody. Every
-file has a row in `ATTRIBUTION-SIXTH-HISTORY.md` — obligation 6 of the licence
-— and a test holds the table against the directory in **both** directions, so a
-portrait cannot ship without a row and a row cannot outlive its file.
-
-**The name rule (`f3fa4f14`).** An assistant called `leo` could not wear
-`leo.png`: each import yields a fingerprinted bundle URL and the filename is
-gone by the time the app sees it. The generator now emits `PORTRAIT_NAMES`
-beside `PORTRAIT_FILES`, index for index, and `portraitFor` matches the name
-first and falls back to the id hash second. The hash stays underneath, because
-an assistant named something outside the pack still needs a face and needs the
-same one on every render.
-
-`fascination` is reserved for the orchestrator in both directions: the
-orchestrator always wears it, and it is held out of the set the hash deals from
-so nobody is dealt the face of the one running the house. That rule needs to
-know *which* card is the orchestrator's, and nothing else in the projection
-distinguishes it, so `SceneAgent` now carries the flag through to the card.
-
-**The picker (`a7a27b57`).** Under occult the summoning screen's Character row
-becomes the portrait wall, and choosing a face sets the assistant's name to the
-portrait's — the same thing clicking a pixel cast member already does with its
-display name. The picker hands back the **name**, not a file, because the name
-is what the assignment rule reads. The pixel cast is untouched for the other
-themes, the accent default stays `'sky'` as the dispatch required, and the
-reserved face is not on the wall.
-
-## Break-it-to-prove-it
-
-Each of these was applied, run, and reverted:
-
-| Change | Test that went red |
+| mutation | red |
 |---|---|
-| Delete one row from the attribution document | `every shipped portrait is recorded, because that is the licence` |
-| Make `portraitFor` ignore the name and always hash | `an assistant named for a portrait wears it, whatever its id`, `an assistant named for a portrait wears that portrait` |
-| Stop the scene telling `portraitFor` which card is the orchestrator's | `the orchestrator wears the face reserved for it` |
-| Make the picker hand back a file instead of a name | `choosing a face hands back the name it belongs to` |
+| never paint — ignore the theme | the three painted cases |
+| paint under every theme | the light/dark case only |
+| deal strangers by name instead of id | the stranger case only |
+| the strip goes back to `SpritePortrait` directly | the wiring case only |
 
-## Deviations
+---
 
-1. **The scene's "drop a portrait into the pack" test was replaced, not kept.**
-   It proved the scene consulted the mapping by copying a file into the pack at
-   runtime, regenerating the index and reading the cards — a dance whose entire
-   reason was that the shipped pack was empty and could not be asserted
-   against. With 48 portraits in it that premise is gone, and worse, it mutates
-   a licence-governed directory while other test files read the same directory
-   concurrently, which would have made the attribution test flaky. It is now two
-   assertions on the bundled pack (`the cards wear the shipped pack`, then `an
-   assistant named for a portrait wears that portrait`), which are stronger and
-   mutate nothing.
+## One regression this round introduced, still open
 
-2. **The pool cross-check is opt-in via `STUDY_PORTRAIT_NAME_POOL` rather than
-   an absolute path in the test.** The plan asked the test to assert against the
-   spawner's name pool file. That file lives outside this repository, and a
-   hardcoded absolute path to it would fail on every machine but one — and is
-   exactly the kind of environment-specific reference the contributing rules
-   forbid. The rule is split: the in-repository half (no iconography, every name
-   typeable) always runs; the cross-repository half runs when pointed at a pool.
-   Evidence that it passes against the real pool is in Verification above.
+`test/occult-art-sheets.test.cjs` — *"every painted panel the house names has a
+sheet, and every sheet a panel"* — **passes on `782c6657` and fails from
+`abc8fbbc` onwards.** It is the one failure in the 36 that is ours.
 
-3. **The commit for the art regenerates the index with the generator as it then
-   stood** (files only), and the following commit adds the names. Splitting it
-   that way keeps every commit in the stack green rather than leaving one that
-   ships portraits the index does not list.
+The consolidation folded the hearth and the writing desk into the parlour as
+props, so `room-hearth.png` (1.1MB) and `room-writing-desk.png` (1.6MB) are no
+longer painted by any room in `room.json`, while both PNGs and their prompt
+sheets are still in the tree. The test asserts both directions of that
+correspondence, and the reverse direction is now false.
 
-4. **Task 3 deviation of record:** the cog glyph is generated eight-fold rather
-   than drawn by eye; hand-placed lobes read as a splat at 16px, which is the
-   size that actually matters.
+That is a real finding, not a stale test: 2.7MB of paintings ship in every build
+for rooms that no longer exist, and two prompt sheets describe panels the house
+does not use. **The remedy is a decision rather than a repair** — either the two
+panels and their sheets come out (they stay recoverable from history, and the
+sheets record model, prompt and reference digest, so they can be regenerated), or
+a later art pass repaints a purpose-built parlour panel and they are superseded
+then. Nothing was deleted here, because deleting approved artwork on a green-test
+errand is the wrong trade.
 
-## Rework round
+---
 
-Three review findings, one commit each, each with its test written first and
-then broken to prove it protects something.
+## What cannot be verified in this environment
 
-    9d78693a fix(study): the reserved portrait cannot be claimed by naming yourself after it
-    b1dbdd26 fix(i18n): the house register also answers a language change, not only a theme
-    577117a6 fix(study): a room whose ambiance fails to load is a room without ambiance
+Every one of the seven findings was reported from the running app, and six of the
+seven are visual. Contrast ratios, panel luma, scale arithmetic and per-frame
+step bounds are all asserted numerically in the suite, but **"is the fire still
+blinking", "can you read the card now" and "does the strip show the same face as
+the floor" need a GPU, a running Electron and an eye.** The before/after evidence
+for those is a screenshot pair per finding, at one window size and one theme, and
+it has to be captured by someone with the app in front of them.
 
-### 1 — The reserved portrait was bypassable by name
-
-`fascination` was held out of the set the hash deals from, but the name rule
-runs *first* and matched against the complete pack. An assistant named
-`fascination` by hand — the summoning screen takes a typed name — matched it
-directly and the reservation never came into it. The name lookup now searches
-the same dealable list the hash deals from, so the one exclusion covers both
-halves of the assignment and the reserved name falls through to the ordinary
-deal like any other stranger.
-
-### 2 — The house register only answered the theme
-
-The register is a function of two things, the theme and whether the reader is
-in English, and the effect depended on the theme alone. Switching the app to
-English from Settings while the occult theme was already active left the
-language at plain `en` until a theme toggle or a remount happened to re-run
-the effect. The rule now also runs on i18next's `languageChanged`.
-
-It settles rather than spinning because `voiceFor` returns null once the
-language is already the one it would ask for — that null is the fixed point,
-and answering a change costs at most one further hop. The test counts those
-hops rather than trusting the argument.
-
-The subscription was lifted into `watchVoice(theme, instance)` so the reaction
-itself is testable against a stand-in, not just the pure rule underneath it. A
-source assertion holds the hook to calling it, because a hook that
-re-implemented the rule in its own effect would pass every other test on the
-page while reacting to nothing.
-
-### 3 — The ambiance load had no rejection handler
-
-Two awaits in the pixi build-out can reject outside this app's control: the
-dynamic `import('pixi.js')` and `Application.init` on a machine with no working
-WebGL context. The body was fire-and-forget, so either surfaced as an unhandled
-rejection — an error report nobody can act on, and fatal to the renderer under
-a host that treats unhandled rejections as such. It now starts through
-`startAmbiance`, which catches and says nothing: the room, its cards and its
-commissions were never waiting on the canvas, and the failure is visible as the
-candles not lighting.
-
-### 4 — The ambiance layer leaked what it failed to build
-
-Catching the rejection silently (above) fixed the crash and left the leak. The
-`Application` was constructed, then `init` was awaited, then forty lines of
-setup ran, and only after all of that was the handle the cleanup destroys
-through assigned. Anything failing in that window — `init` rejecting on a
-machine with no GL context, having already allocated the canvas, or any of the
-setup throwing — left the handle null: the catch said nothing, the cleanup had
-nothing to destroy, and a WebGL context and a ticker survived the room. Once
-per room, per resize, per retry.
-
-Construction and setup now go through `buildOrDestroy`, which hands the caller
-its handle *before* the first await and destroys through that same handle if
-the build throws. Destruction is idempotent, because the unmount that lands
-between the rejection and the catch reaches the same resource from the other
-side, and destroying a pixi `Application` twice is an error of its own. There
-is now exactly one `.destroy(` call site in the file, which is what makes
-exactly-once checkable rather than asserted. One behaviour rides along: the
-unmounted-mid-`init` path used to destroy with `{ children: true }` and now
-uses the same `{ children: true, texture: true }` as every other path.
-
-### Break-it-to-prove-it
-
-| Change | Test that went red |
-|---|---|
-| Restore the whole-pack name lookup for non-god assistants | `a worker named for the reserved face does not get it` |
-| Drop the `languageChanged` subscription | `choosing English inside the house is answered with the house register`, `answering a language change does not start one`, `the watcher lets go when the app does` |
-| Make `voiceFor` offer the register to any language under occult | `a language that is not English is left alone, theme or no theme`, plus the pre-existing rule test |
-| Drop the `.catch` from `startAmbiance` | `pixi failing to load costs the room its ambiance and nothing else` |
-| Drop the `held.release()` from `buildOrDestroy`'s catch | `a build that fails after constructing still destroys what it constructed` |
-| Make `release` non-idempotent | both of the above, plus `a build that succeeds keeps its application until cleanup asks for it` |
-| Publish the handle after the build instead of before it | `a build that fails after constructing still destroys what it constructed` |
-
-### Verification, and a baseline that moved
-
-```
-node --test test/*.test.cjs
-# 9276936f (the ref this round started from): 1019 of 1056, 35 failures, 1 skip
-# 577117a6:                                  1027 of 1064, 35 failures, 1 skip
-# bd00fb90 (the ref this fix started from):  1027 of 1064, 35 failures, 1 skip
-# this tip:                                  1030 of 1067, 35 failures, 1 skip
-# identical failure set throughout; every new test is a new pass
-
-npm run typecheck    # node + web, 0 errors
-npm run build        # succeeds
-```
-
-The 35 are the memory and hindsight backend suites, which need a server this
-environment does not have running today. They are **not** the zero recorded
-further up this file: that run was made when the server was reachable. Both
-numbers are honest and neither is reproducible without knowing which. The
-comparison that matters is the one above — the same set of failures on both
-refs, measured minutes apart in the same shell.
-
-One environment note for whoever runs this next: an isolated worktree has no
-`node_modules`, and here the symlink into the base checkout was being removed
-by something outside this session several times an hour. Every run above was
-made with the link re-created immediately beforehand, and the suite runs also
-carried `NODE_PATH=<base>/node_modules` so a mid-run removal could not turn
-into a hundred phantom failures. A bare `node --test` in a worktree that has
-lost its link reports whole files as failures with `Cannot find module
-'typescript'` — which looks nothing like a missing symlink.
-
-## Rework round, second pass
-
-One review finding, one commit — the tip of this branch:
-
-    fix(study): an unmount mid-init destroyed an uninitialised Application
-
-### 5 — The handle published before `init` could not honour a release
-
-Handing the caller its handle before the first await (fix 4 above) closed the
-leak and opened a smaller hole underneath it, because it assumed a constructed
-`Application` can be destroyed. It cannot. In pixi v8 the constructor assigns
-only `stage`; `init` is what assigns `this.renderer`; and `destroy` ends with
-an unconditional `this.renderer.destroy(rendererDestroyOptions)`. Between the
-constructor and `init` resolving there is no renderer, so the public `destroy`
-throws a `TypeError` rather than freeing anything. (`node_modules/pixi.js/lib/
-app/Application.mjs` — checked against the version installed here, not from
-memory.)
-
-Two paths went through that gap:
-
-- **An unmount while `autoDetectRenderer` was still pending.** React's cleanup
-  calls `release`, `release` called `destroy`, and the `TypeError` came out of
-  the cleanup — where a decoration failing takes the unmount with it. This is
-  the ordinary case, not an exotic one: the whole point of the handle being
-  published early is that it is reachable during `init`.
-- **`init` rejecting.** The build's failure path called `release`, which threw
-  on the way out and replaced the WebGL failure with a `TypeError` about
-  reading `destroy` of `undefined` — the one message that says nothing about
-  what went wrong.
-
-`release` is now a *request*. `buildOrDestroy` tracks whether the value can
-currently survive its own `destroy`, and the build declares the step that makes
-it briefly unable to by running it through `held.initialize(...)`:
-
-- a release arriving during `initialize` is remembered, not performed, and is
-  honoured the moment `init` resolves — before anything is attached or started,
-  and exactly once;
-- `initialize` then returns `false`, which is how the build knows to stop
-  rather than parent an orphan into a detached node;
-- an `initialize` that rejects leaves the value undestroyable for good and lets
-  the rejection travel unchanged. There is no public call that takes down a
-  half-initialised `Application`, so the only thing a second `destroy` could
-  add is a second error covering the first.
-
-Outside a declared `initialize` window the default is still "destroyable", so a
-build that fails anywhere else destroys what it built exactly as before —
-silently declining to destroy is the leak this function exists to close, and it
-is the failure mode worth defaulting against. There is no await between the
-handle being published and the build entering `initialize`, so the Application
-is never actually reachable during the instant before that window opens.
-
-### Break-it-to-prove-it
-
-| Change | Test that went red |
-|---|---|
-| `release` destroys regardless of readiness (the reported bug) | `an unmount during init waits for pixi before destroying it`, `an init that rejects reports its own failure, not a destroy on nothing` |
-| A rejected `initialize` marks the value destroyable anyway | `an init that rejects reports its own failure, not a destroy on nothing` |
-| `initialize` forgets a release that arrived while it was in flight | `an unmount during init waits for pixi before destroying it` |
-| The layer awaits `application.init` outside the guard again | `the layer initialises pixi through the guard, not around it` |
-
-The forcing test uses a fake whose `destroy` throws until `init` has set its
-readiness flag, which is the one property of the real `Application` that
-matters here. A fake that tolerates being destroyed early cannot fail on this
-bug, which is why the previous round's tests were green over it.
-
-### Verification
-
-```
-node --test test/*.test.cjs        # exit 1, from the pre-existing failures below
-# 0cb6b642 (the ref this fix started from): 1030 of 1067
-# this tip:                                 1033 of 1070
-# 35 failures + 1 cancelled + 1 skip on both; failure set diffed line by line
-# and identical. All three new passes are the three new tests.
-
-npm run typecheck                  # node + web, 0 errors
-```
-
-The 35 remain the memory and hindsight backend suites, which need a server this
-environment does not have running. Both refs were measured in the same shell,
-minutes apart, each with the `node_modules` symlink re-created immediately
-beforehand and `NODE_PATH` set, for the reason recorded at the end of the
-previous round.
-
-Not verified here: the fix in the running app. Confirming that an occult-theme
-room unmounted mid-`init` no longer throws from React's cleanup needs a display
-and a real WebGL context, neither of which exists in this environment. The
-reproduction is: open a Study room under the occult theme and resize or switch
-theme within the first frames of the canvas appearing — before, that logged a
-`TypeError` from the cleanup; after, it should log nothing and leave no canvas
-behind.
-
-## Parked questions
-
-1. **A `completedAt` on the task ledger.** The shelf's age window can only be
-   applied to what has a date. `HiveTask` carries `createdAt` and no completion
-   timestamp; an archived `Agent` carries no timestamp at all. So the window
-   filters what has a date, using `createdAt` as the nearest honest proxy and
-   naming it as one in the code, the undated keep the store's append order
-   (a real ordering, even without a clock), and the count cap bounds everything
-   regardless. A real `completedAt` would make the window exact. It is a change
-   to the task ledger, not to this theme, so it is a question rather than a
-   commit here.
-
-2. **Visual QA has not been done and cannot be done here.** Everything in this
-   milestone that a person would judge — the flicker rate, whether the books
-   read as books on the painted shelves, whether the deco icons hold at 16px,
-   whether the portrait wall is usable at fifty faces — needs the app running on
-   a display. This environment has none, and the app is single-instance. The
-   suite proves the wiring; it cannot prove any of that.
-
-3. **The flying-book animation was not attempted.** The shelf lights a book
-   when work finishes; it does not animate one crossing the room to get there.
-   Nothing in the milestone depends on it and it is listed as optional.
-
-4. **`docs/superpowers/plans/…` is in this branch's history (`99651f1d`).**
-   That tree is fork-only and must not appear in an upstream diff, so that
-   commit has to be dropped before this stack is offered anywhere upstream.
-   Flagged rather than rewritten, because rewriting a branch's history is the
-   integrator's call. This file is in the same category: it is committed so that
-   it survives the worktree it was written in, and it should be dropped from any
-   upstream-facing stack along with the plan.
+The one exception is finding 7, which has a mechanical check: under the occult
+theme, the face on an assistant's card in the footer strip and the face on the
+same assistant in the room above it must be the same image.
