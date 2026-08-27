@@ -21,6 +21,7 @@ import { DEFAULT_GOD_NAME } from '@shared/godIdentity';
 import en from './locales/en.json';
 import zhCN from './locales/zh-CN.json';
 import ar from './locales/ar.json';
+import enSH from './locales/en-SH.json';
 
 /**
  * The languages the Settings picker offers, in display order.
@@ -110,11 +111,17 @@ void i18n
     resources: {
       en: { translation: en },
       'zh-CN': { translation: zhCN },
-      ar: { translation: ar }
+      ar: { translation: ar },
+      // A REGISTER of English, not a language: it re-voices the nouns the Study
+      // renames and leaves every other key to fall through to `en` below. That
+      // is why it is absent from LANGUAGES — Settings offers languages, and
+      // this one is chosen by the theme (see useThemeVoice.ts), not by a
+      // reader who wants the app in a different tongue.
+      'en-SH': { translation: enSH }
     },
     lng: detectLanguage(),
     fallbackLng: 'en',
-    supportedLngs: ['en', 'zh-CN', 'ar'],
+    supportedLngs: ['en', 'zh-CN', 'ar', 'en-SH'],
     // Resources are bundled inline, so nothing ever suspends — the string is
     // there at init time. Keeping this false lets every component call
     // useTranslation() without wrapping the tree in <Suspense>.

@@ -1,0 +1,223 @@
+{
+  "common": {
+    "tokens": "essence"
+  },
+  "badge": {
+    "idle": "at rest",
+    "thinking": "reading",
+    "working": "reading",
+    "waiting": "waiting",
+    "blocked": "needs you",
+    "success": "concluded",
+    "ghost": "departed",
+    "compacting": "condensing",
+    "looping": "circling",
+    "typing": "your draft"
+  },
+  "sidebar": {
+    "terminal": "speaking-glass",
+    "git": "git",
+    "messages": "correspondence",
+    "traces": "traces"
+  },
+  "kanban": {
+    "count": "{{count}} commissions",
+    "newWorkHint": "new work? put it to {{godName}} (the watch tab)",
+    "colTodo": "INTENDED",
+    "colDoing": "UNDERWAY",
+    "colBlocked": "IMPEDED",
+    "colDone": "CONCLUDED",
+    "openTaskDetails": "open the commission",
+    "needsYouTitle": "waiting on YOUR answer — see the PETITIONS tab",
+    "dismissTitle": "set this commission aside (removes it from the table)",
+    "dismissAria": "set the commission aside",
+    "taskTitle": "COMMISSION",
+    "unassigned": "unassigned",
+    "noDescription": "(nothing written on this card)",
+    "humanQA": "PETITION & REPLY",
+    "awaitingAnswer": "AWAITING YOUR ANSWER — PETITIONS TAB",
+    "dependsOn": "WAITS UPON",
+    "assign": "entrust",
+    "priority": "Priority {{level}}/5"
+  },
+  "askMe": {
+    "emptyTitle": "Nothing petitions you at this hour. 🕯",
+    "emptySub": "When the House impedes a commission on your word — a question to answer, or a deed only you can do — it appears here, and on the writing desk in the Study.",
+    "openDetail": "open the whole commission",
+    "dismissTitle": "set aside — clear this off the writing desk unanswered (the record is kept)",
+    "dismissAria": "set this petition aside",
+    "answerPlaceholder": "Your answer — or 'done', with what came of it… (Ctrl+Enter to send)",
+    "sending": "sending…",
+    "respond": "answer & release",
+    "viewAnswers": "READ {{count}} EARLIER ANSWER",
+    "viewAnswersPlural": "READ {{count}} EARLIER ANSWERS",
+    "viewAnswersHistory": "open the commission with the whole petition & reply",
+    "blockingDownstream": "IMPEDING {{count}} COMMISSION DOWNSTREAM",
+    "blockingDownstreamPlural": "IMPEDING {{count}} COMMISSIONS DOWNSTREAM",
+    "more": "… +{{count}} more"
+  },
+  "agentStrip": {
+    "addAgent": "summon",
+    "restoringTitle": "Last session's assistants are being summoned again with their own names, so their memory and correspondence reattach.",
+    "restoreTitle": "Last session: {{names}}",
+    "restoringTeam": "summoning the House again…",
+    "restoreTeam": "recall the House ({{count}}) ▴",
+    "previousSession": "the last session",
+    "restorable": "{{name}} — may be recalled from the last session",
+    "dismiss": "Dismiss {{name}} — strike them from the recall list for good",
+    "dismissAria": "Dismiss {{name}}",
+    "restoreAll": "recall all ({{count}})"
+  },
+  "agentCard": {
+    "contextTitle": "What they hold in mind: {{used}} / {{limit}} essence ({{pct}}%)",
+    "contextGaugeTitle": "The gauge fills once the assistant reports what it is doing",
+    "doingTasks": "reading {{count}} commission — click to open",
+    "doingTasksPlural": "reading {{count}} commissions — click to open"
+  },
+  "agentControl": {
+    "steerPlaceholder": "send this assistant a note… (arrives as context on its next turn; nothing is typed into its speaking-glass)",
+    "allowToolsTip": "Give its instruments back. The assistant keeps its session and picks up where it stopped.",
+    "blockToolsTip": "The assistant keeps thinking and talking to you, but cannot read, write or run anything until you allow it again. Immediate, and reversible.",
+    "blockToolsAria": "Withhold this assistant's instruments",
+    "stopAfterStepAria": "Stop this assistant after the current step",
+    "steerTip": "Hands the assistant a note at its next turn. It does not interrupt what it is doing now, and nothing is typed into its speaking-glass.",
+    "steerAria": "Send this assistant a note",
+    "deliveryPaused": "held correspondence (the whole House)"
+  },
+  "agentDetail": {
+    "fullscreenDesc": "This speaking-glass is open in focus mode. Press Esc or leave focus mode to bring it back here.",
+    "noPtyDesc": "This assistant has no lit speaking-glass. Summon one to use the speaking-glass tab.",
+    "killConfirm": "Dismiss {{name}}? The process ends and the assistant goes to the shelves (kept in the record, gone from the Study).",
+    "terminalTip": "Open your own terminal in {{cwd}} — an ordinary shell in this assistant's folder, apart from the assistant's own.",
+    "openTerminalAria": "Open your own terminal in this assistant's folder"
+  },
+  "commandCenter": {
+    "title": "THE STUDY",
+    "runsTheFloor": "{{name}} keeps the House",
+    "agents": "ASSISTANTS",
+    "archived": "ON THE SHELVES ({{count}})",
+    "showClosed": "show departed assistants",
+    "hideClosed": "hide departed assistants",
+    "assign": "Entrust",
+    "godTag": " (the keeper)",
+    "taskFromHuman": "A commission from the human",
+    "dispatchViaMichael": "COMMISSION — THROUGH {{godName}}",
+    "dispatchPlaceholder": "Describe the commission… ({{godName}} divides it, writes the card, and entrusts it)",
+    "dispatch": "commission",
+    "sentToMichael": "put to {{godName}}",
+    "michaelDecides": "{{godName}} decides",
+    "suggestedOwner": "SUGGESTED HAND",
+    "meterTitle": "Essence spent this session: {{used}} of {{limit}}{{note}} — not what is held in mind",
+    "agentLimit": " (this assistant's limit)",
+    "floorBudget": " (the House's allowance)",
+    "contextTitle": "Held in mind: {{used}} of {{limit}} essence ({{pct}}%)",
+    "ctx": "held",
+    "modelRestarts": "{{provider}} model (summons the assistant afresh)",
+    "restartContinueTitle": "End and summon {{name}} again, resuming the same conversation — mends a garbled speaking-glass without losing what is held in mind",
+    "logSpawn": "summoned {{name}}",
+    "textSearch": "TEXT SEARCH (board, commissions, memory)",
+    "textSearchPlaceholder": "Find exact text across the House…",
+    "semanticPlaceholder": "What does the House know about…",
+    "tokenLimitTitle": "Set this assistant's whole essence limit",
+    "defaultBudgetNote": " (the default — set the House's allowance in Settings)",
+    "deliveryResumeAria": "Resume delivery for the whole House",
+    "deliveryHoldAria": "Hold delivery for the whole House",
+    "deliveryPausedTitle": "Correspondence is being held for EVERY assistant in the House. Nothing is lost; it is delivered when you switch this back on.",
+    "deliveryOnTitle": "Correspondence reaches every assistant of its own accord. Click to hold the whole House.",
+    "noTerminal": "{{name}} has no lit speaking-glass.",
+    "terminalFullscreen": "The speaking-glass is open in full. Press Esc to bring it back.",
+    "tabs": {
+      "terminal": "speaking-glass",
+      "floor": "the watch",
+      "tasks": "commissions",
+      "human": "petitions",
+      "triggers": "the almanac",
+      "history": "the record",
+      "memory": "memory",
+      "graph": "graph",
+      "activity": "activity",
+      "skills": "skills",
+      "workers": "assistants"
+    }
+  },
+  "addAgent": {
+    "title": "SUMMON AN ASSISTANT",
+    "name": "Name",
+    "character": "Portrait",
+    "color": "Colour",
+    "spawn": "summon",
+    "spawning": "summoning...",
+    "reviewFields": "read every field — the command above all — before summoning.",
+    "descriptionPlaceholder": "their calling — what this assistant is for, not what it is doing now"
+  },
+  "fullscreenTerminal": {
+    "addAgent": "Summon an assistant",
+    "showAgentList": "Show the assistants",
+    "hideAgentList": "Hide the assistants — the speaking-glass full width",
+    "contextTitle": "Held in mind: {{used}} / {{limit}} essence ({{pct}}%)",
+    "closeAgent": "Dismiss {{name}} — ends the process and sets them on the shelves",
+    "openTerminalAria": "Open your own terminal in this assistant's folder"
+  },
+  "office": {
+    "activity": {
+      "waiting": "waiting",
+      "needsYou": "needs you",
+      "compacting": "condensing what it holds",
+      "looping": "circling — the breaker armed",
+      "runningFloor": "keeping the House",
+      "idle": "at rest"
+    }
+  },
+  "officeTheme": {
+    "stillWorking": "⚠ {{count}} assistant is still reading.",
+    "stillWorkingPlural": "⚠ {{count}} assistants are still reading.",
+    "deleteCount": "Your {{count}} present assistant will be dismissed — their speaking-glasses close and any work in hand stops.",
+    "deleteCountPlural": "Your {{count}} present assistants will be dismissed — their speaking-glasses close and any work in hand stops."
+  },
+  "memoryPanel": {
+    "openTitle": "Search the memory your assistants have built",
+    "title": "THE HOUSE'S MEMORY",
+    "intro": "What your assistants remember between sessions, held in common. Search it by meaning, not by the exact words.",
+    "plainNotesStill": "Assistants still keep plain notes without it."
+  },
+  "threads": {
+    "empty": "No correspondence yet. Letters this assistant receives appear here."
+  },
+  "toolWaterfall": {
+    "fresh": "fresh {{tokens}}",
+    "cache": "held {{tokens}} ({{pct}}%)",
+    "total": "{{tokens}} in all",
+    "noTelemetry": "nothing reported yet — summon this assistant afresh to instrument it",
+    "empty": "No instruments taken up yet. Each one the assistant uses appears here with its real duration."
+  },
+  "workersTab": {
+    "workerIdTitle": "assistant / speaking-glass id",
+    "upSinceTitle": "time since the summoning",
+    "tokensTitle": "essence spent in all (in + out + held)",
+    "tokens": "essence {{value}}"
+  },
+  "settings": {
+    "nav": {
+      "agentsModels": "Assistants & Models"
+    },
+    "general": {
+      "keepAwake": "Keep the Mac awake while assistants read",
+      "simpleModeDesc": "Assistants report in plain language instead of engineering shorthand.",
+      "desktopNotificationsDesc": "Native toasts when an assistant finishes or needs your word."
+    },
+    "agentsModels": {
+      "defaultModel": "Default model for an assistant",
+      "savedNote": "saved — applies to assistants summoned from now on"
+    },
+    "autonomy": {
+      "autoOn": "Unbidden — assistants act without asking",
+      "autoOff": "Ask first — assistants pause for your leave",
+      "autoDesc": "Applies to assistants summoned from now on (each one's command can still override).",
+      "floorBudget": "the House's essence allowance",
+      "budgetEquals": "= {{value}} essence",
+      "budgetTotal": "essence across the whole House",
+      "velocity": "essence spent per minute",
+      "breakerDesc": "A guard against an assistant that runs away with itself, and with your essence. The breaker steers, then constrains, then stops."
+    }
+  }
+}

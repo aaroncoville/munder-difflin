@@ -8,6 +8,7 @@ import { useHive } from '@/hooks/useHive';
 import { useResolvedGodName } from '@/hooks/useResolvedGodName';
 import { useGodNameSync } from '@/i18n/useGodNameSync';
 import { useDirectionSync } from '@/i18n/useDirection';
+import { useThemeVoice } from '@/i18n/useThemeVoice';
 import { useArabicTerminalSync } from '@/terminal/useArabicTerminalSync';
 import { MemoryPanel } from '@/components/MemoryPanel';
 import { AgentDetailPanel } from '@/components/AgentDetailPanel';
@@ -43,6 +44,8 @@ export function App() {
   useDirectionSync();
   // Let terminals that are ALREADY open follow a language switch too.
   useArabicTerminalSync();
+  // The Study says things in its own register. English readers only — see the hook.
+  useThemeVoice();
   const agent = useStore(selectedAgent);
   const agents = useStore(s => s.agents);
   const agentCount = agents.length;
