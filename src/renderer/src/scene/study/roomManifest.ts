@@ -207,6 +207,16 @@ export function validateRoomManifest(raw: unknown): RoomManifest {
   if (!rooms.some((r) => r.kind === 'desk')) {
     throw new Error('room manifest: the house needs at least one desk room');
   }
+  // A reading room with no berth is furniture with nowhere to sit: the seating
+  // hands out `deskBerths`, so a house of empty reading rooms leaves it
+  // indexing an empty list. Together with the check above this guarantees at
+  // least one reading berth exists, which is what lets the seating index one
+  // without asking whether there is any.
+  for (const room of rooms) {
+    if (room.kind === 'desk' && room.berths.length === 0) {
+      throw new Error(`room manifest: the reading room ${room.id} has no desk to sit at`);
+    }
+  }
   const study = rooms.find((r) => r.kind === 'godStudy') as Room;
   if (study.berths.length === 0) {
     throw new Error(`room manifest: the godStudy room ${study.id} has no berth to sit in`);

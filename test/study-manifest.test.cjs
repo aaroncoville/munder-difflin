@@ -198,3 +198,15 @@ test('the shipped floor plan loads cleanly', () => {
   assert.equal(load.ok, true, load.ok ? '' : `room.json is broken: ${load.error}`);
   assert.ok(load.manifest.rooms.length > 0, 'and carries the house');
 });
+
+test('a reading room with no desk in it is rejected, naming the room', () => {
+  const { validateRoomManifest, deskBerths } = loadTs(MANIFEST);
+  const spoilt = house();
+  spoilt.rooms[0].berths = [];
+  // The house still HAS a reading room, so the count check passes and the
+  // seating is left with nowhere to put anybody.
+  assert.equal(spoilt.rooms.filter((r) => r.kind === 'desk').length, 1);
+  assert.throws(() => validateRoomManifest(spoilt), /r-desk/);
+  // Which is what lets the seating index a berth without checking first.
+  assert.ok(deskBerths(shippedHouse()).length > 0, 'the shipped house has desks');
+});
