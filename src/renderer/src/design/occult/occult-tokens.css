@@ -84,8 +84,8 @@
      as nothing at all in a serif. Cormorant's small caps need roughly a third
      more to sit at the same optical weight. */
   --cth-text-display-lg: 22px;
-  --cth-text-display-md: 16px;
-  --cth-text-display-sm: 11px;
+  --cth-text-display-md: 17px;
+  --cth-text-display-sm: 12px;
   --cth-text-body-lg:    16px;
   --cth-text-body-md:    14px;
   --cth-text-body-sm:    13px;
@@ -93,8 +93,8 @@
   --cth-text-mono-sm:    13px;
 
   --cth-lh-display-lg: 26px;
-  --cth-lh-display-md: 20px;
-  --cth-lh-display-sm: 15px;
+  --cth-lh-display-md: 21px;
+  --cth-lh-display-sm: 16px;
   --cth-lh-body-lg:    24px;
   --cth-lh-body-md:    20px;
   --cth-lh-body-sm:    18px;
