@@ -42,6 +42,22 @@ dress this app in the idiom of the Secret Histories at all.
    the Sixth History logo above. No Cultist Simulator, BOOK OF HOURS or Lady
    Afterwards logo is used, and no other Weather Factory artwork.
 
+   This obligation has one live surface: `scene/study/assets/portraits`, the
+   drop-in pack the Study puts on assistants' cards. Because it is a directory
+   anyone can add a file to, the rule is enforced at the directory rather than
+   at review time — only two provenances are admissible there:
+
+   - an image from the community asset pack the licence page publishes, or
+   - artwork generated for this project.
+
+   Every file's provenance is recorded in the table below as it lands. A
+   portrait with no row here has not been cleared. The pack ships empty, and an
+   empty pack is a supported state: cards fall back to a monogram.
+
+   | Portrait file | Provenance |
+   |---|---|
+   | _(none yet)_ | — |
+
 7. **Comply with local law.** Noted.
 
 ## What is NOT covered
