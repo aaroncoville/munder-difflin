@@ -55,10 +55,18 @@ const { houseRows, deskBerths, deskRooms, roomOfKind } = loadTs(MANIFEST);
  *
  * render-hooks.cjs mounts one component and does not recurse, so without this
  * the card layer is a wall of opaque elements and every assertion below would
- * pass vacuously on an empty house. The wrappers it expands use no hooks, which
- * is what makes calling them here safe; the original element is kept in the
- * results too, so `n.type === AgentCard` still identifies a card.
+ * pass vacuously on an empty house. Most of the wrappers it expands use no
+ * hooks, which is what makes calling them here safe; the original element is
+ * kept in the results too, so `n.type === AgentCard` still identifies a card.
+ *
+ * A component that DOES take hooks cannot be expanded this way — there is no
+ * hook host outside a mount, so calling it throws on its first useRef. Those
+ * are recorded rather than expanded, and the set of them is asserted below.
+ * Swallowing the throw silently would be the real hazard: a component that
+ * started crashing for a genuine reason would look like an opaque wrapper and
+ * every assertion under it would go quietly vacuous.
  */
+const UNEXPANDED = new Set();
 const all = (n, pred, out = []) => {
   if (!n || typeof n !== 'object') return out;
   if (Array.isArray(n)) {
@@ -67,7 +75,12 @@ const all = (n, pred, out = []) => {
   }
   if (pred(n)) out.push(n);
   if (n.props?.children !== undefined) all(n.props.children, pred, out);
-  if (typeof n.type === 'function') all(n.type(n.props), pred, out);
+  if (typeof n.type === 'function') {
+    let rendered;
+    try { rendered = n.type(n.props); }
+    catch { UNEXPANDED.add(n.type.name || '(anonymous)'); return out; }
+    all(rendered, pred, out);
+  }
   return out;
 };
 const one = (n, pred) => all(n, pred)[0];
@@ -123,7 +136,7 @@ test('each room stacks its panel, its ambiance slot and its cards in that order'
   }
 });
 
-test('every room reserves an ambiance slot, empty and never eating a click', () => {
+test('every room lights its own ambiance, and none of it eats a click', () => {
   seedDom();
   const { StudyScene, studyRoom } = loadTs(SCENE);
   const inst = mount(StudyScene, {});
@@ -131,9 +144,20 @@ test('every room reserves an ambiance slot, empty and never eating a click', () 
   const slots = all(inst.tree, (n) => n.props?.['data-study-slot'] === 'ambiance');
   assert.equal(slots.length, studyRoom.rooms.length, 'one slot per room');
   for (const slot of slots) {
-    assert.equal(slot.props.children, undefined, 'nothing mounted in it yet');
+    // The slot M2 reserved is filled: each room gets its own canvas, sized to
+    // its own panel, so a light point normalized to that painting lands on it.
+    const layer = slot.props.children;
+    assert.ok(layer && typeof layer.type === 'function', 'the ambiance slot is empty');
+    assert.equal(layer.type.name, 'AmbianceLayer');
+    // The input contract, unchanged and non-negotiable: everything clickable in
+    // the Study — every card, room and commission — is a DOM element UNDER this
+    // canvas, so a slot that took pointer events would swallow the whole scene.
     assert.equal(slot.props.style.pointerEvents, 'none', 'input belongs to the DOM layer');
   }
+  // Each room lights ITS OWN painting, not a shared one: a canvas handed the
+  // wrong room would flicker candles where that room has none.
+  const rooms = slots.map((s) => s.props.children.props.room.id);
+  assert.deepEqual(rooms, studyRoom.rooms.map((r) => r.id));
 });
 
 test('every panel the manifest names is on disk at the size it declares, and imported', () => {
@@ -491,4 +515,13 @@ test('a portrait dropped into the pack lands on the cards', async () => {
     regenerate();
     reload(); // leave the shipped (empty) pack loaded for anything after this
   }
+});
+
+test('the only unexpandable wrapper is the one that owns a canvas', () => {
+  // AmbianceLayer takes useRef/useState/useEffect because it owns a pixi
+  // application and a ticker; it is mounted and asserted properly in
+  // test/study-ambiance.test.cjs. Anything ELSE appearing here is a component
+  // that started throwing during render, and everything the walker would have
+  // found underneath it has silently stopped being checked.
+  assert.deepEqual([...UNEXPANDED].sort(), ['AmbianceLayer']);
 });

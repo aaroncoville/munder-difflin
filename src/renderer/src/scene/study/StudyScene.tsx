@@ -12,9 +12,10 @@
  *
  *   1. its panel image, contain-fitted so the whole painting is always visible
  *      and never cropped;
- *   2. a reserved slot for the ambiance canvas (flicker, motes, hearth smoke),
- *      which mounts nothing yet — it is `pointer-events: none` by contract, so
- *      that when it does arrive every click still belongs to the DOM;
+ *   2. the ambiance canvas — candlelight at the points the manifest marks,
+ *      dust drifting in it, the hearth's own fire. It is `pointer-events: none`
+ *      by contract, and pixi's event system is off at its root as well, because
+ *      everything clickable in the Study is a DOM element beneath it;
  *   3. the card layer: an assistant at each occupied berth with the book of
  *      what they are working on and what they are saying — or, in a prop room,
  *      the badge that room carries.
@@ -39,6 +40,7 @@ import {
   type RoomManifest
 } from './roomManifest';
 import { AgentCard } from './AgentCard';
+import { AmbianceLayer } from './AmbianceLayer';
 import { DeskBook } from './DeskBook';
 import { SpeechScroll } from './SpeechScroll';
 import { portraitFor } from './portraits';
@@ -368,7 +370,9 @@ function RoomPanel({ room, height, label, onClick, children }: {
           height: view.h,
           pointerEvents: 'none'
         }}
-      />
+      >
+        <AmbianceLayer room={room} view={view} />
+      </div>
       <div data-study-layer="cards" style={{ position: 'absolute', inset: 0 }}>
         {typeof children === 'function' ? children(view) : children}
       </div>
