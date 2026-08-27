@@ -96,13 +96,34 @@ export function themeControlFace(current: AppTheme): ThemeControlFace {
 }
 
 /**
- * Terminals and TUIs only have two palettes. Occult borrows the dark one until
- * it grows a candlelit palette of its own, so every place that hands a theme to
- * xterm or to a spawned agent's settings routes through here rather than
- * re-deciding the mapping.
+ * What an EXTERNAL program should be told about the ground it is drawing on.
+ *
+ * Two values, and there cannot be a third. This answer feeds DEC mode 2031,
+ * whose reply is `CSI ? 997 ; 1 n` for dark and `; 2 n` for light and has no
+ * other form, and it feeds the persisted `terminalTheme` config field that
+ * spawned agents read to theme their own TUI — typed and validated in the main
+ * process as exactly this pair. Occult is a dark terminal as far as any program
+ * painting into it is concerned, and always will be.
+ *
+ * This is NOT the question "which palette do we paint" — see terminalPaletteFor.
  */
 export function terminalThemeFor(t: AppTheme): 'light' | 'dark' {
   return t === 'light' ? 'light' : 'dark';
+}
+
+/** Which of the app's own xterm palettes to paint. */
+export type TerminalPalette = 'light' | 'dark' | 'occult';
+
+/**
+ * Which palette OUR terminals use — a different question from the one above,
+ * and the one the candlelight answers.
+ *
+ * Nothing outside the renderer sees this value, so a third palette costs an
+ * external program nothing: a running TUI still hears "dark" and paints itself
+ * for a dark ground, which is what the candlelit palette is.
+ */
+export function terminalPaletteFor(t: AppTheme): TerminalPalette {
+  return t;
 }
 
 export function useAppTheme(): AppTheme {

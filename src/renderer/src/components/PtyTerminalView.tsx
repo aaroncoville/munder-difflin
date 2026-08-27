@@ -11,7 +11,8 @@ import {
   setTerminalFontSize,
   useTerminalFontSize
 } from './terminalFontSize';
-import { useAppTheme, terminalThemeFor } from '@/design/theme';
+import { useAppTheme, terminalPaletteFor, type TerminalPalette } from '@/design/theme';
+import { occultTerminalTheme } from '@/design/occult/occultTerminal';
 
 // Zoom lives in ./terminalFontSize so anything outside the terminal (the message
 // composer) can scale with it too; these aliases keep the call sites below short.
@@ -22,7 +23,7 @@ const MAX_FONT_SIZE = MAX_TERMINAL_FONT_SIZE;
 // v0.3.4: the terminal follows the APP-WIDE theme (design/theme.ts, toggled in
 // the title bar) instead of keeping its own light/dark switch — one theme for
 // chrome, terminal, and (via config.terminalTheme) each agent's TUI palette.
-type PtyTheme = 'light' | 'dark';
+type PtyTheme = TerminalPalette;
 
 const zoomBtnStyle: CSSProperties = {
   width: 18,
@@ -108,7 +109,12 @@ const darkTheme = {
   brightWhite:  '#EFEDE9'
 };
 
-const THEMES: Record<PtyTheme, typeof lightTheme> = { light: lightTheme, dark: darkTheme };
+// Candlelight is the third: same shape, its own file, because it is shared
+// with the editor and holding one palette in two places is how the dark one
+// drifted from its own panel.
+const THEMES: Record<PtyTheme, typeof lightTheme> = {
+  light: lightTheme, dark: darkTheme, occult: occultTerminalTheme
+};
 
 export interface PtyTerminalViewProps {
   ptyId: string;
@@ -132,7 +138,7 @@ export function PtyTerminalView({ ptyId, onStreamData, onUserPrompt, onToggleFul
   onUserPromptRef.current = onUserPrompt;
   const fontSize = useTerminalFontSize();
   const fontSizeRef = useRef(fontSize);
-  const ptyTheme: PtyTheme = terminalThemeFor(useAppTheme());
+  const ptyTheme: PtyTheme = terminalPaletteFor(useAppTheme());
   const ptyThemeRef = useRef(ptyTheme);
   ptyThemeRef.current = ptyTheme;
 

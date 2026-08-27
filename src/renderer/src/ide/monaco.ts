@@ -19,6 +19,7 @@
  */
 import * as monaco from 'monaco-editor';
 import { loader } from '@monaco-editor/react';
+import { occultMonacoTheme, OCCULT_MONACO_THEME } from '@/design/occult/occultTerminal';
 
 import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
 import JsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker';
@@ -51,7 +52,7 @@ import TsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker'
 
 let themesDefined = false;
 
-/** Register the CTH light/dark Monaco themes (idempotent). */
+/** Register the CTH Monaco themes (idempotent). */
 function defineThemes(m: typeof monaco): void {
   if (themesDefined) return;
   themesDefined = true;
@@ -86,6 +87,10 @@ function defineThemes(m: typeof monaco): void {
       'diffEditor.removedLineBackground': '#FF6B6B22'
     }
   });
+  // The Study's editor. Defined unconditionally alongside the others because
+  // defineTheme only registers a name — nothing renders until setTheme picks
+  // one, and monacoThemeFor is the only thing that picks.
+  m.editor.defineTheme(OCCULT_MONACO_THEME, occultMonacoTheme);
 }
 
 let configured = false;
@@ -100,7 +105,7 @@ export function setupMonaco(): typeof monaco {
   return monaco;
 }
 
-export const CTH_MONACO_THEME = 'cth-light';
+export { CTH_MONACO_THEME, monacoThemeFor } from './monacoTheme';
 
 /** Map a filename to a Monaco language id (used to set the model language). */
 export function languageForPath(path: string): string {
