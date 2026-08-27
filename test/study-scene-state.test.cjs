@@ -99,24 +99,34 @@ test('reseating is stable: an unrelated agent arriving does not move everyone', 
   }
 });
 
-test('more assistants than desks still seats everyone, without collapsing them', async () => {
+test('more assistants than desks gives everyone their own place at a desk', async () => {
   const many = Array.from({ length: DESKS.length + 3 }, (_, i) => agent(`w-${i}`));
   const state = await project({ agents: many });
   assert.equal(state.agents.length, many.length, 'nobody is dropped on the floor');
-  for (const a of state.agents) {
-    assert.ok(a.berthId, `${a.id} has a berth`);
-  }
+
   // Everyone who fits gets their own desk, in order...
   DESKS.forEach((berth, i) => {
     assert.equal(state.agents[i].berthId, berth.id, `seat ${i}`);
+    assert.equal(state.agents[i].stackIndex, 0, `seat ${i} is the first at its desk`);
   });
-  // ...and the overflow piles onto the LAST desk. Wrapping around to the first
-  // would also produce one berth per desk while quietly seating the newcomers
-  // on top of the assistants already there.
-  const last = DESKS[DESKS.length - 1].id;
-  for (const over of state.agents.slice(DESKS.length)) {
-    assert.equal(over.berthId, last, `${over.id} shares the last desk`);
+
+  // ...and everyone past that shares a desk with a place of their own on it.
+  // A berth alone is not a place: two assistants handed the same berth and
+  // nothing else are drawn at identical coordinates, which is one card as far
+  // as the eye and the pointer are both concerned.
+  const places = state.agents.map((a) => `${a.berthId}#${a.stackIndex}`);
+  assert.equal(new Set(places).size, places.length,
+    `no two assistants share a place: ${places.join(' ')}`);
+  for (const a of state.agents) {
+    assert.ok(Number.isInteger(a.stackIndex) && a.stackIndex >= 0,
+      `${a.id} has a place at its desk`);
   }
+
+  // The places are dealt out in order, so nobody moves when somebody new
+  // arrives after them.
+  const again = await project({ agents: many });
+  assert.deepEqual(again.agents.map((a) => `${a.berthId}#${a.stackIndex}`), places,
+    'seating the same roster twice seats it the same way');
 });
 
 test('an assistant holding both a stuck card and a live one reads as stuck', async () => {

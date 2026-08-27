@@ -310,6 +310,62 @@ test('the card table stacks mirror the kanban columns', async () => {
     'todo, doing, blocked, done — in the kanban\'s own order');
 });
 
+/**
+ * The band of card `under` that `over`, drawn after it, leaves clear — the part
+ * of it a pointer can still reach. `Infinity` when they do not overlap at all.
+ */
+const exposedBand = (under, over) => {
+  const meets = over.left < under.left + under.width && under.left < over.left + over.width
+    && over.top < under.top + under.height && under.top < over.top + over.height;
+  if (!meets) return Infinity;
+  return Math.max(
+    over.left - under.left,
+    over.top - under.top,
+    (under.left + under.width) - (over.left + over.width),
+    (under.top + under.height) - (over.top + over.height)
+  );
+};
+
+/** A pointer target this thin is not a pointer target. */
+const GRABBABLE = 6;
+
+test('assistants sharing a desk are dealt out, not stacked out of sight', async () => {
+  const crowd = Array.from({ length: deskBerths(studyRoom).length + 3 },
+    (_, i) => person(`w-${i}`));
+  const { view, calls } = await inhabit({ agents: crowd });
+  assert.equal(all(view.tree, (n) => n.type === AgentCard).length, crowd.length,
+    'everybody in the house is drawn');
+
+  // Card boxes are normalized to the panel each card is drawn in, so two cards
+  // in different rooms share coordinates without sharing a place on screen.
+  // Crowding is therefore only ever a question WITHIN one room.
+  let crowded = 0;
+  for (const room of studyRoom.rooms) {
+    const cards = all(panelOf(view.tree, room.id), (n) => n.type === AgentCard);
+    if (cards.length > 1) crowded++;
+    const boxes = cards.map((c) => c.props.box);
+    const spots = new Set(boxes.map((b) => `${b.left},${b.top}`));
+    assert.equal(spots.size, boxes.length, `${room.id}: no two cards in the same place`);
+
+    // Distinct is only half of it. Cards later in the layer paint over earlier
+    // ones, so a card covered edge to edge cannot be clicked however different
+    // its coordinates are.
+    for (let i = 0; i < boxes.length; i++) {
+      for (let j = i + 1; j < boxes.length; j++) {
+        assert.ok(exposedBand(boxes[i], boxes[j]) >= GRABBABLE,
+          `${room.id}: ${cards[i].props.name} keeps a grabbable edge clear of `
+          + `${cards[j].props.name} (${exposedBand(boxes[i], boxes[j])}px)`);
+      }
+    }
+  }
+  assert.ok(crowded > 0, 'a crowd this size really does put two people at one desk');
+
+  // And the card each assistant is drawn on still selects that assistant.
+  for (const card of all(view.tree, (n) => n.type === AgentCard)) card.props.onClick();
+  assert.deepEqual([...calls.selected].sort(), crowd.map((a) => a.id).sort(),
+    'every card in the crowd selects its own assistant');
+});
+
 test('an empty house is still a house', async () => {
   const { view } = await inhabit({});
   assert.equal(all(view.tree, (n) => n.type === AgentCard).length, 0);

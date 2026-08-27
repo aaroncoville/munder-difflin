@@ -166,6 +166,31 @@ export function deskLayout(desk: Box):
 }
 
 /**
+ * How far each extra occupant of one berth is dealt back from the one below,
+ * in fractions of the place setting.
+ *
+ * A berth is one desk, and a house with more assistants than desks is a real
+ * state — so desks get shared. Sharing has to LOOK like sharing: cards drawn at
+ * identical coordinates are one card as far as the eye is concerned, and as far
+ * as the pointer is concerned the ones underneath do not exist at all, because
+ * the topmost covers them edge to edge. Dealing each one back and down leaves a
+ * band of every card below it clear, and that band is what you click.
+ *
+ * Down as well as across, because a stack offset on one axis only reads as a
+ * misprint rather than a pile.
+ */
+export const STACK_OFFSET = { x: 0.14, y: 0.1 };
+
+/** Where the nth assistant at one berth sits. The first sits at the berth. */
+export function stackedBerth(desk: Box, stackIndex: number): Box {
+  return {
+    ...desk,
+    left: desk.left + desk.width * STACK_OFFSET.x * stackIndex,
+    top: desk.top + desk.height * STACK_OFFSET.y * stackIndex
+  };
+}
+
+/**
  * What each prop room is called and what clicking it does.
  *
  * These read in the Study's own idiom rather than the app's — an Ask Me board
@@ -388,18 +413,19 @@ export function StudyScene(): JSX.Element {
 
   /** The place settings a room holds: whoever the projection seated in it. */
   const occupantsOf = (room: Room, view: ViewBox): React.ReactNode =>
-    room.berths.flatMap((berth) =>
-      scene.agents
+    room.berths.flatMap((berth) => {
+      const desk = berthToBox(berth, view);
+      return scene.agents
         .filter((agent) => agent.berthId === berth.id)
         .map((agent) => (
           <DeskPlace
             key={agent.id}
             agent={agent}
-            desk={berthToBox(berth, view)}
+            desk={stackedBerth(desk, agent.stackIndex)}
             onSelect={() => select(agent.id)}
           />
-        ))
-    );
+        ));
+    });
 
   const renderRoom = (room: Room, height: number): JSX.Element => {
     if (room.kind === 'desk' || room.kind === 'godStudy') {

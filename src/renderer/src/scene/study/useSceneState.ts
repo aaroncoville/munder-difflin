@@ -24,6 +24,15 @@ export interface SceneAgent {
   role?: string;
   status: CardStatus;
   berthId: string;
+  /**
+   * How many assistants were already seated at that berth — 0 for the first.
+   *
+   * A berth alone is not a place: everyone handed the same berth and nothing
+   * else is drawn at identical coordinates, which is one card as far as both
+   * the eye and the pointer are concerned. The scene deals each one back from
+   * the one below it, and this is the count it deals by.
+   */
+  stackIndex: number;
   /** Absent when this assistant has no card on the ledger. */
   bookState?: BookState;
   bookTitle?: string;
@@ -120,23 +129,31 @@ export function bookFor(tasks: readonly HiveTask[], agentId: string):
  *
  * A house with more assistants than desks is a real state, not an error: the
  * overflow shares the last desk rather than the scene inventing berths no room
- * has the furniture for.
+ * has the furniture for. Sharing a desk means sharing it visibly — each
+ * assistant past the first is given its place in the pile, and the scene deals
+ * them back from one another so every card keeps an edge of its own.
  */
 export function projectScene(agents: readonly Agent[], tasks: readonly HiveTask[]): SceneState {
   const desks = deskBerths(studyRoom);
   const god = godBerth(studyRoom);
+  /** How many are already sitting at each berth. */
+  const seated = new Map<string, number>();
   let seat = 0;
-  const projected = agents.map((a) => ({
-    id: a.id,
-    name: a.name,
-    role: a.description || undefined,
-    status: cardStatusOf(a),
-    berthId: a.isGod
-      ? god.id
-      : desks[Math.min(seat++, desks.length - 1)].id,
-    speech: speechFor(a),
-    ...bookFor(tasks, a.id)
-  }));
+  const projected = agents.map((a) => {
+    const berthId = a.isGod ? god.id : desks[Math.min(seat++, desks.length - 1)].id;
+    const stackIndex = seated.get(berthId) ?? 0;
+    seated.set(berthId, stackIndex + 1);
+    return {
+      id: a.id,
+      name: a.name,
+      role: a.description || undefined,
+      status: cardStatusOf(a),
+      berthId,
+      stackIndex,
+      speech: speechFor(a),
+      ...bookFor(tasks, a.id)
+    };
+  });
   const kanbanCounts = { todo: 0, doing: 0, blocked: 0, done: 0 };
   for (const t of tasks) kanbanCounts[t.status]++;
   return {
