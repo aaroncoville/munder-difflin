@@ -3,7 +3,7 @@ import { useStore, selectedAgent } from '@/store/store';
 import { startMockLoop, stopMockLoop } from '@/store/mockEvents';
 import type { HarnessConfig } from '@/store/config';
 import { DEFAULT_ORG_TRIGGER } from '@shared/triggers';
-import { OfficeFloor } from '@/scene/office/OfficeFloor';
+import { FloorHost } from '@/scene/study/FloorHost';
 import { useHive } from '@/hooks/useHive';
 import { useResolvedGodName } from '@/hooks/useResolvedGodName';
 import { useGodNameSync } from '@/i18n/useGodNameSync';
@@ -402,7 +402,7 @@ export function App() {
         gap: 0
       }}>
         <div style={{ flex: 1, minHeight: 0, minWidth: 0, position: 'relative' }}>
-          <OfficeFloor />
+          <FloorHost />
           <MemoryPanel />
           {agentCount === 0 && godStatus === 'booting' && <MichaelBooting />}
           {agentCount === 0 && godStatus !== 'booting' && (
