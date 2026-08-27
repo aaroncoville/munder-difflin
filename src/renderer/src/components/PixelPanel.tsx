@@ -41,6 +41,9 @@ export function PixelPanel({
   const baseStyle: CSSProperties = {
     background: fillByVariant[variant],
     boxShadow: borderByVariant[variant],
+    // Zero in light and dark — the corner is part of the theme, not of the
+    // component (see the radius family in tokens.css).
+    borderRadius: 'var(--cth-radius-panel)',
     padding: noPadding ? 0 : 'var(--cth-space-3)',
     position: 'relative',
     ...style

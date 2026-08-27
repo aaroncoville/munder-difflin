@@ -117,6 +117,9 @@ export function PixelButton({
         background: palette.fill,
         color: palette.text,
         border: 'none',
+        // Zero in light and dark — the corner is part of the theme, not of the
+        // component (see the radius family in tokens.css).
+        borderRadius: 'var(--cth-radius-control)',
         // v0.3.4: 1px hairline + 1px lift — the 2px chrome read as heavy boxes
         boxShadow: pressed && !disabled
           ? `inset 0 0 0 1px ${palette.border}`

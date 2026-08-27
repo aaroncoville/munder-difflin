@@ -65,6 +65,9 @@ export function PixelBadge({ status, label, style }: PixelBadgeProps) {
         padding: '2px 8px 0',
         background: 'var(--cth-cream-100)',
         boxShadow: `inset 0 0 0 1px ${colorByStatus[status]}`,
+        // Zero in light and dark — the corner is part of the theme, not of the
+        // component (see the radius family in tokens.css).
+        borderRadius: 'var(--cth-radius-badge)',
         fontFamily: 'var(--cth-font-ui)',
         fontSize: 'var(--cth-text-body-sm)',
         lineHeight: '18px',
