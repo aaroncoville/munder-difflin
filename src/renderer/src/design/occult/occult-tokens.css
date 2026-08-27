@@ -1,0 +1,129 @@
+/* ── Occult theme ────────────────────────────────────────────────────────────
+   The whole app in candlelight. Same token swap the dark theme uses — stamped
+   as data-cth-theme='occult' on <html> by design/theme.ts — but a warmer,
+   deeper register: ink-blue night grounds, parchment text, candleflame gold,
+   crimson and a muted teal.
+
+   EVERY token the base :root declares is redefined here. That is not tidiness,
+   it is the contract: a token this block forgets falls back to the LIGHT value,
+   which lands a cream surface in the middle of a night palette. Enforced by
+   test/occult-tokens.test.cjs, which diffs the two blocks' key sets.
+
+   Contrast is measured, not eyeballed, following the dark theme's precedent:
+   body text clears 4.5:1 and the structural border token (ink-300, the app's
+   whole outline language) clears 3.0:1 on every surface it can appear on —
+   including the lightest, paper-100. */
+:root[data-cth-theme='occult'] {
+  /* Base surfaces — deep ink-blue, warmer and more violet than the dark
+     theme's neutral charcoal. Same elevation ramp: darkest where light mode
+     was lightest. */
+  --cth-cream-50:  #221E30;   /* app ground */
+  --cth-cream-100: #1C1828;
+  --cth-cream-200: #171322;
+  --cth-cream-300: #120F1B;
+  --cth-paper-100: #262134;   /* cards, inputs, terminals — the lightest ground */
+  --cth-paper-200: #1E1A2B;
+
+  /* Ink → parchment ramp */
+  --cth-ink-900: #EAE0C8;   /* 11.5-12.0:1 — primary text, aged paper */
+  --cth-ink-700: #C9BEA4;   /*  8.1:1      — secondary text */
+  --cth-ink-500: #988F7C;   /*  4.7:1      — tertiary / hints */
+  --cth-ink-300: #776D8F;   /*  3.2-3.9:1  — BORDERS. must stay >= 3.0 */
+  --cth-ink-100: #3A3450;   /*  1.5:1      — dividers, meant to recede */
+
+  /* Accents — the same six hue slots, dropped into an occult register. Held to
+     a narrow luminance band so no single hue flares against the night. */
+  --cth-coral: #B0524E;       --cth-coral-light: #4A2C31;
+  --cth-mint:  #5F7E5A;       --cth-mint-light:  #2C3A2E;
+  --cth-sky:   #3E7C7B;       --cth-sky-light:   #24393E;
+  --cth-lemon: #C9A227;       --cth-lemon-light: #453A1E;
+  --cth-lilac: #7B6AA8;       --cth-lilac-light: #322C4A;
+  --cth-peach: #C98A4B;       --cth-peach-light: #45321F;
+
+  /* Status — hue meanings unchanged, candlelit values. Ghost is the quietest
+     mark and still has to be FINDABLE (3.2:1); the dark theme learned that the
+     hard way when its ghost measured 1.54:1 and simply vanished. */
+  --cth-status-idle:       #837C99;
+  --cth-status-thinking:   #3E7C7B;
+  --cth-status-working:    #C9A227;
+  --cth-status-waiting:    #6D7CB8;
+  --cth-status-blocked:    #B0524E;
+  --cth-status-success:    #5F7E5A;
+  --cth-status-ghost:      #6A6480;
+  --cth-status-compacting: #7B6AA8;
+  --cth-status-looping:    #C98A4B;
+  --cth-status-typing:     #B8912F;
+
+  /* Spacing — geometry is not themed; repeated because the block must be
+     complete, not because the values differ. */
+  --cth-space-0: 0px;
+  --cth-space-1: 4px;
+  --cth-space-2: 8px;
+  --cth-space-3: 12px;
+  --cth-space-4: 16px;
+  --cth-space-5: 24px;
+  --cth-space-6: 32px;
+  --cth-space-7: 48px;
+  --cth-space-8: 64px;
+
+  /* Type — the display face is Task 4's business; body and mono never change. */
+  --cth-font-display: "Press Start 2P", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Geeza Pro", "Noto Naskh Arabic", "Segoe UI Historic", monospace;
+  --cth-font-ui:      "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Geeza Pro", "Noto Naskh Arabic", "Segoe UI Historic", sans-serif;
+  --cth-font-mono:    "JetBrains Mono", ui-monospace, "SF Mono", Menlo, "PingFang SC", "Microsoft YaHei", "Noto Sans Mono CJK SC", "Noto Sans CJK SC", "Geeza Pro", "Noto Naskh Arabic", "Segoe UI Historic", monospace;
+
+  --cth-text-display-lg: 16px;
+  --cth-text-display-md: 12px;
+  --cth-text-display-sm: 8px;
+  --cth-text-body-lg:    16px;
+  --cth-text-body-md:    14px;
+  --cth-text-body-sm:    13px;
+  --cth-text-mono-md:    14px;
+  --cth-text-mono-sm:    13px;
+
+  --cth-lh-display-lg: 24px;
+  --cth-lh-display-md: 20px;
+  --cth-lh-display-sm: 12px;
+  --cth-lh-body-lg:    24px;
+  --cth-lh-body-md:    20px;
+  --cth-lh-body-sm:    18px;
+  --cth-lh-mono:       20px;
+
+  /* Elevation. Light and dark stamp a hard offset block; candlelight does not
+     cast one, so this is the one place the shadow's SHAPE changes with the
+     theme rather than only its colour. */
+  --cth-shadow-hard: 0 2px 10px rgba(0, 0, 0, 0.55);
+
+  /* Borders. The default hairline goes gilt, so panel edges read as thin gold
+     leaf rather than as grey outline; dialogs get the brighter gilt. */
+  --cth-panel-border:          inset 0 0 0 1px var(--cth-hairline);
+  --cth-panel-border-inset:    inset 0 0 0 1px var(--cth-ink-100);
+  --cth-panel-border-terminal: inset 0 0 0 1px var(--cth-hairline);
+  --cth-panel-border-dialog:   inset 0 0 0 1px var(--cth-gilt);
+
+  /* Text ON an accent fill. The base comment holds this dark because accents
+     are LIGHT surfaces in light and dark alike — here they are mid-dark, so
+     the same reasoning inverts the answer: parchment clears 4.8:1 on coral
+     where the base's near-black would sit at 2.7:1. */
+  --cth-on-accent: #EAE0C8;
+
+  /* The theme-shape families come alive. Everywhere else they are inert. */
+  --cth-radius-panel: 3px;
+  --cth-radius-control: 2px;
+  --cth-radius-badge: 2px;
+  --cth-hairline: #8A7440;
+  --cth-gilt: #C9A227;
+  --cth-gilt-soft: #6B5A2E;
+  --cth-dur-slow: 320ms;
+  --cth-dur-drift: 2400ms;
+  --cth-ease-glide: cubic-bezier(0.33, 0, 0.2, 1);
+}
+
+/* The ground itself. global.css lays a cream diagonal noise over body; under
+   occult that gradient is a pale scratch on a night surface, so this replaces
+   it wholesale with a fainter gilt weave. Higher specificity, so import order
+   does not matter. */
+:root[data-cth-theme='occult'] body {
+  background:
+    repeating-linear-gradient(-45deg, transparent 0 14px, rgba(201, 162, 39, 0.04) 14px 15px),
+    var(--cth-cream-200);
+}

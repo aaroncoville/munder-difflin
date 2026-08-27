@@ -1,5 +1,6 @@
 @import './fonts.css';
 @import './tokens.css';
+@import './occult/occult-tokens.css';
 
 *, *::before, *::after { box-sizing: border-box; }
 

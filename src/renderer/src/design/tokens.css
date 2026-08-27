@@ -94,6 +94,24 @@
   --cth-panel-border-inset:    inset 0 0 0 1px var(--cth-ink-100);
   --cth-panel-border-terminal: inset 0 0 0 1px var(--cth-ink-300);
   --cth-panel-border-dialog:   inset 0 0 0 1px var(--cth-ink-500);
+
+  /* Theme-shape families. A theme can differ from another in more than colour:
+     corner radius, the weight and hue of a hairline, and how long a transition
+     takes are all part of a dress. These are declared here so components can
+     read them unconditionally, and they are deliberately INERT — radius 0,
+     hairline and gilt aliased to the tokens the components already used, the
+     existing durations — so light and dark render exactly as they did before
+     the families existed. Only a theme block that overrides them changes
+     anything. */
+  --cth-radius-panel: 0px;
+  --cth-radius-control: 0px;
+  --cth-radius-badge: 0px;
+  --cth-hairline: var(--cth-ink-300);
+  --cth-gilt: var(--cth-lemon);
+  --cth-gilt-soft: var(--cth-lemon-light);
+  --cth-dur-slow: 200ms;
+  --cth-dur-drift: 1200ms;
+  --cth-ease-glide: cubic-bezier(0.4, 0.0, 0.2, 1);
 }
 
 /* ── Dark theme ──────────────────────────────────────────────────────────────
