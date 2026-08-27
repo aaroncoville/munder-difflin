@@ -212,6 +212,92 @@ Each of these was applied, run, and reverted:
    than drawn by eye; hand-placed lobes read as a splat at 16px, which is the
    size that actually matters.
 
+## Rework round
+
+Three review findings, one commit each, each with its test written first and
+then broken to prove it protects something.
+
+    9d78693a fix(study): the reserved portrait cannot be claimed by naming yourself after it
+    b1dbdd26 fix(i18n): the house register also answers a language change, not only a theme
+    577117a6 fix(study): a room whose ambiance fails to load is a room without ambiance
+
+### 1 — The reserved portrait was bypassable by name
+
+`fascination` was held out of the set the hash deals from, but the name rule
+runs *first* and matched against the complete pack. An assistant named
+`fascination` by hand — the summoning screen takes a typed name — matched it
+directly and the reservation never came into it. The name lookup now searches
+the same dealable list the hash deals from, so the one exclusion covers both
+halves of the assignment and the reserved name falls through to the ordinary
+deal like any other stranger.
+
+### 2 — The house register only answered the theme
+
+The register is a function of two things, the theme and whether the reader is
+in English, and the effect depended on the theme alone. Switching the app to
+English from Settings while the occult theme was already active left the
+language at plain `en` until a theme toggle or a remount happened to re-run
+the effect. The rule now also runs on i18next's `languageChanged`.
+
+It settles rather than spinning because `voiceFor` returns null once the
+language is already the one it would ask for — that null is the fixed point,
+and answering a change costs at most one further hop. The test counts those
+hops rather than trusting the argument.
+
+The subscription was lifted into `watchVoice(theme, instance)` so the reaction
+itself is testable against a stand-in, not just the pure rule underneath it. A
+source assertion holds the hook to calling it, because a hook that
+re-implemented the rule in its own effect would pass every other test on the
+page while reacting to nothing.
+
+### 3 — The ambiance load had no rejection handler
+
+Two awaits in the pixi build-out can reject outside this app's control: the
+dynamic `import('pixi.js')` and `Application.init` on a machine with no working
+WebGL context. The body was fire-and-forget, so either surfaced as an unhandled
+rejection — an error report nobody can act on, and fatal to the renderer under
+a host that treats unhandled rejections as such. It now starts through
+`startAmbiance`, which catches and says nothing: the room, its cards and its
+commissions were never waiting on the canvas, and the failure is visible as the
+candles not lighting.
+
+### Break-it-to-prove-it
+
+| Change | Test that went red |
+|---|---|
+| Restore the whole-pack name lookup for non-god assistants | `a worker named for the reserved face does not get it` |
+| Drop the `languageChanged` subscription | `choosing English inside the house is answered with the house register`, `answering a language change does not start one`, `the watcher lets go when the app does` |
+| Make `voiceFor` offer the register to any language under occult | `a language that is not English is left alone, theme or no theme`, plus the pre-existing rule test |
+| Drop the `.catch` from `startAmbiance` | `pixi failing to load costs the room its ambiance and nothing else` |
+
+### Verification, and a baseline that moved
+
+```
+node --test test/*.test.cjs
+# 9276936f (the ref this round started from): 1019 of 1056, 35 failures, 1 skip
+# 577117a6 (this tip):                       1027 of 1064, 35 failures, 1 skip
+# identical failure set; the 8 new tests are the 8 new passes
+
+npm run typecheck    # node + web, 0 errors
+npm run build        # succeeds
+```
+
+The 35 are the memory and hindsight backend suites, which need a server this
+environment does not have running today. They are **not** the zero recorded
+further up this file: that run was made when the server was reachable. Both
+numbers are honest and neither is reproducible without knowing which. The
+comparison that matters is the one above — the same set of failures on both
+refs, measured minutes apart in the same shell.
+
+One environment note for whoever runs this next: an isolated worktree has no
+`node_modules`, and here the symlink into the base checkout was being removed
+by something outside this session several times an hour. Every run above was
+made with the link re-created immediately beforehand, and the suite runs also
+carried `NODE_PATH=<base>/node_modules` so a mid-run removal could not turn
+into a hundred phantom failures. A bare `node --test` in a worktree that has
+lost its link reports whole files as failures with `Cannot find module
+'typescript'` — which looks nothing like a missing symlink.
+
 ## Parked questions
 
 1. **A `completedAt` on the task ledger.** The shelf's age window can only be
