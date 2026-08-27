@@ -137,10 +137,10 @@ test('occult swaps the display face but keeps the CJK/Arabic fallback tail', () 
   // through to generic monospace — the exact breakage self-hosting fixed.
   assert.match(occult, /--cth-font-display:\s*"Cormorant SC",[^;]*"Noto Naskh Arabic"/);
   assert.match(occult, /--cth-text-display-lg:\s*22px/);
-  assert.match(occult, /--cth-text-display-md:\s*16px/);
+  assert.match(occult, /--cth-text-display-md:\s*17px/);
   assert.match(occult, /--cth-text-display-sm:\s*12px/);
   assert.match(occult, /--cth-lh-display-lg:\s*26px/);
-  assert.match(occult, /--cth-lh-display-sm:\s*15px/);
+  assert.match(occult, /--cth-lh-display-sm:\s*16px/);
 });
 
 test('the display face is self-hosted, like every other face here', () => {
