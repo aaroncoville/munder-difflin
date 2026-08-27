@@ -128,6 +128,19 @@
   --cth-dur-slow: 320ms;
   --cth-dur-drift: 2400ms;
   --cth-ease-glide: cubic-bezier(0.33, 0, 0.2, 1);
+
+  /* The release drop's window. The page inside it is a sandboxed frame with a
+     hardcoded cream ground that no theme can reach, so the mat around it stays
+     a LIGHT parchment — close enough to that cream to read as one sheet — and
+     the occult register goes into the frame instead: a night title bar, gilt
+     rules, and the three dots in this theme's own accents. Darkening the mat
+     would open a visible seam around a page that cannot follow. */
+  --cth-drop-paper:     #EAE0C8;
+  --cth-drop-ink:       #171322;
+  --cth-drop-ink-faint: #8A7440;
+  --cth-drop-yellow:    #C9A227;
+  --cth-drop-sky:       #3E7C7B;
+  --cth-drop-maroon:    #B0524E;
 }
 
 /* The ground itself. global.css lays a cream diagonal noise over body; under

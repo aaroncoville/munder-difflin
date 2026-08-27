@@ -93,3 +93,30 @@ test('the bundled-font licence notice covers the new face', () => {
   assert.match(notice, /cormorant-sc-latin-700\.woff2/);
   assert.match(notice, /Cormorant/);
 });
+
+test('ReleaseDrop reads tokens instead of a private palette', () => {
+  const src = read('src/renderer/src/components/ReleaseDrop.tsx');
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const hexes = code.match(/#[0-9A-Fa-f]{6}\b/g) ?? [];
+  assert.deepEqual(hexes, [], 'raw hex colours survive in ReleaseDrop');
+  assert.match(code, /var\(--cth-drop-paper\)/);
+  assert.match(code, /var\(--cth-drop-ink\)/);
+});
+
+test('the drop palette keeps its landing-site values outside occult', () => {
+  // The drop is the landing site's window, restated in app chrome because the
+  // sandboxed frame inside it cannot reach a stylesheet. Light and dark must
+  // therefore resolve to exactly the hexes the frame hardcodes.
+  for (const [token, hex] of [
+    ['--cth-drop-paper', '#FFFDF7'], ['--cth-drop-ink', '#1B1B1B'],
+    ['--cth-drop-ink-faint', '#8A867A'], ['--cth-drop-yellow', '#FFCA54'],
+    ['--cth-drop-sky', '#72C2DF'], ['--cth-drop-maroon', '#B23A4E']
+  ]) {
+    assert.match(base, new RegExp(`${token}:\\s*${hex}`), `${token} drifted from the landing palette`);
+  }
+  // …and the frame's own copy still agrees, or the seam between chrome and
+  // page reopens.
+  const frame = read('src/shared/releaseDrop.ts');
+  assert.match(frame, /--paper:\s*#FFFDF7/);
+  assert.match(frame, /--ink:\s*#1B1B1B/);
+});

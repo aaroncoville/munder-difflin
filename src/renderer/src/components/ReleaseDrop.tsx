@@ -43,15 +43,18 @@ export interface ReleaseDropProps {
   onDismiss: () => void;
 }
 
-// Landing site palette (docs/DESIGN.md §2). Restated here because the modal is
-// app chrome and cannot reach the site's stylesheet; kept in one place so the
-// frame's tokens in shared/releaseDrop.ts and this chrome never drift apart.
-const PAPER = '#FFFDF7';
-const INK = '#1B1B1B';
-const INK_FAINT = '#8A867A';
-const YELLOW = '#FFCA54';
-const SKY = '#72C2DF';
-const MAROON = '#B23A4E';
+// Landing site palette (docs/DESIGN.md §2). The values live in tokens.css as
+// the --cth-drop-* family, which resolves to exactly these hexes in light and
+// dark; a theme that wants to re-dress the window overrides them there. They
+// stay named here because the frame's own copy in shared/releaseDrop.ts is a
+// separate document with `default-src 'none'` and cannot read a custom
+// property, so the two sides only agree by both being written down.
+const PAPER = 'var(--cth-drop-paper)';
+const INK = 'var(--cth-drop-ink)';
+const INK_FAINT = 'var(--cth-drop-ink-faint)';
+const YELLOW = 'var(--cth-drop-yellow)';
+const SKY = 'var(--cth-drop-sky)';
+const MAROON = 'var(--cth-drop-maroon)';
 const MONO = '"JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace';
 
 // How long the loader may cover the frame before it is revealed regardless.
@@ -140,8 +143,8 @@ export function ReleaseDrop({ version, html, onDismiss }: ReleaseDropProps) {
         }}>
           <span aria-hidden style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
             <i style={{ width: 10, height: 10, background: YELLOW, display: 'block' }} />
-            <i style={{ width: 10, height: 10, background: '#72C2DF', display: 'block' }} />
-            <i style={{ width: 10, height: 10, background: '#B23A4E', display: 'block' }} />
+            <i style={{ width: 10, height: 10, background: SKY, display: 'block' }} />
+            <i style={{ width: 10, height: 10, background: MAROON, display: 'block' }} />
           </span>
           <span style={{
             flex: 1, minWidth: 0, fontSize: 12, fontWeight: 700, letterSpacing: '.08em',

@@ -112,6 +112,20 @@
   --cth-dur-slow: 200ms;
   --cth-dur-drift: 1200ms;
   --cth-ease-glide: cubic-bezier(0.4, 0.0, 0.2, 1);
+
+  /* The release drop's window chrome, which is the LANDING SITE's palette
+     (docs/DESIGN.md), not this app's. It lives here rather than as literals in
+     ReleaseDrop.tsx so a theme can re-dress the window, but the values are the
+     site's and light and dark both resolve to exactly them — the sandboxed
+     frame inside the window hardcodes the same hexes (shared/releaseDrop.ts)
+     and cannot read a stylesheet, so any theme that moves these has to keep the
+     two sides reading as one page. */
+  --cth-drop-paper:     #FFFDF7;
+  --cth-drop-ink:       #1B1B1B;
+  --cth-drop-ink-faint: #8A867A;
+  --cth-drop-yellow:    #FFCA54;
+  --cth-drop-sky:       #72C2DF;
+  --cth-drop-maroon:    #B23A4E;
 }
 
 /* ── Dark theme ──────────────────────────────────────────────────────────────
