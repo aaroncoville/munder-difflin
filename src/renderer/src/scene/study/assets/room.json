@@ -1,6 +1,6 @@
 {
   "_comment": "Cross-section of the Study, storey by storey. Each room is a flat panel with its own image; every berth is normalized (0..1) to THAT panel, not to the house. Berths were read off the paintings themselves: a reading berth's bottom edge sits on the painted desk surface, so the card stands at the desk and the book lands on it. A prop room's single berth is where its badge belongs in the painting — the baize, the open almanac, the stack of petitions, the armchair.",
-  "bandThickness": 12,
+  "bandThickness": 18,
   "rooms": [
     {
       "id": "shelves", "kind": "shelves", "image": "./room-shelves.png",
@@ -14,6 +14,12 @@
       ]
     },
     {
+      "id": "almanac", "kind": "almanac", "image": "./room-almanac.png",
+      "natural": { "w": 1568, "h": 672 }, "row": 0, "col": 1,
+      "berths": [{ "id": "almanac-page", "x": 0.745, "y": 0.490, "w": 0.160, "h": 0.120 }],
+      "lightPoints": [{ "x": 0.735, "y": 0.245 }]
+    },
+    {
       "id": "card-table", "kind": "cardTable", "image": "./room-card-table.png",
       "natural": { "w": 1568, "h": 672 }, "row": 1, "col": 0,
       "berths": [{ "id": "card-table-baize", "x": 0.395, "y": 0.650, "w": 0.215, "h": 0.075 }],
@@ -22,10 +28,10 @@
       ]
     },
     {
-      "id": "almanac", "kind": "almanac", "image": "./room-almanac.png",
+      "id": "writing-desk", "kind": "writingDesk", "image": "./room-writing-desk.png",
       "natural": { "w": 1568, "h": 672 }, "row": 1, "col": 1,
-      "berths": [{ "id": "almanac-page", "x": 0.745, "y": 0.490, "w": 0.160, "h": 0.120 }],
-      "lightPoints": [{ "x": 0.735, "y": 0.245 }]
+      "berths": [{ "id": "petitions-stack", "x": 0.655, "y": 0.545, "w": 0.090, "h": 0.085 }],
+      "lightPoints": [{ "x": 0.545, "y": 0.065 }]
     },
     {
       "id": "desk-1", "kind": "desk", "image": "./room-desk-a.png",
@@ -74,14 +80,8 @@
       "lightPoints": [{ "x": 0.325, "y": 0.420 }, { "x": 0.665, "y": 0.420 }]
     },
     {
-      "id": "writing-desk", "kind": "writingDesk", "image": "./room-writing-desk.png",
-      "natural": { "w": 1568, "h": 672 }, "row": 4, "col": 1,
-      "berths": [{ "id": "petitions-stack", "x": 0.655, "y": 0.545, "w": 0.090, "h": 0.085 }],
-      "lightPoints": [{ "x": 0.545, "y": 0.065 }]
-    },
-    {
       "id": "hearth", "kind": "hearth", "image": "./room-hearth.png",
-      "natural": { "w": 1568, "h": 672 }, "row": 4, "col": 2,
+      "natural": { "w": 1568, "h": 672 }, "row": 4, "col": 1,
       "berths": [{ "id": "hearth-chair", "x": 0.700, "y": 0.550, "w": 0.160, "h": 0.200 }],
       "lightPoints": [{ "x": 0.200, "y": 0.755 }]
     }

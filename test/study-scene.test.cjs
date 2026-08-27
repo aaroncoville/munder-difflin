@@ -109,6 +109,44 @@ test('the rooms are stacked in reading order, with masonry between the storeys',
   }
 });
 
+test('the rooms are divided by walls, not by gaps you can see through', () => {
+  // The storeys had masonry between them and the rooms in a storey had a CSS
+  // gap — which paints nothing. Two rooms side by side were separated by
+  // whatever happened to be behind the house, so the building had floors but no
+  // walls. Every division is a painted band now, and they are all one thickness.
+  seedDom();
+  const { StudyScene, studyRoom } = loadTs(SCENE);
+  const inst = mount(StudyScene, {});
+  scenes.push(inst);
+
+  const rows = houseRows(studyRoom);
+  const walls = all(inst.tree, (n) => n.props?.['data-study-wall'] !== undefined);
+  const expected = rows.reduce((sum, storey) => sum + storey.length - 1, 0);
+  assert.equal(walls.length, expected, 'one wall between each pair of rooms in a storey');
+  for (const w of walls) {
+    assert.equal(w.props.style.width, studyRoom.bandThickness,
+      'a wall is a different thickness from the masonry between the storeys');
+    assert.ok(w.props.style.background, 'the wall is not painted');
+  }
+
+  // A storey laying its rooms out with `gap` would satisfy the count above
+  // while still drawing nothing between them, so the gap has to be gone.
+  const storeys = all(inst.tree, (n) => n.props?.['data-study-storey'] !== undefined);
+  assert.equal(storeys.length, rows.length);
+  for (const s of storeys) {
+    assert.ok(!s.props.style.gap, 'the storey still spaces its rooms with an invisible gap');
+  }
+
+  // And the building has an outside: without it the top storey's ceiling and
+  // the end rooms' outer walls are the only edges in the house that are not
+  // masonry, which is exactly where it stops reading as a cross-section.
+  const house = one(inst.tree, (n) => n.props?.['data-study-house'] !== undefined);
+  assert.equal(house.props.style.padding, studyRoom.bandThickness, 'the house has no outer wall');
+  assert.equal(house.props.style.boxSizing, 'border-box',
+    'the outer wall is added OUTSIDE the natural size the letterbox was computed from');
+  assert.ok(house.props.style.background, 'the outer wall is not painted');
+});
+
 test('the house is letterboxed into the window rather than scrolled', () => {
   seedDom();
   const { StudyScene, HOUSE_NATURAL_WIDTH, HOUSE_NATURAL_HEIGHT } = loadTs(SCENE);
@@ -151,13 +189,18 @@ test('the letterbox is measured against everything the house draws', () => {
   // short of what the storeys and the masonry actually add up to, the bottom of
   // the building is cut off by the letterbox instead of being scaled into it.
   seedDom();
-  const { StudyScene, HOUSE_NATURAL_HEIGHT } = loadTs(SCENE);
+  const { StudyScene, HOUSE_NATURAL_HEIGHT, studyRoom } = loadTs(SCENE);
   const inst = mount(StudyScene, {});
   scenes.push(inst);
   const heights = (attr) => all(inst.tree, (n) => n.props?.[attr] !== undefined)
     .reduce((sum, n) => sum + n.props.style.height, 0);
-  assert.equal(heights('data-study-storey') + heights('data-study-band'), HOUSE_NATURAL_HEIGHT,
-    'every storey and every band is inside the height the house is fitted by');
+  // Plus the outer wall, above the top storey and below the bottom one: it is
+  // drawn as the house's own padding rather than as a band, so it has no height
+  // of its own to sum, but the letterbox still has to be measuring it.
+  assert.equal(
+    heights('data-study-storey') + heights('data-study-band') + studyRoom.bandThickness * 2,
+    HOUSE_NATURAL_HEIGHT,
+    'every storey, every band and the outer wall are inside the height the house is fitted by');
 });
 
 test('each room stacks its panel, its ambiance slot and its cards in that order', () => {

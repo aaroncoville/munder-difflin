@@ -129,8 +129,11 @@ export function storeyHeight(rooms: readonly Room[], width: number, band: number
   return Math.max(1, Math.min(fitted, tallest));
 }
 
-/** The width at which every storey draws at its natural height. */
-export const HOUSE_NATURAL_WIDTH = STOREYS.length === 0 ? 0 : Math.max(
+/**
+ * The width of the ROOMS at which every storey draws at its natural height —
+ * the inside of the building, with no outer wall counted.
+ */
+export const HOUSE_INNER_WIDTH = STOREYS.length === 0 ? 0 : Math.max(
   ...STOREYS.map((rooms) => {
     const tallest = Math.max(...rooms.map((r) => r.natural.h));
     return rooms.reduce((sum, r) => sum + (r.natural.w / r.natural.h) * tallest, 0)
@@ -138,11 +141,42 @@ export const HOUSE_NATURAL_WIDTH = STOREYS.length === 0 ? 0 : Math.max(
   })
 );
 
-/** How tall the house is at that width: every storey, and the masonry between. */
-export const HOUSE_NATURAL_HEIGHT = STOREYS.reduce(
-  (sum, rooms) => sum + storeyHeight(rooms, HOUSE_NATURAL_WIDTH, studyRoom.bandThickness),
+/** The inside height: every storey, and the masonry between. */
+const HOUSE_INNER_HEIGHT = STOREYS.reduce(
+  (sum, rooms) => sum + storeyHeight(rooms, HOUSE_INNER_WIDTH, studyRoom.bandThickness),
   Math.max(0, STOREYS.length - 1) * studyRoom.bandThickness
 );
+
+/**
+ * The whole building, outer wall included.
+ *
+ * The wall is the same thickness as every other course of masonry in the house
+ * and it is what the letterbox measures, so the top storey's ceiling and the
+ * end rooms' outer walls are drawn rather than merely being where the painting
+ * stops. It is added here, once, so that `houseFit` and the element's own
+ * `width` cannot disagree about whether the wall is inside the number.
+ */
+export const HOUSE_NATURAL_WIDTH = HOUSE_INNER_WIDTH === 0
+  ? 0 : HOUSE_INNER_WIDTH + studyRoom.bandThickness * 2;
+export const HOUSE_NATURAL_HEIGHT = HOUSE_INNER_HEIGHT === 0
+  ? 0 : HOUSE_INNER_HEIGHT + studyRoom.bandThickness * 2;
+
+/**
+ * Masonry, as a paint.
+ *
+ * One style for every division in the house — the bands between storeys, the
+ * walls between rooms, and the wall around the outside — because the moment
+ * they are authored separately they drift apart in thickness or in colour, and
+ * a cross-section whose walls are not all the same wall stops reading as a
+ * building. The courses are a repeating gradient rather than an image: it costs
+ * nothing, and it is what keeps a plain bar from reading as a gap.
+ */
+const MASONRY = {
+  background: 'var(--cth-ink-700)',
+  backgroundImage:
+    'repeating-linear-gradient(0deg, rgba(0,0,0,0.22) 0 1px, transparent 1px 9px),'
+    + ' repeating-linear-gradient(90deg, rgba(0,0,0,0.22) 0 1px, transparent 1px 26px)'
+} as const;
 
 /**
  * Where the whole house lands on the floor it is given.
@@ -554,11 +588,14 @@ export function StudyScene(): JSX.Element {
           transform: `scale(${HOUSE_NATURAL_WIDTH > 0 ? fit.w / HOUSE_NATURAL_WIDTH : 1})`,
           transformOrigin: 'top left',
           display: 'flex',
-          flexDirection: 'column'
+          flexDirection: 'column',
+          padding: studyRoom.bandThickness,
+          boxSizing: 'border-box',
+          ...MASONRY
         }}
       >
         {STOREYS.map((rooms, i) => {
-          const height = storeyHeight(rooms, HOUSE_NATURAL_WIDTH, studyRoom.bandThickness);
+          const height = storeyHeight(rooms, HOUSE_INNER_WIDTH, studyRoom.bandThickness);
           return (
           <Fragment key={rooms[0].id}>
             {i > 0 ? (
@@ -567,7 +604,7 @@ export function StudyScene(): JSX.Element {
                 style={{
                   height: studyRoom.bandThickness,
                   flex: '0 0 auto',
-                  background: 'var(--cth-ink-700)'
+                  ...MASONRY
                 }}
               />
             ) : null}
@@ -577,11 +614,29 @@ export function StudyScene(): JSX.Element {
                 display: 'flex',
                 flex: '0 0 auto',
                 justifyContent: 'center',
-                gap: studyRoom.bandThickness,
                 height
               }}
             >
-              {rooms.map((room) => renderRoom(room, height))}
+              {rooms.map((room, j) => (
+                <Fragment key={room.id}>
+                  {/* The wall between two rooms. A CSS `gap` here painted
+                      nothing — the rooms were separated by whatever showed
+                      through the house, so the building had storeys but no
+                      walls. */}
+                  {j > 0 ? (
+                    <div
+                      data-study-wall=""
+                      style={{
+                        width: studyRoom.bandThickness,
+                        flex: '0 0 auto',
+                        alignSelf: 'stretch',
+                        ...MASONRY
+                      }}
+                    />
+                  ) : null}
+                  {renderRoom(room, height)}
+                </Fragment>
+              ))}
             </div>
           </Fragment>
           );

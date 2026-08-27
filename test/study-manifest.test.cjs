@@ -214,3 +214,29 @@ test('a reading room with no desk in it is rejected, naming the room', () => {
   // Which is what lets the seating index a berth without checking first.
   assert.ok(deskBerths(shippedHouse()).length > 0, 'the shipped house has desks');
 });
+
+test('no storey holds more than two rooms', () => {
+  const { houseRows } = loadTs(MANIFEST);
+  // Three rooms abreast made the house wider than it was tall, and because the
+  // house is letterboxed whole, EVERY room in it shrank to fit the one storey
+  // that was too wide. Two is the cap; there is vertical space to spend and
+  // another storey is cheap.
+  for (const storey of houseRows(shippedHouse())) {
+    assert.ok(storey.length <= 2,
+      `storey ${storey[0].row} holds ${storey.length} rooms: ${storey.map((r) => r.id).join(', ')}`);
+  }
+});
+
+test('every storey spans the whole house, so no room is centred in dead floor', () => {
+  // A storey narrower than the house is drawn centred, with empty floor either
+  // side — and the empty floor is paid for out of the scale the whole building
+  // is letterboxed at, so a single short storey shrinks every room in the house.
+  const { houseRows } = loadTs(MANIFEST);
+  const storeys = houseRows(shippedHouse());
+  const span = (rooms) => rooms.reduce((s, r) => s + r.natural.w / r.natural.h, 0);
+  const widest = Math.max(...storeys.map(span));
+  for (const storey of storeys) {
+    assert.equal(span(storey), widest,
+      `storey ${storey[0].row} spans ${span(storey)} of the house's ${widest}`);
+  }
+});
