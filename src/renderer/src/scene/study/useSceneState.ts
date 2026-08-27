@@ -16,6 +16,7 @@ import { parseTasks, waitsOnHuman, type HiveTask } from '@/components/TasksKanba
 import type { CardStatus } from './AgentCard';
 import type { BookState } from './DeskBook';
 import { deskBerths, godBerth } from './roomManifest';
+import { shelfBooks, type ArchivedThing } from './shelfBooks';
 import { studyRoom } from './StudyScene';
 
 export interface SceneAgent {
@@ -44,6 +45,12 @@ export interface SceneState {
   agents: SceneAgent[];
   openAskCount: number;
   kanbanCounts: { todo: number; doing: number; blocked: number; done: number };
+  /**
+   * What the shelf wall holds: concluded commissions and departed assistants,
+   * newest last, already bounded — see `shelfArchive.ts` for the bound and for
+   * why an archived assistant has no date to bound it by.
+   */
+  archive: ArchivedThing[];
   /**
    * The ledger itself, carried through rather than only counted.
    *
@@ -150,7 +157,40 @@ export function bookFor(tasks: readonly HiveTask[], agentId: string):
  * assistant's index in the roster and nothing else: somebody new arriving at
  * the end never moves anybody already sitting down.
  */
-export function projectScene(agents: readonly Agent[], tasks: readonly HiveTask[]): SceneState {
+/**
+ * Everything the House has finished with, as one list.
+ *
+ * A concluded commission is dated by when it was OPENED, because the ledger
+ * records no completion time — the approximation is stated in shelfArchive.ts
+ * rather than hidden behind a plausible-looking field name. An archived
+ * assistant has no date at all and keeps the store's own order.
+ */
+export function archiveOf(
+  archivedAgents: readonly Agent[],
+  tasks: readonly HiveTask[],
+  now: number
+): ArchivedThing[] {
+  const parse = (iso: string | undefined): number | null => {
+    const t = iso ? Date.parse(iso) : NaN;
+    return Number.isFinite(t) ? t : null;
+  };
+  const things: ArchivedThing[] = [
+    ...archivedAgents.map((a) => ({
+      id: a.id, label: a.name, kind: 'assistant' as const, at: null
+    })),
+    ...tasks.filter((t) => t.status === 'done').map((t) => ({
+      id: t.id, label: t.title, kind: 'commission' as const, at: parse(t.createdAt)
+    }))
+  ];
+  return shelfBooks(things, now);
+}
+
+export function projectScene(
+  agents: readonly Agent[],
+  tasks: readonly HiveTask[],
+  archivedAgents: readonly Agent[] = [],
+  now: number = Date.now()
+): SceneState {
   const desks = deskBerths(studyRoom);
   const god = godBerth(studyRoom);
   /** How many are already sitting at each berth. */
@@ -177,12 +217,14 @@ export function projectScene(agents: readonly Agent[], tasks: readonly HiveTask[
     agents: projected,
     openAskCount: tasks.filter(waitsOnHuman).length,
     kanbanCounts,
+    archive: archiveOf(archivedAgents, tasks, now),
     tasks
   };
 }
 
 export function useSceneState(): SceneState {
   const agents = useStore((s) => s.agents);
+  const archivedAgents = useStore((s) => s.archivedAgents);
   const [tasks, setTasks] = useState<HiveTask[]>([]);
 
   useEffect(() => {
@@ -198,5 +240,12 @@ export function useSceneState(): SceneState {
     return () => { alive = false; clearInterval(timer); };
   }, []);
 
-  return useMemo(() => projectScene(agents, tasks), [agents, tasks]);
+  // `now` is read on each projection rather than held in state: the window is
+  // fourteen days wide, so a clock that only advances when the roster or the
+  // ledger changes is exact enough, and one that ticked would re-render the
+  // whole house for nothing.
+  return useMemo(
+    () => projectScene(agents, tasks, archivedAgents, Date.now()),
+    [agents, tasks, archivedAgents]
+  );
 }

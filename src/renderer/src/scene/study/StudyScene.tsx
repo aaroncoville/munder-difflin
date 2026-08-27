@@ -42,6 +42,7 @@ import {
 import { AgentCard } from './AgentCard';
 import { AmbianceLayer } from './AmbianceLayer';
 import { BaizeCards } from './BaizeCards';
+import { ShelfArchive } from './ShelfArchive';
 import { DeskBook } from './DeskBook';
 import { SpeechScroll } from './SpeechScroll';
 import { portraitFor } from './portraits';
@@ -427,6 +428,14 @@ export function StudyScene(): JSX.Element {
           baize={berthToBox(berth, view)}
           onOpen={openTaskDetail}
         />
+      );
+    }
+    if (kind === 'shelves') {
+      // Finished work, darkening the painted volumes it lands on. The shelves
+      // room's own marked points are where the painting puts its shelves, so a
+      // book stands on one rather than at a guessed coordinate.
+      return (
+        <ShelfArchive books={scene.archive} shelves={room.lightPoints ?? []} view={view} />
       );
     }
     if (kind === 'writingDesk' && scene.openAskCount > 0) {
