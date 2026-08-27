@@ -18,6 +18,9 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
+import { arabicJoinRanges } from '@/terminal/arabicJoiner';
+import { attachArabicSpacingFix } from '@/terminal/arabicSpacingFix';
+import { isArabicTerminalEnabled } from '@/terminal/arabicSetting';
 import {
   classifyPathToken, isPathToken, pathTokenMatcher, stripPathToken, type PathAction
 } from '@shared/terminalPaths';
@@ -80,6 +83,9 @@ export interface TerminalEntry {
    * be recognised and dropped instead of corrupting the replacement. */
   generation: number;
   webgl?: WebglAddon;
+  /** Live Arabic/RTL rendering handles, present only while it is ON. Held so
+   *  the mode can be switched off again without disposing the terminal. */
+  arabic?: { joiner: number; detachSpacing: () => void };
 }
 
 const pool = new Map<string, TerminalEntry>();
@@ -340,6 +346,14 @@ export function acquireTerminal(ptyId: string, theme?: ThemeMap, fontSize = 14):
     // Bracketed paste is still user-owned draft text; remove only its wrapper so
     // pasted content marks the prompt dirty instead of looking automation-safe.
     const input = data.replace(/\x1b\[200~/g, '').replace(/\x1b\[201~/g, '');
+    // A PASTE is never a submit: the TUI drops its newlines into the input box
+    // and waits for a real Enter. xterm rewrites pasted newlines to "\r", so
+    // without this a five-line paste would look like five submitted messages —
+    // and the Enter that actually sends it would then be a sixth. (TELEMETRY.md
+    // → message_sent; the paste's own Enter keystroke arrives as its own chunk
+    // and is counted there.)
+    const pasted = data.includes('\x1b[200~');
+    let submitted = false;
     for (let i = 0; i < input.length; i++) {
       const ch = input[i];
       if (ch === '\r' || ch === '\n') {
@@ -358,7 +372,10 @@ export function acquireTerminal(ptyId: string, theme?: ThemeMap, fontSize = 14):
           entry.automationBlocked = true;
           entry.automationBlockedAt = Date.now();
         }
-        if (t.length >= 2) entry.onPrompt?.(t);
+        if (t.length >= 2) {
+          entry.onPrompt?.(t);
+          submitted = true;
+        }
       } else if (ch === '\x7f' || ch === '\b') {
         entry.lineBuf = entry.lineBuf.slice(0, -1);
       } else if (ch === '\x1b') {
@@ -367,6 +384,11 @@ export function acquireTerminal(ptyId: string, theme?: ThemeMap, fontSize = 14):
         entry.lineBuf += ch;
       }
     }
+    // ONE message per input chunk, at the SUBMIT boundary — not per keystroke
+    // (that is what `pty:write` sees, and counting there would meter typing) and
+    // not per line inside a paste. This is the only place the renderer can cause
+    // an analytics event; it sends a surface name and nothing else.
+    if (submitted && !pasted) void window.cth.trackMessageSent('terminal');
     entry.inputDirty = entry.lineBuf.length > 0;
     // Re-stamped on every keystroke, so the staleness clock measures time since
     // the user last touched the draft — not since they started it.
@@ -557,6 +579,12 @@ export function dismissTerminalPicker(ptyId: string): void {
  *  rather than leave a black terminal. */
 function leaseWebglRenderer(entry: TerminalEntry): void {
   if (entry.webgl) return;
+  // Arabic mode wants the DOM renderer ON PURPOSE: rows become real text nodes,
+  // so the browser's own engine does shaping and (with the CSS in
+  // design/global.css) bidi — what the WebGL cell painter structurally cannot
+  // (xterm.js has no bidi: xtermjs/xterm.js#701). Skipping the lease IS the
+  // feature, not a fallback.
+  if (isArabicTerminalEnabled()) return;
   try {
     const webgl = new WebglAddon();
     webgl.onContextLoss(() => {
@@ -628,6 +656,89 @@ function releaseWebglRenderer(entry: TerminalEntry): void {
   entry.needsRendererRepaint = true;
 }
 
+/** Turn Arabic/RTL rendering ON for one open terminal.
+ *
+ *  The full recipe is documented in terminal/arabicJoiner.ts: join every Arabic
+ *  phrase into one render range, and strip xterm's per-span letter-spacing from
+ *  Arabic spans. MUST run after `open()` — registering a joiner on an unopened
+ *  terminal throws.
+ *
+ *  The `cth-bidi` class is what scopes the bidi CSS in design/global.css to this
+ *  terminal. PR #213 applied those rules to every .xterm on the page; they are
+ *  `!important` and change span layout, so an English user who fell back to the
+ *  DOM renderer (a lost WebGL lease) would have had their TUI box-drawing
+ *  shifted by a feature they never enabled. */
+function enableArabicRendering(entry: TerminalEntry): void {
+  if (entry.arabic) return;
+  entry.host.classList.add('cth-bidi');
+  const joiner = entry.term.registerCharacterJoiner(arabicJoinRanges);
+  const detachSpacing = attachArabicSpacingFix(entry.host);
+  entry.arabic = { joiner, detachSpacing };
+  // Terminals open at boot, often BEFORE webfonts finish loading, so xterm
+  // measures Arabic glyphs against fallback metrics and keeps them. When the
+  // real fonts land, poke fontFamily (a self-assign) to force a re-measure and
+  // full repaint.
+  void document.fonts?.ready.then(() => {
+    if (entry.exited) return;
+    const fam = entry.term.options.fontFamily;
+    entry.term.options.fontFamily = fam;
+  });
+}
+
+/** Exactly undo the above. Every step is reversible, which is the reason the
+ *  switch can be live at all — nothing here disposes the terminal. */
+function disableArabicRendering(entry: TerminalEntry): void {
+  const on = entry.arabic;
+  if (!on) return;
+  entry.arabic = undefined;
+  entry.host.classList.remove('cth-bidi');
+  try { entry.term.deregisterCharacterJoiner(on.joiner); } catch { /* already gone */ }
+  try { on.detachSpacing(); } catch { /* noop */ }
+}
+
+/** Bring every OPEN terminal in line with the current setting.
+ *
+ *  Called when the app language changes and when the Settings toggle is used.
+ *  Without it the setting would only reach terminals opened afterwards, and a
+ *  user who switched to Arabic would see the terminals they already had still
+ *  rendering unshaped, left-to-right — which reads as the feature not working
+ *  rather than as a scoping rule.
+ *
+ *  It UPGRADES IN PLACE rather than rebuilding. The office scene can be rebuilt
+ *  on a language switch (a8292697) because it is derived from state we still
+ *  hold; a terminal cannot, because its scrollback exists only in xterm's own
+ *  buffer and the pty will not resend it — recreating one would silently eat
+ *  the user's history. Dropping the WebGL lease is enough: `releaseWebglRenderer`
+ *  hands painting to the DOM renderer with the buffer, the pty subscription and
+ *  the scrollback all untouched, and that DOM renderer is precisely what Arabic
+ *  mode needs. Going the other way re-leases WebGL on the next attach.
+ *
+ *  A terminal that has never been opened is skipped: it has no host in the
+ *  document and no joiner to register, and `attachTerminal` reads the setting
+ *  fresh when it does open. */
+export function notifyArabicTerminalChangeAll(): void {
+  const want = isArabicTerminalEnabled();
+  const open = [...pool.values()].filter((e) => e.opened && !e.exited);
+  const changed = open.filter((e) => !!e.arabic !== want);
+  for (const entry of changed) {
+    if (want) {
+      // The GPU cell painter ignores CSS and cannot do bidi, so Arabic mode
+      // needs the DOM renderer. Releasing the lease keeps the buffer.
+      releaseWebglRenderer(entry);
+      enableArabicRendering(entry);
+    } else {
+      disableArabicRendering(entry);
+      // Deliberately NOT re-leasing WebGL here: the lease is taken on attach,
+      // and taking one now for an off-screen terminal is the exact GPU-context
+      // exhaustion releaseWebglRenderer exists to avoid.
+      entry.needsRendererRepaint = true;
+    }
+    repaintTerminalAfterRendererLoss(entry);
+  }
+  console.log(`[terminal] arabic -> ${want ? 'on' : 'off'}: `
+    + `${changed.length}/${open.length} open terminal(s) switched`);
+}
+
 /** Re-parent a pty's terminal into `container`, opening xterm on first attach. */
 export function attachTerminal(entry: TerminalEntry, container: HTMLElement): void {
   container.appendChild(entry.host);
@@ -636,6 +747,17 @@ export function attachTerminal(entry: TerminalEntry, container: HTMLElement): vo
     // terminal, and xterm needs its host in the document to measure the cell.
     entry.term.open(entry.host);
     entry.opened = true;
+    // Arabic/RTL terminal support (the full recipe is documented in
+    // terminal/arabicJoiner.ts): join every Arabic phrase into one render range,
+    // and strip xterm's per-span letter-spacing from Arabic spans. MUST come
+    // after open(): registering a joiner on an unopened terminal throws.
+    //
+    // The `cth-bidi` class is what scopes the bidi CSS in design/global.css to
+    // this terminal. The PR applied those rules to every .xterm on the page;
+    // they are `!important` and change span layout, so an English user who
+    // fell back to the DOM renderer (a lost WebGL lease) would have had their
+    // TUI box-drawing shifted by a feature they never enabled.
+    if (isArabicTerminalEnabled()) enableArabicRendering(entry);
   }
   leaseWebglRenderer(entry);
   // PTY startup output can arrive before this pooled terminal subscribes.

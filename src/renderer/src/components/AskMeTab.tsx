@@ -1,9 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { PixelButton } from './PixelButton';
 import { PixelBadge } from './PixelBadge';
 import { useStore, type AnswerAttachment } from '@/store/store';
 import { withAttachedImages } from '@shared/attachedImages';
+import { MarkdownPreview } from '@/markdown/MarkdownPreview';
 import { type HiveTask, type HumanQA, openQuestion, waitsOnHuman } from './TasksKanban';
+import { compareByNewestAsk } from './askMeOrder';
+import { isComposingKey } from '@shared/imeGuard';
+import { useRtl } from '@/i18n/useDirection';
 
 /**
  * ASK ME — first-class human feedback through the task system.
@@ -66,6 +71,8 @@ function dependentsTree(id: string, all: HiveTask[], seen = new Set<string>()): 
 }
 
 export function AskMeTab() {
+  const { t: translate } = useTranslation();
+  const rtl = useRtl();
   const agents = useStore((s) => s.agents);
   const restorable = useStore((s) => s.restorableAgents);
   const [tasks, setTasks] = useState<HiveTask[]>([]);
@@ -105,7 +112,16 @@ export function AskMeTab() {
   const nameFor = (id?: string): string | undefined =>
     id ? (agents.find((a) => a.id === id)?.name ?? restorable.find((a) => a.id === id)?.name ?? id) : undefined;
 
-  const waiting = tasks.filter(waitsOnHuman);
+  // Newest ask at the top, oldest at the bottom. Before this the board had no
+  // comparator at all, so a question's position was an accident of where its
+  // card sat in tasks.json. `filter` already returns a fresh array, so sorting
+  // in place never touches the store's own ordering. The ask each card is
+  // ranked by comes from openQuestion() — the same predicate waitsOnHuman uses
+  // — and only this OUTER list is sorted; a card's humanQA history stays
+  // chronological (see askMeOrder.ts).
+  const waiting = tasks
+    .filter(waitsOnHuman)
+    .sort((a, b) => compareByNewestAsk(openQuestion(a), openQuestion(b)));
 
   /**
    * Apply `patch` to the OPEN humanQA entry of one card, on the RAW ledger.
@@ -262,10 +278,9 @@ export function AskMeTab() {
     <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', background: 'var(--cth-paper-200)', padding: 10, display: 'flex', flexDirection: 'column', gap: 10, fontFamily: 'var(--cth-font-mono)' }}>
       {waiting.length === 0 && (
         <div style={{ textAlign: 'center', padding: '24px 12px', color: 'var(--cth-ink-500)', fontSize: 12 }}>
-          Nothing needs you right now. 🌿<br />
+          {translate('askMe.emptyTitle')}<br />
           <span style={{ fontSize: 11, color: 'var(--cth-ink-300)' }}>
-            When the team blocks a task on your input — a question to answer or a to-do only
-            you can perform — it shows up here (and on the ASK ME board on the floor).
+            {translate('askMe.emptySub')}
           </span>
         </div>
       )}
@@ -284,7 +299,7 @@ export function AskMeTab() {
             }}>
               <button
                 onClick={() => openTaskDetail(t.id)}
-                title="open the full task detail"
+                title={translate('askMe.openDetail')}
                 style={{
                   border: 'none', background: 'transparent', cursor: 'pointer', padding: 0, textAlign: 'left',
                   fontFamily: 'var(--cth-font-mono)', fontSize: 15, color: 'var(--cth-ink-900)',
@@ -300,8 +315,8 @@ export function AskMeTab() {
               <button
                 onClick={() => void dismiss(t)}
                 disabled={sending === t.id}
-                title="dismiss — clear this off the ASK ME board without answering (history kept)"
-                aria-label="dismiss this ask"
+                title={translate('askMe.dismissTitle')}
+                aria-label={translate('askMe.dismissAria')}
                 style={{
                   flexShrink: 0, width: 18, height: 18, padding: 0, marginLeft: 2,
                   display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1,
@@ -315,9 +330,13 @@ export function AskMeTab() {
             </div>
 
             <div style={{ padding: 9, display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {/* the question */}
-              <div style={{ fontSize: 15, lineHeight: '19px', color: 'var(--cth-ink-900)', whiteSpace: 'pre-wrap' }}>
-                {open.q}
+              {/* The question, rendered as markdown. The god writes these with
+                  emphasis, lists, `code` and links; as plain text the asterisks
+                  and backticks were on screen literally. The card variant keeps
+                  this card's mono face and turns a single newline into a break, so
+                  a question with no markdown in it looks exactly as it did. */}
+              <div dir={rtl ? 'auto' : undefined} style={{ fontSize: 15, lineHeight: '19px', color: 'var(--cth-ink-900)' }}>
+                <MarkdownPreview source={open.q} variant="card" />
               </div>
 
               {/* answer box — and the drop target for images, so a screenshot can
@@ -336,9 +355,10 @@ export function AskMeTab() {
                 }}
               >
                 <textarea
+                  dir={rtl ? 'auto' : undefined}
                   value={drafts[t.id] ?? ''}
                   onChange={(e) => setAnswerDraft(t.id, e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void sendAnswer(t); }}
+                  onKeyDown={(e) => { if (isComposingKey(e)) return; if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void sendAnswer(t); }}
                   onPaste={(e) => {
                     // A pasted screenshot arrives as a file on the clipboard; let
                     // ordinary text paste through untouched.
@@ -411,7 +431,7 @@ export function AskMeTab() {
                   }
                   onClick={() => void sendAnswer(t)}
                 >
-                  {sending === t.id ? 'sending…' : (attaching[t.id] ?? 0) > 0 ? 'attaching…' : 'respond & unblock'}
+                  {sending === t.id ? translate('askMe.sending') : (attaching[t.id] ?? 0) > 0 ? 'attaching…' : translate('askMe.respond')}
                 </PixelButton>
                 <PixelButton
                   variant="secondary" size="sm"
@@ -432,14 +452,19 @@ export function AskMeTab() {
                 {(t.humanQA?.filter((e) => e.a).length ?? 0) > 0 && (
                   <button
                     onClick={() => openTaskDetail(t.id)}
-                    title="open the task detail with the full Q&A history"
+                    title={translate('askMe.viewAnswersHistory')}
                     style={{
                       border: 'none', background: 'transparent', cursor: 'pointer', padding: 0,
                       fontSize: 10, color: 'var(--cth-ink-700)', fontFamily: 'var(--cth-font-display)',
                       textDecoration: 'underline'
                     }}
                   >
-                    VIEW {t.humanQA!.filter((e) => e.a).length} EARLIER ANSWER{t.humanQA!.filter((e) => e.a).length === 1 ? '' : 'S'}
+                    {(() => {
+                      const n = t.humanQA!.filter((e) => e.a).length;
+                      return n === 1
+                        ? translate('askMe.viewAnswers', { count: n })
+                        : translate('askMe.viewAnswersPlural', { count: n });
+                    })()}
                   </button>
                 )}
               </div>
@@ -448,7 +473,9 @@ export function AskMeTab() {
               {stuck.length > 0 && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
                   <div style={{ fontFamily: 'var(--cth-font-display)', fontSize: 8, color: 'var(--cth-coral)' }}>
-                    BLOCKING {stuck.length} DOWNSTREAM TASK{stuck.length === 1 ? '' : 'S'}
+                    {stuck.length === 1
+                      ? translate('askMe.blockingDownstream', { count: stuck.length })
+                      : translate('askMe.blockingDownstreamPlural', { count: stuck.length })}
                   </div>
                   {stuck.slice(0, 6).map((d, i) => (
                     <div key={d.id} style={{
@@ -463,7 +490,7 @@ export function AskMeTab() {
                     </div>
                   ))}
                   {stuck.length > 6 && (
-                    <div style={{ paddingLeft: 14, fontSize: 11, color: 'var(--cth-ink-300)' }}>… +{stuck.length - 6} more</div>
+                    <div style={{ paddingLeft: 14, fontSize: 11, color: 'var(--cth-ink-300)' }}>{translate('askMe.more', { count: stuck.length - 6 })}</div>
                   )}
                 </div>
               )}

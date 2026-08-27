@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { HarnessConfig } from '@/store/config';
 import { MCP_CATALOG, type McpTier } from '@shared/mcpCatalog';
 import { applyToggle, resolveEnabledFor } from './mcpToggleLogic';
@@ -8,15 +9,15 @@ export interface McpDefaultsSettingsProps {
 }
 
 const TIER_ORDER: McpTier[] = ['safe-readonly', 'write', 'secret'];
-const TIER_LABEL: Record<McpTier, string> = {
-  'safe-readonly': 'Safe & Read-Only (on by default)',
-  'write': 'Write Access (consent required)',
-  'secret': 'Requires Secret / API Key (consent required)'
+const TIER_LABEL_KEY: Record<McpTier, string> = {
+  'safe-readonly': 'mcpDefaults.tiers.safeReadonly',
+  'write': 'mcpDefaults.tiers.write',
+  'secret': 'mcpDefaults.tiers.secret'
 };
-const TIER_NOTE: Record<McpTier, string> = {
-  'safe-readonly': 'These servers read data only, need no secrets, and are scoped to the agent workspace. They are enabled for every new agent.',
-  'write': 'These servers can mutate state beyond the workspace. Off by default — enable only after reviewing.',
-  'secret': 'These servers require an API key or credentials. Off by default — add your credentials and enable after consent.'
+const TIER_NOTE_KEY: Record<McpTier, string> = {
+  'safe-readonly': 'mcpDefaults.tiers.safeReadonlyNote',
+  'write': 'mcpDefaults.tiers.writeNote',
+  'secret': 'mcpDefaults.tiers.secretNote'
 };
 
 const labelStyle: React.CSSProperties = {
@@ -28,6 +29,7 @@ const labelStyle: React.CSSProperties = {
 };
 
 export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
+  const { t } = useTranslation();
   const [note, setNote] = useState('');
   // Seeded from the prop, then replaced by the persisted config after each
   // toggle. Rendering from the prop alone keeps showing the stale value.
@@ -57,10 +59,10 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
         updateConfig: window.cth.updateConfig,
         getConfig: window.cth.getConfig
       }));
-      setNote(`${id}: ${next ? 'enabled' : 'disabled'}`);
+      setNote(t('mcpDefaults.toggleNote', { id, state: next ? t('common.on') : t('common.off') }));
       setTimeout(() => setNote(''), 1800);
     } catch {
-      setNote('could not save');
+      setNote(t('mcpDefaults.couldNotSave'));
       setTimeout(() => setNote(''), 2000);
     }
   };
@@ -70,11 +72,9 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div>
-        <div style={{ ...labelStyle, marginBottom: 6 }}>Default MCP servers</div>
+        <div style={{ ...labelStyle, marginBottom: 6 }}>{t('mcpDefaults.title')}</div>
         <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>
-          These servers are merged into each new agent's session settings. Safe servers are on by
-          default; write/secret servers are off until you consent. Changes take effect on the next
-          agent spawn — running agents are not affected.
+          {t('mcpDefaults.desc')}
         </span>
       </div>
 
@@ -90,10 +90,10 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
                 color: isConsent ? '#6E1423' : 'var(--cth-ink-500)',
                 textTransform: 'uppercase'
               }}>
-                {TIER_LABEL[tier]}
+                {t(TIER_LABEL_KEY[tier])}
               </span>
               <span style={{ fontSize: 11, lineHeight: '15px', color: 'var(--cth-ink-400, var(--cth-ink-500))' }}>
-                {TIER_NOTE[tier]}
+                {t(TIER_NOTE_KEY[tier])}
               </span>
             </div>
 
@@ -144,7 +144,7 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
                         textTransform: 'uppercase'
                       }}
                     >
-                      {on ? 'on' : 'off'}
+                      {on ? t('common.on') : t('common.off')}
                     </button>
                   </div>
                 );

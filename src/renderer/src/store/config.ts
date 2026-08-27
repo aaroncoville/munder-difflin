@@ -168,7 +168,14 @@ export interface ModelOption {
 /** One row of the model catalog. `minAppVersion` / `maxAppVersion` are INCLUSIVE
  *  app-version bounds: the model is offered while the running build sits inside
  *  them, and null (or an absent key) means unbounded in that direction. That is
- *  what lets a release introduce or retire a model without a code change. */
+ *  what lets a release introduce or retire a model without a code change.
+ *
+ *  PRERELEASES COUNT AS THEIR RELEASE. The comparison is major.minor.patch only
+ *  (`isNewer` discards a `-rc.N` suffix), so `minAppVersion: '0.4.6'` IS offered
+ *  on `0.4.6-rc.1`. That is deliberate and ruled on: an rc of a release should
+ *  count as that release, it matches the update badge's own comparison, and the
+ *  alternative would hide a new model from exactly the testers meant to
+ *  exercise it. Bound a model to the release, not to its rc. */
 interface CatalogModel {
   /** absent = use the CLI default (no --model flag) */
   id?: string;
