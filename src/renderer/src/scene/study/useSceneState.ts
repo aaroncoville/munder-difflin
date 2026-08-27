@@ -128,10 +128,18 @@ export function bookFor(tasks: readonly HiveTask[], agentId: string):
  * his own study and does not consume a reading desk on his way past.
  *
  * A house with more assistants than desks is a real state, not an error: the
- * overflow shares the last desk rather than the scene inventing berths no room
- * has the furniture for. Sharing a desk means sharing it visibly — each
- * assistant past the first is given its place in the pile, and the scene deals
- * them back from one another so every card keeps an edge of its own.
+ * overflow shares, rather than the scene inventing berths no room has the
+ * furniture for. It shares by carrying on round the house from the first desk
+ * again, so a crowd settles evenly instead of piling onto whichever desk the
+ * seating ran out at — the ninth assistant of nine sits with the first, not
+ * with the eighth, and a house of three times its desks is three deep
+ * everywhere rather than seventeen deep in one room. Depth is what costs: each
+ * assistant past the first at a desk is dealt back from the one below by a
+ * fixed step, and a pile deep enough walks off the edge of its own panel.
+ *
+ * Seating stays stable through it, because a place is a function of an
+ * assistant's index in the roster and nothing else: somebody new arriving at
+ * the end never moves anybody already sitting down.
  */
 export function projectScene(agents: readonly Agent[], tasks: readonly HiveTask[]): SceneState {
   const desks = deskBerths(studyRoom);
@@ -140,7 +148,7 @@ export function projectScene(agents: readonly Agent[], tasks: readonly HiveTask[
   const seated = new Map<string, number>();
   let seat = 0;
   const projected = agents.map((a) => {
-    const berthId = a.isGod ? god.id : desks[Math.min(seat++, desks.length - 1)].id;
+    const berthId = a.isGod ? god.id : desks[seat++ % desks.length].id;
     const stackIndex = seated.get(berthId) ?? 0;
     seated.set(berthId, stackIndex + 1);
     return {

@@ -366,6 +366,32 @@ test('assistants sharing a desk are dealt out, not stacked out of sight', async 
     'every card in the crowd selects its own assistant');
 });
 
+test('a crowded house keeps every card inside the room it is drawn in', async () => {
+  // Three times the desks: whatever the seating does with the overflow, a card
+  // dealt off the edge of its own panel is clipped away by the panel's
+  // `overflow: hidden` — invisible and unclickable, which is the bug the stack
+  // offset exists to prevent, one step further along.
+  const crowd = Array.from({ length: deskBerths(studyRoom).length * 3 },
+    (_, i) => person(`w-${i}`));
+  const { view } = await inhabit({ agents: crowd });
+
+  let checked = 0;
+  for (const room of studyRoom.rooms) {
+    const panel = panelOf(view.tree, room.id);
+    const { width, height } = panel.props.style;
+    for (const card of all(panel, (n) => n.type === AgentCard)) {
+      const box = card.props.box;
+      const where = `${card.props.name} in ${room.id}`;
+      assert.ok(box.left >= 0 && box.left + box.width <= width + 0.5,
+        `${where} stays within the panel across (${box.left}..${box.left + box.width} of ${width})`);
+      assert.ok(box.top >= 0 && box.top + box.height <= height + 0.5,
+        `${where} stays within the panel down (${box.top}..${box.top + box.height} of ${height})`);
+      checked++;
+    }
+  }
+  assert.equal(checked, crowd.length, 'every card in the crowd was checked');
+});
+
 test('an empty house is still a house', async () => {
   const { view } = await inhabit({});
   assert.equal(all(view.tree, (n) => n.type === AgentCard).length, 0);
