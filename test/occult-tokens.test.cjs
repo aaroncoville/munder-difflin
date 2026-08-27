@@ -120,3 +120,15 @@ test('the drop palette keeps its landing-site values outside occult', () => {
   assert.match(frame, /--paper:\s*#FFFDF7/);
   assert.match(frame, /--ink:\s*#1B1B1B/);
 });
+
+test('occult replaces the I-beam cursor and gives selection a ground', () => {
+  // The mouse I-beam is an OS cursor, which `color-scheme` cannot reach — the
+  // reason global.css draws its own. That one wears a cream halo sized for a
+  // cream input; on a night ground it is the halo that disappears.
+  const rule = occult.match(
+    /:root\[data-cth-theme='occult'\] input[^{]*{([\s\S]*?)\n}/);
+  assert.ok(rule, 'no occult cursor rule');
+  assert.match(rule[1], /cursor:\s*url\("data:image\/svg\+xml/);
+  assert.doesNotMatch(rule[1], /%23fdf6e3/i, 'still wearing the cream halo');
+  assert.match(occult, /:root\[data-cth-theme='occult'\]\s*::selection\s*{[\s\S]*?background:/);
+});

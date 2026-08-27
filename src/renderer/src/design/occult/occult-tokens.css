@@ -152,3 +152,24 @@
     repeating-linear-gradient(-45deg, transparent 0 14px, rgba(201, 162, 39, 0.04) 14px 15px),
     var(--cth-cream-200);
 }
+
+/* The mouse I-beam. global.css draws its own because the OS cursor scheme is
+   the one thing `color-scheme` cannot touch, and on Windows several schemes
+   paint it white with a hairline outline — invisible over a pale input. That
+   replacement wears an INKED stroke inside a cream halo, which is sized for a
+   cream input and inverts the problem here: on a night ground the halo is what
+   disappears. Same glyph, colours swapped — a parchment stroke inside a dark
+   halo, so it reads on the occult grounds and on the terminal alike. */
+:root[data-cth-theme='occult'] input,
+:root[data-cth-theme='occult'] textarea,
+:root[data-cth-theme='occult'] [contenteditable='true'] {
+  cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='17' height='18'><g fill='none' stroke='%23120f1b' stroke-width='4' stroke-linecap='round'><path d='M5 2.5h7M8.5 3v12M5 15.5h7'/></g><g fill='none' stroke='%23eae0c8' stroke-width='1.6' stroke-linecap='round'><path d='M5 2.5h7M8.5 3v12M5 15.5h7'/></g></svg>") 8 9, text;
+}
+
+/* Selection has no styling anywhere else, so it falls to the UA's blue — the
+   one saturated non-palette colour that can appear on screen under this theme.
+   Gilt-soft is dark enough to leave the parchment text readable on top. */
+:root[data-cth-theme='occult'] ::selection {
+  background: var(--cth-gilt-soft);
+  color: var(--cth-ink-900);
+}
