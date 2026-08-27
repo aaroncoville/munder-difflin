@@ -109,15 +109,55 @@ test('the rooms are stacked in reading order, with masonry between the storeys',
   }
 });
 
-test('the house scrolls vertically when it is taller than the window', () => {
+test('the house is letterboxed into the window rather than scrolled', () => {
   seedDom();
-  const { StudyScene } = loadTs(SCENE);
+  const { StudyScene, HOUSE_NATURAL_WIDTH, HOUSE_NATURAL_HEIGHT } = loadTs(SCENE);
   const inst = mount(StudyScene, {});
   scenes.push(inst);
   const host = one(inst.tree, (n) => n.props?.['data-study-scene'] !== undefined);
   assert.ok(host, 'the scene host is there');
-  assert.equal(host.props.style.overflowY, 'auto', 'the storeys below the fold are reachable');
-  assert.equal(host.props.style.overflowX, 'hidden', 'and the house never scrolls sideways');
+  assert.equal(host.props.style.overflow, 'hidden', 'there is nothing to scroll to');
+
+  const house = one(inst.tree, (n) => n.props?.['data-study-house'] !== undefined);
+  assert.equal(house.props.style.width, HOUSE_NATURAL_WIDTH,
+    'the house is laid out at its natural size');
+  assert.equal(house.props.style.height, HOUSE_NATURAL_HEIGHT);
+  assert.match(String(house.props.style.transform), /^scale\(/,
+    'and it is the scale that fits it to the window');
+  assert.equal(house.props.style.transformOrigin, 'top left',
+    'scaled from the corner the letterbox positions');
+});
+
+test('the whole house fits any window, centred and undistorted', () => {
+  const { houseFit, HOUSE_NATURAL_WIDTH, HOUSE_NATURAL_HEIGHT } = loadTs(SCENE);
+  const near = (a, b) => Math.abs(a - b) < 1e-9;
+  const aspect = HOUSE_NATURAL_WIDTH / HOUSE_NATURAL_HEIGHT;
+  for (const host of [{ w: 1280, h: 800 }, { w: 600, h: 1400 }, { w: 2400, h: 300 },
+    { w: 320, h: 320 }, { w: HOUSE_NATURAL_WIDTH, h: HOUSE_NATURAL_HEIGHT }]) {
+    const fit = houseFit(host);
+    const where = `${host.w}x${host.h}`;
+    assert.ok(fit.w <= host.w + 1e-9, `${where}: no wider than the window`);
+    assert.ok(fit.h <= host.h + 1e-9, `${where}: no taller than the window — nothing to scroll`);
+    assert.ok(near(fit.w / fit.h, aspect), `${where}: the house is not stretched`);
+    assert.ok(near(fit.x, (host.w - fit.w) / 2) && near(fit.y, (host.h - fit.h) / 2),
+      `${where}: centred in what it was given`);
+    assert.ok(near(fit.w, host.w) || near(fit.h, host.h),
+      `${where}: as large as the constraining axis allows`);
+  }
+});
+
+test('the letterbox is measured against everything the house draws', () => {
+  // The fit scales the house against its natural height. If that number is
+  // short of what the storeys and the masonry actually add up to, the bottom of
+  // the building is cut off by the letterbox instead of being scaled into it.
+  seedDom();
+  const { StudyScene, HOUSE_NATURAL_HEIGHT } = loadTs(SCENE);
+  const inst = mount(StudyScene, {});
+  scenes.push(inst);
+  const heights = (attr) => all(inst.tree, (n) => n.props?.[attr] !== undefined)
+    .reduce((sum, n) => sum + n.props.style.height, 0);
+  assert.equal(heights('data-study-storey') + heights('data-study-band'), HOUSE_NATURAL_HEIGHT,
+    'every storey and every band is inside the height the house is fitted by');
 });
 
 test('each room stacks its panel, its ambiance slot and its cards in that order', () => {
