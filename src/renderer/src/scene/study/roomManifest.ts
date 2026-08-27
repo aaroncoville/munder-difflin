@@ -258,7 +258,26 @@ export function houseRows(manifest: RoomManifest): Room[][] {
     .map(([, rooms]) => [...rooms].sort((a, b) => a.col - b.col));
 }
 
-/** The shipped floor plan. Throws if room.json has been edited into nonsense. */
-export function loadRoomManifest(): RoomManifest {
-  return validateRoomManifest(roomJson);
+/** A floor plan that was read, or the reason it could not be. */
+export type ManifestLoad =
+  | { ok: true; manifest: RoomManifest }
+  | { ok: false; error: string };
+
+/**
+ * Read a floor plan — the shipped one unless another is passed — as a result.
+ *
+ * `validateRoomManifest` throws, and should: a hand-edited manifest is worth
+ * failing loudly over, with the offending field named. But the Study reads its
+ * plan while its own module is being evaluated, and a module that throws as it
+ * is imported takes its importer down with it. Turning the throw into a value
+ * here keeps a broken plan a decision the scene can make — draw nothing, and
+ * let the floor fall back — instead of an exception nobody is positioned to
+ * catch.
+ */
+export function loadRoomManifest(raw: unknown = roomJson): ManifestLoad {
+  try {
+    return { ok: true, manifest: validateRoomManifest(raw) };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }

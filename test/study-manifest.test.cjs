@@ -37,9 +37,17 @@ const house = (over = {}) => ({
   ...over
 });
 
+/** The shipped floor plan, or a failure naming why it would not load. */
+function shippedHouse() {
+  const { loadRoomManifest } = loadTs(MANIFEST);
+  const load = loadRoomManifest();
+  assert.equal(load.ok, true, load.ok ? '' : `room.json does not validate: ${load.error}`);
+  return load.manifest;
+}
+
 test('the shipped house is valid and complete', () => {
-  const { loadRoomManifest, deskRooms } = loadTs(MANIFEST);
-  const room = loadRoomManifest();
+  const { deskRooms } = loadTs(MANIFEST);
+  const room = shippedHouse();
   assert.ok(room.rooms.length >= 8, 'a house of rooms');
   assert.ok(deskRooms(room).length >= 6, 'at least six reading rooms');
   assert.ok(room.bandThickness > 0, 'the masonry between rows has a thickness');
@@ -69,7 +77,7 @@ test('the shipped house is valid and complete', () => {
 
 test('every anchor the scene needs is a room of its own kind, exactly once', () => {
   const { loadRoomManifest } = loadTs(MANIFEST);
-  const rooms = loadRoomManifest().rooms;
+  const rooms = shippedHouse().rooms;
   for (const kind of ANCHOR_KINDS) {
     assert.equal(rooms.filter((r) => r.kind === kind).length, 1, `one ${kind} room`);
   }
@@ -78,7 +86,7 @@ test('every anchor the scene needs is a room of its own kind, exactly once', () 
 
 test('the reading desks are the berths of the desk rooms, in manifest order', () => {
   const { loadRoomManifest, deskBerths, deskRooms } = loadTs(MANIFEST);
-  const room = loadRoomManifest();
+  const room = shippedHouse();
   assert.deepEqual(
     deskBerths(room).map((b) => b.id),
     deskRooms(room).flatMap((r) => r.berths.map((b) => b.id)),
@@ -89,7 +97,7 @@ test('the reading desks are the berths of the desk rooms, in manifest order', ()
 
 test("the god's berth comes from the god's study, not from a reading room", () => {
   const { loadRoomManifest, godBerth, deskBerths } = loadTs(MANIFEST);
-  const room = loadRoomManifest();
+  const room = shippedHouse();
   const god = godBerth(room);
   const study = room.rooms.find((r) => r.kind === 'godStudy');
   assert.ok(study.berths.some((b) => b.id === god.id), "the god sits in the god's study");
@@ -99,7 +107,7 @@ test("the god's berth comes from the god's study, not from a reading room", () =
 
 test('the house reads top to bottom, and each row left to right', () => {
   const { loadRoomManifest, houseRows } = loadTs(MANIFEST);
-  const rows = houseRows(loadRoomManifest());
+  const rows = houseRows(shippedHouse());
   assert.ok(rows.length >= 2, 'more than one storey');
   let previous = -1;
   for (const row of rows) {
@@ -111,7 +119,7 @@ test('the house reads top to bottom, and each row left to right', () => {
     assert.deepEqual(cols, [...cols].sort((a, b) => a - b), 'columns ascend');
   }
   const placed = rows.flat().length;
-  assert.equal(placed, loadRoomManifest().rooms.length, 'every room is placed');
+  assert.equal(placed, shippedHouse().rooms.length, 'every room is placed');
 });
 
 test('a house missing an anchor room is rejected, naming the kind', () => {
@@ -165,4 +173,28 @@ test("the god's study must actually have a seat in it", () => {
   const spoilt = house();
   spoilt.rooms[1].berths = [];
   assert.throws(() => validateRoomManifest(spoilt), /godStudy/);
+});
+
+test('a floor plan that fails validation is reported, not thrown', () => {
+  const { loadRoomManifest, validateRoomManifest } = loadTs(MANIFEST);
+  const spoilt = house();
+  spoilt.rooms = spoilt.rooms.filter((r) => r.kind !== 'hearth');
+
+  // The validator still throws — that is what names the offending field.
+  assert.throws(() => validateRoomManifest(spoilt), /hearth/);
+
+  // The loader must not, because the Study reads the plan while its module is
+  // being evaluated: a throw there rejects the whole chunk.
+  let load;
+  assert.doesNotThrow(() => { load = loadRoomManifest(spoilt); },
+    'loading a broken floor plan must not throw');
+  assert.equal(load.ok, false, 'the load reports failure');
+  assert.match(load.error, /hearth/, 'and carries the validator\'s reason');
+});
+
+test('the shipped floor plan loads cleanly', () => {
+  const { loadRoomManifest } = loadTs(MANIFEST);
+  const load = loadRoomManifest();
+  assert.equal(load.ok, true, load.ok ? '' : `room.json is broken: ${load.error}`);
+  assert.ok(load.manifest.rooms.length > 0, 'and carries the house');
 });

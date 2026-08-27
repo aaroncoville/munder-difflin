@@ -47,7 +47,7 @@ test('containFit letterboxes on the constraining axis', () => {
 
 // ─── The house ──────────────────────────────────────────────────────────────
 
-const { houseRows, deskBerths, deskRooms, loadRoomManifest } = loadTs(MANIFEST);
+const { houseRows, deskBerths, deskRooms } = loadTs(MANIFEST);
 
 /**
  * Every node in the tree, descending THROUGH the scene's presentational
@@ -138,7 +138,7 @@ test('every room reserves an ambiance slot, empty and never eating a click', () 
 
 test('every panel the manifest names is on disk at the size it declares, and imported', () => {
   const { ROOM_SRC } = loadTs(SCENE);
-  for (const room of loadRoomManifest().rooms) {
+  for (const room of studyRoom.rooms) {
     const file = path.resolve(ASSETS, room.image);
     assert.ok(fs.existsSync(file), `${room.id}'s panel ${room.image} is on disk`);
     // The scene must render the file the manifest names — an image with no

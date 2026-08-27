@@ -35,7 +35,8 @@ import {
   loadRoomManifest,
   type AnchorKind,
   type Berth,
-  type Room
+  type Room,
+  type RoomManifest
 } from './roomManifest';
 import { AgentCard } from './AgentCard';
 import { DeskBook } from './DeskBook';
@@ -87,8 +88,20 @@ export function berthToBox(berth: Berth, view: ViewBox): Box {
   };
 }
 
-/** The floor plan the house is built from — parsed once, shared by its rooms. */
-export const studyRoom = loadRoomManifest();
+const HOUSE = loadRoomManifest();
+
+/**
+ * The floor plan the house is built from — parsed once, shared by its rooms.
+ *
+ * A plan that failed validation leaves an empty house here rather than an
+ * exception, so importing the Study always succeeds. Nothing ever draws that
+ * empty house: `StudyScene` refuses to render while `studyRoomError` is set,
+ * and the floor host puts the office floor up in its place.
+ */
+export const studyRoom: RoomManifest = HOUSE.ok ? HOUSE.manifest : { rooms: [], bandThickness: 0 };
+
+/** Why the house could not be built, or `null` when it could. */
+export const studyRoomError: string | null = HOUSE.ok ? null : HOUSE.error;
 
 /** The storeys, top to bottom, each read left to right. */
 const STOREYS = houseRows(studyRoom);
@@ -112,7 +125,7 @@ export function storeyHeight(rooms: readonly Room[], width: number, band: number
 }
 
 /** The width at which every storey draws at its natural height. */
-export const HOUSE_NATURAL_WIDTH = Math.max(
+export const HOUSE_NATURAL_WIDTH = STOREYS.length === 0 ? 0 : Math.max(
   ...STOREYS.map((rooms) => {
     const tallest = Math.max(...rooms.map((r) => r.natural.h));
     return rooms.reduce((sum, r) => sum + (r.natural.w / r.natural.h) * tallest, 0)
@@ -304,6 +317,10 @@ function RoomPanel({ room, height, label, onClick, children }: {
 }
 
 export function StudyScene(): JSX.Element {
+  // A house that could not be read is not a house that can be drawn half-way.
+  // Throwing here hands the decision to the floor host's boundary, which puts
+  // the office floor up — before any hook runs, so the throw is the whole render.
+  if (studyRoomError) throw new Error(`the Study has no floor plan: ${studyRoomError}`);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const houseWidth = useHouseWidth(hostRef);
   const scene = useSceneState();
