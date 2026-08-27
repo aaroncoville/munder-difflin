@@ -29,10 +29,17 @@
  *
  * The prop rooms ARE the props: clicking the card table's room opens Tasks, so
  * there is no invisible hotspot to keep in step with the painting.
+ *
+ * A function does not have to own a room to be one of those props, though. The
+ * house is letterboxed whole, so a storey given over to a stack of letters is
+ * paid for by every assistant's card in the building — which is why the plan
+ * also lets an anchor stand INSIDE another room, as a rectangle of that
+ * painting carrying the same label, click and badge a room of its own would.
  */
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { useStore } from '@/store/store';
 import {
+  ANCHOR_KINDS,
   houseRows,
   loadRoomManifest,
   type AnchorKind,
@@ -276,6 +283,11 @@ const KANBAN_COLUMNS = ['todo', 'doing', 'blocked', 'done'] as const;
 /** The badge row a prop room carries, centred over its panel. */
 const BADGES: React.CSSProperties = {
   position: 'absolute',
+  // A printed count, not a control. It is drawn OVER whatever carries the
+  // click — a room panel, or a prop standing in one — and a badge that ate the
+  // pointer would make the middle of the prop the one part of it you cannot
+  // press.
+  pointerEvents: 'none',
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
@@ -299,7 +311,15 @@ const BADGES: React.CSSProperties = {
  * where in it the prop stands.
  */
 export function badgeBox(room: Room, view: ViewBox): React.CSSProperties {
-  const berth = room.berths[0];
+  return anchorFrame(room.berths[0], view);
+}
+
+/** The same patch, for an anchor that stands as a prop and so has no room of
+ *  its own to fall back to. */
+export function anchorFrame(
+  berth: Berth | undefined,
+  view: ViewBox
+): React.CSSProperties {
   if (!berth) return { inset: 0 };
   const box = berthToBox(berth, view);
   return { left: box.left, top: box.top, width: box.width, height: box.height };
@@ -452,6 +472,42 @@ function RoomPanel({ room, height, label, onClick, children }: {
   );
 }
 
+/**
+ * An anchor standing inside another room: the clickable patch of painting.
+ *
+ * It carries exactly what a prop ROOM carries — the label, the button
+ * semantics, the keyboard handling — over a rectangle instead of a panel. The
+ * one addition is that a press has to STOP here: the host room is itself a
+ * button (the parlour opens the board), so a door that did not stop its click
+ * would open the board behind the window it just closed.
+ */
+function PropPlate({ kind, label, box, onClick }: {
+  kind: AnchorKind;
+  label: string;
+  box: React.CSSProperties;
+  onClick?: () => void;
+}): JSX.Element {
+  const press = (stop: () => void): void => { stop(); onClick?.(); };
+  return (
+    <div
+      data-study-prop=""
+      data-study-kind={kind}
+      title={label}
+      aria-label={label}
+      role="button"
+      tabIndex={0}
+      onClick={(event: React.MouseEvent) => press(() => event.stopPropagation())}
+      onKeyDown={(event: React.KeyboardEvent<HTMLDivElement>) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        press(() => event.stopPropagation());
+      }}
+      style={{ position: 'absolute', cursor: 'pointer', ...box }}
+    />
+  );
+}
+
 export function StudyScene(): JSX.Element {
   // A house that could not be read is not a house that can be drawn half-way.
   // Throwing here hands the decision to the floor host's boundary, which puts
@@ -483,14 +539,17 @@ export function StudyScene(): JSX.Element {
     hearth: () => window.close()
   };
 
-  const badgesFor = (room: Room, kind: AnchorKind, view: ViewBox): React.ReactNode => {
-    const frame = { ...BADGES, ...badgeBox(room, view) };
+  /** What one anchor draws on the patch of painting it stands on — whether
+   *  that patch is a whole prop room or a prop inside somebody else's. */
+  const anchorContent = (
+    kind: AnchorKind, room: Room, berth: Berth | undefined, view: ViewBox
+  ): React.ReactNode => {
+    const frame = { ...BADGES, ...anchorFrame(berth, view) };
     if (kind === 'cardTable') {
       // The commissions themselves, dealt onto the baize the painting puts
       // there. They replace the four column totals that used to sit here: a
       // total could only ever mean "open the whole board", which is what
       // clicking the room already does.
-      const berth = room.berths[0];
       if (!berth) return null;
       return (
         <BaizeCards
@@ -544,23 +603,31 @@ export function StudyScene(): JSX.Element {
     });
 
   const renderRoom = (room: Room, height: number): JSX.Element => {
-    if (room.kind === 'desk' || room.kind === 'godStudy') {
-      return (
-        <RoomPanel key={room.id} room={room} height={height}>
-          {(view: ViewBox) => occupantsOf(room, view)}
-        </RoomPanel>
-      );
-    }
-    const kind = room.kind;
+    const own = ANCHOR_KINDS.find((k) => k === room.kind);
     return (
       <RoomPanel
         key={room.id}
         room={room}
         height={height}
-        label={ANCHOR_LABEL[kind]}
-        onClick={ANCHOR_CLICK[kind]}
+        {...(own ? { label: ANCHOR_LABEL[own], onClick: ANCHOR_CLICK[own] } : {})}
       >
-        {(view: ViewBox) => badgesFor(room, kind, view)}
+        {(view: ViewBox) => (
+          <>
+            {own ? anchorContent(own, room, room.berths[0], view) : null}
+            {occupantsOf(room, view)}
+            {room.props.map((prop) => (
+              <Fragment key={prop.kind}>
+                <PropPlate
+                  kind={prop.kind}
+                  label={ANCHOR_LABEL[prop.kind]}
+                  box={anchorFrame(prop.berth, view)}
+                  onClick={ANCHOR_CLICK[prop.kind]}
+                />
+                {anchorContent(prop.kind, room, prop.berth, view)}
+              </Fragment>
+            ))}
+          </>
+        )}
       </RoomPanel>
     );
   };

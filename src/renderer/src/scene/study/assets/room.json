@@ -1,5 +1,5 @@
 {
-  "_comment": "Cross-section of the Study, storey by storey. Each room is a flat panel with its own image; every berth is normalized (0..1) to THAT panel, not to the house. Berths were read off the paintings themselves: a reading berth's bottom edge sits on the painted desk surface, so the card stands at the desk and the book lands on it. A prop room's single berth is where its badge belongs in the painting — the baize, the open almanac, the stack of petitions, the armchair.",
+  "_comment": "Cross-section of the Study, storey by storey. Each room is a flat panel with its own image; every berth is normalized (0..1) to THAT panel, not to the house. Berths were read off the paintings themselves: a reading berth's bottom edge sits on the painted desk surface, so the card stands at the desk and the book lands on it. An anchor is either a room of its own kind or a `prop` standing inside somebody else's room — the parlour holds three, because a storey spent on a single prop is paid for by every card in the house.",
   "bandThickness": 18,
   "rooms": [
     {
@@ -20,22 +20,8 @@
       "lightPoints": [{ "x": 0.735, "y": 0.245 }]
     },
     {
-      "id": "card-table", "kind": "cardTable", "image": "./room-card-table.png",
-      "natural": { "w": 1568, "h": 672 }, "row": 1, "col": 0,
-      "berths": [{ "id": "card-table-baize", "x": 0.335, "y": 0.400, "w": 0.335, "h": 0.300 }],
-      "lightPoints": [
-        { "x": 0.345, "y": 0.155 }, { "x": 0.505, "y": 0.075 }, { "x": 0.665, "y": 0.155 }
-      ]
-    },
-    {
-      "id": "writing-desk", "kind": "writingDesk", "image": "./room-writing-desk.png",
-      "natural": { "w": 1568, "h": 672 }, "row": 1, "col": 1,
-      "berths": [{ "id": "petitions-stack", "x": 0.655, "y": 0.545, "w": 0.090, "h": 0.085 }],
-      "lightPoints": [{ "x": 0.545, "y": 0.065 }]
-    },
-    {
       "id": "desk-1", "kind": "desk", "image": "./room-desk-a.png",
-      "natural": { "w": 1568, "h": 672 }, "row": 2, "col": 0,
+      "natural": { "w": 1568, "h": 672 }, "row": 1, "col": 0,
       "berths": [
         { "id": "berth-1", "x": 0.115, "y": 0.200, "w": 0.300, "h": 0.460 },
         { "id": "berth-2", "x": 0.575, "y": 0.185, "w": 0.300, "h": 0.460 }
@@ -46,7 +32,7 @@
     },
     {
       "id": "desk-2", "kind": "desk", "image": "./room-desk-b.png",
-      "natural": { "w": 1568, "h": 672 }, "row": 2, "col": 1,
+      "natural": { "w": 1568, "h": 672 }, "row": 1, "col": 1,
       "berths": [
         { "id": "berth-3", "x": 0.150, "y": 0.275, "w": 0.240, "h": 0.460 },
         { "id": "berth-4", "x": 0.585, "y": 0.275, "w": 0.240, "h": 0.460 }
@@ -55,7 +41,7 @@
     },
     {
       "id": "desk-3", "kind": "desk", "image": "./room-desk-a.png",
-      "natural": { "w": 1568, "h": 672 }, "row": 3, "col": 0,
+      "natural": { "w": 1568, "h": 672 }, "row": 2, "col": 0,
       "berths": [
         { "id": "berth-5", "x": 0.115, "y": 0.200, "w": 0.300, "h": 0.460 },
         { "id": "berth-6", "x": 0.575, "y": 0.185, "w": 0.300, "h": 0.460 }
@@ -66,7 +52,7 @@
     },
     {
       "id": "desk-4", "kind": "desk", "image": "./room-desk-b.png",
-      "natural": { "w": 1568, "h": 672 }, "row": 3, "col": 1,
+      "natural": { "w": 1568, "h": 672 }, "row": 2, "col": 1,
       "berths": [
         { "id": "berth-7", "x": 0.150, "y": 0.275, "w": 0.240, "h": 0.460 },
         { "id": "berth-8", "x": 0.585, "y": 0.275, "w": 0.240, "h": 0.460 }
@@ -75,15 +61,29 @@
     },
     {
       "id": "god-study", "kind": "godStudy", "image": "./room-god-study.png",
-      "natural": { "w": 1568, "h": 672 }, "row": 4, "col": 0,
+      "natural": { "w": 1568, "h": 672 }, "row": 3, "col": 0,
       "berths": [{ "id": "god", "x": 0.335, "y": 0.185, "w": 0.320, "h": 0.500 }],
       "lightPoints": [{ "x": 0.325, "y": 0.420 }, { "x": 0.665, "y": 0.420 }]
     },
     {
-      "id": "hearth", "kind": "hearth", "image": "./room-hearth.png",
-      "natural": { "w": 1568, "h": 672 }, "row": 4, "col": 1,
-      "berths": [{ "id": "hearth-chair", "x": 0.700, "y": 0.550, "w": 0.160, "h": 0.200 }],
-      "lightPoints": [{ "x": 0.200, "y": 0.755 }]
+      "id": "parlour", "kind": "cardTable", "image": "./room-card-table.png",
+      "natural": { "w": 1568, "h": 672 }, "row": 3, "col": 1,
+      "berths": [{ "id": "card-table-baize", "x": 0.335, "y": 0.400, "w": 0.335, "h": 0.300 }],
+      "props": [
+        {
+          "_comment": "The petitions, stacked on the cabinet top against the far wall.",
+          "kind": "writingDesk",
+          "berth": { "id": "petitions-stack", "x": 0.845, "y": 0.400, "w": 0.115, "h": 0.130 }
+        },
+        {
+          "_comment": "Closing time is the door out of the parlour, on the near wall.",
+          "kind": "hearth",
+          "berth": { "id": "parlour-door", "x": 0.045, "y": 0.120, "w": 0.095, "h": 0.620 }
+        }
+      ],
+      "lightPoints": [
+        { "x": 0.345, "y": 0.155 }, { "x": 0.505, "y": 0.075 }, { "x": 0.665, "y": 0.155 }
+      ]
     }
   ]
 }

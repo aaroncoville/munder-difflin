@@ -47,7 +47,7 @@ test('containFit letterboxes on the constraining axis', () => {
 
 // ─── The house ──────────────────────────────────────────────────────────────
 
-const { houseRows, deskBerths, deskRooms, roomOfKind } = loadTs(MANIFEST);
+const { anchorSeat, houseRows, deskBerths, deskRooms, roomOfKind } = loadTs(MANIFEST);
 
 /**
  * Every node in the tree, descending THROUGH the scene's presentational
@@ -361,7 +361,7 @@ test('clicking an assistant selects it, the same as clicking its desk on the flo
   assert.deepEqual(calls.selected, ['w-1']);
 });
 
-test('the prop rooms are the buttons, and each fires what the office prop fires', async () => {
+test('the props are the buttons, and each fires what the office prop fires', async () => {
   const { view, calls } = await inhabit({ agents: [person('god-1', { isGod: true })] });
   const buttons = Object.fromEntries(
     all(view.tree, (n) => n.props?.role === 'button' && n.props?.title)
@@ -370,21 +370,44 @@ test('the prop rooms are the buttons, and each fires what the office prop fires'
     ['Triggers', 'almanac'], ['Closing Time', 'hearth']]) {
     assert.ok(buttons[label], `${label} is a button`);
     assert.equal(buttons[label].tabIndex, 0, `${label} is reachable by keyboard`);
-    // Clicking the ROOM is clicking the prop — the button IS the room panel.
-    assert.equal(buttons[label]['data-study-kind'], kind, `${label} is the ${kind} room itself`);
+    // Clicking the prop IS clicking the anchor, whether the prop is a whole
+    // room panel or a rectangle of one.
+    assert.equal(buttons[label]['data-study-kind'], kind, `${label} is the ${kind} itself`);
   }
-  buttons['Tasks'].onClick();
-  buttons['Triggers'].onClick();
+  const stopped = () => { let n = 0; return { stopPropagation: () => { n++; }, count: () => n }; };
+  const fire = (label) => {
+    const e = stopped();
+    buttons[label].onClick(e);
+    return e.count();
+  };
+  fire('Tasks');
+  fire('Triggers');
   assert.deepEqual(calls.tabs, ['tasks', 'triggers']);
 
-  buttons['Petitions'].onClick();
+  fire('Petitions');
   assert.deepEqual(calls.tabs, ['tasks', 'triggers', 'human']);
   assert.deepEqual(calls.selected, ['god-1'],
     'the petitions go to the god, so he is who gets selected');
 
   assert.equal(calls.closed, 0);
-  buttons['Closing Time'].onClick();
+  fire('Closing Time');
   assert.equal(calls.closed, 1, 'the hearth closes the house');
+});
+
+test('a prop standing in a room stops the click reaching the room behind it', async () => {
+  // The parlour is itself a button — clicking it opens the board — and the
+  // petitions and the door are rectangles ON it. A prop that let its click
+  // through would open the board over whatever the prop just opened.
+  const { view, calls } = await inhabit({ agents: [person('god-1', { isGod: true })] });
+  const plates = all(view.tree, (n) => n.props?.['data-study-prop'] === '');
+  assert.ok(plates.length >= 2, 'the house gathers no functions into a shared room');
+  for (const plate of plates) {
+    let stops = 0;
+    plate.props.onClick({ stopPropagation: () => { stops++; } });
+    assert.equal(stops, 1, `${plate.props.title} lets its click through to the room`);
+  }
+  assert.ok(!calls.tabs.includes('tasks'),
+    'pressing a prop on the parlour wall opened the whole board as well');
 });
 
 test('a room announced as a button answers Enter and Space, like one', async () => {
@@ -426,15 +449,18 @@ test('the writing desk carries the count of letters waiting on the human', async
     humanQA: [{ q: `question ${n}` }]
   });
   const quiet = await inhabit({ agents: [person('w-1')] });
-  const deskOf = (v) => one(v.tree, (n) => n.props?.title === 'Petitions');
-  assert.equal(text(deskOf(quiet.view)).join('').trim(), '',
+  const countOf = (v) => {
+    const badges = all(v.tree, (n) => n.props?.['data-study-badges'] === '');
+    return badges.map((b) => text(b).join('')).join('').trim();
+  };
+  assert.equal(countOf(quiet.view), '',
     'no letters, no badge — an empty desk is the resting state');
 
   const busy = await inhabit({ agents: [person('w-1')], tasks: [waiting(1), waiting(2)] });
-  assert.equal(text(deskOf(busy.view)).join('').trim(), '2', 'two letters, shown as two');
+  assert.equal(countOf(busy.view), '2', 'two letters, shown as two');
 });
 
-test('a prop room shows its count where the painting puts the prop', async () => {
+test('a prop shows its count where the painting puts it', async () => {
   const { view } = await inhabit({
     agents: [person('w-1')],
     tasks: [{ id: 'a', status: 'blocked', title: 'a', dependsOn: [], humanQA: [{ q: 'q' }] }]
@@ -443,8 +469,7 @@ test('a prop room shows its count where the painting puts the prop', async () =>
   // names ONE berth — the stack of petitions, the open almanac — and the badge
   // has to be projected against that panel's letterboxed box like any other
   // position inside the painting.
-  const desk = roomOfKind(studyRoom, 'writingDesk');
-  const berth = desk.berths[0];
+  const { room: desk, berth } = anchorSeat(studyRoom, 'writingDesk');
   assert.ok(berth, 'the writing desk declares where its letters are');
   const want = berthToBox(berth, viewOf(desk));
   const badges = one(panelOf(view.tree, desk.id), (n) => n.props?.['data-study-badges'] === '');
