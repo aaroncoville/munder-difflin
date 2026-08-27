@@ -276,6 +276,31 @@ test('the prop rooms are the buttons, and each fires what the office prop fires'
   assert.equal(calls.closed, 1, 'the hearth closes the house');
 });
 
+test('a room announced as a button answers Enter and Space, like one', async () => {
+  const { view, calls } = await inhabit({ agents: [person('w-1')] });
+  const table = one(view.tree, (n) => n.props?.title === 'Tasks');
+  const press = (key, on = {}) => {
+    const node = {};
+    let defaultPrevented = false;
+    table.props.onKeyDown({
+      key, target: node, currentTarget: node, ...on,
+      preventDefault: () => { defaultPrevented = true; }
+    });
+    return defaultPrevented;
+  };
+  assert.equal(press('Enter'), true, 'Enter opens the tasks');
+  assert.deepEqual(calls.tabs, ['tasks']);
+  assert.equal(press(' '), true, 'Space opens them too, without scrolling the house');
+  assert.deepEqual(calls.tabs, ['tasks', 'tasks']);
+  for (const key of ['a', 'Tab', 'ArrowRight']) assert.equal(press(key), false, key);
+  assert.equal(calls.tabs.length, 2, 'and nothing else opens anything');
+
+  // A card sits INSIDE a room, so a key pressed on the card must not also open
+  // the room behind it.
+  press('Enter', { target: {} });
+  assert.equal(calls.tabs.length, 2, 'a key from within the room is not the room being pressed');
+});
+
 test('the archive is a room you can read but not press', async () => {
   const { view } = await inhabit({ agents: [person('w-1')] });
   const shelves = one(view.tree, (n) => n.props?.['data-study-kind'] === 'shelves');

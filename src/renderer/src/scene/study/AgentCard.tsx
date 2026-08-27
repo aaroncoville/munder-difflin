@@ -12,7 +12,7 @@
  * with no art, the frame falls back to a monogram in the display face — the
  * card is still a card, just an unillustrated one.
  */
-import type { CSSProperties } from 'react';
+import type { CSSProperties, KeyboardEvent } from 'react';
 import type { Box } from './StudyScene';
 
 /** The four states a card shows. Deliberately coarser than the store's status
@@ -75,7 +75,23 @@ export function AgentCard({
   return (
     <div
       {...(interactive
-        ? { role: 'button', tabIndex: 0, onClick, title: role ? `${name} — ${role}` : name }
+        ? {
+          role: 'button',
+          tabIndex: 0,
+          onClick,
+          // A real <button> answers Enter and Space for free; `role="button"`
+          // only promises that it does. Without this the card is reachable by
+          // keyboard and inert once you get there. The target check keeps a key
+          // pressed on something nested inside from reading as a press of the
+          // card — the same guard the roster's card uses.
+          onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => {
+            if (event.target !== event.currentTarget) return;
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            onClick?.();
+          },
+          title: role ? `${name} — ${role}` : name
+        }
         : {})}
       data-study-card={name}
       style={root}

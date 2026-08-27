@@ -295,7 +295,23 @@ function RoomPanel({ room, height, label, onClick, children }: {
       data-study-room={room.id}
       data-study-kind={room.kind}
       {...(label ? { title: label, 'aria-label': label } : {})}
-      {...(interactive ? { role: 'button', tabIndex: 0, onClick } : {})}
+      {...(interactive
+        ? {
+          role: 'button',
+          tabIndex: 0,
+          onClick,
+          // A room that carries button semantics has to behave like a button
+          // from the keyboard too. The target check matters more here than
+          // anywhere: every assistant's card is nested inside a room, and
+          // without it pressing Enter on a card would open the room as well.
+          onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => {
+            if (event.target !== event.currentTarget) return;
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            onClick?.();
+          }
+        }
+        : {})}
       style={{
         position: 'relative',
         flex: '0 0 auto',

@@ -95,6 +95,32 @@ test('a clickable card is reachable by keyboard, an inert one is not', () => {
     'no button semantics without a handler');
 });
 
+test('a card announced as a button answers Enter and Space, like one', () => {
+  // `role="button"` and a tab stop promise a control; only a real <button>
+  // keeps that promise on its own. Without a key handler the card is reachable
+  // by keyboard and does nothing when you get there.
+  let clicks = 0;
+  const inst = mount(AgentCard, { name: 'Pam', status: 'idle', box, onClick: () => { clicks++; } });
+  const btn = find(inst.tree, (n) => n.props?.role === 'button');
+  const press = (key) => {
+    const node = {};
+    let defaultPrevented = false;
+    btn.props.onKeyDown({
+      key, target: node, currentTarget: node,
+      preventDefault: () => { defaultPrevented = true; }
+    });
+    return defaultPrevented;
+  };
+  assert.equal(press('Enter'), true, 'Enter activates the card');
+  assert.equal(clicks, 1);
+  assert.equal(press(' '), true, 'Space activates it, and does not scroll the floor');
+  assert.equal(clicks, 2);
+  for (const key of ['a', 'Tab', 'ArrowDown', 'Escape']) {
+    assert.equal(press(key), false, `${key} is not an activation`);
+  }
+  assert.equal(clicks, 2, 'and nothing else selects the assistant');
+});
+
 test('an archived card recedes instead of disappearing', () => {
   const live = mount(AgentCard, { name: 'Pam', status: 'idle', box });
   const gone = mount(AgentCard, { name: 'Pam', status: 'archived', box });
