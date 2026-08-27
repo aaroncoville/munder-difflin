@@ -7,6 +7,7 @@ const { mount, text } = require('./render-hooks.cjs');
 const loadTs = require('./load-ts.cjs');
 
 const SCENE = 'src/renderer/src/scene/study/StudyScene.tsx';
+const MANIFEST = 'src/renderer/src/scene/study/roomManifest.ts';
 const ASSETS = path.resolve(__dirname, '..', 'src/renderer/src/scene/study/assets');
 
 /** Every scene mounted here — the Study polls the task ledger on an interval,
@@ -23,7 +24,7 @@ const seedDom = () => {
 
 test('berthToBox letterboxes correctly', () => {
   const { berthToBox } = loadTs(SCENE);
-  // 2:1 backdrop contain-fit inside a 1000x1000 container -> view 1000x500 at y=250
+  // A 2:1 panel contain-fit inside a 1000x1000 box -> view 1000x500 at y=250
   const view = { x: 0, y: 250, w: 1000, h: 500 };
   assert.deepEqual(
     berthToBox({ id: 'd', x: 0.5, y: 0.5, w: 0.1, h: 0.2 }, view),
@@ -44,64 +45,9 @@ test('containFit letterboxes on the constraining axis', () => {
   for (const v of Object.values(degenerate)) assert.ok(Number.isFinite(v), 'finite view box');
 });
 
-test('the scene stacks backdrop, ambiance slot, card layer in order', () => {
-  seedDom();
-  const { StudyScene } = loadTs(SCENE);
-  const inst = mount(StudyScene, {});
-  scenes.push(inst);
-  const layers = JSON.stringify(inst.tree);
-  const iBackdrop = layers.indexOf('backdrop');
-  const iAmbiance = layers.indexOf('data-study-slot');
-  const iCards = layers.indexOf('data-study-layer');
-  assert.ok(iBackdrop >= 0, 'backdrop present');
-  assert.ok(iBackdrop < iAmbiance, 'backdrop below the ambiance slot');
-  assert.ok(iAmbiance < iCards, 'ambiance slot below the card layer');
-});
+// ─── The house ──────────────────────────────────────────────────────────────
 
-test('the ambiance slot is reserved and empty, and never eats a click', () => {
-  seedDom();
-  const { StudyScene } = loadTs(SCENE);
-  const inst = mount(StudyScene, {});
-  scenes.push(inst);
-  const find = (n) => {
-    if (!n || typeof n !== 'object') return undefined;
-    if (n.props?.['data-study-slot'] === 'ambiance') return n;
-    for (const k of [].concat(n.props?.children ?? [])) { const h = find(k); if (h) return h; }
-    return undefined;
-  };
-  const slot = find(inst.tree);
-  assert.ok(slot, 'ambiance slot rendered');
-  assert.equal(slot.props.children, undefined, 'nothing mounted in it yet');
-  assert.equal(slot.props.style.pointerEvents, 'none', 'input belongs to the DOM layer');
-});
-
-test('the shipped backdrop exists and matches what the manifest declares', () => {
-  const { loadRoomManifest } = loadTs('src/renderer/src/scene/study/roomManifest.ts');
-  const declared = loadRoomManifest().backdrop;
-  const file = path.resolve(ASSETS, declared);
-  assert.ok(fs.existsSync(file), `manifest backdrop ${declared} is on disk`);
-  // The scene must render the file the manifest names — not some other import
-  // that happens to be lying around.
-  const { BACKDROP_SRC, BACKDROP_NATURAL } = loadTs(SCENE);
-  assert.equal(path.basename(BACKDROP_SRC), path.basename(declared));
-  // A real PNG, at the aspect the berth coordinates were authored against.
-  const head = fs.readFileSync(file).subarray(0, 24);
-  assert.equal(head.subarray(1, 4).toString('latin1'), 'PNG', 'PNG signature');
-  assert.equal(head.readUInt32BE(16), BACKDROP_NATURAL.w, 'declared width matches the file');
-  assert.equal(head.readUInt32BE(20), BACKDROP_NATURAL.h, 'declared height matches the file');
-});
-
-// ─── The inhabited Study ────────────────────────────────────────────────────
-// Everything above proves the shell. These prove the room is actually wired to
-// the store: real agents, real cards, real anchors firing the real navigation.
-
-const { useStore } = loadTs('src/renderer/src/store/store.ts');
-const { AgentCard } = loadTs('src/renderer/src/scene/study/AgentCard.tsx');
-const { DeskBook } = loadTs('src/renderer/src/scene/study/DeskBook.tsx');
-const { SpeechScroll } = loadTs('src/renderer/src/scene/study/SpeechScroll.tsx');
-const { berthToBox, containFit, BACKDROP_NATURAL, studyRoom } = loadTs(SCENE);
-
-const settle = () => new Promise((r) => setImmediate(r));
+const { houseRows, deskBerths, deskRooms, loadRoomManifest } = loadTs(MANIFEST);
 
 /**
  * Every node in the tree, descending THROUGH the scene's presentational
@@ -109,7 +55,7 @@ const settle = () => new Promise((r) => setImmediate(r));
  *
  * render-hooks.cjs mounts one component and does not recurse, so without this
  * the card layer is a wall of opaque elements and every assertion below would
- * pass vacuously on an empty room. The wrappers it expands use no hooks, which
+ * pass vacuously on an empty house. The wrappers it expands use no hooks, which
  * is what makes calling them here safe; the original element is kept in the
  * results too, so `n.type === AgentCard` still identifies a card.
  */
@@ -125,6 +71,98 @@ const all = (n, pred, out = []) => {
   return out;
 };
 const one = (n, pred) => all(n, pred)[0];
+const panelOf = (tree, roomId) => one(tree, (n) => n.props?.['data-study-room'] === roomId);
+
+test('the rooms are stacked in reading order, with masonry between the storeys', () => {
+  seedDom();
+  const { StudyScene, studyRoom } = loadTs(SCENE);
+  const inst = mount(StudyScene, {});
+  scenes.push(inst);
+
+  const rows = houseRows(studyRoom);
+  const panels = all(inst.tree, (n) => n.props?.['data-study-room'] !== undefined);
+  assert.deepEqual(
+    panels.map((p) => p.props['data-study-room']),
+    rows.flat().map((r) => r.id),
+    'every room is drawn once, top storey first and each storey left to right'
+  );
+
+  const bands = all(inst.tree, (n) => n.props?.['data-study-band'] !== undefined);
+  assert.equal(bands.length, rows.length - 1, 'one band between each pair of storeys');
+  for (const b of bands) {
+    assert.equal(b.props.style.height, studyRoom.bandThickness,
+      'the band is as thick as the manifest says');
+    assert.ok(b.props.style.background, 'the masonry is painted');
+  }
+});
+
+test('the house scrolls vertically when it is taller than the window', () => {
+  seedDom();
+  const { StudyScene } = loadTs(SCENE);
+  const inst = mount(StudyScene, {});
+  scenes.push(inst);
+  const host = one(inst.tree, (n) => n.props?.['data-study-scene'] !== undefined);
+  assert.ok(host, 'the scene host is there');
+  assert.equal(host.props.style.overflowY, 'auto', 'the storeys below the fold are reachable');
+  assert.equal(host.props.style.overflowX, 'hidden', 'and the house never scrolls sideways');
+});
+
+test('each room stacks its panel, its ambiance slot and its cards in that order', () => {
+  seedDom();
+  const { StudyScene, studyRoom } = loadTs(SCENE);
+  const inst = mount(StudyScene, {});
+  scenes.push(inst);
+  for (const room of studyRoom.rooms) {
+    const panel = JSON.stringify(panelOf(inst.tree, room.id));
+    const iImage = panel.indexOf('data-study-panel');
+    const iAmbiance = panel.indexOf('data-study-slot');
+    const iCards = panel.indexOf('data-study-layer');
+    assert.ok(iImage >= 0, `${room.id} paints a panel`);
+    assert.ok(iImage < iAmbiance, `${room.id}: panel below the ambiance slot`);
+    assert.ok(iAmbiance < iCards, `${room.id}: ambiance slot below the card layer`);
+  }
+});
+
+test('every room reserves an ambiance slot, empty and never eating a click', () => {
+  seedDom();
+  const { StudyScene, studyRoom } = loadTs(SCENE);
+  const inst = mount(StudyScene, {});
+  scenes.push(inst);
+  const slots = all(inst.tree, (n) => n.props?.['data-study-slot'] === 'ambiance');
+  assert.equal(slots.length, studyRoom.rooms.length, 'one slot per room');
+  for (const slot of slots) {
+    assert.equal(slot.props.children, undefined, 'nothing mounted in it yet');
+    assert.equal(slot.props.style.pointerEvents, 'none', 'input belongs to the DOM layer');
+  }
+});
+
+test('every panel the manifest names is on disk at the size it declares, and imported', () => {
+  const { ROOM_SRC } = loadTs(SCENE);
+  for (const room of loadRoomManifest().rooms) {
+    const file = path.resolve(ASSETS, room.image);
+    assert.ok(fs.existsSync(file), `${room.id}'s panel ${room.image} is on disk`);
+    // The scene must render the file the manifest names — an image with no
+    // import behind it resolves to nothing and the room paints as a hole.
+    assert.ok(ROOM_SRC[room.image], `${room.image} has an import behind it`);
+    assert.equal(path.basename(String(ROOM_SRC[room.image])), path.basename(room.image));
+    const head = fs.readFileSync(file).subarray(0, 24);
+    assert.equal(head.subarray(1, 4).toString('latin1'), 'PNG', `${room.image} is a PNG`);
+    assert.equal(head.readUInt32BE(16), room.natural.w, `${room.image} width matches natural.w`);
+    assert.equal(head.readUInt32BE(20), room.natural.h, `${room.image} height matches natural.h`);
+  }
+});
+
+// ─── The inhabited Study ────────────────────────────────────────────────────
+// Everything above proves the shell. These prove the house is actually wired to
+// the store: real agents, real cards, real rooms firing the real navigation.
+
+const { useStore } = loadTs('src/renderer/src/store/store.ts');
+const { AgentCard } = loadTs('src/renderer/src/scene/study/AgentCard.tsx');
+const { DeskBook } = loadTs('src/renderer/src/scene/study/DeskBook.tsx');
+const { SpeechScroll } = loadTs('src/renderer/src/scene/study/SpeechScroll.tsx');
+const { berthToBox, containFit, studyRoom } = loadTs(SCENE);
+
+const settle = () => new Promise((r) => setImmediate(r));
 
 const person = (id, over = {}) => ({
   id, name: id.toUpperCase(), character: 'jim', accent: 'sky', description: '',
@@ -154,10 +192,10 @@ async function inhabit({ agents = [], tasks = [], cth = {} } = {}) {
   return { view, calls };
 }
 
-/** The view box the scene falls back to with no layout to measure. */
-const VIEW = containFit(BACKDROP_NATURAL, BACKDROP_NATURAL);
+/** The view box a room's panel falls back to with no layout to measure. */
+const viewOf = (room) => containFit(room.natural, room.natural);
 
-test('every assistant is a card, standing on the berth the manifest gives it', async () => {
+test('every assistant is a card, in the room the manifest gives its berth', async () => {
   const { view } = await inhabit({
     agents: [person('w-1'), person('god-1', { isGod: true }), person('w-2')]
   });
@@ -167,9 +205,22 @@ test('every assistant is a card, standing on the berth the manifest gives it', a
   // The god's card is bigger, because his berth is — the layout is the
   // manifest's to decide, never the component's.
   assert.ok(byName['GOD-1'].box.width > byName['W-1'].box.width, "the god's seat is grander");
-  const deskOne = berthToBox(studyRoom.deskBerths[0], VIEW);
+
+  // ...and it is positioned against ITS OWN room's panel, not the whole house.
+  const firstDeskRoom = deskRooms(studyRoom)[0];
+  const deskOne = berthToBox(deskBerths(studyRoom)[0], viewOf(firstDeskRoom));
   assert.ok(byName['W-1'].box.left >= deskOne.left, 'the first worker sits at the first desk');
   assert.ok(byName['W-1'].box.left + byName['W-1'].box.width <= deskOne.left + deskOne.width);
+
+  // The card is a CHILD of that room's panel. A card positioned right but drawn
+  // in another room would satisfy every coordinate assertion above.
+  const inFirstDesk = all(panelOf(view.tree, firstDeskRoom.id), (n) => n.type === AgentCard);
+  assert.deepEqual(inFirstDesk.map((c) => c.props.name), ['W-1'],
+    'the first worker is drawn inside the first reading room and nobody else is');
+  const study = studyRoom.rooms.find((r) => r.kind === 'godStudy');
+  assert.deepEqual(
+    all(panelOf(view.tree, study.id), (n) => n.type === AgentCard).map((c) => c.props.name),
+    ['GOD-1'], "the god is drawn in the god's study");
 });
 
 test('work in progress is an open book and a scroll of what is being said', async () => {
@@ -199,14 +250,17 @@ test('clicking an assistant selects it, the same as clicking its desk on the flo
   assert.deepEqual(calls.selected, ['w-1']);
 });
 
-test('the props are buttons, and each fires what the office prop fires', async () => {
+test('the prop rooms are the buttons, and each fires what the office prop fires', async () => {
   const { view, calls } = await inhabit({ agents: [person('god-1', { isGod: true })] });
   const buttons = Object.fromEntries(
     all(view.tree, (n) => n.props?.role === 'button' && n.props?.title)
       .map((n) => [n.props.title, n.props]));
-  for (const label of ['Tasks', 'Petitions', 'Triggers', 'Closing Time']) {
+  for (const [label, kind] of [['Tasks', 'cardTable'], ['Petitions', 'writingDesk'],
+    ['Triggers', 'almanac'], ['Closing Time', 'hearth']]) {
     assert.ok(buttons[label], `${label} is a button`);
     assert.equal(buttons[label].tabIndex, 0, `${label} is reachable by keyboard`);
+    // Clicking the ROOM is clicking the prop — the button IS the room panel.
+    assert.equal(buttons[label]['data-study-kind'], kind, `${label} is the ${kind} room itself`);
   }
   buttons['Tasks'].onClick();
   buttons['Triggers'].onClick();
@@ -220,6 +274,14 @@ test('the props are buttons, and each fires what the office prop fires', async (
   assert.equal(calls.closed, 0);
   buttons['Closing Time'].onClick();
   assert.equal(calls.closed, 1, 'the hearth closes the house');
+});
+
+test('the archive is a room you can read but not press', async () => {
+  const { view } = await inhabit({ agents: [person('w-1')] });
+  const shelves = one(view.tree, (n) => n.props?.['data-study-kind'] === 'shelves');
+  assert.equal(shelves.props.title, 'The Archive', 'it is labelled');
+  assert.equal(shelves.props.role, undefined,
+    'and offers no control, because pressing it would do nothing yet');
 });
 
 test('the writing desk carries the count of letters waiting on the human', async () => {
@@ -248,14 +310,17 @@ test('the card table stacks mirror the kanban columns', async () => {
     'todo, doing, blocked, done — in the kanban\'s own order');
 });
 
-test('an empty house is still a room', async () => {
+test('an empty house is still a house', async () => {
   const { view } = await inhabit({});
   assert.equal(all(view.tree, (n) => n.type === AgentCard).length, 0);
-  assert.ok(one(view.tree, (n) => n.props?.title === 'Tasks'), 'the props are still there');
+  assert.ok(one(view.tree, (n) => n.props?.title === 'Tasks'), 'the rooms are still there');
+  assert.equal(
+    all(view.tree, (n) => n.props?.['data-study-room'] !== undefined).length,
+    studyRoom.rooms.length, 'an empty house has all its rooms');
 });
 
 test('a portrait dropped into the pack lands on the cards', async () => {
-  // The pack ships empty, so nothing about an empty room can tell whether the
+  // The pack ships empty, so nothing about an empty house can tell whether the
   // scene consults the portrait mapping at all — and a mapping nobody calls
   // fails silently on the day the art arrives. This drops a real file into the
   // real directory, regenerates the real index, and looks at the cards.
@@ -269,7 +334,7 @@ test('a portrait dropped into the pack lands on the cards', async () => {
     return loadTs.fresh(SCENE);
   };
   try {
-    fs.copyFileSync(path.join(ASSETS, 'backdrop-placeholder.png'), dropped);
+    fs.copyFileSync(path.join(ASSETS, 'room-desk.png'), dropped);
     regenerate();
     const { StudyScene: Reloaded } = reload();
 
@@ -286,7 +351,7 @@ test('a portrait dropped into the pack lands on the cards', async () => {
     view.render();
 
     const card = one(view.tree, (n) => n.type === AgentCard);
-    assert.ok(card, 'a card is on the floor');
+    assert.ok(card, 'a card is in the house');
     assert.match(String(card.props.portraitSrc), /test-portrait\.png$/,
       'the card wears the portrait that was just added to the pack');
   } finally {

@@ -15,6 +15,7 @@ import { useStore, type Agent } from '@/store/store';
 import { parseTasks, waitsOnHuman, type HiveTask } from '@/components/TasksKanban';
 import type { CardStatus } from './AgentCard';
 import type { BookState } from './DeskBook';
+import { deskBerths, godBerth } from './roomManifest';
 import { studyRoom } from './StudyScene';
 
 export interface SceneAgent {
@@ -110,17 +111,20 @@ export function bookFor(tasks: readonly HiveTask[], agentId: string):
  * Seat the roster.
  *
  * Reading desks are handed out in roster order, which is the order the user
- * already sees in the strip and can reorder by hand — so the room's seating and
- * the roster's agree, and summoning somebody new never reshuffles the people
- * already sitting down. The god has his own berth in the foreground and does
- * not consume a reading desk on his way past.
+ * already sees in the strip and can reorder by hand — so the house's seating
+ * and the roster's agree, and summoning somebody new never reshuffles the
+ * people already sitting down. The berths themselves come from the reading
+ * rooms in the order the manifest builds the house, so adding a storey of desks
+ * to the cross-section extends the seating without touching this. The god has
+ * his own study and does not consume a reading desk on his way past.
  *
  * A house with more assistants than desks is a real state, not an error: the
- * overflow shares the last desk rather than the scene inventing berths the
- * painting has no furniture for.
+ * overflow shares the last desk rather than the scene inventing berths no room
+ * has the furniture for.
  */
 export function projectScene(agents: readonly Agent[], tasks: readonly HiveTask[]): SceneState {
-  const desks = studyRoom.deskBerths;
+  const desks = deskBerths(studyRoom);
+  const god = godBerth(studyRoom);
   let seat = 0;
   const projected = agents.map((a) => ({
     id: a.id,
@@ -128,7 +132,7 @@ export function projectScene(agents: readonly Agent[], tasks: readonly HiveTask[
     role: a.description || undefined,
     status: cardStatusOf(a),
     berthId: a.isGod
-      ? studyRoom.godBerth.id
+      ? god.id
       : desks[Math.min(seat++, desks.length - 1)].id,
     speech: speechFor(a),
     ...bookFor(tasks, a.id)

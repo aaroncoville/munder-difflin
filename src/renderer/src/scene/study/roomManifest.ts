@@ -1,23 +1,25 @@
 /**
  * The Study's floor plan, as data.
  *
- * Every position in the painted scene — where an assistant's card rests, where
- * the card table stands, where a candle burns — is a normalized rectangle in
- * `assets/room.json`, in fractions of the backdrop's natural size. The scene
- * scales them onto whatever box the backdrop actually renders into, so the
- * painting can be recomposed, re-generated at another aspect, or swapped
- * wholesale without a line of component code changing.
+ * The Study is drawn as a cross-section of a house: rooms are flat panels, laid
+ * out in rows from the top of the building down, with masonry between the
+ * storeys. There is no single painting and no perspective — each room owns its
+ * own image, and every position inside it (where an assistant's card rests,
+ * where a candle burns) is a normalized rectangle in fractions of THAT panel's
+ * natural size. The scene scales each room's berths onto the box that room
+ * actually renders into, so a panel can be repainted, resized, or moved to
+ * another storey without a line of component code changing.
  *
  * The manifest is authored by hand and shipped in the bundle, so it is not
  * untrusted input in the security sense — but it IS hand-edited, and a berth
- * that has drifted off the canvas or a duplicated id produces a scene that is
+ * that has drifted off its panel or a duplicated id produces a scene that is
  * subtly wrong rather than obviously broken (a card stacked invisibly on
- * another, an anchor hanging past the frame). Validation turns those into a
- * loud failure at load, where they are cheap to find.
+ * another, an assistant drawn in two rooms at once). Validation turns those
+ * into a loud failure at load, where they are cheap to find.
  */
 import roomJson from './assets/room.json';
 
-/** A normalized rectangle on the backdrop: origin plus size, all in 0..1. */
+/** A normalized rectangle inside one room's panel: origin plus size, all in 0..1. */
 export interface Berth {
   id: string;
   x: number;
@@ -26,33 +28,62 @@ export interface Berth {
   h: number;
 }
 
-/** The five fixed props the scene can be clicked on, beyond the desks. */
-export interface RoomAnchors {
+/**
+ * What a room is for.
+ *
+ * `desk` rooms hold the reading berths assistants are seated into, and there
+ * are many of them. Every other kind is a singleton: the god's study, and the
+ * five props the scene can be clicked on — which in this model are rooms too,
+ * so clicking the room IS clicking the prop.
+ */
+export type RoomKind =
+  | 'desk'
+  | 'godStudy'
   /** The task board. */
-  cardTable: Berth;
+  | 'cardTable'
   /** Ask Me — the stack of sealed letters awaiting the human. */
-  writingDesk: Berth;
+  | 'writingDesk'
   /** Triggers. */
-  almanac: Berth;
+  | 'almanac'
   /** Closing Time. */
-  hearth: Berth;
+  | 'hearth'
   /** The done archive. */
-  shelves: Berth;
-}
+  | 'shelves';
 
-export interface RoomManifest {
-  /** Path of the backdrop image, relative to this directory. */
-  backdrop: string;
-  /** One assistant each, in seating priority order. */
-  deskBerths: Berth[];
-  /** The god's seat, foreground and larger than the rest. */
-  godBerth: Berth;
-  anchors: RoomAnchors;
-  /** Where the ambiance layer hangs its glows. May be empty. */
+export interface Room {
+  id: string;
+  kind: RoomKind;
+  /** Path of this room's panel image, relative to this directory. */
+  image: string;
+  /** Natural size of that image — the frame this room's berths were authored in. */
+  natural: { w: number; h: number };
+  /** Storey, counted from the top of the house. */
+  row: number;
+  /** Position within the storey, left to right. */
+  col: number;
+  /** Normalized WITHIN this panel. May be empty: a prop room seats nobody. */
+  berths: Berth[];
+  /** Where the ambiance layer hangs this room's glows. May be empty. */
   lightPoints: { x: number; y: number }[];
 }
 
-const ANCHOR_KEYS = ['cardTable', 'writingDesk', 'almanac', 'hearth', 'shelves'] as const;
+export interface RoomManifest {
+  rooms: Room[];
+  /** Thickness in px of the masonry band drawn between two storeys. */
+  bandThickness: number;
+}
+
+/** The kinds that must appear exactly once, and that the scene navigates from. */
+export const ANCHOR_KINDS = [
+  'cardTable', 'writingDesk', 'almanac', 'hearth', 'shelves'
+] as const;
+
+export type AnchorKind = (typeof ANCHOR_KINDS)[number];
+
+const ROOM_KINDS: readonly RoomKind[] = ['desk', 'godStudy', ...ANCHOR_KINDS];
+
+/** The kinds there can only be one of — everything except a reading room. */
+const SINGLETON_KINDS: readonly RoomKind[] = ['godStudy', ...ANCHOR_KINDS];
 
 function asRecord(value: unknown, what: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -61,7 +92,7 @@ function asRecord(value: unknown, what: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function validateBerth(raw: unknown, what: string): Berth {
+function validateBerth(raw: unknown, roomId: string, what: string): Berth {
   const o = asRecord(raw, what);
   const id = o.id;
   if (typeof id !== 'string' || !id) throw new Error(`room manifest: ${what} needs a non-empty id`);
@@ -78,44 +109,153 @@ function validateBerth(raw: unknown, what: string): Berth {
   }
   if (out.w <= 0 || out.h <= 0) throw new Error(`room manifest: ${id} has no area`);
   if (out.x + out.w > 1 || out.y + out.h > 1) {
-    throw new Error(`room manifest: ${id} hangs off the backdrop (${out.x}+${out.w}, ${out.y}+${out.h})`);
+    throw new Error(
+      `room manifest: ${id} hangs off the panel of ${roomId} (${out.x}+${out.w}, ${out.y}+${out.h})`
+    );
   }
   return out;
+}
+
+function validateLightPoints(raw: unknown, roomId: string): { x: number; y: number }[] {
+  const list = raw === undefined ? [] : raw;
+  if (!Array.isArray(list)) throw new Error(`room manifest: ${roomId}.lightPoints must be an array`);
+  return list.map((p, i) => {
+    const q = asRecord(p, `${roomId}.lightPoints[${i}]`);
+    for (const k of ['x', 'y'] as const) {
+      const v = q[k];
+      if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > 1) {
+        throw new Error(`room manifest: ${roomId}.lightPoints[${i}].${k} must be normalized to 0..1`);
+      }
+    }
+    return { x: q.x as number, y: q.y as number };
+  });
+}
+
+function validateWhole(raw: unknown, what: string): number {
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0) {
+    throw new Error(`room manifest: ${what} must be a whole number from 0, got ${JSON.stringify(raw)}`);
+  }
+  return raw;
+}
+
+function validateRoom(raw: unknown, index: number): Room {
+  const o = asRecord(raw, `rooms[${index}]`);
+  const id = o.id;
+  if (typeof id !== 'string' || !id) throw new Error(`room manifest: rooms[${index}] needs an id`);
+  const kind = o.kind as RoomKind;
+  if (!ROOM_KINDS.includes(kind)) {
+    throw new Error(`room manifest: ${id} has unknown kind ${JSON.stringify(o.kind)}`);
+  }
+  if (typeof o.image !== 'string' || !o.image) {
+    throw new Error(`room manifest: ${id}.image must be a non-empty path`);
+  }
+  const natural = asRecord(o.natural, `${id}.natural`);
+  for (const k of ['w', 'h'] as const) {
+    const v = natural[k];
+    if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) {
+      throw new Error(`room manifest: ${id}.natural.${k} must be a positive number`);
+    }
+  }
+  if (!Array.isArray(o.berths)) throw new Error(`room manifest: ${id}.berths must be an array`);
+  return {
+    id,
+    kind,
+    image: o.image,
+    natural: { w: natural.w as number, h: natural.h as number },
+    row: validateWhole(o.row, `${id}.row`),
+    col: o.col === undefined ? 0 : validateWhole(o.col, `${id}.col`),
+    berths: o.berths.map((b, i) => validateBerth(b, id, `${id}.berths[${i}]`)),
+    lightPoints: validateLightPoints(o.lightPoints, id)
+  };
 }
 
 /** Parse and check one manifest, throwing with the offending field named. */
 export function validateRoomManifest(raw: unknown): RoomManifest {
   const o = asRecord(raw, 'manifest');
-  if (typeof o.backdrop !== 'string' || !o.backdrop) {
-    throw new Error('room manifest: backdrop must be a non-empty path');
+  if (!Array.isArray(o.rooms) || o.rooms.length === 0) {
+    throw new Error('room manifest: rooms must be a non-empty array');
   }
-  if (!Array.isArray(o.deskBerths)) throw new Error('room manifest: deskBerths must be an array');
-  const deskBerths = o.deskBerths.map((b, i) => validateBerth(b, `deskBerths[${i}]`));
-  const seen = new Set<string>();
-  for (const b of deskBerths) {
-    if (seen.has(b.id)) throw new Error(`room manifest: duplicate berth id ${b.id}`);
-    seen.add(b.id);
+  if (typeof o.bandThickness !== 'number' || !Number.isFinite(o.bandThickness) || o.bandThickness < 0) {
+    throw new Error('room manifest: bandThickness must be a number of pixels');
   }
-  const godBerth = validateBerth(o.godBerth, 'godBerth');
-  const anchorsRaw = asRecord(o.anchors, 'anchors');
-  const anchors = {} as RoomAnchors;
-  for (const key of ANCHOR_KEYS) {
-    if (anchorsRaw[key] === undefined) throw new Error(`room manifest: anchors.${key} is missing`);
-    anchors[key] = validateBerth(anchorsRaw[key], `anchors.${key}`);
-  }
-  const lightRaw = o.lightPoints === undefined ? [] : o.lightPoints;
-  if (!Array.isArray(lightRaw)) throw new Error('room manifest: lightPoints must be an array');
-  const lightPoints = lightRaw.map((p, i) => {
-    const q = asRecord(p, `lightPoints[${i}]`);
-    for (const k of ['x', 'y'] as const) {
-      const v = q[k];
-      if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > 1) {
-        throw new Error(`room manifest: lightPoints[${i}].${k} must be normalized to 0..1`);
-      }
+  const rooms = o.rooms.map(validateRoom);
+
+  const roomIds = new Set<string>();
+  const spots = new Set<string>();
+  // Berth ids are unique across the WHOLE house, not per room: the scene looks
+  // an assistant's berth up by id, so two rooms sharing one would draw the same
+  // person twice and the seating would silently depend on iteration order.
+  const berthIds = new Set<string>();
+  for (const r of rooms) {
+    if (roomIds.has(r.id)) throw new Error(`room manifest: duplicate room id ${r.id}`);
+    roomIds.add(r.id);
+    const spot = `row ${r.row} col ${r.col}`;
+    if (spots.has(spot)) throw new Error(`room manifest: ${r.id} stands on ${spot}, already taken`);
+    spots.add(spot);
+    for (const b of r.berths) {
+      if (berthIds.has(b.id)) throw new Error(`room manifest: duplicate berth id ${b.id}`);
+      berthIds.add(b.id);
     }
-    return { x: q.x as number, y: q.y as number };
-  });
-  return { backdrop: o.backdrop, deskBerths, godBerth, anchors, lightPoints };
+  }
+
+  for (const kind of SINGLETON_KINDS) {
+    const found = rooms.filter((r) => r.kind === kind);
+    if (found.length !== 1) {
+      throw new Error(`room manifest: the house needs exactly one ${kind} room, found ${found.length}`);
+    }
+  }
+  if (!rooms.some((r) => r.kind === 'desk')) {
+    throw new Error('room manifest: the house needs at least one desk room');
+  }
+  const study = rooms.find((r) => r.kind === 'godStudy') as Room;
+  if (study.berths.length === 0) {
+    throw new Error(`room manifest: the godStudy room ${study.id} has no berth to sit in`);
+  }
+
+  return { rooms, bandThickness: o.bandThickness };
+}
+
+/** The reading rooms, in the order they are authored — which is seating order. */
+export function deskRooms(manifest: RoomManifest): Room[] {
+  return manifest.rooms.filter((r) => r.kind === 'desk');
+}
+
+/** Every reading berth in the house, in seating priority order. */
+export function deskBerths(manifest: RoomManifest): Berth[] {
+  return deskRooms(manifest).flatMap((r) => r.berths);
+}
+
+/** The god's seat — the first berth in the one room that is his study. */
+export function godBerth(manifest: RoomManifest): Berth {
+  const study = manifest.rooms.find((r) => r.kind === 'godStudy');
+  if (!study || !study.berths[0]) throw new Error('room manifest: no godStudy berth');
+  return study.berths[0];
+}
+
+/** The one room of a singleton kind. */
+export function roomOfKind(manifest: RoomManifest, kind: RoomKind): Room {
+  const room = manifest.rooms.find((r) => r.kind === kind);
+  if (!room) throw new Error(`room manifest: no ${kind} room`);
+  return room;
+}
+
+/**
+ * The house as storeys, top to bottom, each read left to right.
+ *
+ * The scene draws from this rather than from `rooms` directly, so the manifest
+ * can be authored in whatever order reads best and the building still stacks
+ * the way its `row`/`col` say it does.
+ */
+export function houseRows(manifest: RoomManifest): Room[][] {
+  const byRow = new Map<number, Room[]>();
+  for (const r of manifest.rooms) {
+    const row = byRow.get(r.row);
+    if (row) row.push(r);
+    else byRow.set(r.row, [r]);
+  }
+  return [...byRow.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, rooms]) => [...rooms].sort((a, b) => a.col - b.col));
 }
 
 /** The shipped floor plan. Throws if room.json has been edited into nonsense. */

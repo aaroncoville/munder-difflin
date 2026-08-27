@@ -19,6 +19,10 @@ const loadTs = require('./load-ts.cjs');
 const { useSceneState } = loadTs('src/renderer/src/scene/study/useSceneState.ts');
 const { useStore } = loadTs('src/renderer/src/store/store.ts');
 const { studyRoom } = loadTs('src/renderer/src/scene/study/StudyScene.tsx');
+const { deskBerths, godBerth } = loadTs('src/renderer/src/scene/study/roomManifest.ts');
+
+/** The reading berths, in the order the house seats people into them. */
+const DESKS = deskBerths(studyRoom);
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 const mounted = [];
@@ -77,9 +81,9 @@ test('the god takes the god berth and the workers take desks in roster order', a
     agents: [agent('w-1'), agent('god-1', { isGod: true }), agent('w-2')]
   });
   const berthOf = (id) => state.agents.find((a) => a.id === id)?.berthId;
-  assert.equal(berthOf('god-1'), studyRoom.godBerth.id, 'the god sits at his own desk');
-  assert.equal(berthOf('w-1'), studyRoom.deskBerths[0].id);
-  assert.equal(berthOf('w-2'), studyRoom.deskBerths[1].id,
+  assert.equal(berthOf('god-1'), godBerth(studyRoom).id, 'the god sits at his own desk');
+  assert.equal(berthOf('w-1'), DESKS[0].id);
+  assert.equal(berthOf('w-2'), DESKS[1].id,
     'the god does not consume a reading desk on his way past');
 });
 
@@ -96,21 +100,21 @@ test('reseating is stable: an unrelated agent arriving does not move everyone', 
 });
 
 test('more assistants than desks still seats everyone, without collapsing them', async () => {
-  const many = Array.from({ length: studyRoom.deskBerths.length + 3 }, (_, i) => agent(`w-${i}`));
+  const many = Array.from({ length: DESKS.length + 3 }, (_, i) => agent(`w-${i}`));
   const state = await project({ agents: many });
   assert.equal(state.agents.length, many.length, 'nobody is dropped on the floor');
   for (const a of state.agents) {
     assert.ok(a.berthId, `${a.id} has a berth`);
   }
   // Everyone who fits gets their own desk, in order...
-  studyRoom.deskBerths.forEach((berth, i) => {
+  DESKS.forEach((berth, i) => {
     assert.equal(state.agents[i].berthId, berth.id, `seat ${i}`);
   });
   // ...and the overflow piles onto the LAST desk. Wrapping around to the first
   // would also produce one berth per desk while quietly seating the newcomers
   // on top of the assistants already there.
-  const last = studyRoom.deskBerths[studyRoom.deskBerths.length - 1].id;
-  for (const over of state.agents.slice(studyRoom.deskBerths.length)) {
+  const last = DESKS[DESKS.length - 1].id;
+  for (const over of state.agents.slice(DESKS.length)) {
     assert.equal(over.berthId, last, `${over.id} shares the last desk`);
   }
 });

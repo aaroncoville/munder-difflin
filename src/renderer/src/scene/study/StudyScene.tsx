@@ -2,33 +2,53 @@
  * The Study — the painted scene that replaces the pixel office floor under the
  * occult theme.
  *
- * Three stacked layers, bottom to top:
+ * The Study is a cross-section of a house, drawn flat and straight on: each
+ * room is its own panel, panels sit side by side to make a storey, and the
+ * storeys stack from the top of the building down with a band of masonry
+ * between them. There is no single backdrop and no perspective. A house taller
+ * than the window simply scrolls.
  *
- *   1. the backdrop image, contain-fitted so the whole painting is always
- *      visible and never cropped;
+ * Every room draws three stacked layers, bottom to top:
+ *
+ *   1. its panel image, contain-fitted so the whole painting is always visible
+ *      and never cropped;
  *   2. a reserved slot for the ambiance canvas (flicker, motes, hearth smoke),
  *      which mounts nothing yet — it is `pointer-events: none` by contract, so
  *      that when it does arrive every click still belongs to the DOM;
- *   3. the card layer: an assistant at each occupied berth, the book of what
- *      they are working on, what they are saying, and the room's five props.
+ *   3. the card layer: an assistant at each occupied berth with the book of
+ *      what they are working on and what they are saying — or, in a prop room,
+ *      the badge that room carries.
  *
- * Because the backdrop is letterboxed rather than stretched, the layout can NOT
- * be expressed in CSS percentages: a berth at x=0.5 is halfway across the
- * *image*, which is not halfway across the container unless the aspects happen
- * to match. Every position therefore goes through `berthToBox`, against the
- * measured box the image actually occupies.
+ * Because each panel is letterboxed rather than stretched, positions inside it
+ * can NOT be expressed in CSS percentages: a berth at x=0.5 is halfway across
+ * the *image*, which is not halfway across the panel unless the aspects happen
+ * to match. Every position therefore goes through `berthToBox`, against the box
+ * that room's image actually occupies.
+ *
+ * The prop rooms ARE the props: clicking the card table's room opens Tasks, so
+ * there is no invisible hotspot to keep in step with the painting.
  */
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { useStore } from '@/store/store';
-import backdropUrl from './assets/backdrop-placeholder.png';
-import { loadRoomManifest, type Berth } from './roomManifest';
+import {
+  houseRows,
+  loadRoomManifest,
+  type AnchorKind,
+  type Berth,
+  type Room
+} from './roomManifest';
 import { AgentCard } from './AgentCard';
 import { DeskBook } from './DeskBook';
 import { SpeechScroll } from './SpeechScroll';
 import { portraitFor } from './portraits';
 import { useSceneState, type SceneAgent } from './useSceneState';
+import { ROOM_SRC } from './roomImages';
 
-/** Where the backdrop actually landed inside the container, in px. */
+/** Re-exported so a test can hold the shipped imports against the paths
+ *  room.json names: an image with no import behind it paints as a hole. */
+export { ROOM_SRC };
+
+/** Where a room's panel image actually landed inside its box, in px. */
 export interface ViewBox {
   x: number;
   y: number;
@@ -42,14 +62,6 @@ export interface Box {
   width: number;
   height: number;
 }
-
-/** Natural size of the shipped backdrop — the frame the berths were authored in. */
-export const BACKDROP_NATURAL = { w: 1344, h: 768 };
-
-/** The image the scene renders. Exported so a test can hold it against the
- *  path room.json declares; the two drifting apart would put every berth on a
- *  painting they were not authored for. */
-export const BACKDROP_SRC: string = backdropUrl;
 
 /** Letterbox `natural` inside `container`, the way `object-fit: contain` does. */
 export function containFit(
@@ -65,7 +77,7 @@ export function containFit(
   return { x: (container.w - w) / 2, y: (container.h - h) / 2, w, h };
 }
 
-/** A normalized berth, projected onto the box the backdrop occupies. */
+/** A berth normalized to one room's panel, projected onto the box it occupies. */
 export function berthToBox(berth: Berth, view: ViewBox): Box {
   return {
     left: view.x + berth.x * view.w,
@@ -75,16 +87,46 @@ export function berthToBox(berth: Berth, view: ViewBox): Box {
   };
 }
 
-/** The floor plan the scene is drawn from — parsed once, shared by its children. */
+/** The floor plan the house is built from — parsed once, shared by its rooms. */
 export const studyRoom = loadRoomManifest();
+
+/** The storeys, top to bottom, each read left to right. */
+const STOREYS = houseRows(studyRoom);
+
+/**
+ * How tall a storey is at a given width.
+ *
+ * Every room in a storey is drawn at the same height, so the storey's width at
+ * height H is the sum of its rooms' aspect ratios times H, plus the mortar
+ * between them. Inverting that gives the height at which the storey exactly
+ * fills the house — capped at the tallest natural size in the row, because
+ * blowing a panel up past its own art gains nothing and would make a wide
+ * window produce an absurdly tall building.
+ */
+export function storeyHeight(rooms: readonly Room[], width: number, band: number): number {
+  const aspect = rooms.reduce((sum, r) => sum + r.natural.w / r.natural.h, 0);
+  const tallest = Math.max(...rooms.map((r) => r.natural.h));
+  if (!(width > 0) || !(aspect > 0)) return tallest;
+  const fitted = (width - band * (rooms.length - 1)) / aspect;
+  return Math.max(1, Math.min(fitted, tallest));
+}
+
+/** The width at which every storey draws at its natural height. */
+export const HOUSE_NATURAL_WIDTH = Math.max(
+  ...STOREYS.map((rooms) => {
+    const tallest = Math.max(...rooms.map((r) => r.natural.h));
+    return rooms.reduce((sum, r) => sum + (r.natural.w / r.natural.h) * tallest, 0)
+      + studyRoom.bandThickness * (rooms.length - 1);
+  })
+);
 
 /**
  * Where the card, the book and the scroll sit inside one berth.
  *
- * A berth is the whole place setting, not the card — the painting has a desk
- * there, and the card has to look like it is resting ON it with room left for a
- * volume beside it. The scroll floats clear above, outside the berth, which is
- * why it is the only piece allowed past those bounds.
+ * A berth is the whole place setting, not the card — the room has a desk there,
+ * and the card has to look like it is resting ON it with room left for a volume
+ * beside it. The scroll floats clear above, outside the berth, which is why it
+ * is the only piece allowed past those bounds.
  */
 export function deskLayout(desk: Box):
 { card: Box; book: Box; scroll: { left: number; top: number; width: number } } {
@@ -111,7 +153,7 @@ export function deskLayout(desk: Box):
 }
 
 /**
- * What each prop in the room is called and what clicking it does.
+ * What each prop room is called and what clicking it does.
  *
  * These read in the Study's own idiom rather than the app's — an Ask Me board
  * is a writing desk of unanswered petitions here. They are English literals
@@ -119,74 +161,50 @@ export function deskLayout(desk: Box):
  * with the rest of the voice work, and keying them into the shared catalog
  * before that exists would put occult wording in front of light and dark too.
  */
-export const ANCHOR_LABEL = {
+export const ANCHOR_LABEL: Record<AnchorKind, string> = {
   cardTable: 'Tasks',
   writingDesk: 'Petitions',
   almanac: 'Triggers',
   hearth: 'Closing Time',
   shelves: 'The Archive'
-} as const;
+};
 
 const KANBAN_COLUMNS = ['todo', 'doing', 'blocked', 'done'] as const;
 
-const ZONE: React.CSSProperties = {
+/** The badge row a prop room carries, centred over its panel. */
+const BADGES: React.CSSProperties = {
   position: 'absolute',
+  inset: 0,
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
   gap: 3,
-  boxSizing: 'border-box',
-  borderRadius: 'var(--cth-radius-panel)',
   fontFamily: 'var(--cth-font-display)',
   fontSize: 'var(--cth-text-display-sm)',
   color: 'var(--cth-ink-900)'
 };
 
-/** The measured backdrop box. Falls back to the natural size where there is no
- *  layout to measure (node tests), so the projection is still exercisable. */
-function useViewBox(hostRef: React.RefObject<HTMLDivElement | null>): ViewBox {
-  const [view, setView] = useState<ViewBox>(() => containFit(BACKDROP_NATURAL, BACKDROP_NATURAL));
+/**
+ * The measured width of the scroll host.
+ *
+ * This is the only measurement the house takes. Everything below it — every
+ * storey's height, every panel's box — is arithmetic from this one number, so
+ * the rooms stay hook-free and can be reasoned about (and rendered in a test)
+ * as pure functions of the manifest. Falls back to the house's natural width
+ * where there is no layout to measure.
+ */
+function useHouseWidth(hostRef: React.RefObject<HTMLDivElement | null>): number {
+  const [width, setWidth] = useState(HOUSE_NATURAL_WIDTH);
   useEffect(() => {
     const host = hostRef.current;
     if (!host || typeof ResizeObserver === 'undefined') return;
-    const measure = (): void => {
-      setView(containFit({ w: host.clientWidth, h: host.clientHeight }, BACKDROP_NATURAL));
-    };
+    const measure = (): void => setWidth(host.clientWidth);
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(host);
     return () => ro.disconnect();
   }, [hostRef]);
-  return view;
-}
-
-/** A clickable prop. Anchors that only mark a place render without the button
- *  semantics, so a screen reader is not offered a control that does nothing. */
-function AnchorZone({ label, box, onClick, children }: {
-  label: string;
-  box: Box;
-  onClick?: () => void;
-  children?: React.ReactNode;
-}): JSX.Element {
-  const interactive = typeof onClick === 'function';
-  return (
-    <div
-      title={label}
-      aria-label={label}
-      {...(interactive ? { role: 'button', tabIndex: 0, onClick } : {})}
-      style={{
-        ...ZONE,
-        left: box.left,
-        top: box.top,
-        width: box.width,
-        height: box.height,
-        cursor: interactive ? 'pointer' : 'default',
-        boxShadow: 'var(--cth-panel-border)'
-      }}
-    >
-      {children}
-    </div>
-  );
+  return width;
 }
 
 /** One assistant's place setting: card, book, and what they are saying. */
@@ -214,41 +232,47 @@ function DeskPlace({ agent, desk, onSelect }: {
   );
 }
 
-export function StudyScene(): JSX.Element {
-  const hostRef = useRef<HTMLDivElement | null>(null);
-  const view = useViewBox(hostRef);
-  const scene = useSceneState();
-  const select = useStore((s) => s.select);
-  const requestCommandCenterTab = useStore((s) => s.requestCommandCenterTab);
-  const godId = useStore((s) => s.agents.find((a) => a.isGod)?.id);
-
-  const berths = new Map<string, Berth>(
-    [...studyRoom.deskBerths, studyRoom.godBerth].map((b) => [b.id, b])
-  );
-  const anchorBox = (key: keyof typeof ANCHOR_LABEL): Box =>
-    berthToBox(studyRoom.anchors[key], view);
-
-  /** The petitions are the god's to answer, so opening them selects him too —
-   *  the same pair of actions the office floor's ASK ME board fires. */
-  const openPetitions = (): void => {
-    if (godId) select(godId);
-    requestCommandCenterTab('human');
-  };
-
+/**
+ * One room of the house.
+ *
+ * A room that navigates somewhere carries the button semantics itself. A room
+ * that only marks a place — the archive, a reading room — renders without them,
+ * so a screen reader is not offered a control that does nothing.
+ */
+function RoomPanel({ room, height, label, onClick, children }: {
+  room: Room;
+  /** The storey's height in px; the panel's width follows from its aspect. */
+  height: number;
+  label?: string;
+  onClick?: () => void;
+  /** A function child is handed the panel's letterboxed view box, which is
+   *  what a berth has to be projected against and is only known in here. */
+  children?: React.ReactNode | ((view: ViewBox) => React.ReactNode);
+}): JSX.Element {
+  const width = (room.natural.w / room.natural.h) * height;
+  const view = containFit({ w: width, h: height }, room.natural);
+  const interactive = typeof onClick === 'function';
   return (
     <div
-      ref={hostRef}
-      data-study-scene=""
+      data-study-room={room.id}
+      data-study-kind={room.kind}
+      {...(label ? { title: label, 'aria-label': label } : {})}
+      {...(interactive ? { role: 'button', tabIndex: 0, onClick } : {})}
       style={{
         position: 'relative',
-        width: '100%',
-        height: '100%',
+        flex: '0 0 auto',
+        width,
+        height,
         overflow: 'hidden',
-        background: 'var(--cth-cream-300)'
+        boxSizing: 'border-box',
+        borderRadius: 'var(--cth-radius-panel)',
+        boxShadow: 'var(--cth-panel-border)',
+        cursor: interactive ? 'pointer' : 'default'
       }}
     >
       <img
-        src={BACKDROP_SRC}
+        data-study-panel={room.id}
+        src={ROOM_SRC[room.image]}
         alt=""
         aria-hidden
         draggable={false}
@@ -273,11 +297,42 @@ export function StudyScene(): JSX.Element {
         }}
       />
       <div data-study-layer="cards" style={{ position: 'absolute', inset: 0 }}>
-        <AnchorZone
-          label={ANCHOR_LABEL.cardTable}
-          box={anchorBox('cardTable')}
-          onClick={() => requestCommandCenterTab('tasks')}
-        >
+        {typeof children === 'function' ? children(view) : children}
+      </div>
+    </div>
+  );
+}
+
+export function StudyScene(): JSX.Element {
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const houseWidth = useHouseWidth(hostRef);
+  const scene = useSceneState();
+  const select = useStore((s) => s.select);
+  const requestCommandCenterTab = useStore((s) => s.requestCommandCenterTab);
+  const godId = useStore((s) => s.agents.find((a) => a.isGod)?.id);
+
+  /** The petitions are the god's to answer, so opening them selects him too —
+   *  the same pair of actions the office floor's ASK ME board fires. */
+  const openPetitions = (): void => {
+    if (godId) select(godId);
+    requestCommandCenterTab('human');
+  };
+
+  /** What clicking each prop room does. The archive is deliberately absent: the
+   *  spec gives it one scripted animation and no destination of its own yet. */
+  const ANCHOR_CLICK: Partial<Record<AnchorKind, () => void>> = {
+    cardTable: () => requestCommandCenterTab('tasks'),
+    writingDesk: openPetitions,
+    almanac: () => requestCommandCenterTab('triggers'),
+    // Intercepted by the main process while terminals are alive — the same call
+    // the office floor's clock makes.
+    hearth: () => window.close()
+  };
+
+  const badgesFor = (kind: AnchorKind): React.ReactNode => {
+    if (kind === 'cardTable') {
+      return (
+        <div style={BADGES}>
           {KANBAN_COLUMNS.map((column) => (
             <div
               key={column}
@@ -292,48 +347,109 @@ export function StudyScene(): JSX.Element {
               {scene.kanbanCounts[column]}
             </div>
           ))}
-        </AnchorZone>
-        <AnchorZone
-          label={ANCHOR_LABEL.writingDesk}
-          box={anchorBox('writingDesk')}
-          onClick={openPetitions}
-        >
-          {scene.openAskCount > 0 ? (
+        </div>
+      );
+    }
+    if (kind === 'writingDesk' && scene.openAskCount > 0) {
+      return (
+        <div style={BADGES}>
+          <div
+            style={{
+              padding: '1px 5px',
+              borderRadius: 'var(--cth-radius-badge)',
+              background: 'var(--cth-status-blocked)',
+              color: 'var(--cth-cream-50)'
+            }}
+          >
+            {scene.openAskCount}
+          </div>
+        </div>
+      );
+    }
+    return null;
+  };
+
+  /** The place settings a room holds: whoever the projection seated in it. */
+  const occupantsOf = (room: Room, view: ViewBox): React.ReactNode =>
+    room.berths.flatMap((berth) =>
+      scene.agents
+        .filter((agent) => agent.berthId === berth.id)
+        .map((agent) => (
+          <DeskPlace
+            key={agent.id}
+            agent={agent}
+            desk={berthToBox(berth, view)}
+            onSelect={() => select(agent.id)}
+          />
+        ))
+    );
+
+  const renderRoom = (room: Room, height: number): JSX.Element => {
+    if (room.kind === 'desk' || room.kind === 'godStudy') {
+      return (
+        <RoomPanel key={room.id} room={room} height={height}>
+          {(view: ViewBox) => occupantsOf(room, view)}
+        </RoomPanel>
+      );
+    }
+    const kind = room.kind;
+    return (
+      <RoomPanel
+        key={room.id}
+        room={room}
+        height={height}
+        label={ANCHOR_LABEL[kind]}
+        onClick={ANCHOR_CLICK[kind]}
+      >
+        {badgesFor(kind)}
+      </RoomPanel>
+    );
+  };
+
+  return (
+    <div
+      ref={hostRef}
+      data-study-scene=""
+      style={{
+        position: 'relative',
+        width: '100%',
+        height: '100%',
+        overflowY: 'auto',
+        overflowX: 'hidden',
+        background: 'var(--cth-cream-300)'
+      }}
+    >
+      <div
+        data-study-house=""
+        style={{ display: 'flex', flexDirection: 'column', width: '100%' }}
+      >
+        {STOREYS.map((rooms, i) => {
+          const height = storeyHeight(rooms, houseWidth, studyRoom.bandThickness);
+          return (
+          <Fragment key={rooms[0].id}>
+            {i > 0 ? (
+              <div
+                data-study-band=""
+                style={{
+                  height: studyRoom.bandThickness,
+                  flex: '0 0 auto',
+                  background: 'var(--cth-ink-700)'
+                }}
+              />
+            ) : null}
             <div
+              data-study-storey={i}
               style={{
-                padding: '1px 5px',
-                borderRadius: 'var(--cth-radius-badge)',
-                background: 'var(--cth-status-blocked)',
-                color: 'var(--cth-cream-50)'
+                display: 'flex',
+                flex: '0 0 auto',
+                justifyContent: 'center',
+                gap: studyRoom.bandThickness,
+                height
               }}
             >
-              {scene.openAskCount}
+              {rooms.map((room) => renderRoom(room, height))}
             </div>
-          ) : null}
-        </AnchorZone>
-        <AnchorZone
-          label={ANCHOR_LABEL.almanac}
-          box={anchorBox('almanac')}
-          onClick={() => requestCommandCenterTab('triggers')}
-        />
-        <AnchorZone
-          label={ANCHOR_LABEL.hearth}
-          box={anchorBox('hearth')}
-          // Intercepted by the main process while terminals are alive — the
-          // same call the office floor's clock makes.
-          onClick={() => window.close()}
-        />
-        <AnchorZone label={ANCHOR_LABEL.shelves} box={anchorBox('shelves')} />
-        {scene.agents.map((agent) => {
-          const berth = berths.get(agent.berthId);
-          if (!berth) return null;
-          return (
-            <DeskPlace
-              key={agent.id}
-              agent={agent}
-              desk={berthToBox(berth, view)}
-              onSelect={() => select(agent.id)}
-            />
+          </Fragment>
           );
         })}
       </div>

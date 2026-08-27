@@ -1,28 +1,82 @@
 {
-  "_comment": "Normalized (0..1) floor plan of the Study, in fractions of the backdrop's natural size. Authored against backdrop-placeholder.png (1344x768). The art track revises the numbers; the shape is the contract.",
-  "backdrop": "./backdrop-placeholder.png",
-  "deskBerths": [
-    { "id": "desk-1", "x": 0.10, "y": 0.50, "w": 0.12, "h": 0.14 },
-    { "id": "desk-2", "x": 0.28, "y": 0.50, "w": 0.12, "h": 0.14 },
-    { "id": "desk-3", "x": 0.46, "y": 0.50, "w": 0.12, "h": 0.14 },
-    { "id": "desk-4", "x": 0.64, "y": 0.50, "w": 0.12, "h": 0.14 },
-    { "id": "desk-5", "x": 0.04, "y": 0.70, "w": 0.12, "h": 0.14 },
-    { "id": "desk-6", "x": 0.22, "y": 0.70, "w": 0.12, "h": 0.14 },
-    { "id": "desk-7", "x": 0.58, "y": 0.70, "w": 0.12, "h": 0.14 },
-    { "id": "desk-8", "x": 0.76, "y": 0.70, "w": 0.12, "h": 0.14 }
-  ],
-  "godBerth": { "id": "god", "x": 0.395, "y": 0.72, "w": 0.15, "h": 0.20 },
-  "anchors": {
-    "cardTable":   { "id": "cardTable",   "x": 0.38, "y": 0.30, "w": 0.20, "h": 0.14 },
-    "writingDesk": { "id": "writingDesk", "x": 0.78, "y": 0.30, "w": 0.16, "h": 0.14 },
-    "almanac":     { "id": "almanac",     "x": 0.03, "y": 0.44, "w": 0.09, "h": 0.16 },
-    "hearth":      { "id": "hearth",      "x": 0.89, "y": 0.62, "w": 0.10, "h": 0.22 },
-    "shelves":     { "id": "shelves",     "x": 0.05, "y": 0.08, "w": 0.90, "h": 0.14 }
-  },
-  "lightPoints": [
-    { "x": 0.94, "y": 0.70 },
-    { "x": 0.30, "y": 0.47 },
-    { "x": 0.70, "y": 0.47 },
-    { "x": 0.50, "y": 0.15 }
+  "_comment": "Cross-section of the Study, storey by storey. Each room is a flat panel with its own image; every berth is normalized (0..1) to THAT panel, not to the house. Placeholder panels are flat colour at the natural sizes below; the art track repaints them and may revise the numbers — the shape is the contract.",
+  "bandThickness": 12,
+  "rooms": [
+    {
+      "id": "shelves", "kind": "shelves", "image": "./room-shelves.png",
+      "natural": { "w": 1280, "h": 140 }, "row": 0, "col": 0, "berths": []
+    },
+    {
+      "id": "card-table", "kind": "cardTable", "image": "./room-card-table.png",
+      "natural": { "w": 400, "h": 220 }, "row": 1, "col": 0, "berths": [],
+      "lightPoints": [{ "x": 0.5, "y": 0.28 }]
+    },
+    {
+      "id": "almanac", "kind": "almanac", "image": "./room-almanac.png",
+      "natural": { "w": 240, "h": 220 }, "row": 1, "col": 1, "berths": []
+    },
+    {
+      "id": "desk-1", "kind": "desk", "image": "./room-desk.png",
+      "natural": { "w": 320, "h": 220 }, "row": 2, "col": 0,
+      "berths": [{ "id": "berth-1", "x": 0.18, "y": 0.30, "w": 0.64, "h": 0.56 }],
+      "lightPoints": [{ "x": 0.86, "y": 0.24 }]
+    },
+    {
+      "id": "desk-2", "kind": "desk", "image": "./room-desk.png",
+      "natural": { "w": 320, "h": 220 }, "row": 2, "col": 1,
+      "berths": [{ "id": "berth-2", "x": 0.18, "y": 0.30, "w": 0.64, "h": 0.56 }],
+      "lightPoints": [{ "x": 0.86, "y": 0.24 }]
+    },
+    {
+      "id": "desk-3", "kind": "desk", "image": "./room-desk.png",
+      "natural": { "w": 320, "h": 220 }, "row": 2, "col": 2,
+      "berths": [{ "id": "berth-3", "x": 0.18, "y": 0.30, "w": 0.64, "h": 0.56 }],
+      "lightPoints": [{ "x": 0.86, "y": 0.24 }]
+    },
+    {
+      "id": "desk-4", "kind": "desk", "image": "./room-desk.png",
+      "natural": { "w": 320, "h": 220 }, "row": 2, "col": 3,
+      "berths": [{ "id": "berth-4", "x": 0.18, "y": 0.30, "w": 0.64, "h": 0.56 }],
+      "lightPoints": [{ "x": 0.86, "y": 0.24 }]
+    },
+    {
+      "id": "desk-5", "kind": "desk", "image": "./room-desk.png",
+      "natural": { "w": 320, "h": 220 }, "row": 3, "col": 0,
+      "berths": [{ "id": "berth-5", "x": 0.18, "y": 0.30, "w": 0.64, "h": 0.56 }],
+      "lightPoints": [{ "x": 0.86, "y": 0.24 }]
+    },
+    {
+      "id": "desk-6", "kind": "desk", "image": "./room-desk.png",
+      "natural": { "w": 320, "h": 220 }, "row": 3, "col": 1,
+      "berths": [{ "id": "berth-6", "x": 0.18, "y": 0.30, "w": 0.64, "h": 0.56 }],
+      "lightPoints": [{ "x": 0.86, "y": 0.24 }]
+    },
+    {
+      "id": "desk-7", "kind": "desk", "image": "./room-desk.png",
+      "natural": { "w": 320, "h": 220 }, "row": 3, "col": 2,
+      "berths": [{ "id": "berth-7", "x": 0.18, "y": 0.30, "w": 0.64, "h": 0.56 }],
+      "lightPoints": [{ "x": 0.86, "y": 0.24 }]
+    },
+    {
+      "id": "desk-8", "kind": "desk", "image": "./room-desk.png",
+      "natural": { "w": 320, "h": 220 }, "row": 3, "col": 3,
+      "berths": [{ "id": "berth-8", "x": 0.18, "y": 0.30, "w": 0.64, "h": 0.56 }],
+      "lightPoints": [{ "x": 0.86, "y": 0.24 }]
+    },
+    {
+      "id": "god-study", "kind": "godStudy", "image": "./room-god-study.png",
+      "natural": { "w": 420, "h": 260 }, "row": 4, "col": 0,
+      "berths": [{ "id": "god", "x": 0.22, "y": 0.20, "w": 0.56, "h": 0.66 }],
+      "lightPoints": [{ "x": 0.5, "y": 0.12 }]
+    },
+    {
+      "id": "writing-desk", "kind": "writingDesk", "image": "./room-writing-desk.png",
+      "natural": { "w": 320, "h": 260 }, "row": 4, "col": 1, "berths": []
+    },
+    {
+      "id": "hearth", "kind": "hearth", "image": "./room-hearth.png",
+      "natural": { "w": 220, "h": 260 }, "row": 4, "col": 2, "berths": [],
+      "lightPoints": [{ "x": 0.5, "y": 0.62 }]
+    }
   ]
 }
