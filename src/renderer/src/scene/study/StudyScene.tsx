@@ -5,8 +5,9 @@
  * The Study is a cross-section of a house, drawn flat and straight on: each
  * room is its own panel, panels sit side by side to make a storey, and the
  * storeys stack from the top of the building down with a band of masonry
- * between them. There is no single backdrop and no perspective. A house taller
- * than the window simply scrolls.
+ * between them. There is no single backdrop and no perspective. The whole
+ * building is then letterboxed into the window, so it is always visible end to
+ * end and there is nothing to scroll.
  *
  * Every room draws three stacked layers, bottom to top:
  *
@@ -133,6 +134,31 @@ export const HOUSE_NATURAL_WIDTH = STOREYS.length === 0 ? 0 : Math.max(
   })
 );
 
+/** How tall the house is at that width: every storey, and the masonry between. */
+export const HOUSE_NATURAL_HEIGHT = STOREYS.reduce(
+  (sum, rooms) => sum + storeyHeight(rooms, HOUSE_NATURAL_WIDTH, studyRoom.bandThickness),
+  Math.max(0, STOREYS.length - 1) * studyRoom.bandThickness
+);
+
+/**
+ * Where the whole house lands on the floor it is given.
+ *
+ * The house is a fixed drawing, so making it fit a window is the same problem
+ * as making a panel fit its room, one storey up: letterbox the natural size
+ * into what there is and centre it. That is what the office floor does with
+ * its camera, and it is why nothing here scrolls — a building that is too tall
+ * for the window is drawn smaller, not clipped and handed a scrollbar, so the
+ * hearth at the bottom is as visible as the shelves at the top.
+ *
+ * Laying the house out at its natural size and scaling the result, rather than
+ * recomputing every storey against the window, is what keeps the proportions
+ * honest: at any window size the rooms stay the size they were painted
+ * relative to each other, and every berth inside them comes along for free.
+ */
+export function houseFit(host: { w: number; h: number }): ViewBox {
+  return containFit(host, { w: HOUSE_NATURAL_WIDTH, h: HOUSE_NATURAL_HEIGHT });
+}
+
 /**
  * Where the card, the book and the scroll sit inside one berth.
  *
@@ -242,26 +268,34 @@ export function badgeBox(room: Room, view: ViewBox): React.CSSProperties {
 }
 
 /**
- * The measured width of the scroll host.
+ * The measured floor the house stands on.
  *
  * This is the only measurement the house takes. Everything below it — every
- * storey's height, every panel's box — is arithmetic from this one number, so
- * the rooms stay hook-free and can be reasoned about (and rendered in a test)
- * as pure functions of the manifest. Falls back to the house's natural width
- * where there is no layout to measure.
+ * storey's height, every panel's box — is arithmetic from the manifest, and
+ * this box only decides how big the finished drawing is drawn, so the rooms
+ * stay hook-free and can be reasoned about (and rendered in a test) as pure
+ * functions of the manifest.
+ *
+ * A host with no layout yet reports 0×0, which would scale the house away to
+ * nothing; its natural size stands in until there is something real to measure,
+ * which is also what a test with no ResizeObserver sees.
  */
-function useHouseWidth(hostRef: React.RefObject<HTMLDivElement | null>): number {
-  const [width, setWidth] = useState(HOUSE_NATURAL_WIDTH);
+function useHouseBox(hostRef: React.RefObject<HTMLDivElement | null>): { w: number; h: number } {
+  const [box, setBox] = useState({ w: HOUSE_NATURAL_WIDTH, h: HOUSE_NATURAL_HEIGHT });
   useEffect(() => {
     const host = hostRef.current;
     if (!host || typeof ResizeObserver === 'undefined') return;
-    const measure = (): void => setWidth(host.clientWidth);
+    const measure = (): void => {
+      const w = host.clientWidth;
+      const h = host.clientHeight;
+      if (w > 0 && h > 0) setBox({ w, h });
+    };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(host);
     return () => ro.disconnect();
   }, [hostRef]);
-  return width;
+  return box;
 }
 
 /** One assistant's place setting: card, book, and what they are saying. */
@@ -382,7 +416,7 @@ export function StudyScene(): JSX.Element {
   // the office floor up — before any hook runs, so the throw is the whole render.
   if (studyRoomError) throw new Error(`the Study has no floor plan: ${studyRoomError}`);
   const hostRef = useRef<HTMLDivElement | null>(null);
-  const houseWidth = useHouseWidth(hostRef);
+  const fit = houseFit(useHouseBox(hostRef));
   const scene = useSceneState();
   const select = useStore((s) => s.select);
   const requestCommandCenterTab = useStore((s) => s.requestCommandCenterTab);
@@ -493,17 +527,26 @@ export function StudyScene(): JSX.Element {
         position: 'relative',
         width: '100%',
         height: '100%',
-        overflowY: 'auto',
-        overflowX: 'hidden',
+        overflow: 'hidden',
         background: 'var(--cth-cream-300)'
       }}
     >
       <div
         data-study-house=""
-        style={{ display: 'flex', flexDirection: 'column', width: '100%' }}
+        style={{
+          position: 'absolute',
+          left: fit.x,
+          top: fit.y,
+          width: HOUSE_NATURAL_WIDTH,
+          height: HOUSE_NATURAL_HEIGHT,
+          transform: `scale(${HOUSE_NATURAL_WIDTH > 0 ? fit.w / HOUSE_NATURAL_WIDTH : 1})`,
+          transformOrigin: 'top left',
+          display: 'flex',
+          flexDirection: 'column'
+        }}
       >
         {STOREYS.map((rooms, i) => {
-          const height = storeyHeight(rooms, houseWidth, studyRoom.bandThickness);
+          const height = storeyHeight(rooms, HOUSE_NATURAL_WIDTH, studyRoom.bandThickness);
           return (
           <Fragment key={rooms[0].id}>
             {i > 0 ? (
