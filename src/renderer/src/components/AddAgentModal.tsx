@@ -3,11 +3,13 @@ import { useTranslation } from 'react-i18next';
 import { PixelPanel } from './PixelPanel';
 import { PixelButton } from './PixelButton';
 import { SpritePortrait } from './SpritePortrait';
+import { PortraitPicker } from './PortraitPicker';
 import { Icon } from './Icon';
 import { ProviderLogo } from './ProviderLogo';
 import { useStore, type Agent } from '@/store/store';
 import { OFFICE_CAST, DEFAULT_CHARACTER, type OfficeCharacterName } from '@/scene/office/cast';
 import { type AccentColorName } from '@/design/tokens';
+import { useAppTheme } from '@/design/theme';
 import type { HireManifest } from '@shared/hire';
 import { hireQueueProgress } from '@shared/hireQueue';
 import { MCP_CATALOG } from '@shared/mcpCatalog';
@@ -187,6 +189,11 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
   // unless the user reconfigured it); the model only carries over for Claude.
   const initialProvider = inferAgentProvider(config.defaultCommand);
   const initialModel = isClaudeProvider(initialProvider) ? config.defaultModel : undefined;
+
+  // Under the occult theme the cast is the Study's licensed portrait pack
+  // rather than the pixel office sprites, and the same click still names the
+  // assistant — which is what makes it wear the face it was named for.
+  const summonsPaintedFaces = useAppTheme() === 'occult';
 
   const [name, setName] = useState(pendingHire?.name ?? 'Jim');
   const [character, setCharacter] = useState<OfficeCharacterName>(knownCharacter(pendingHire?.character));
@@ -684,6 +691,12 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                     </Row>
 
                     <Row label={tr('addAgent.character')}>
+                      {summonsPaintedFaces ? (
+                        <PortraitPicker
+                          selected={name.trim().toLowerCase()}
+                          onPick={(portrait) => setName(portrait)}
+                        />
+                      ) : (
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                         {OFFICE_CAST.map(c => (
                           <button
@@ -708,6 +721,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                           </button>
                         ))}
                       </div>
+                      )}
                     </Row>
 
                     <Row label={tr('addAgent.color')}>
