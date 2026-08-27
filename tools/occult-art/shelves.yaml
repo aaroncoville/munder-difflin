@@ -1,0 +1,20 @@
+# The archive wall — shelves, lamps, ladder and cat.
+#
+# The sheet the shipped panel was generated from. Reproduce it with the call in
+# this directory's README; the reference image is identified by digest rather
+# than by name because the request carried it inline.
+panel: src/renderer/src/scene/study/assets/room-shelves.png
+model: black-forest-labs/flux-kontext-pro
+input:
+  prompt: |-
+    Repaint as a pure library wall: keep the paneled shelves and warm lamps, fill every shelf with books, remove the fireplace and replace it with more shelving and a rolling ladder, keep the cat. Keep the exact illustration style, palette discipline, grain texture, and flat straight-on elevation of the original. This must be a clearly transformed new room, not a copy. No people, no readable text.
+  aspect_ratio: "21:9"
+  output_format: png
+  input_image: "the reference below, supplied inline as a data: URI"
+reference:
+  media_type: image/jpeg
+  bytes: 253739
+  sha256: 00c6ff71bd5c92d23cabc060a36846d79f73ba05b73a7ad772a20c5407782961
+output:
+  width: 1568
+  height: 672

@@ -1,0 +1,20 @@
+# Reading room A — two candle-lit desks under the pink porthole.
+#
+# The sheet the shipped panel was generated from. Reproduce it with the call in
+# this directory's README; the reference image is identified by digest rather
+# than by name because the request carried it inline.
+panel: src/renderer/src/scene/study/assets/room-desk-a.png
+model: black-forest-labs/flux-kontext-pro
+input:
+  prompt: |-
+    Repaint as a scholars' workroom: keep the wood-paneled walls, specimen shelves and round pink porthole window, replace the display cases with TWO sturdy dark-wood writing desks side by side, each with a lit candle and an open book, clear space above each desk. Render as FLAT 2D storybook game illustration: naive simple shapes, matte flat colors with soft paper-grain texture, thin clean outlines, NO realistic lighting, NO 3D rendering, NO photorealism, NO depth of field — the same flat cut-paper look as the input image. Straight-on elevation. No people, no readable text.
+  aspect_ratio: "21:9"
+  output_format: png
+  input_image: "the reference below, supplied inline as a data: URI"
+reference:
+  media_type: image/jpeg
+  bytes: 232059
+  sha256: ada926cf5c5a7150308262246ed8da5e8344f64a321fe0839b9285276baef8cc
+output:
+  width: 1568
+  height: 672

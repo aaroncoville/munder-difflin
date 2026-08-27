@@ -1,0 +1,20 @@
+# The almanac room — the lectern the triggers badge sits on.
+#
+# The sheet the shipped panel was generated from. Reproduce it with the call in
+# this directory's README; the reference image is identified by digest rather
+# than by name because the request carried it inline.
+panel: src/renderer/src/scene/study/assets/room-almanac.png
+model: black-forest-labs/flux-kontext-pro
+input:
+  prompt: |-
+    Repaint as an astronomer's almanac room: keep the brass telescope smaller and to the left, tall leaded windows, star charts and celestial maps on the wall, add a wooden lectern with a large open almanac at the right, one clear writing desk. Keep the exact illustration style, palette discipline, grain texture, and flat straight-on elevation of the original. This must be a clearly transformed new room, not a copy. No people, no readable text.
+  aspect_ratio: "21:9"
+  output_format: png
+  input_image: "the reference below, supplied inline as a data: URI"
+reference:
+  media_type: image/jpeg
+  bytes: 309266
+  sha256: 2ac6d60e84ceba5d317fc5401867fc6b27fff4e6f8ace3dfc4bce6f5d4322460
+output:
+  width: 1568
+  height: 672

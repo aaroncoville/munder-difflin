@@ -1,0 +1,20 @@
+# The hearth room — the range fire and the armchair of the Hour of Rest.
+#
+# The sheet the shipped panel was generated from. Reproduce it with the call in
+# this directory's README; the reference image is identified by digest rather
+# than by name because the request carried it inline.
+panel: src/renderer/src/scene/study/assets/room-hearth.png
+model: black-forest-labs/flux-kontext-pro
+input:
+  prompt: |-
+    Repaint as an evening hearth room: keep the flat stone arch and glowing range fire exactly as in the original, swap the dish dresser for a worn armchair with a small tea table, add a mantel clock. Render as FLAT 2D storybook game illustration: naive simple shapes, matte flat colors with soft paper-grain texture, thin clean outlines, NO realistic lighting, NO 3D rendering, NO photorealism, NO depth of field — the same flat cut-paper look as the input image. Straight-on elevation. No people, no readable text.
+  aspect_ratio: "21:9"
+  output_format: png
+  input_image: "the reference below, supplied inline as a data: URI"
+reference:
+  media_type: image/jpeg
+  bytes: 280986
+  sha256: bc3b68a171d7f81b15b5b6d8065e89a5fa66a76467861b89c0c23da570eeaf8f
+output:
+  width: 1568
+  height: 672

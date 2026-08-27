@@ -1,0 +1,20 @@
+# The god's study — the keeper's desk under the sea windows.
+#
+# The sheet the shipped panel was generated from. Reproduce it with the call in
+# this directory's README; the reference image is identified by digest rather
+# than by name because the request carried it inline.
+panel: src/renderer/src/scene/study/assets/room-god-study.png
+model: black-forest-labs/flux-kontext-pro
+input:
+  prompt: |-
+    Repaint as the keeper's study: keep the arched openings, sea view and roof beams exactly as flat as the original, one grander dark-wood desk centered with quill and inkwell, tall bookshelf at left, no seagull. Render as FLAT 2D storybook game illustration: naive simple shapes, matte flat colors with soft paper-grain texture, thin clean outlines, NO realistic lighting, NO 3D rendering, NO photorealism, NO depth of field — the same flat cut-paper look as the input image. Straight-on elevation. No people, no readable text.
+  aspect_ratio: "21:9"
+  output_format: png
+  input_image: "the reference below, supplied inline as a data: URI"
+reference:
+  media_type: image/jpeg
+  bytes: 171120
+  sha256: 55bf3480450b0659ff85de24bcbc000bfb39f6b8c30d6bd4c8cf3c2ff9f61331
+output:
+  width: 1568
+  height: 672

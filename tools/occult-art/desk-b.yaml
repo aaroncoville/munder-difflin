@@ -1,0 +1,20 @@
+# Reading room B — two desks in front of the twin gothic windows.
+#
+# The sheet the shipped panel was generated from. Reproduce it with the call in
+# this directory's README; the reference image is identified by digest rather
+# than by name because the request carried it inline.
+panel: src/renderer/src/scene/study/assets/room-desk-b.png
+model: black-forest-labs/flux-kontext-pro
+input:
+  prompt: |-
+    Repaint as a reading room: keep the twin gothic windows and card-catalog cabinets, add TWO clear writing desks in front of the windows each with a candle, space above each desk. Keep the exact illustration style, palette discipline, grain texture, and flat straight-on elevation of the original. This must be a clearly transformed new room, not a copy. No people, no readable text.
+  aspect_ratio: "21:9"
+  output_format: png
+  input_image: "the reference below, supplied inline as a data: URI"
+reference:
+  media_type: image/jpeg
+  bytes: 240648
+  sha256: d8161e10e40284390cfcac07978b779be678115bb9049468f1aa24add60c2aa9
+output:
+  width: 1568
+  height: 672
