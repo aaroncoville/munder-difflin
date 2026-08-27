@@ -72,6 +72,19 @@ function loadFile(filename) {
 }
 
 /** Load a TypeScript module and its local TypeScript imports for node:test. */
-module.exports = function loadTs(relativePath) {
+function loadTs(relativePath) {
   return loadFile(path.resolve(__dirname, '..', relativePath));
+}
+
+/**
+ * Same, but re-evaluates the module even if it was loaded before. Modules with
+ * load-time side effects (reading localStorage, stamping the document) need one
+ * instance per case, which the shared cache would otherwise deny them.
+ */
+loadTs.fresh = function loadTsFresh(relativePath) {
+  const filename = path.resolve(__dirname, '..', relativePath);
+  cache.delete(filename);
+  return loadFile(filename);
 };
+
+module.exports = loadTs;

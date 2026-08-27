@@ -19,7 +19,7 @@ import { usePtyParser } from '@/hooks/usePtyParser';
 import { useRestoreTeam } from '@/hooks/useRestoreTeam';
 import { useTerminalFontSize } from './terminalFontSize';
 import { useHasTerminalDraft, disposeTerminal, reflowTerminal, notifyThemeChangeAll } from './terminalPool';
-import { useAppTheme, toggleAppTheme } from '@/design/theme';
+import { useAppTheme, toggleAppTheme, terminalThemeFor } from '@/design/theme';
 import type { HarnessConfig } from '@/store/config';
 import { useRtl } from '@/i18n/useDirection';
 
@@ -333,11 +333,11 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
           <button
             onClick={() => {
               const next = toggleAppTheme();
-              void window.cth.updateConfig({ terminalTheme: next });
+              void window.cth.updateConfig({ terminalTheme: terminalThemeFor(next) });
               // Focus mode has its OWN theme button, so notifying only from the
               // title-bar toggle meant a flip made from in here never reached a
               // running TUI. Both entry points must tell them.
-              notifyThemeChangeAll(next === 'dark' ? 'dark' : 'light');
+              notifyThemeChangeAll(terminalThemeFor(next));
             }}
             title={appThemeNow === 'dark' ? t('fullscreenTerminal.lightTheme') : t('fullscreenTerminal.darkTheme')}
             aria-label={t('fullscreenTerminal.toggleTheme')}

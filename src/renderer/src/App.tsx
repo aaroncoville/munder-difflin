@@ -20,7 +20,7 @@ import { QuitWarningModal, type ClosingTimeState } from '@/components/QuitWarnin
 import { CompletionToast } from '@/realtime/CompletionToast';
 import { UpdateToast } from '@/components/UpdateToast';
 import { UpdateBadge } from '@/components/UpdateBadge';
-import { useAppTheme, toggleAppTheme } from '@/design/theme';
+import { useAppTheme, toggleAppTheme, terminalThemeFor } from '@/design/theme';
 import { SettingsModal, type Section as SettingsSection } from '@/components/SettingsModal';
 import { PixelPanel } from '@/components/PixelPanel';
 import { PixelButton } from '@/components/PixelButton';
@@ -323,12 +323,12 @@ export function App() {
             // until the agent restarted. Only programs that enabled DEC mode 2031
             // are told, and it is every pooled terminal rather than the visible one,
             // so a background agent is not stale when you switch to it.
-            notifyThemeChangeAll(next === 'dark' ? 'dark' : 'light');
+            notifyThemeChangeAll(terminalThemeFor(next));
             // Mirror into the harness config: every agent (re)spawned from now
             // on gets the matching `theme` in its per-session Claude settings,
             // so the TUI's truecolor palette fits the terminal. Scoped to
             // harness agents — the user's global Claude theme is never touched.
-            void window.cth.updateConfig({ terminalTheme: next });
+            void window.cth.updateConfig({ terminalTheme: terminalThemeFor(next) });
           }}
           data-tip={appThemeNow === 'dark' ? 'Light theme' : 'Dark theme'}
           aria-label="Toggle dark mode"
