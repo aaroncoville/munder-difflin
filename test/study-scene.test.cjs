@@ -214,9 +214,13 @@ test('every assistant is a card, in the room the manifest gives its berth', asyn
 
   // The card is a CHILD of that room's panel. A card positioned right but drawn
   // in another room would satisfy every coordinate assertion above.
+  // A painted reading room holds more than one desk, so how many of the workers
+  // land in the first one is the manifest's to say — but WHICH ones is not:
+  // seating fills the berths in order, so it is the leading slice of them.
+  const seatedInFirst = ['W-1', 'W-2'].slice(0, firstDeskRoom.berths.length);
   const inFirstDesk = all(panelOf(view.tree, firstDeskRoom.id), (n) => n.type === AgentCard);
-  assert.deepEqual(inFirstDesk.map((c) => c.props.name), ['W-1'],
-    'the first worker is drawn inside the first reading room and nobody else is');
+  assert.deepEqual(inFirstDesk.map((c) => c.props.name), seatedInFirst,
+    'the first reading room draws exactly the assistants its own berths seat');
   const study = studyRoom.rooms.find((r) => r.kind === 'godStudy');
   assert.deepEqual(
     all(panelOf(view.tree, study.id), (n) => n.type === AgentCard).map((c) => c.props.name),
@@ -441,7 +445,7 @@ test('a portrait dropped into the pack lands on the cards', async () => {
     return loadTs.fresh(SCENE);
   };
   try {
-    fs.copyFileSync(path.join(ASSETS, 'room-desk.png'), dropped);
+    fs.copyFileSync(path.join(ASSETS, 'room-desk-a.png'), dropped);
     regenerate();
     const { StudyScene: Reloaded } = reload();
 

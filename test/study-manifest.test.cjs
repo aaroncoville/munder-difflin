@@ -46,10 +46,14 @@ function shippedHouse() {
 }
 
 test('the shipped house is valid and complete', () => {
-  const { deskRooms } = loadTs(MANIFEST);
+  const { deskBerths, deskRooms } = loadTs(MANIFEST);
   const room = shippedHouse();
   assert.ok(room.rooms.length >= 8, 'a house of rooms');
-  assert.ok(deskRooms(room).length >= 6, 'at least six reading rooms');
+  assert.ok(deskRooms(room).length >= 1, 'somewhere to read');
+  // What the house owes the seating is DESKS, not rooms: a painted reading
+  // room holds more than one, so counting rooms would pass a house with six
+  // empty ones and fail a house with three that seat eight.
+  assert.ok(deskBerths(room).length >= 6, 'at least six reading desks');
   assert.ok(room.bandThickness > 0, 'the masonry between rows has a thickness');
 
   const roomIds = new Set(room.rooms.map((r) => r.id));
