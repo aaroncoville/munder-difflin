@@ -354,34 +354,66 @@ test('the writing desk carries the count of letters waiting on the human', async
 test('a prop room shows its count where the painting puts the prop', async () => {
   const { view } = await inhabit({
     agents: [person('w-1')],
-    tasks: [{ id: 'a', status: 'todo', title: 'a', dependsOn: [] }]
+    tasks: [{ id: 'a', status: 'blocked', title: 'a', dependsOn: [], humanQA: [{ q: 'q' }] }]
   });
-  // The counts belong ON the baize, not in the middle of the parlour's air:
-  // the room's own berth is where the painting puts the table, and the badge
+  // A count belongs ON the prop, not in the middle of the room's air: the room
+  // names ONE berth — the stack of petitions, the open almanac — and the badge
   // has to be projected against that panel's letterboxed box like any other
-  // position inside it.
-  const table = roomOfKind(studyRoom, 'cardTable');
-  const berth = table.berths[0];
-  assert.ok(berth, 'the parlour declares where its table is');
-  const want = berthToBox(berth, viewOf(table));
-  const badges = one(panelOf(view.tree, table.id), (n) => n.props?.['data-study-badges'] === '');
+  // position inside the painting.
+  const desk = roomOfKind(studyRoom, 'writingDesk');
+  const berth = desk.berths[0];
+  assert.ok(berth, 'the writing desk declares where its letters are');
+  const want = berthToBox(berth, viewOf(desk));
+  const badges = one(panelOf(view.tree, desk.id), (n) => n.props?.['data-study-badges'] === '');
   assert.deepEqual(
     { left: badges.props.style.left, top: badges.props.style.top,
       width: badges.props.style.width, height: badges.props.style.height },
     want,
-    'the counts are laid over the baize the manifest points at');
+    'the count is laid over the stack the manifest points at');
 });
 
-test('the card table stacks mirror the kanban columns', async () => {
-  const card = (id, status) => ({ id, status, title: id, dependsOn: [] });
+test('the commissions are dealt onto the baize the manifest points at', async () => {
   const { view } = await inhabit({
     agents: [person('w-1')],
-    tasks: [card('a', 'todo'), card('b', 'todo'), card('c', 'doing'),
-      card('d', 'blocked'), card('e', 'done')]
+    tasks: [{ id: 'T-1', status: 'todo', title: 'a', dependsOn: [] },
+      { id: 'T-2', status: 'doing', title: 'b', dependsOn: [] }]
+  });
+  // Same rule as a badge, for the same reason — the cards are a position inside
+  // the painting, so they go through the same projection a berth does. Cards
+  // laid over the parlour's wall instead of its table is the failure this
+  // catches, and it is invisible to a count of them.
+  const table = roomOfKind(studyRoom, 'cardTable');
+  const baize = berthToBox(table.berths[0], viewOf(table));
+  const cards = all(panelOf(view.tree, table.id), (n) => n.props?.['data-baize-card'] !== undefined);
+  assert.equal(cards.length, 2, 'two commissions, two cards');
+  for (const c of cards) {
+    const { left, top, width, height } = c.props.style;
+    assert.ok(left >= baize.left - 0.01 && left + width <= baize.left + baize.width + 0.01,
+      'a card is off the side of the table');
+    assert.ok(top >= baize.top - 0.01 && top + height <= baize.top + baize.height + 0.01,
+      'a card is off the end of the table');
+  }
+});
+
+test('the card table shows the ledger itself, stuck work first', async () => {
+  const card = (n, status) => ({ id: `T-${n}`, status, title: `card ${n}`, dependsOn: [] });
+  const { view } = await inhabit({
+    agents: [person('w-1')],
+    tasks: [card(1, 'todo'), card(2, 'todo'), card(3, 'doing'),
+      card(4, 'blocked'), card(5, 'done')]
   });
   const table = one(view.tree, (n) => n.props?.title === 'Tasks');
-  assert.deepEqual(text(table).map(String), ['2', '1', '1', '1'],
-    'todo, doing, blocked, done — in the kanban\'s own order');
+  // Every commission on the ledger is on the table, numbered as the board
+  // numbers it — and dealt impeded first, because what is stuck is what
+  // somebody glancing across the room needs to see.
+  //
+  // Read through `all`, not `text`: the cards are rendered by a component, and
+  // `text` stops at the component node. Reading the tree the shallow way here
+  // would report an empty table and call it a pass.
+  const cards = all(table, (n) => n.props?.['data-baize-card'] !== undefined);
+  assert.deepEqual(cards.map((c) => String(c.props.children)), ['4', '3', '1', '2', '5']);
+  assert.deepEqual(cards.map((c) => c.props['data-baize-card']),
+    ['T-4', 'T-3', 'T-1', 'T-2', 'T-5'], 'the numbers are not the cards they name');
 });
 
 /**

@@ -41,6 +41,7 @@ import {
 } from './roomManifest';
 import { AgentCard } from './AgentCard';
 import { AmbianceLayer } from './AmbianceLayer';
+import { BaizeCards } from './BaizeCards';
 import { DeskBook } from './DeskBook';
 import { SpeechScroll } from './SpeechScroll';
 import { portraitFor } from './portraits';
@@ -390,6 +391,7 @@ export function StudyScene(): JSX.Element {
   const scene = useSceneState();
   const select = useStore((s) => s.select);
   const requestCommandCenterTab = useStore((s) => s.requestCommandCenterTab);
+  const openTaskDetail = useStore((s) => s.openTaskDetail);
   const godId = useStore((s) => s.agents.find((a) => a.isGod)?.id);
 
   /** The petitions are the god's to answer, so opening them selects him too —
@@ -413,23 +415,18 @@ export function StudyScene(): JSX.Element {
   const badgesFor = (room: Room, kind: AnchorKind, view: ViewBox): React.ReactNode => {
     const frame = { ...BADGES, ...badgeBox(room, view) };
     if (kind === 'cardTable') {
+      // The commissions themselves, dealt onto the baize the painting puts
+      // there. They replace the four column totals that used to sit here: a
+      // total could only ever mean "open the whole board", which is what
+      // clicking the room already does.
+      const berth = room.berths[0];
+      if (!berth) return null;
       return (
-        <div data-study-badges="" style={frame}>
-          {KANBAN_COLUMNS.map((column) => (
-            <div
-              key={column}
-              title={column}
-              style={{
-                padding: '1px 4px',
-                borderRadius: 'var(--cth-radius-badge)',
-                background: 'var(--cth-paper-100)',
-                boxShadow: 'var(--cth-panel-border)'
-              }}
-            >
-              {scene.kanbanCounts[column]}
-            </div>
-          ))}
-        </div>
+        <BaizeCards
+          tasks={scene.tasks}
+          baize={berthToBox(berth, view)}
+          onOpen={openTaskDetail}
+        />
       );
     }
     if (kind === 'writingDesk' && scene.openAskCount > 0) {

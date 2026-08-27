@@ -44,6 +44,15 @@ export interface SceneState {
   agents: SceneAgent[];
   openAskCount: number;
   kanbanCounts: { todo: number; doing: number; blocked: number; done: number };
+  /**
+   * The ledger itself, carried through rather than only counted.
+   *
+   * The card table deals the actual commissions onto the baize, and a card that
+   * opens a commission needs the commission's id — which a column total does
+   * not carry. This is the same array the counts were derived from, so the two
+   * cannot disagree about what is on the board.
+   */
+  tasks: readonly HiveTask[];
 }
 
 /** Same cadence as the kanban — the ledger is a file the god edits by hand. */
@@ -167,7 +176,8 @@ export function projectScene(agents: readonly Agent[], tasks: readonly HiveTask[
   return {
     agents: projected,
     openAskCount: tasks.filter(waitsOnHuman).length,
-    kanbanCounts
+    kanbanCounts,
+    tasks
   };
 }
 
