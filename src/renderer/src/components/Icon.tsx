@@ -2,6 +2,8 @@
 // Add to library by extending `paths` below.
 
 import { CSSProperties } from 'react';
+import { useAppTheme } from '@/design/theme';
+import { DECO_PATHS } from './decoIcons';
 
 export type IconName =
   | 'gear' | 'plus' | 'x' | 'check' | 'arrow-right' | 'pause' | 'play'
@@ -155,14 +157,24 @@ export interface IconProps {
 }
 
 export function Icon({ name, size = 1, style }: IconProps) {
-  const def = paths[name];
+  // The Study is painted, not plotted, so it gets the gilt set. The two tables
+  // share this component rather than forking it because the contract every call
+  // site relies on — name, size, currentColor ink — is identical for both, and
+  // only the drawing underneath differs.
+  const deco = useAppTheme() === 'occult';
+  const def = deco ? DECO_PATHS[name] : paths[name];
   const dim = 16 * size;
+  // crispEdges snaps every edge to the device pixel. That is what keeps a 16px
+  // pixel-art glyph from shimmering, and it is precisely what turns a swept
+  // deco curve into a staircase — so the hint travels with the table it belongs
+  // to rather than with the component.
+  const rendering = deco ? {} : { shapeRendering: 'crispEdges' as const };
   return (
     <svg
       viewBox="0 0 16 16"
       width={dim}
       height={dim}
-      shapeRendering="crispEdges"
+      {...rendering}
       style={{ display: 'inline-block', ...style }}
       aria-hidden
     >
