@@ -79,11 +79,15 @@ test('the shipped house is valid and complete', () => {
   }
 });
 
-test('every anchor the scene needs is a room of its own kind, exactly once', () => {
-  const { loadRoomManifest } = loadTs(MANIFEST);
+test('every anchor the scene needs stands in the house exactly once', () => {
+  // Once, but not necessarily as a room: an anchor is either a room of its own
+  // kind or a prop inside somebody else's, and the scene navigates from it
+  // either way. Two of one, or none, is a plan the scene cannot draw.
   const rooms = shippedHouse().rooms;
   for (const kind of ANCHOR_KINDS) {
-    assert.equal(rooms.filter((r) => r.kind === kind).length, 1, `one ${kind} room`);
+    const standing = rooms.filter((r) => r.kind === kind).length
+      + rooms.reduce((n, r) => n + r.props.filter((p) => p.kind === kind).length, 0);
+    assert.equal(standing, 1, `one ${kind}, as a room or as a prop`);
   }
   assert.equal(rooms.filter((r) => r.kind === 'godStudy').length, 1, "one god's study");
 });
@@ -239,4 +243,82 @@ test('every storey spans the whole house, so no room is centred in dead floor', 
     assert.equal(span(storey), widest,
       `storey ${storey[0].row} spans ${span(storey)} of the house's ${widest}`);
   }
+});
+
+test('an anchor may stand as a prop inside a room instead of owning one', () => {
+  // A room per function wastes a storey, and the house is letterboxed whole —
+  // so every storey spent on a single prop shrinks the reading rooms too. An
+  // anchor is therefore allowed to be a place INSIDE somebody else's room.
+  const { validateRoomManifest } = loadTs(MANIFEST);
+  const plan = house();
+  const host = plan.rooms.find((r) => r.id === 'r-cardTable');
+  const moved = plan.rooms.filter((r) => r.kind !== 'hearth');
+  host.props = [{ kind: 'hearth', berth: berth('door', { x: 0.05, y: 0.05, w: 0.1, h: 0.8 }) }];
+  const manifest = validateRoomManifest({ ...plan, rooms: moved });
+  const hosted = manifest.rooms.find((r) => r.id === 'r-cardTable');
+  assert.equal(hosted.props.length, 1);
+  assert.equal(hosted.props[0].kind, 'hearth');
+  assert.equal(hosted.props[0].berth.id, 'door');
+});
+
+test('an anchor that is both a room and a prop is rejected, and so is one that is neither', () => {
+  const { validateRoomManifest } = loadTs(MANIFEST);
+  const twice = house();
+  twice.rooms.find((r) => r.id === 'r-cardTable').props = [
+    { kind: 'hearth', berth: berth('door', { x: 0.05, y: 0.05, w: 0.1, h: 0.8 }) }
+  ];
+  assert.throws(() => validateRoomManifest(twice), /exactly one hearth/);
+
+  const none = house();
+  assert.throws(
+    () => validateRoomManifest({ ...none, rooms: none.rooms.filter((r) => r.kind !== 'hearth') }),
+    /exactly one hearth/
+  );
+});
+
+test('a prop berth is checked against its host panel and the house-wide id list', () => {
+  const { validateRoomManifest } = loadTs(MANIFEST);
+  const off = house();
+  off.rooms.find((r) => r.id === 'r-cardTable').props = [
+    { kind: 'almanac', berth: berth('page', { x: 0.8, y: 0.1, w: 0.4, h: 0.2 }) }
+  ];
+  assert.throws(
+    () => validateRoomManifest({ ...off, rooms: off.rooms.filter((r) => r.kind !== 'almanac') }),
+    /hangs off the panel of r-cardTable/
+  );
+
+  const clash = house();
+  clash.rooms.find((r) => r.id === 'r-cardTable').props = [
+    { kind: 'almanac', berth: berth('b-1') }
+  ];
+  assert.throws(
+    () => validateRoomManifest({ ...clash, rooms: clash.rooms.filter((r) => r.kind !== 'almanac') }),
+    /duplicate berth id b-1/
+  );
+});
+
+test('anchorSeat finds an anchor whether it owns a room or stands in one', () => {
+  const { anchorSeat } = loadTs(MANIFEST);
+  const plan = shippedHouse();
+  for (const kind of ANCHOR_KINDS) {
+    const seat = anchorSeat(plan, kind);
+    assert.ok(seat, `${kind} is nowhere in the house`);
+    assert.ok(plan.rooms.includes(seat.room), `${kind}'s host is not a room of the house`);
+    if (seat.room.kind !== kind) {
+      assert.ok(seat.room.props.some((p) => p.kind === kind), `${kind} is not a prop of its host`);
+    }
+  }
+});
+
+test('the function rooms are gathered into one, so the reading rooms get the storey', () => {
+  // Single-function rooms cost a whole storey each, and the house is scaled to
+  // fit as one drawing — so the price of a room holding nothing but a stack of
+  // letters is paid by every assistant's card in the building.
+  const { houseRows } = loadTs(MANIFEST);
+  const storeys = houseRows(shippedHouse());
+  assert.equal(storeys.length, 4, 'the house is four storeys, not five');
+  const anchorRooms = storeys.flat().filter(
+    (r) => r.kind !== 'desk' && r.kind !== 'godStudy');
+  assert.ok(anchorRooms.length <= 3,
+    `${anchorRooms.length} rooms hold nothing but props: ${anchorRooms.map((r) => r.id).join(', ')}`);
 });

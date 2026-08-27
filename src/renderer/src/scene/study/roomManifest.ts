@@ -50,6 +50,21 @@ export type RoomKind =
   /** The done archive. */
   | 'shelves';
 
+/**
+ * An anchor standing INSIDE somebody else's room.
+ *
+ * A room per function costs a whole storey, and the house is letterboxed as a
+ * single drawing — so a storey spent on a stack of letters is paid for by every
+ * assistant's card in the building. A prop is the other way of putting an
+ * anchor in the house: a rectangle of an existing painting that carries the
+ * same label, the same click and the same badge the room would have.
+ */
+export interface Prop {
+  kind: AnchorKind;
+  /** Where in the host's panel the prop stands, normalized to THAT panel. */
+  berth: Berth;
+}
+
 export interface Room {
   id: string;
   kind: RoomKind;
@@ -63,6 +78,8 @@ export interface Room {
   col: number;
   /** Normalized WITHIN this panel. May be empty: a prop room seats nobody. */
   berths: Berth[];
+  /** Anchors that stand in this room rather than owning one. May be empty. */
+  props: Prop[];
   /** Where the ambiance layer hangs this room's glows. May be empty. */
   lightPoints: { x: number; y: number }[];
 }
@@ -131,6 +148,19 @@ function validateLightPoints(raw: unknown, roomId: string): { x: number; y: numb
   });
 }
 
+function validateProps(raw: unknown, roomId: string): Prop[] {
+  const list = raw === undefined ? [] : raw;
+  if (!Array.isArray(list)) throw new Error(`room manifest: ${roomId}.props must be an array`);
+  return list.map((p, i) => {
+    const o = asRecord(p, `${roomId}.props[${i}]`);
+    const kind = o.kind as AnchorKind;
+    if (!ANCHOR_KINDS.includes(kind)) {
+      throw new Error(`room manifest: ${roomId}.props[${i}] has unknown kind ${JSON.stringify(o.kind)}`);
+    }
+    return { kind, berth: validateBerth(o.berth, roomId, `${roomId}.props[${i}].berth`) };
+  });
+}
+
 function validateWhole(raw: unknown, what: string): number {
   if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0) {
     throw new Error(`room manifest: ${what} must be a whole number from 0, got ${JSON.stringify(raw)}`);
@@ -165,6 +195,7 @@ function validateRoom(raw: unknown, index: number): Room {
     row: validateWhole(o.row, `${id}.row`),
     col: o.col === undefined ? 0 : validateWhole(o.col, `${id}.col`),
     berths: o.berths.map((b, i) => validateBerth(b, id, `${id}.berths[${i}]`)),
+    props: validateProps(o.props, id),
     lightPoints: validateLightPoints(o.lightPoints, id)
   };
 }
@@ -192,16 +223,23 @@ export function validateRoomManifest(raw: unknown): RoomManifest {
     const spot = `row ${r.row} col ${r.col}`;
     if (spots.has(spot)) throw new Error(`room manifest: ${r.id} stands on ${spot}, already taken`);
     spots.add(spot);
-    for (const b of r.berths) {
+    for (const b of [...r.berths, ...r.props.map((p) => p.berth)]) {
       if (berthIds.has(b.id)) throw new Error(`room manifest: duplicate berth id ${b.id}`);
       berthIds.add(b.id);
     }
   }
 
+  // An anchor is counted wherever it stands — as a room of that kind or as a
+  // prop on somebody's wall. Counting the two together is what lets the house
+  // gather its functions into one room without the plan claiming, or losing,
+  // an anchor the scene navigates from.
   for (const kind of SINGLETON_KINDS) {
-    const found = rooms.filter((r) => r.kind === kind);
-    if (found.length !== 1) {
-      throw new Error(`room manifest: the house needs exactly one ${kind} room, found ${found.length}`);
+    const asRoom = rooms.filter((r) => r.kind === kind).length;
+    const asProp = kind === 'godStudy'
+      ? 0 : rooms.reduce((n, r) => n + r.props.filter((p) => p.kind === kind).length, 0);
+    if (asRoom + asProp !== 1) {
+      throw new Error(
+        `room manifest: the house needs exactly one ${kind}, found ${asRoom + asProp}`);
     }
   }
   if (!rooms.some((r) => r.kind === 'desk')) {
@@ -247,6 +285,28 @@ export function roomOfKind(manifest: RoomManifest, kind: RoomKind): Room {
   const room = manifest.rooms.find((r) => r.kind === kind);
   if (!room) throw new Error(`room manifest: no ${kind} room`);
   return room;
+}
+
+/**
+ * Where an anchor stands, and the room it stands in.
+ *
+ * The scene navigates from the five anchors, and each of them is now either a
+ * room of its own kind or a prop inside one — so everything that has to know
+ * where an anchor IS (its click target, the badge laid over it, the cards dealt
+ * onto it) asks this rather than assuming a room. A room-kind anchor seats its
+ * prop at its first berth, which is where the badge already went.
+ */
+export function anchorSeat(
+  manifest: RoomManifest,
+  kind: AnchorKind
+): { room: Room; berth: Berth | undefined } {
+  const own = manifest.rooms.find((r) => r.kind === kind);
+  if (own) return { room: own, berth: own.berths[0] };
+  for (const room of manifest.rooms) {
+    const prop = room.props.find((p) => p.kind === kind);
+    if (prop) return { room, berth: prop.berth };
+  }
+  throw new Error(`room manifest: no ${kind} anywhere in the house`);
 }
 
 /**
