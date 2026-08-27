@@ -14,9 +14,7 @@ import cardTable from './assets/room-card-table.png';
 import deskA from './assets/room-desk-a.png';
 import deskB from './assets/room-desk-b.png';
 import godStudy from './assets/room-god-study.png';
-import hearth from './assets/room-hearth.png';
 import shelves from './assets/room-shelves.png';
-import writingDesk from './assets/room-writing-desk.png';
 
 export const ROOM_SRC: Record<string, string> = {
   './room-almanac.png': almanac,
@@ -24,7 +22,5 @@ export const ROOM_SRC: Record<string, string> = {
   './room-desk-a.png': deskA,
   './room-desk-b.png': deskB,
   './room-god-study.png': godStudy,
-  './room-hearth.png': hearth,
-  './room-shelves.png': shelves,
-  './room-writing-desk.png': writingDesk
+  './room-shelves.png': shelves
 };
