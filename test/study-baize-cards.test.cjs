@@ -154,3 +154,94 @@ test('an empty ledger leaves an empty table, not an empty card', async () => {
   const { view } = await inhabit([]);
   assert.equal(cardsIn(view).length, 0);
 });
+
+// ─── Readable at the size the house is actually drawn ───────────────────────
+
+/** One colour token, resolved out of the occult stylesheet. */
+const occultToken = (() => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const css = fs.readFileSync(
+    path.resolve(__dirname, '..', 'src/renderer/src/design/occult/occult-tokens.css'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+  return (name) => {
+    const m = css.match(new RegExp(`${name}:\\s*(#[0-9A-Fa-f]{6})`));
+    assert.ok(m, `${name} is not declared in the occult theme`);
+    return m[1];
+  };
+})();
+
+const luminance = (hex) => {
+  const ch = (c) => (c / 255 <= 0.03928 ? c / 255 / 12.92 : ((c / 255 + 0.055) / 1.055) ** 2.4);
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  return 0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b);
+};
+const contrast = (a, b) => {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+};
+
+/** The card table's dealing area, in the panel's OWN pixels — which is the
+ *  only frame in which "big enough to read" means anything, because the whole
+ *  house is drawn at natural size and then scaled into the window as one
+ *  drawing. A card measured in CSS px here is a card measured before the scale
+ *  that shrinks it. */
+function dealtOnTheShippedTable() {
+  const { loadRoomManifest, roomOfKind } = loadTs('src/renderer/src/scene/study/roomManifest.ts');
+  const load = loadRoomManifest();
+  assert.equal(load.ok, true, 'room.json does not validate');
+  const room = roomOfKind(load.manifest, 'cardTable');
+  const berth = room.berths[0];
+  const baize = {
+    left: berth.x * room.natural.w,
+    top: berth.y * room.natural.h,
+    width: berth.w * room.natural.w,
+    height: berth.h * room.natural.h
+  };
+  return B.dealBaize(Array.from({ length: B.BAIZE_MAX }, (_, i) => task(`T-${i + 1}`)), baize);
+}
+
+test('a commission card is dealt big enough to read once the house is scaled', () => {
+  // The house is laid out at its natural size and then letterboxed into the
+  // window as ONE scaled drawing, so every size inside it is divided by that
+  // scale — around 0.3 on a normal window. The dealing area was the painted
+  // baize itself, 337 by 50 panel pixels, and eight cards in it came out at 64
+  // by 19 before the scale and a handful of pixels after it.
+  for (const { box } of dealtOnTheShippedTable()) {
+    assert.ok(box.width >= 80, `a card is ${Math.round(box.width)} panel px wide`);
+    assert.ok(box.height >= 60, `a card is ${Math.round(box.height)} panel px tall`);
+  }
+});
+
+test('the number on a card is sized from the card, not from a CSS token', () => {
+  // A fixed `--cth-text-display-sm` is 12px BEFORE the house scale, which is
+  // about three pixels after it. Type inside the house has to be a fraction of
+  // the thing it is printed on, or it does not survive the letterbox.
+  const dealt = dealtOnTheShippedTable();
+  const { BaizeCards } = B;
+  const rendered = BaizeCards({
+    tasks: dealt.map((d) => d.task),
+    baize: { left: 0, top: 0, width: 600, height: 300 },
+    onOpen: () => {}
+  });
+  const cards = rendered.props.children;
+  assert.ok(cards.length > 0, 'nothing was dealt');
+  for (const card of cards) {
+    const { fontSize, height } = card.props.style;
+    assert.equal(typeof fontSize, 'number',
+      `the card face is still a CSS token (${String(fontSize)}) the house scale then shrinks`);
+    assert.ok(fontSize >= height * 0.3,
+      `the number is ${fontSize} on a card ${height} tall`);
+  }
+});
+
+test('every card face is legible on its own colour', () => {
+  const FACES = B.CARD_FACES;
+  assert.ok(FACES, 'the faces are not reachable to be checked');
+  for (const [status, face] of Object.entries(FACES)) {
+    const bg = occultToken(face.background.replace(/^var\(|\)$/g, ''));
+    const fg = occultToken(face.color.replace(/^var\(|\)$/g, ''));
+    assert.ok(contrast(bg, fg) >= 4.5,
+      `${status} prints ${fg} on ${bg} — ${contrast(bg, fg).toFixed(2)}:1`);
+  }
+});

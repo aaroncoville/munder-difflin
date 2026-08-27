@@ -96,12 +96,36 @@ export function dealBaize(
   }));
 }
 
-/** What each status looks like on the baize — the same language the books use. */
-const FACE: Record<HiveTask['status'], { background: string; color: string }> = {
-  blocked: { background: 'var(--cth-status-blocked)', color: 'var(--cth-cream-50)' },
-  doing: { background: 'var(--cth-status-working)', color: 'var(--cth-cream-50)' },
-  todo: { background: 'var(--cth-paper-100)', color: 'var(--cth-ink-900)' },
-  done: { background: 'var(--cth-paper-200)', color: 'var(--cth-ink-500)' }
+/**
+ * What each status looks like on the baize — the same language the books use.
+ *
+ * Every card is a dark paper ground with a parchment number and a bar of its
+ * status colour down the left edge, rather than a card FILLED with that colour.
+ * Filled was unreadable: the printed number cleared 3.2:1 on the blocked
+ * card's coral, and no ink in this palette clears 4.5 on it — a saturated
+ * mid-tone has nowhere legible to put text. The bar carries the colour at full
+ * strength instead, and reads faster at this size than a tinted rectangle does.
+ *
+ * Exported so the contrast of every pair can be measured rather than eyeballed.
+ */
+export const CARD_FACES: Record<HiveTask['status'],
+{ background: string; color: string; edge: string }> = {
+  blocked: {
+    background: 'var(--cth-coral-light)', color: 'var(--cth-ink-900)',
+    edge: 'var(--cth-status-blocked)'
+  },
+  doing: {
+    background: 'var(--cth-lemon-light)', color: 'var(--cth-ink-900)',
+    edge: 'var(--cth-status-working)'
+  },
+  todo: {
+    background: 'var(--cth-paper-100)', color: 'var(--cth-ink-900)',
+    edge: 'var(--cth-ink-300)'
+  },
+  done: {
+    background: 'var(--cth-paper-200)', color: 'var(--cth-ink-500)',
+    edge: 'var(--cth-ink-100)'
+  }
 };
 
 export interface BaizeCardsProps {
@@ -143,12 +167,24 @@ export function BaizeCards({ tasks, baize, onOpen }: BaizeCardsProps): JSX.Eleme
               justifyContent: 'center',
               boxSizing: 'border-box',
               borderRadius: 'var(--cth-radius-badge)',
-              boxShadow: 'var(--cth-panel-border)',
               fontFamily: 'var(--cth-font-display)',
-              fontSize: 'var(--cth-text-display-sm)',
+              // Sized FROM the card, not from a token. The whole house is laid
+              // out at its natural size and then letterboxed into the window as
+              // one scaled drawing, so a fixed 12px face arrives on screen at
+              // three or four pixels. A fraction of the card survives the scale
+              // because the card is scaled by the same number.
+              fontSize: box.height * 0.5,
+              lineHeight: 1,
               cursor: 'pointer',
               userSelect: 'none',
-              ...FACE[task.status]
+              background: CARD_FACES[task.status].background,
+              color: CARD_FACES[task.status].color,
+              // The status bar down the left edge, and a hairline all round so
+              // the card has an edge against the baize under it. Proportional
+              // for the same reason the type is.
+              boxShadow: `inset ${Math.max(2, box.width * 0.09)}px 0 0 `
+                + `${CARD_FACES[task.status].edge}, `
+                + `inset 0 0 0 ${Math.max(1, box.width * 0.02)}px var(--cth-ink-300)`
             }}
           >
             {n}

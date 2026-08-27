@@ -22,7 +22,7 @@
     {
       "id": "card-table", "kind": "cardTable", "image": "./room-card-table.png",
       "natural": { "w": 1568, "h": 672 }, "row": 1, "col": 0,
-      "berths": [{ "id": "card-table-baize", "x": 0.395, "y": 0.650, "w": 0.215, "h": 0.075 }],
+      "berths": [{ "id": "card-table-baize", "x": 0.335, "y": 0.400, "w": 0.335, "h": 0.300 }],
       "lightPoints": [
         { "x": 0.345, "y": 0.155 }, { "x": 0.505, "y": 0.075 }, { "x": 0.665, "y": 0.155 }
       ]
