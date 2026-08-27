@@ -62,3 +62,34 @@ test('global.css imports the occult tokens', () => {
   assert.match(read('src/renderer/src/design/global.css'),
     /@import '\.\/occult\/occult-tokens\.css';/);
 });
+
+test('occult swaps the display face but keeps the CJK/Arabic fallback tail', () => {
+  // Press Start 2P is latin-only, and so is Cormorant SC. Dropping the system
+  // CJK/Arabic faces from the tail would leave a zh-CN or ar heading falling
+  // through to generic monospace — the exact breakage self-hosting fixed.
+  assert.match(occult, /--cth-font-display:\s*"Cormorant SC",[^;]*"Noto Naskh Arabic"/);
+  assert.match(occult, /--cth-text-display-lg:\s*22px/);
+  assert.match(occult, /--cth-text-display-md:\s*16px/);
+  assert.match(occult, /--cth-text-display-sm:\s*11px/);
+  assert.match(occult, /--cth-lh-display-lg:\s*26px/);
+  assert.match(occult, /--cth-lh-display-sm:\s*15px/);
+});
+
+test('the display face is self-hosted, like every other face here', () => {
+  const fonts = read('src/renderer/src/design/occult/occult-fonts.css');
+  for (const weight of [400, 700]) {
+    assert.match(fonts, new RegExp(
+      `font-family:\\s*'Cormorant SC';[\\s\\S]*?url\\('\\.\\./\\.\\./assets/fonts/cormorant-sc-latin-${weight}\\.woff2'\\)`));
+  }
+  assert.match(read('src/renderer/src/design/global.css'),
+    /@import '\.\/occult\/occult-fonts\.css';/);
+});
+
+test('the bundled-font licence notice covers the new face', () => {
+  // OFL section 2: the notice travels with every copy. A font file added
+  // without its attribution is a licence breach, not a docs omission.
+  const notice = read('src/renderer/src/assets/fonts/LICENSE.txt');
+  assert.match(notice, /cormorant-sc-latin-400\.woff2/);
+  assert.match(notice, /cormorant-sc-latin-700\.woff2/);
+  assert.match(notice, /Cormorant/);
+});

@@ -1,0 +1,28 @@
+/* The occult theme's display face, self-hosted like the other three (see
+ * assets/fonts/LICENSE.txt and design/fonts.css for why: the app must render
+ * its own typography without a network, and fonts.gstatic.com is blocked in
+ * mainland China).
+ *
+ * Cormorant SC — SIL Open Font License 1.1. Latin subset only, the same choice
+ * every bundled face makes; the token stack in occult-tokens.css keeps the
+ * system CJK and Arabic faces behind it.
+ *
+ * The @font-face rules are unguarded on purpose — a font declaration costs
+ * nothing until something asks for the family, and only the occult token block
+ * ever names it. */
+
+@font-face {
+  font-family: 'Cormorant SC';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../../assets/fonts/cormorant-sc-latin-400.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Cormorant SC';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('../../assets/fonts/cormorant-sc-latin-700.woff2') format('woff2');
+}

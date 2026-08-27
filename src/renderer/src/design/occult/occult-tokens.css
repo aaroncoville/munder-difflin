@@ -66,23 +66,35 @@
   --cth-space-7: 48px;
   --cth-space-8: 64px;
 
-  /* Type — the display face is Task 4's business; body and mono never change. */
-  --cth-font-display: "Press Start 2P", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Geeza Pro", "Noto Naskh Arabic", "Segoe UI Historic", monospace;
+  /* Type — the pixel brand face is the one thing this theme cannot keep: a
+     candlelit deco room set in Press Start 2P reads as a joke. Cormorant SC is
+     a didone-adjacent serif whose small caps are its default, which is exactly
+     what the display slot is used for here. Body Inter and mono JetBrains Mono
+     are untouched — legibility is not the thing being re-dressed.
+
+     The CJK and Arabic tail is carried over verbatim; Cormorant SC is latin-
+     only, same as Press Start 2P, so dropping it would put a zh-CN heading
+     back on generic monospace. */
+  --cth-font-display: "Cormorant SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Geeza Pro", "Noto Naskh Arabic", "Segoe UI Historic", monospace;
   --cth-font-ui:      "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Geeza Pro", "Noto Naskh Arabic", "Segoe UI Historic", sans-serif;
   --cth-font-mono:    "JetBrains Mono", ui-monospace, "SF Mono", Menlo, "PingFang SC", "Microsoft YaHei", "Noto Sans Mono CJK SC", "Noto Sans CJK SC", "Geeza Pro", "Noto Naskh Arabic", "Segoe UI Historic", monospace;
 
-  --cth-text-display-lg: 16px;
-  --cth-text-display-md: 12px;
-  --cth-text-display-sm: 8px;
+  /* Display sizes are retuned, not inherited: Press Start 2P is a pixel face
+     with an enormous apparent size per em, so 8px reads as a label there and
+     as nothing at all in a serif. Cormorant's small caps need roughly a third
+     more to sit at the same optical weight. */
+  --cth-text-display-lg: 22px;
+  --cth-text-display-md: 16px;
+  --cth-text-display-sm: 11px;
   --cth-text-body-lg:    16px;
   --cth-text-body-md:    14px;
   --cth-text-body-sm:    13px;
   --cth-text-mono-md:    14px;
   --cth-text-mono-sm:    13px;
 
-  --cth-lh-display-lg: 24px;
+  --cth-lh-display-lg: 26px;
   --cth-lh-display-md: 20px;
-  --cth-lh-display-sm: 12px;
+  --cth-lh-display-sm: 15px;
   --cth-lh-body-lg:    24px;
   --cth-lh-body-md:    20px;
   --cth-lh-body-sm:    18px;
