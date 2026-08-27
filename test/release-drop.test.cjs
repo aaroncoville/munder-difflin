@@ -204,7 +204,7 @@ test('a data: @import and a plain https url() are left alone (only remote @impor
 // shared loader cannot import.
 
 test('the loader reveals on onLoad OR a timeout cap — never on onLoad alone', () => {
-  const src = readDrop();
+  const src = sourceAssert.activeSource('src/renderer/src/components/ReleaseDrop.tsx');
   // onLoad wires the reveal…
   assert.match(src, /onLoad=\{reveal\}/, 'the iframe onLoad must reveal');
   // …and a timeout races it, so a delayed/never-firing onLoad cannot hang the loader.
@@ -215,7 +215,7 @@ test('the loader reveals on onLoad OR a timeout cap — never on onLoad alone', 
 });
 
 test('the frame is always mounted; only the loader is conditionally rendered', () => {
-  const src = readDrop();
+  const src = sourceAssert.activeSource('src/renderer/src/components/ReleaseDrop.tsx');
   // The iframe must not be behind a `revealed &&` — a broken reveal must never
   // unmount the frame. It is the LOADER that is conditional and removed on reveal.
   assert.doesNotMatch(src, /revealed\s*&&\s*<iframe/, 'the iframe must not be gated on reveal');

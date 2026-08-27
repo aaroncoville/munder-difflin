@@ -48,7 +48,7 @@ test('the renderer restores its notice when the restart reports a cancel', () =>
 });
 
 test('a re-entry guard refuses a duplicate restart instead of firing quitAndInstall twice', () => {
-  const src = read('src/main/updater.ts');
+  const src = sourceAssert.activeSource('src/main/updater.ts');
   const handler = src.slice(src.indexOf("ipcMain.handle('update:restartAndInstall'"));
   const body = handler.slice(0, handler.indexOf('\n  });'));
   assert.ok(/if \(pendingRestart\) return/.test(body),
@@ -61,7 +61,7 @@ test('a re-entry guard refuses a duplicate restart instead of firing quitAndInst
 });
 
 test('a failed quit settles the pending restart so the button stops spinning', () => {
-  const src = read('src/main/updater.ts');
+  const src = sourceAssert.activeSource('src/main/updater.ts');
   assert.ok(/function failPendingRestart\(error: string\): void/.test(src),
     'a restart the native updater refuses reports via the error event, not a throw; '
     + 'without a way to settle the pending restart the handler awaits forever');
