@@ -35,14 +35,23 @@ export { PORTRAIT_FILES, PORTRAIT_NAMES };
 /**
  * The orchestrator's own face, reserved by name.
  *
- * Aaron's pick, and it is reserved in both directions: the god always wears it,
- * and it is held out of the pool the hash deals from so no worker is ever dealt
- * the face of the person running the House.
+ * Reserved in both directions: the god always wears it, and it is held out of
+ * both halves of every other assignment — the pool the hash deals from and the
+ * names a worker may be matched against — so no worker ever ends up wearing the
+ * face of the person running the House, by luck or by being named after it.
  */
 export const GOD_PORTRAIT = 'fascination';
 
-/** The pack minus the reserved faces — what an unnamed assistant is dealt. */
+/** The pack minus the reserved faces — what an assistant other than the god may
+ *  be dealt *or* named for. Both halves of the assignment go through this list,
+ *  which is what makes the reservation hold: matching a name against the whole
+ *  pack would hand the god's face to anybody who typed its name into the summon
+ *  form, walking straight past the hash's exclusion. */
 const DEALABLE = PORTRAIT_FILES.filter((_, i) => PORTRAIT_NAMES[i] !== GOD_PORTRAIT);
+
+/** Their names, in step with `DEALABLE` — filtered by the same predicate, so
+ *  index `i` of one is index `i` of the other. */
+const DEALABLE_NAMES = PORTRAIT_NAMES.filter((n) => n !== GOD_PORTRAIT);
 
 /** FNV-1a, 32-bit. Small, dependency-free, and spreads short ids like `w-1`
  *  and `w-2` — which the obvious "sum the char codes" does not. */
@@ -69,11 +78,15 @@ export function assignPortrait(id: string, files: readonly string[]): string | u
  * somebody typed is part of who they are — the pack's files are lower-case and
  * the name in the roster is whatever was entered.
  */
-export function portraitNamed(name: string | undefined): string | undefined {
+export function portraitNamed(
+  name: string | undefined,
+  names: readonly string[] = PORTRAIT_NAMES,
+  files: readonly string[] = PORTRAIT_FILES
+): string | undefined {
   const key = (name ?? '').trim().toLowerCase();
   if (!key) return undefined;
-  const i = PORTRAIT_NAMES.indexOf(key);
-  return i === -1 ? undefined : PORTRAIT_FILES[i];
+  const i = names.indexOf(key);
+  return i === -1 ? undefined : files[i];
 }
 
 /** The portrait for one assistant, from the shipped pack. */
@@ -81,5 +94,8 @@ export function portraitFor(
   agent: { id: string; name: string; role?: string; isGod?: boolean }
 ): string | undefined {
   if (agent.isGod) return portraitNamed(GOD_PORTRAIT) ?? assignPortrait(agent.id, DEALABLE);
-  return portraitNamed(agent.name) ?? assignPortrait(agent.id, DEALABLE);
+  // Searched against the dealable pack, not the whole one: an assistant named
+  // for the reserved face falls through to the hash like any other stranger.
+  return portraitNamed(agent.name, DEALABLE_NAMES, DEALABLE)
+    ?? assignPortrait(agent.id, DEALABLE);
 }

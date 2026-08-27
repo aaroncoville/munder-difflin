@@ -107,6 +107,27 @@ test('the orchestrator has a face of its own', () => {
   assert.ok(!dealt.has(portraitNamed(GOD_PORTRAIT)), 'a worker was dealt the god s portrait');
 });
 
+test('a worker named for the reserved face does not get it', () => {
+  // The name rule is checked before the hash, so a worker literally named
+  // `fascination` — nothing stops one being typed into the summon form — used
+  // to match the reserved face by name and walk straight past the reservation.
+  // The name lookup a worker goes through must not see the god's face at all.
+  const god = portraitNamed(GOD_PORTRAIT);
+  assert.ok(god, 'the reserved portrait is not in the pack');
+  const got = portraitFor({ id: 'w-1', name: GOD_PORTRAIT, isGod: false });
+  assert.notEqual(got, god, 'a worker wore the god s face by naming itself after it');
+  // And it is dealt the same face it would have got with any other unknown
+  // name: the reserved name falls through to the hash, it is not special-cased
+  // into some second reserved portrait.
+  assert.equal(got, portraitFor({ id: 'w-1', name: 'not in the pack at all' }),
+    'the reserved name does not fall through to the ordinary deal');
+  // Case and space are stripped before the lookup, so those spellings too.
+  for (const spelling of ['  FASCINATION ', 'Fascination']) {
+    assert.notEqual(portraitFor({ id: 'w-2', name: spelling }), god,
+      `${spelling} slipped past the reservation`);
+  }
+});
+
 test('the pack is people, and none of the iconography', () => {
   // The community pack also ships aspect, faction and element cards. They are
   // iconography, not portraits: an assistant wearing the Moth aspect card is
