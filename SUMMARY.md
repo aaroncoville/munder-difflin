@@ -261,6 +261,27 @@ a host that treats unhandled rejections as such. It now starts through
 commissions were never waiting on the canvas, and the failure is visible as the
 candles not lighting.
 
+### 4 — The ambiance layer leaked what it failed to build
+
+Catching the rejection silently (above) fixed the crash and left the leak. The
+`Application` was constructed, then `init` was awaited, then forty lines of
+setup ran, and only after all of that was the handle the cleanup destroys
+through assigned. Anything failing in that window — `init` rejecting on a
+machine with no GL context, having already allocated the canvas, or any of the
+setup throwing — left the handle null: the catch said nothing, the cleanup had
+nothing to destroy, and a WebGL context and a ticker survived the room. Once
+per room, per resize, per retry.
+
+Construction and setup now go through `buildOrDestroy`, which hands the caller
+its handle *before* the first await and destroys through that same handle if
+the build throws. Destruction is idempotent, because the unmount that lands
+between the rejection and the catch reaches the same resource from the other
+side, and destroying a pixi `Application` twice is an error of its own. There
+is now exactly one `.destroy(` call site in the file, which is what makes
+exactly-once checkable rather than asserted. One behaviour rides along: the
+unmounted-mid-`init` path used to destroy with `{ children: true }` and now
+uses the same `{ children: true, texture: true }` as every other path.
+
 ### Break-it-to-prove-it
 
 | Change | Test that went red |
@@ -269,14 +290,19 @@ candles not lighting.
 | Drop the `languageChanged` subscription | `choosing English inside the house is answered with the house register`, `answering a language change does not start one`, `the watcher lets go when the app does` |
 | Make `voiceFor` offer the register to any language under occult | `a language that is not English is left alone, theme or no theme`, plus the pre-existing rule test |
 | Drop the `.catch` from `startAmbiance` | `pixi failing to load costs the room its ambiance and nothing else` |
+| Drop the `held.release()` from `buildOrDestroy`'s catch | `a build that fails after constructing still destroys what it constructed` |
+| Make `release` non-idempotent | both of the above, plus `a build that succeeds keeps its application until cleanup asks for it` |
+| Publish the handle after the build instead of before it | `a build that fails after constructing still destroys what it constructed` |
 
 ### Verification, and a baseline that moved
 
 ```
 node --test test/*.test.cjs
 # 9276936f (the ref this round started from): 1019 of 1056, 35 failures, 1 skip
-# 577117a6 (this tip):                       1027 of 1064, 35 failures, 1 skip
-# identical failure set; the 8 new tests are the 8 new passes
+# 577117a6:                                  1027 of 1064, 35 failures, 1 skip
+# bd00fb90 (the ref this fix started from):  1027 of 1064, 35 failures, 1 skip
+# this tip:                                  1030 of 1067, 35 failures, 1 skip
+# identical failure set throughout; every new test is a new pass
 
 npm run typecheck    # node + web, 0 errors
 npm run build        # succeeds

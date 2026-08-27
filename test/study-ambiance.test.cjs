@@ -119,3 +119,55 @@ test('the layer starts pixi through the handler, not around it', () => {
   assert.doesNotMatch(layer, /void\s*\(async/,
     'a bare fire-and-forget async body is back, with no rejection handler on it');
 });
+
+test('a build that fails after constructing still destroys what it constructed', async () => {
+  // Constructing a pixi Application allocates, and `init` allocates the canvas
+  // and the GL context before it can reject. A handle published only after the
+  // last line of setup is a handle nobody holds while any of that can fail, so
+  // the silent catch above swallows the failure and the context leaks — once
+  // per room, per retry, per resize.
+  const { buildOrDestroy } = loadTs('src/renderer/src/scene/study/AmbianceLayer.tsx');
+
+  let destroyed = 0;
+  const application = { destroy: () => { destroyed++; } };
+  let held = null;
+
+  await assert.rejects(
+    buildOrDestroy(() => application, (h) => { held = h; }, async () => {
+      throw new Error('WebGL unsupported');
+    }),
+    /WebGL unsupported/,
+    'the failure stopped travelling, so the caller can no longer decline it'
+  );
+  assert.equal(destroyed, 1, 'the constructed application outlived the failure');
+
+  // The unmount that lands between the rejection and the catch is the race the
+  // guard exists for: both paths reach the same resource, and destroying a
+  // pixi Application twice is its own error.
+  held.release();
+  assert.equal(destroyed, 1, 'cleanup racing the failure destroyed it twice');
+});
+
+test('a build that succeeds keeps its application until cleanup asks for it', async () => {
+  const { buildOrDestroy } = loadTs('src/renderer/src/scene/study/AmbianceLayer.tsx');
+
+  let destroyed = 0;
+  const application = { destroy: () => { destroyed++; } };
+  let held = null;
+
+  await buildOrDestroy(() => application, (h) => { held = h; }, async () => {});
+  assert.equal(destroyed, 0, 'a working build was torn down anyway — no ambiance at all');
+  held.release();
+  held.release();
+  assert.equal(destroyed, 1, 'cleanup running twice destroyed the application twice');
+});
+
+test('the layer has exactly one place that destroys the application', () => {
+  // Exactly-once is only enforceable through a single guarded call site; a
+  // second `.destroy(` in this file is a path that can double up or be missed.
+  const layer = strip(read('src/renderer/src/scene/study/AmbianceLayer.tsx'));
+  assert.match(layer, /buildOrDestroy\(/,
+    'the effect constructs pixi outside the guard that destroys it on failure');
+  assert.equal((layer.match(/\.destroy\(/g) ?? []).length, 1,
+    'destruction has more than one call site again');
+});

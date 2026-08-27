@@ -94,6 +94,71 @@ export function startAmbiance(build: () => Promise<void>): void {
   });
 }
 
+/** Anything holding a GPU context until it is told to let go. Declared as a
+ *  method rather than a function-typed property so that pixi's own wider
+ *  `destroy` overload satisfies it. */
+interface Destroyable {
+  destroy(removeView: boolean, opts: unknown): void;
+}
+
+/**
+ * A constructed resource, and the one call that takes it down.
+ *
+ * `release` is idempotent on purpose. The build's failure path and the effect's
+ * cleanup can both reach the same resource, in either order — an unmount that
+ * lands between `init` rejecting and the catch running is exactly that race —
+ * and destroying a pixi Application twice is an error of its own.
+ */
+export interface Held<T> {
+  value: T;
+  release: () => void;
+}
+
+/**
+ * Construct, hand the handle out, then build — destroying on the way out if the
+ * build fails.
+ *
+ * The constructor allocates before anything is awaited, and `init` allocates
+ * the canvas and the GL context before it can reject. So there is no point
+ * between the constructor and the last line of setup at which simply dropping
+ * the reference is free: whatever was built has to be destroyed. A handle
+ * published only once setup has finished is a handle nobody holds during the
+ * entire window in which the build can fail, and the caller's deliberately
+ * silent catch then swallows the failure with the context still open — a leak
+ * per room, per resize, per retry.
+ *
+ * `hold` therefore runs before the first await, so a cleanup arriving mid-build
+ * has something to destroy; the failure path destroys through the same handle;
+ * and `release` makes that exactly once between them. The failure keeps
+ * travelling so the caller can still decline it.
+ */
+export async function buildOrDestroy<T extends Destroyable>(
+  construct: () => T,
+  hold: (held: Held<T>) => void,
+  build: (value: T, held: Held<T>) => Promise<void>
+): Promise<void> {
+  const value = construct();
+  let released = false;
+  const held: Held<T> = {
+    value,
+    release: () => {
+      if (released) return;
+      released = true;
+      // `true` removes the canvas from the DOM with it; the options object
+      // takes the display objects and their textures down too. Leaving either
+      // behind leaks a WebGL context per room, and a house has ten rooms.
+      value.destroy(true, { children: true, texture: true });
+    }
+  };
+  hold(held);
+  try {
+    await build(value, held);
+  } catch (err) {
+    held.release();
+    throw err;
+  }
+}
+
 export interface AmbianceLayerProps {
   room: Room;
   /** Where the room's panel image actually landed, in px. The canvas matches it
@@ -116,81 +181,79 @@ export function AmbianceLayer({ room, view }: AmbianceLayerProps): JSX.Element |
     let alive = true;
     // Held outside the async body so cleanup can reach whatever exists by the
     // time it runs, however far the load got.
-    let app: { destroy: (a: boolean, b: unknown) => void; canvas: HTMLCanvasElement;
-      stage: { addChild: (c: unknown) => void; eventMode?: string };
-      ticker: { add: (f: (t: { deltaMS: number }) => void) => void } } | null = null;
+    let held: { release: () => void } | null = null;
 
     startAmbiance(async () => {
       const PIXI = await import('pixi.js');
       if (!alive) return;
-      const application = new PIXI.Application();
-      await application.init({
-        width: Math.round(view.w),
-        height: Math.round(view.h),
-        backgroundAlpha: 0,
-        antialias: true,
-        autoDensity: true,
-        resolution: window.devicePixelRatio || 1
-      });
-      // Unmounted while pixi was initialising: destroy what we just built
-      // rather than parenting an orphan into a detached node.
-      if (!alive) { application.destroy(true, { children: true }); return; }
+      await buildOrDestroy(
+        () => new PIXI.Application(),
+        (h) => { held = h; },
+        async (application, owned) => {
+          await application.init({
+            width: Math.round(view.w),
+            height: Math.round(view.h),
+            backgroundAlpha: 0,
+            antialias: true,
+            autoDensity: true,
+            resolution: window.devicePixelRatio || 1
+          });
+          // Unmounted while pixi was initialising: destroy what we just built
+          // rather than parenting an orphan into a detached node.
+          if (!alive) { owned.release(); return; }
 
-      // Input belongs to the DOM. 'none' is pixi's own opt-out, on top of the
-      // host's `pointer-events: none` — the canvas must be invisible to the
-      // pointer by two independent mechanisms, because the whole Study is
-      // clickable underneath it.
-      application.stage.eventMode = 'none';
-      application.canvas.style.pointerEvents = 'none';
-      host.appendChild(application.canvas);
+          // Input belongs to the DOM. 'none' is pixi's own opt-out, on top of the
+          // host's `pointer-events: none` — the canvas must be invisible to the
+          // pointer by two independent mechanisms, because the whole Study is
+          // clickable underneath it.
+          application.stage.eventMode = 'none';
+          application.canvas.style.pointerEvents = 'none';
+          host.appendChild(application.canvas);
 
-      const lights = lightsFor(room.lightPoints ?? []);
-      // The hearth's own fire is the room's first marked light: the painting
-      // puts it in the grate, and it wants the deeper colour and a wider throw.
-      const isHearth = room.kind === 'hearth';
+          const lights = lightsFor(room.lightPoints ?? []);
+          // The hearth's own fire is the room's first marked light: the painting
+          // puts it in the grate, and it wants the deeper colour and a wider throw.
+          const isHearth = room.kind === 'hearth';
 
-      const glows = lights.map((p, i) => {
-        const g = new PIXI.Graphics();
-        const radius = (isHearth && i === 0 ? 34 : 18) * Math.min(view.w / 520, 1.6);
-        g.circle(0, 0, radius).fill({ color: isHearth && i === 0 ? HEARTH : CANDLE, alpha: 0.5 });
-        g.position.set(p.x * view.w, p.y * view.h);
-        // Additive, so light adds to the paint underneath instead of sitting on
-        // it as a disc of colour — the difference between a glow and a sticker.
-        g.blendMode = 'add';
-        application.stage.addChild(g);
-        return g;
-      });
+          const glows = lights.map((p, i) => {
+            const g = new PIXI.Graphics();
+            const radius = (isHearth && i === 0 ? 34 : 18) * Math.min(view.w / 520, 1.6);
+            g.circle(0, 0, radius).fill({ color: isHearth && i === 0 ? HEARTH : CANDLE, alpha: 0.5 });
+            g.position.set(p.x * view.w, p.y * view.h);
+            // Additive, so light adds to the paint underneath instead of sitting on
+            // it as a disc of colour — the difference between a glow and a sticker.
+            g.blendMode = 'add';
+            application.stage.addChild(g);
+            return g;
+          });
 
-      const motes: Mote[] = seedMotes(seedFor(room.id), MOTE_CAP, view);
-      const dust = new PIXI.Graphics();
-      dust.blendMode = 'add';
-      application.stage.addChild(dust);
+          const motes: Mote[] = seedMotes(seedFor(room.id), MOTE_CAP, view);
+          const dust = new PIXI.Graphics();
+          dust.blendMode = 'add';
+          application.stage.addChild(dust);
 
-      let t = 0;
-      application.ticker.add((tick: { deltaMS: number }) => {
-        t += tick.deltaMS;
-        for (let i = 0; i < glows.length; i++) {
-          const f = flicker(t, i);
-          glows[i].alpha = f;
-          // Breathing the radius as well as the alpha is what stops it reading
-          // as a light on a dimmer.
-          glows[i].scale.set(0.9 + f * 0.18);
+          let t = 0;
+          application.ticker.add((tick: { deltaMS: number }) => {
+            t += tick.deltaMS;
+            for (let i = 0; i < glows.length; i++) {
+              const f = flicker(t, i);
+              glows[i].alpha = f;
+              // Breathing the radius as well as the alpha is what stops it reading
+              // as a light on a dimmer.
+              glows[i].scale.set(0.9 + f * 0.18);
+            }
+            driftMotes(motes, tick.deltaMS, view);
+            dust.clear();
+            for (const m of motes) dust.circle(m.x, m.y, m.r).fill({ color: CANDLE, alpha: m.a });
+          });
         }
-        driftMotes(motes, tick.deltaMS, view);
-        dust.clear();
-        for (const m of motes) dust.circle(m.x, m.y, m.r).fill({ color: CANDLE, alpha: m.a });
-      });
-
-      app = application as unknown as typeof app;
+      );
     });
 
     return () => {
       alive = false;
-      // `true` removes the canvas from the DOM with it; the options object
-      // takes the display objects and their textures down too. Leaving either
-      // behind leaks a WebGL context per room, and a house has ten rooms.
-      app?.destroy(true, { children: true, texture: true });
-      app = null;
+      held?.release();
+      held = null;
     };
   }, [room.id, room.kind, room.lightPoints, run, view.w, view.h]);
 
