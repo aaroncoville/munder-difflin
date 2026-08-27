@@ -155,7 +155,7 @@ test('every hook installer routes through the launcher — none left on bare nod
   hive.installAgyHooks();
   hive.installGrokHooks();
   hive.installGeminiHooks(path.join(home, 'hive/agents/a1'));
-  hive.installCodexHooks(path.join(home, 'hive/agents/a1'), 'a1');
+  hive.installCodexHooks(path.join(home, 'hive/agents/a1'), home, 'a1');
 
   const launcher = launcherIn(home);
   const commands = hookCommandsUnder(home);
@@ -185,7 +185,7 @@ test('Codex rollouts remain isolated and are visible under the standard scan roo
     fs.writeFileSync(file, `${kind}\n`, 'utf8');
   }
 
-  hive.installCodexHooks(agentDir, 'a1');
+  hive.installCodexHooks(agentDir, harness, 'a1');
 
   const targets = {};
   for (const [kind, relative] of Object.entries(files)) {
@@ -200,7 +200,7 @@ test('Codex rollouts remain isolated and are visible under the standard scan roo
       `existing ${kind} data was lost during exposure`);
   }
 
-  hive.installCodexHooks(agentDir, 'a1');
+  hive.installCodexHooks(agentDir, harness, 'a1');
   for (const kind of Object.keys(files)) {
     assert.equal(fs.realpathSync(path.join(codexHome, kind)), targets[kind],
       `reinstalling hooks moved ${kind} again`);
@@ -241,7 +241,7 @@ test('a missing exposed directory is repaired on the next spawn', (t) => {
   fs.symlinkSync(staleTarget, sessions, process.platform === 'win32' ? 'junction' : 'dir');
   fs.rmSync(staleTarget, { recursive: true, force: true });
 
-  hive.installCodexHooks(agentDir, 'a1');
+  hive.installCodexHooks(agentDir, harness, 'a1');
 
   assert.equal(fs.lstatSync(sessions).isSymbolicLink(), true);
   assert.equal(fs.statSync(sessions).isDirectory(), true, 'the stale link still has no writable target');
@@ -274,7 +274,7 @@ test('reset cleanup removes only exposed Munder rollouts', (t) => {
   const personal = path.join(home, '.codex', 'sessions', '2026', '08', '21', 'rollout-personal.jsonl');
   fs.mkdirSync(path.dirname(personal), { recursive: true });
   fs.writeFileSync(personal, 'personal\n', 'utf8');
-  hive.installCodexHooks(agentDir, 'a1');
+  hive.installCodexHooks(agentDir, harness, 'a1');
   const exposed = fs.realpathSync(isolated);
 
   hive.removeExposedCodexData();
