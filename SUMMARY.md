@@ -115,3 +115,57 @@ App-level screenshots (floor, Tasks, Settings, terminal, in each theme) were
 not captured. A build of this app was running the live agent hive throughout;
 Electron holds a single-instance lock and a second instance would have shared
 that instance's state. `evidence/README.md` records what would settle it.
+
+## Rework after review
+
+Two findings from review, both fixed on this branch.
+
+**The theme control still presented a binary.** `App.tsx` and
+`FullscreenTerminal.tsx` each tested `theme === 'dark'` and picked between a
+sun and a moon, which was correct while there were two themes and wrong the
+moment there were three: in occult both showed a moon and said "Dark theme"
+while a click went to light, and in dark both said "Light theme" while a click
+went to occult. `App.tsx`'s aria-label was the fixed string "Toggle dark mode".
+
+This was open question 2 above, left half-fixed deliberately because the locale
+files were outside the milestone's file set; the rework widened that set.
+`themeControlFace()` in `design/theme.ts` now maps each theme to the icon,
+English wording and translation key for the stop a click moves to, and both
+controls render it — occult gets `✦`, in the same text-glyph idiom as the
+existing `☀` and `☾`. The fullscreen mirror's aria-label carries the same
+specific wording as its tooltip rather than a generic one.
+`fullscreenTerminal.occultTheme` was added to en, zh-CN and ar;
+`fullscreenTerminal.toggleTheme` held only the wrong generic string and was
+removed.
+
+Five tests in `test/app-theme.test.cjs` pin all three states. The destination
+each face claims is checked against what the **real** `toggleAppTheme()` does
+from that state, not against a copy of the cycle, so the mapping cannot drift
+away from the ring; the wording must name its destination and no other theme;
+`en.json` and the untranslated title bar's string must agree; and neither call
+site may hold a theme glyph or a single-theme branch of its own. Confirmed red
+by reintroducing the original bug (dark announcing "light") and, separately,
+by putting the old ternary back in `App.tsx`.
+
+**The token test could not see the change it existed to catch.** It read the
+stylesheets raw, so a comment could satisfy an assertion about what the CSS
+declares — including `global.css`'s `@import`, which could have been commented
+out with the "the import is present" test still green and the occult theme
+silently unloaded. And the light/dark byte-identical contract was checked by
+matching six hexes anywhere in the file, which sees a token deleted but not a
+value that moved. Comments are now stripped before any capture; the dark block
+is pinned as an exact normalized snapshot (one declaration per line, so a
+failure reads as a diff) and the base `:root` as a sha256 plus a declaration
+count. Confirmed red by mutating a dark hex, a base value, and the `@import`
+in turn.
+
+| | branch HEAD | after rework |
+|---|---|---|
+| `npm run test:focused` | 907 of 907 | **913 of 913** |
+| `npm run typecheck` | 0 errors | **0 errors** |
+
+Screenshots of the three button states were not captured, for the same reason
+Task 9's were not: a build of this app was running throughout and Electron
+holds a single-instance lock. `evidence/README.md` records what would settle
+it — the three states are one screenshot each of the title bar, in light, dark
+and occult.
