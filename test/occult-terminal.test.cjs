@@ -92,7 +92,7 @@ test('the live terminal can actually reach the third palette', () => {
 
 test('the editor has a candlelit theme, and light and dark keep the one they had', () => {
   const { monacoThemeFor } = loadTs('src/renderer/src/ide/monacoTheme.ts');
-  const { OCCULT_MONACO_THEME, occultMonacoTheme } =
+  const { OCCULT_MONACO_THEME, occultMonacoTheme, occultTerminalTheme } =
     loadTs('src/renderer/src/design/occult/occultTerminal.ts');
   assert.equal(monacoThemeFor('occult'), 'cth-occult');
   assert.equal(OCCULT_MONACO_THEME, 'cth-occult');
@@ -103,7 +103,8 @@ test('the editor has a candlelit theme, and light and dark keep the one they had
   const src = strip(read('src/renderer/src/ide/monaco.ts'));
   assert.match(src, /defineTheme\(\s*(OCCULT_MONACO_THEME|'cth-occult')/,
     'the candlelit editor theme is never registered');
-  assert.equal(occultMonacoTheme.colors['editor.background'], '#262134',
+  assert.equal(occultMonacoTheme.colors['editor.background'].toUpperCase(),
+    occultTerminalTheme.background.toUpperCase(),
     'the editor sits on a different ground from the terminal beside it');
   // Unchanged, deliberately: the editor has only ever registered cth-light, and
   // dark has always rendered with it. Giving dark an editor theme here would be
@@ -113,4 +114,40 @@ test('the editor has a candlelit theme, and light and dark keep the one they had
   for (const p of ['src/renderer/src/ide/MonacoEditor.tsx', 'src/renderer/src/ide/MonacoDiff.tsx']) {
     assert.match(strip(read(p)), /monacoThemeFor/, `${p} still pins one theme`);
   }
+});
+
+test('the candlelit ground is a different colour from the dark one, not a different black', () => {
+  // The reported symptom was "the terminal looks the same black as before" after
+  // switching to the occult theme, and the palette WAS reaching xterm — the
+  // ground was simply cloned from a surface token that sat 1.11:1 away from the
+  // dark terminal's, which is below what an eye resolves. So the property worth
+  // asserting is not "occult has a background" (it always did) but "the two
+  // grounds are far enough apart to be seen as different".
+  //
+  // The dark ground is READ OUT OF the view that paints it rather than restated
+  // here: a constant shared with the implementation is a constant that cannot
+  // catch the implementation moving.
+  const { occultTerminalTheme } = loadTs('src/renderer/src/design/occult/occultTerminal.ts');
+  const dark = read('src/renderer/src/components/PtyTerminalView.tsx')
+    .match(/const darkTheme = {\s*background:\s*'(#[0-9A-Fa-f]{6})'/)[1];
+
+  const channel = (c) => (c / 255 <= 0.03928 ? c / 255 / 12.92 : ((c / 255 + 0.055) / 1.055) ** 2.4);
+  const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  const luminance = (hex) => {
+    const [r, g, b] = rgb(hex);
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+  };
+  const contrast = (a, b) => {
+    const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+
+  assert.ok(contrast(occultTerminalTheme.background, dark) >= 1.15,
+    `the candlelit ground is ${contrast(occultTerminalTheme.background, dark).toFixed(3)}:1 `
+    + `from the dark one (${dark}) — switching theme changes nothing a user can see`);
+
+  // Warm, specifically: the brief is candlelight on parchment, and a ground that
+  // is merely a lighter blue-violet reads as the same night surface lit harder.
+  const [r, , b] = rgb(occultTerminalTheme.background);
+  assert.ok(r > b, 'the candlelit ground is cooler than it is warm');
 });

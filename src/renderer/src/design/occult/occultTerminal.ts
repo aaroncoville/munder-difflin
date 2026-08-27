@@ -36,14 +36,16 @@ export interface XtermTheme {
 }
 
 export const occultTerminalTheme: XtermTheme = {
-  background: '#262134',        // = --cth-paper-100, the ground its panel sits on
+  background: '#312717',        // = --cth-paper-100, the ground its panel sits on
   foreground: '#EAE0C8',        // = --cth-ink-900, aged paper
   cursor: '#C9A227',            // = --cth-gilt — a candleflame, not a block of light
-  cursorAccent: '#262134',
+  cursorAccent: '#312717',
   selectionBackground: '#453A1E',  // = --cth-lemon-light, gilt held down low
   selectionForeground: '#EAE0C8',
 
-  black:        '#1C1828',   // = --cth-cream-100
+  black:        '#251E12',   // = --cth-paper-200 — one step under the ground,
+                             //   so a program painting an ANSI-black cell dims
+                             //   the parchment rather than punching a cold hole in it
   red:          '#B0524E',   // = --cth-coral — Grail crimson
   green:        '#5F7E5A',   // = --cth-mint — a verdigris green
   yellow:       '#C9A227',   // = --cth-gilt — candlelight
@@ -77,7 +79,7 @@ export const occultMonacoTheme = {
   base: 'vs-dark' as const,
   inherit: true,
   rules: [
-    { token: '', foreground: 'EAE0C8', background: '262134' },
+    { token: '', foreground: 'EAE0C8', background: '312717' },
     { token: 'comment', foreground: '776D8F', fontStyle: 'italic' },
     { token: 'keyword', foreground: '9C8CC6' },
     { token: 'string', foreground: '83A077' },
@@ -88,16 +90,16 @@ export const occultMonacoTheme = {
     { token: 'delimiter', foreground: 'C9BEA4' }
   ],
   colors: {
-    'editor.background': '#262134',
+    'editor.background': '#312717',
     'editor.foreground': '#EAE0C8',
     'editorLineNumber.foreground': '#6B5A2E',        // = --cth-gilt-soft
     'editorLineNumber.activeForeground': '#C9A227',  // = --cth-gilt
     'editor.selectionBackground': '#453A1E',
-    'editor.lineHighlightBackground': '#2E2840',
+    'editor.lineHighlightBackground': '#3B301D',
     'editorCursor.foreground': '#C9A227',
-    'editorGutter.background': '#1E1A2B',            // = --cth-paper-200
-    'editorWidget.background': '#1C1828',
-    'editorIndentGuide.background1': '#3A3350',
+    'editorGutter.background': '#251E12',            // = --cth-paper-200
+    'editorWidget.background': '#251E12',
+    'editorIndentGuide.background1': '#4A3D26',
     'diffEditor.insertedTextBackground': '#5F7E5A33',
     'diffEditor.removedTextBackground': '#B0524E33',
     'diffEditor.insertedLineBackground': '#5F7E5A22',

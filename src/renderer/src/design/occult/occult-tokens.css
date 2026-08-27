@@ -21,8 +21,16 @@
   --cth-cream-100: #1C1828;
   --cth-cream-200: #171322;
   --cth-cream-300: #120F1B;
-  --cth-paper-100: #262134;   /* cards, inputs, terminals — the lightest ground */
-  --cth-paper-200: #1E1A2B;
+  --cth-paper-100: #312717;   /* cards, inputs, terminals — the lightest ground.
+                                 Warm on purpose, and the one surface in this ramp
+                                 that is: it is what the terminal and the editor
+                                 sit on, and a blue-violet ground there measured
+                                 1.11:1 against the dark theme's terminal — a
+                                 difference no eye resolves, so switching theme
+                                 appeared to do nothing at all. Parchment under
+                                 candlelight instead. Held at 3.05:1 under
+                                 ink-300, so borders still clear the 3.0 floor. */
+  --cth-paper-200: #251E12;
 
   /* Ink → parchment ramp */
   --cth-ink-900: #EAE0C8;   /* 11.5-12.0:1 — primary text, aged paper */
