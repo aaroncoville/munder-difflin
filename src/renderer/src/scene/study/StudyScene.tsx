@@ -291,11 +291,29 @@ const BADGES: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  gap: 3,
   fontFamily: 'var(--cth-font-display)',
-  fontSize: 'var(--cth-text-display-sm)',
   color: 'var(--cth-ink-900)'
 };
+
+/**
+ * How a number printed inside the house is sized.
+ *
+ * NOT from a type token. The house is laid out at its natural size and
+ * letterboxed into the window as one scaled drawing, so a fixed CSS size
+ * arrives on screen divided by that scale — `--cth-text-display-sm` is 8px,
+ * which a 1280x720 floor delivers at two. A fraction of the plate the number
+ * is printed on survives, because the plate is scaled by exactly the same
+ * number the type would have been.
+ */
+export function countType(plate: { width: number; height: number }): React.CSSProperties {
+  const size = plate.height * 0.52;
+  return {
+    fontSize: size,
+    lineHeight: 1,
+    padding: `${size * 0.12}px ${size * 0.4}px`,
+    borderRadius: 'var(--cth-radius-badge)'
+  };
+}
 
 /**
  * The patch of a prop room's panel its count is laid over.
@@ -568,12 +586,12 @@ export function StudyScene(): JSX.Element {
       );
     }
     if (kind === 'writingDesk' && scene.openAskCount > 0) {
+      const plate = berth ? berthToBox(berth, view) : { width: view.w, height: view.h };
       return (
         <div data-study-badges="" style={frame}>
           <div
             style={{
-              padding: '1px 5px',
-              borderRadius: 'var(--cth-radius-badge)',
+              ...countType(plate),
               background: 'var(--cth-status-blocked)',
               color: 'var(--cth-cream-50)'
             }}

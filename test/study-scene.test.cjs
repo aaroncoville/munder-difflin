@@ -460,6 +460,33 @@ test('the writing desk carries the count of letters waiting on the human', async
   assert.equal(countOf(busy.view), '2', 'two letters, shown as two');
 });
 
+test('the count of waiting letters is sized by the house, not by a token', async () => {
+  // The house is laid out at its natural size and letterboxed into the window
+  // as one scaled drawing, so a fixed CSS size is delivered at a fraction of
+  // itself: `--cth-text-display-sm` is 8px, and 8px arrives on a 1280x720
+  // floor at about two. Anything meant to be READ inside the house has to be a
+  // fraction of the box it is printed in, because that box is scaled by the
+  // same number everything else is.
+  const { view } = await inhabit({
+    agents: [person('w-1')],
+    tasks: [{ id: 'a', status: 'blocked', title: 'a', dependsOn: [], humanQA: [{ q: 'q' }] }]
+  });
+  const { room, berth } = anchorSeat(studyRoom, 'writingDesk');
+  const plate = berthToBox(berth, viewOf(room));
+  const badges = one(view.tree, (n) => n.props?.['data-study-badges'] === '');
+  const printed = one(badges, (n) => typeof n.props?.style?.fontSize === 'number');
+  assert.ok(printed, 'the count is sized from a token rather than from its plate');
+  const size = printed.props.style.fontSize;
+  assert.ok(size > plate.height * 0.2 && size <= plate.height,
+    `the count is ${size} on a plate ${plate.height} tall`);
+
+  // And what that comes to on a window somebody actually has.
+  const { houseFit, HOUSE_NATURAL_WIDTH } = loadTs(SCENE);
+  const scale = houseFit({ w: 1280, h: 720 }).w / HOUSE_NATURAL_WIDTH;
+  assert.ok(size * scale >= 8,
+    `the count lands on screen at ${(size * scale).toFixed(1)}px, which is not a number you can read`);
+});
+
 test('a prop shows its count where the painting puts it', async () => {
   const { view } = await inhabit({
     agents: [person('w-1')],
