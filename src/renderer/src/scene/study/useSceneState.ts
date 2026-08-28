@@ -161,30 +161,24 @@ export function bookFor(tasks: readonly HiveTask[], agentId: string):
  * the end never moves anybody already sitting down.
  */
 /**
- * Everything the House has finished with, as one list.
+ * The people the House has parted with, as books on the shelf wall.
  *
- * A concluded commission is dated by when it was OPENED, because the ledger
- * records no completion time — the approximation is stated in shelfArchive.ts
- * rather than hidden behind a plausible-looking field name. An archived
- * assistant has no date at all and keeps the store's own order.
+ * Concluded commissions used to be listed here too, and that was right while
+ * the card table drew four column totals: the finished work had nowhere else to
+ * be. It has somewhere else now — the baize deals every commission as a book of
+ * its own, done ones included — so listing them here as well drew one thing
+ * twice, in two rooms, with nothing to say which mark was which.
+ *
+ * An archived assistant carries no timestamp anywhere in the store, so these
+ * keep the store's own order and are bounded by the count alone.
  */
 export function archiveOf(
   archivedAgents: readonly Agent[],
-  tasks: readonly HiveTask[],
   now: number
 ): ArchivedThing[] {
-  const parse = (iso: string | undefined): number | null => {
-    const t = iso ? Date.parse(iso) : NaN;
-    return Number.isFinite(t) ? t : null;
-  };
-  const things: ArchivedThing[] = [
-    ...archivedAgents.map((a) => ({
-      id: a.id, label: a.name, kind: 'assistant' as const, at: null
-    })),
-    ...tasks.filter((t) => t.status === 'done').map((t) => ({
-      id: t.id, label: t.title, kind: 'commission' as const, at: parse(t.createdAt)
-    }))
-  ];
+  const things: ArchivedThing[] = archivedAgents.map((a) => ({
+    id: a.id, label: a.name, kind: 'assistant' as const, at: null
+  }));
   return shelfBooks(things, now);
 }
 
@@ -221,7 +215,7 @@ export function projectScene(
     agents: projected,
     openAskCount: tasks.filter(waitsOnHuman).length,
     kanbanCounts,
-    archive: archiveOf(archivedAgents, tasks, now),
+    archive: archiveOf(archivedAgents, now),
     tasks
   };
 }

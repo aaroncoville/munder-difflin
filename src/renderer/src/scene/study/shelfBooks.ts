@@ -6,9 +6,12 @@
  * is what reads as emphasis, so the whole vocabulary here is inverted from the
  * usual and the code says `darken` on purpose.
  *
- * Both a concluded commission and a departed assistant belong on the wall. That
- * is what makes it an archive rather than a done-column: the House keeps its
- * people as well as its work.
+ * What the wall keeps is the House's PEOPLE. Concluded commissions were shelved
+ * here too until the card table learned to deal every commission as a book of
+ * its own; drawing them in both rooms marked one thing twice, so the finished
+ * work now lives on the baize and the wall is the archive of who has gone. The
+ * geometry below still describes any dated or undated thing, because the bound
+ * is about the wall's capacity rather than about who is standing on it.
  *
  * ── The bound, and why it is the shape it is ───────────────────────────────
  *
@@ -19,21 +22,14 @@
  * The age window can only be applied to something that HAS an age, and half of
  * what goes on this wall does not:
  *
- *   - A commission carries `createdAt` and no completion time. So the window is
- *     applied to when it was OPENED, which is a proxy and is named as one — a
- *     long-running commission concluded today can fall outside a window its own
- *     conclusion sits well inside.
  *   - An archived assistant carries no timestamp at all. Nothing in the store
- *     records when somebody was archived.
+ *     records when somebody was archived, so nothing here can date one.
  *
  * Dropping the undated for want of a date would mean archived assistants never
  * appeared, which is exactly what the design asks for. So the window filters
  * what has a date, the count bounds everything, and the undated keep the order
  * the store gives them — which is append order, and therefore a real ordering
  * even without a clock.
- *
- * A `completedAt` on the ledger would make the window exact. That is a
- * hive-side change and is noted rather than faked here.
  *
  * ── Why this file is not called shelfArchive.ts ────────────────────────────
  *

@@ -188,17 +188,35 @@ async function inhabit({ archived = [], tasks = [] }) {
   return view;
 }
 
-test('a concluded commission and a departed assistant both light the shelf', async () => {
+/**
+ * The wall keeps the House's PEOPLE. The work it finished is dealt onto the
+ * baize, and only onto the baize.
+ *
+ * A concluded commission used to appear twice — once as a book on the card
+ * table and again as a darkened spine on the shelf — because the card table
+ * gained the commissions without the shelf giving them up. Two marks for one
+ * thing is not an archive of it; it is a miscount, and the reader has no way to
+ * tell which of the two they are looking at.
+ */
+test('a concluded commission is dealt onto the baize and never onto the shelf', async () => {
   const view = await inhabit({
     archived: [person('gone-1', { archived: true })],
     tasks: [{ id: 'T-1', status: 'done', title: 'the seventh folio', dependsOn: [],
       createdAt: new Date().toISOString() }]
   });
+
+  const baize = all(view.tree, (n) => n.props?.['data-baize-book'] !== undefined);
+  assert.deepEqual(baize.map((b) => b.props['data-baize-book']), ['T-1'],
+    'the concluded commission is not on the baize exactly once');
+
   const books = all(view.tree, (n) => n.props?.['data-shelf-book'] !== undefined);
-  assert.equal(books.length, 2, 'the shelf shows neither the work nor the people');
   const labels = books.map((b) => String(b.props.title));
-  assert.ok(labels.some((l) => /seventh folio/.test(l)), 'the commission is not named');
-  assert.ok(labels.some((l) => /GONE-1/.test(l)), 'the assistant is not named');
+  assert.ok(labels.some((l) => /GONE-1/.test(l)),
+    'the departed assistant lost her spine along with the commissions');
+  assert.equal(books.length, 1,
+    `the shelf holds ${books.length} books for one departed assistant: ${labels.join(', ')}`);
+  assert.ok(!labels.some((l) => /seventh folio/.test(l)),
+    'the commission is drawn on the baize AND on the shelf — one thing, marked twice');
 });
 
 test('unfinished work is not on the shelf', async () => {
@@ -254,17 +272,20 @@ test('the darkening is measured against the wall it actually lands on', () => {
   // a kind the projection produced, and a table keyed by some other word
   // answers that with `undefined` — no filter at all.
   const { archiveOf } = loadTs('src/renderer/src/scene/study/useSceneState.ts');
-  const kinds = [...new Set(archiveOf(
-    [{ id: 'a-1', name: 'gone' }],
-    [{ id: 't-1', title: 'done thing', status: 'done', dependsOn: [] }],
-    Date.now()
-  ).map((thing) => thing.kind))];
-  assert.deepEqual(kinds.sort(), ['assistant', 'commission'],
+  const shelved = [...new Set(archiveOf([{ id: 'a-1', name: 'gone' }], Date.now())
+    .map((thing) => thing.kind))];
+  assert.deepEqual(shelved.sort(), ['assistant'],
     'the archive shelves something this test has never seen');
+  for (const kind of shelved) {
+    assert.ok(src.BOOK_SHADE[kind],
+      `a ${kind} volume has no shade, so it paints as no mark at all`);
+  }
 
-  for (const kind of kinds) {
+  // The darkening itself is asked of every shade the wall declares, not only of
+  // the kind the scene happens to send it today: a shade that does not move the
+  // paint is a mark nobody can find, whenever it comes to be used.
+  for (const kind of Object.keys(src.BOOK_SHADE)) {
     const shade = src.BOOK_SHADE[kind];
-    assert.ok(shade, `a ${kind} volume has no shade, so it paints as no mark at all`);
     const brightness = Number(/brightness\(([\d.]+)\)/.exec(shade)?.[1]);
     assert.ok(brightness > 0 && brightness < 1, `${kind}'s shade does not darken: ${shade}`);
     let before = 0;
