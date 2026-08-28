@@ -222,15 +222,26 @@ export function houseFit(host: { w: number; h: number }): ViewBox {
  * alone in its room — floated the furthest. The book moves to the card's right,
  * onto the same surface, which is where a volume laid out beside somebody
  * actually is.
+ *
+ * ACROSS the setting the card is centred, because the middle of a place setting
+ * is where its chair is: every berth was read off a painting by putting its box
+ * around one seat at one desk. The card used to be centred in the LEFT 62% of
+ * the setting instead — the share reserved for it while the book took the rest
+ * — and so every assistant in the house stood a card's width to the left of the
+ * chair they were sitting in, most visibly in the two rooms whose paintings
+ * have chairs at all. The book keeps its own share; it is measured from the
+ * card's right edge now rather than from a fixed fraction, so the two cannot
+ * collide whatever shape the setting is.
  */
 export const PLACE_SETTING = {
-  /** How much of the setting's width the card is allowed, measured from its
-   *  left. A guard rather than the size: the card is cut to the portrait's
-   *  proportion, and this is only what stops a very short, very wide berth
-   *  from putting the card through the volume beside it. */
+  /** How much of the setting's width the card is allowed. A guard rather than
+   *  the size: the card is cut to the portrait's proportion, and this is only
+   *  what stops a very short, very wide berth from filling its whole desk. */
   card: 0.62,
-  /** The volume beside it: where it starts, and how much it takes. */
-  book: { left: 0.66, width: 0.30, height: 0.22 }
+  /** The volume beside it: the clear desk left between card and book, how much
+   *  wider than tall it lies open, and the most of the setting's height it may
+   *  stand. */
+  book: { gap: 0.04, aspect: 0.62, height: 0.22 }
 } as const;
 
 export function deskLayout(desk: Box):
@@ -242,18 +253,29 @@ export function deskLayout(desk: Box):
   // what cut every card landscape — and a different landscape per room, since
   // the settings are not all the same shape.
   const cardW = Math.min(desk.height * CARD_ASPECT, desk.width * PLACE_SETTING.card);
+  const cardLeft = desk.left + (desk.width - cardW) / 2;
+  // Whatever is left of the setting to the card's right, less a hand's width of
+  // clear desk at each end — the far end matters as much as the near one, since
+  // a berth is read out to the corner of its desk and a book flush with that
+  // corner hangs over the edge of it. The book was a fixed share of the setting starting at 66% of
+  // it, which only did not collide with the card while the card was pinned to
+  // the left; measured from the card, the two cannot overlap however the
+  // setting is shaped.
+  const bookW = Math.max(
+    0, desk.left + desk.width - (cardLeft + cardW) - desk.width * book.gap * 2);
+  const bookH = Math.min(bookW * book.aspect, desk.height * book.height);
   return {
     card: {
-      left: desk.left + (desk.width * PLACE_SETTING.card - cardW) / 2,
+      left: cardLeft,
       top: desk.top,
       width: cardW,
       height: desk.height
     },
     book: {
-      left: desk.left + desk.width * book.left,
-      top: desk.top + desk.height * (1 - book.height),
-      width: desk.width * book.width,
-      height: desk.height * book.height
+      left: cardLeft + cardW + desk.width * book.gap,
+      top: desk.top + desk.height - bookH,
+      width: bookW,
+      height: bookH
     },
     scroll: {
       left: desk.left - desk.width * 0.2,

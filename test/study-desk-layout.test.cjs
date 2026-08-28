@@ -95,3 +95,50 @@ test('the book keeps its own place, clear of the card and inside the berth', () 
     assert.ok(book.width > 0 && book.height > 0, `${where}: the book has no size`);
   }
 });
+
+test('the card stands in the middle of its place setting, where the chair is', () => {
+  // A berth is one seat at one desk: it was read off the painting by putting a
+  // box round a chair and the surface in front of it, so the middle of the box
+  // is the middle of the seat. The card was centred in the LEFT 62% of it
+  // instead — the share reserved for the card while the book took the rest —
+  // which stood every assistant in the house a card's width to the left of the
+  // chair they are sitting in.
+  for (const seat of seated) {
+    const desk = {
+      left: seat.berth.x * seat.room.natural.w,
+      top: seat.berth.y * seat.room.natural.h,
+      width: seat.berth.w * seat.room.natural.w,
+      height: seat.berth.h * seat.room.natural.h
+    };
+    const { card } = deskLayout(desk);
+    const where = `${seat.room.id}/${seat.berth.id}`;
+    assert.ok(Math.abs((card.left + card.width / 2) - (desk.left + desk.width / 2)) < 0.01,
+      `${where}: the card is ${Math.round((card.left + card.width / 2)
+        - (desk.left + desk.width / 2))}px off the middle of its setting`);
+    assert.ok(card.left >= desk.left - 0.01 && card.left + card.width <= desk.left + desk.width + 0.01,
+      `${where}: the card hangs off the end of its setting`);
+  }
+});
+
+test('the book lies flat, and keeps a hand of clear desk at both ends', () => {
+  // Wider than tall, because that is a book lying open on a table rather than
+  // one standing on a shelf — and clear of BOTH ends of the setting: a berth is
+  // read out to the corner of its desk, so a book flush with the far end of it
+  // is a book over the edge of the desk. The god's study is where that showed.
+  for (const seat of seated) {
+    const desk = {
+      left: seat.berth.x * seat.room.natural.w,
+      top: seat.berth.y * seat.room.natural.h,
+      width: seat.berth.w * seat.room.natural.w,
+      height: seat.berth.h * seat.room.natural.h
+    };
+    const { card, book } = deskLayout(desk);
+    const where = `${seat.room.id}/${seat.berth.id}`;
+    assert.ok(book.width > book.height,
+      `${where}: the book is ${Math.round(book.width)}×${Math.round(book.height)}, which is a book `
+      + 'stood on its end');
+    assert.ok(book.left > card.left + card.width, `${where}: the book touches the card`);
+    assert.ok(book.left + book.width < desk.left + desk.width - 0.01,
+      `${where}: the book is flush with the far corner of the desk`);
+  }
+});
