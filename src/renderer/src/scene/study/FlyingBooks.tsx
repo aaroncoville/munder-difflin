@@ -78,6 +78,10 @@ const FLIGHT_SHEET = `
 }
 `;
 
+/** The outer track's name, which is also how its own `animationend` is told
+ *  apart from the inner one bubbling up through it. */
+const CARRY = 'cth-book-fly-across';
+
 /** How long a book is in the air. Long enough to follow across the house. */
 const ACROSS = 'var(--cth-dur-drift) linear both';
 const DOWN = 'var(--cth-dur-drift) var(--cth-ease-glide) both';
@@ -108,7 +112,7 @@ export function FlyingBooks({ paths, onLanded }: FlyingBooksProps): JSX.Element 
           width: land.width,
           height: land.height,
           pointerEvents: 'none',
-          animation: `cth-book-fly-across ${ACROSS}`,
+          animation: `${CARRY} ${ACROSS}`,
           '--cth-fly-x': `${from.left - land.left}px`,
           '--cth-fly-y': `${from.top - land.top}px`,
           // A ratio rather than a length: the book leaves at the size it was on
@@ -124,9 +128,16 @@ export function FlyingBooks({ paths, onLanded }: FlyingBooksProps): JSX.Element 
             data-flight-to={flight.to}
             title={flight.title}
             style={start}
-            // The carry is the longer of the two tracks and the one that fades,
-            // so it is the one that says the flight is over.
-            onAnimationEnd={() => onLanded?.(flight.id)}
+            // The carry is the track that fades, so it is the one that says the
+            // flight is over — but `animationend` BUBBLES, and the fall on the
+            // child inside runs for the same duration. Without this guard the
+            // race between the two events decides whether the book is taken out
+            // of the air mid-landing, which is not a thing to leave to chance.
+            onAnimationEnd={(event) => {
+              if (event.target !== event.currentTarget) return;
+              if (event.animationName !== CARRY) return;
+              onLanded?.(flight.id);
+            }}
           >
             <div
               data-flight-carry=""

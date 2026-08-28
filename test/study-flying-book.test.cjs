@@ -225,8 +225,36 @@ test('a book that has landed says so, so it can be taken out of the air', () => 
   const landed = [];
   const inst = mount(FlyingBooks, { paths: [path()], onLanded: (id) => landed.push(id) });
   const [book] = flying(inst);
-  book.props.onAnimationEnd({ target: book, currentTarget: book });
+  book.props.onAnimationEnd({
+    target: book, currentTarget: book, animationName: 'cth-book-fly-across'
+  });
   assert.deepEqual(landed, ['f1']);
+});
+
+test('the fall finishing is not the flight finishing, however it arrives', () => {
+  // The arc is two animations on two nested elements, and `animationend`
+  // BUBBLES: the inner fall's event reaches the carry's own handler. Both
+  // tracks currently run for the same duration, so which of the two events the
+  // handler sees first is a race — and taking the book out of the air on the
+  // inner one cuts the outer fade off mid-landing.
+  const landed = [];
+  const inst = mount(FlyingBooks, { paths: [path()], onLanded: (id) => landed.push(id) });
+  const [book] = flying(inst);
+  const carry = nodes(book, (n) => n.props?.['data-flight-carry'] !== undefined)[0];
+  assert.ok(carry, 'the fall is a track of its own, on a child of the carry');
+  book.props.onAnimationEnd({
+    target: carry, currentTarget: book, animationName: 'cth-book-fly-down'
+  });
+  assert.deepEqual(landed, [], 'the fall bubbling up does not end the flight');
+  // Nor does anything else that happens to end on an element underneath.
+  book.props.onAnimationEnd({
+    target: carry, currentTarget: book, animationName: 'cth-book-fly-across'
+  });
+  assert.deepEqual(landed, [], 'nor does a namesake ending on a child');
+  book.props.onAnimationEnd({
+    target: book, currentTarget: book, animationName: 'cth-book-fly-across'
+  });
+  assert.deepEqual(landed, ['f1'], 'the carry itself finishing is the landing');
 });
 
 test('an empty sky draws nothing at all', () => {
@@ -394,7 +422,9 @@ test('a book that lands leaves the sky', async () => {
     [card('T-1', 'blocked')]
   ]);
   const [book] = inTheAir(view);
-  book.props.onAnimationEnd({});
+  book.props.onAnimationEnd({
+    target: book, currentTarget: book, animationName: 'cth-book-fly-across'
+  });
   view.render();
   assert.deepEqual(inTheAir(view), [], 'the flourish does not stay on the screen');
 });
