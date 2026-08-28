@@ -47,7 +47,7 @@ import {
   type Room,
   type RoomManifest
 } from './roomManifest';
-import { AgentCard } from './AgentCard';
+import { AgentCard, CARD_ASPECT } from './AgentCard';
 import { AmbianceLayer } from './AmbianceLayer';
 import { BaizeCards } from './BaizeCards';
 import { ShelfArchive } from './ShelfArchive';
@@ -224,7 +224,10 @@ export function houseFit(host: { w: number; h: number }): ViewBox {
  * actually is.
  */
 export const PLACE_SETTING = {
-  /** How much of the setting's width the card takes, measured from its left. */
+  /** How much of the setting's width the card is allowed, measured from its
+   *  left. A guard rather than the size: the card is cut to the portrait's
+   *  proportion, and this is only what stops a very short, very wide berth
+   *  from putting the card through the volume beside it. */
   card: 0.62,
   /** The volume beside it: where it starts, and how much it takes. */
   book: { left: 0.66, width: 0.30, height: 0.22 }
@@ -233,11 +236,17 @@ export const PLACE_SETTING = {
 export function deskLayout(desk: Box):
 { card: Box; book: Box; scroll: { left: number; top: number; width: number } } {
   const book = PLACE_SETTING.book;
+  // The card's height is the setting's, so its foot lands on the painted desk;
+  // its WIDTH is the portrait's proportion of that height, so the frame is the
+  // shape of the art in it. Taking a share of the setting's width instead is
+  // what cut every card landscape — and a different landscape per room, since
+  // the settings are not all the same shape.
+  const cardW = Math.min(desk.height * CARD_ASPECT, desk.width * PLACE_SETTING.card);
   return {
     card: {
-      left: desk.left,
+      left: desk.left + (desk.width * PLACE_SETTING.card - cardW) / 2,
       top: desk.top,
-      width: desk.width * PLACE_SETTING.card,
+      width: cardW,
       height: desk.height
     },
     book: {

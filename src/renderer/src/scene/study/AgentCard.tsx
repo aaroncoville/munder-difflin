@@ -20,6 +20,29 @@ import type { Box } from './StudyScene';
  *  rest / stuck / gone", and the fine-grained status has the roster to live on. */
 export type CardStatus = 'idle' | 'working' | 'blocked' | 'archived';
 
+/**
+ * The proportion the portrait pack is painted at, width over height.
+ *
+ * Every face in `assets/portraits` is 5:6 — 500×600 or 512×614 — and the frame
+ * they are drawn in has to be the same, or `object-fit: cover` crops a band out
+ * of the middle of each one. The berth cannot supply it: a place setting is
+ * more than twice as wide as it is tall, so a card that takes a fixed share of
+ * one comes out landscape and a different landscape in every room.
+ */
+export const PORTRAIT_ASPECT = 5 / 6;
+
+/**
+ * How much of the card's height the caption under the portrait takes.
+ *
+ * A name, and a role under it when there is one. It is the difference between
+ * the shape of the CARD and the shape of the frame inside it, which is why the
+ * two proportions are not the same number.
+ */
+const CAPTION_SHARE = 0.28;
+
+/** The proportion the whole card is cut to: the frame plus its caption. */
+export const CARD_ASPECT = PORTRAIT_ASPECT * (1 - CAPTION_SHARE);
+
 export interface AgentCardProps {
   name: string;
   role?: string;
@@ -100,6 +123,14 @@ export function AgentCard({
         style={{
           flex: 1,
           minHeight: 0,
+          // The frame is cut to the portrait, not to whatever height is left
+          // over once the caption has taken its share — otherwise a card that
+          // is the right shape still crops the face inside it. `alignSelf`
+          // stops the column stretching it back to full width, and the cap
+          // keeps a very short card from pushing the frame past the card's edge.
+          alignSelf: 'center',
+          aspectRatio: `${PORTRAIT_ASPECT * 6} / 6`,
+          maxWidth: '100%',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
