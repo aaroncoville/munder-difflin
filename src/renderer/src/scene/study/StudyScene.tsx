@@ -211,22 +211,40 @@ export function houseFit(host: { w: number; h: number }): ViewBox {
  * and the card has to look like it is resting ON it with room left for a volume
  * beside it. The scroll floats clear above, outside the berth, which is why it
  * is the only piece allowed past those bounds.
+ *
+ * The berth's BOTTOM EDGE is the painted desk surface — that is how every berth
+ * in the manifest was read off its painting, and it is the one thing the whole
+ * illusion rests on. So the card runs the full height of the setting and stands
+ * on that edge. It used to stop at 78% of it, with the book filling the fifth
+ * underneath, and the arithmetic of that is the float somebody sees: a setting
+ * 460 panel pixels tall left the card a hundred pixels clear of the desk it was
+ * supposed to be standing at, and the grandest berth in the house — the god's,
+ * alone in its room — floated the furthest. The book moves to the card's right,
+ * onto the same surface, which is where a volume laid out beside somebody
+ * actually is.
  */
+export const PLACE_SETTING = {
+  /** How much of the setting's width the card takes, measured from its left. */
+  card: 0.62,
+  /** The volume beside it: where it starts, and how much it takes. */
+  book: { left: 0.66, width: 0.30, height: 0.22 }
+} as const;
+
 export function deskLayout(desk: Box):
 { card: Box; book: Box; scroll: { left: number; top: number; width: number } } {
-  const cardW = desk.width * 0.62;
+  const book = PLACE_SETTING.book;
   return {
     card: {
-      left: desk.left + (desk.width - cardW) / 2,
+      left: desk.left,
       top: desk.top,
-      width: cardW,
-      height: desk.height * 0.78
+      width: desk.width * PLACE_SETTING.card,
+      height: desk.height
     },
     book: {
-      left: desk.left + desk.width * 0.62,
-      top: desk.top + desk.height * 0.78,
-      width: desk.width * 0.34,
-      height: desk.height * 0.2
+      left: desk.left + desk.width * book.left,
+      top: desk.top + desk.height * (1 - book.height),
+      width: desk.width * book.width,
+      height: desk.height * book.height
     },
     scroll: {
       left: desk.left - desk.width * 0.2,
