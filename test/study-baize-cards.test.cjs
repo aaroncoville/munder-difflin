@@ -245,3 +245,104 @@ test('every card face is legible on its own colour', () => {
       `${status} prints ${fg} on ${bg} — ${contrast(bg, fg).toFixed(2)}:1`);
   }
 });
+
+// ─── On the table, rather than in the air above it ──────────────────────────
+
+/**
+ * Whether a colour is the painted baize.
+ *
+ * The felt is the only green in the parlour — the walls are red, the wood is
+ * brown, and the chandeliers are gold — so "greener than it is red or blue" is
+ * a wide margin rather than a tuned one.
+ */
+const isBaize = ([r, g, b]) => g > 55 && g > r * 1.2 && g > b * 1.2;
+
+/** The card table's dealing area in panel pixels, and the panel it is on. */
+function theTable() {
+  const readPng = require('./read-png.cjs');
+  const path = require('node:path');
+  const { loadRoomManifest, roomOfKind } = loadTs('src/renderer/src/scene/study/roomManifest.ts');
+  const load = loadRoomManifest();
+  assert.equal(load.ok, true, 'room.json does not validate');
+  const room = roomOfKind(load.manifest, 'cardTable');
+  const berth = room.berths[0];
+  return {
+    panel: readPng(path.resolve(
+      __dirname, '..', 'src/renderer/src/scene/study/assets', path.basename(room.image))),
+    baize: {
+      left: berth.x * room.natural.w,
+      top: berth.y * room.natural.h,
+      width: berth.w * room.natural.w,
+      height: berth.h * room.natural.h
+    }
+  };
+}
+
+test('the commissions are dealt in one hand, not stacked up the parlour wall', () => {
+  // Four across and two deep meant the back row's cards had nothing under them
+  // at all: only the bottom row's feet were anywhere near the table, and the
+  // rest hung in the air above it in a grid.
+  const { baize } = theTable();
+  const dealt = B.dealBaize(
+    Array.from({ length: B.BAIZE_MAX }, (_, i) => task(`T-${i + 1}`)), baize);
+  const feet = dealt.map(({ box }) => box.top + box.height);
+  assert.ok(Math.max(...feet) - Math.min(...feet) < baize.height * 0.2,
+    'the cards stand at two different heights, which is a grid and not a hand');
+  // ...and they are dealt across the table rather than piled at one spot.
+  const lefts = dealt.map(({ box }) => box.left).sort((a, b) => a - b);
+  assert.ok(lefts[lefts.length - 1] - lefts[0] > baize.width * 0.5, 'the hand is not spread');
+});
+
+/**
+ * The top and bottom of the painted table in one column of the panel, or null
+ * where that column misses the table altogether.
+ *
+ * Asking whether the pixel under a card's foot is green would be the obvious
+ * check and it is the wrong one: the painting has small white notes lying ON
+ * the felt, so a card standing squarely on the table can have paper rather than
+ * baize directly beneath it. The table's extent in that column is what "on the
+ * table" actually means, and paper between its edges does not change it.
+ */
+function tableSpan(panel, x) {
+  let top = null;
+  let bottom = null;
+  for (let y = 0; y < panel.height; y++) {
+    if (!isBaize(panel.at(x, y))) continue;
+    if (top === null) top = y;
+    bottom = y;
+  }
+  return top === null ? null : { top, bottom };
+}
+
+test('every commission stands on the painted table', () => {
+  const { panel, baize } = theTable();
+  for (const count of [1, 3, B.BAIZE_MAX]) {
+    const dealt = B.dealBaize(
+      Array.from({ length: count }, (_, i) => task(`T-${i + 1}`)), baize);
+    for (const { task: t, box } of dealt) {
+      const foot = box.top + box.height;
+      // The middle of the foot, not the corners: the table is an oval and its
+      // near edge is a curve, so an outermost corner hanging a few pixels over
+      // the rim is a card on a table rather than a card off one.
+      for (const at of [0.25, 0.5, 0.75]) {
+        const x = box.left + box.width * at;
+        const span = tableSpan(panel, x);
+        assert.ok(span, `with ${count} dealt, ${t.id} stands where the panel has no table at all`);
+        assert.ok(foot >= span.top && foot <= span.bottom,
+          `with ${count} dealt, ${t.id}'s foot is at ${Math.round(foot)}, and the table in that `
+          + `column runs ${span.top} to ${span.bottom} — it is standing off the table`);
+      }
+    }
+  }
+});
+
+test('a commission card is shaped like a card', () => {
+  const { baize } = theTable();
+  for (const count of [1, 2, 5, B.BAIZE_MAX]) {
+    for (const { box } of B.dealBaize(
+      Array.from({ length: count }, (_, i) => task(`T-${i + 1}`)), baize)) {
+      assert.ok(box.height > box.width,
+        `with ${count} dealt, a card is ${Math.round(box.width)}×${Math.round(box.height)}`);
+    }
+  }
+});

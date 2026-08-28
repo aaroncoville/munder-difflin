@@ -30,8 +30,34 @@ export interface Box { left: number; top: number; width: number; height: number 
  */
 export const BAIZE_MAX = 8;
 
-/** Cards per row on the table. */
-const COLUMNS = 4;
+/**
+ * A commission card's proportions, width over height, and how tall it stands.
+ *
+ * A card is a card: taller than it is wide. The dealing area is more than twice
+ * as wide as it is tall, so anything that takes a share of it comes out
+ * landscape — which is how the table ended up carrying eight small horizontal
+ * tiles rather than a hand.
+ */
+const CARD = { aspect: 0.7, stand: 0.62 };
+
+/**
+ * How much of a card its neighbour may cover.
+ *
+ * Cards laid out on a table overlap; cards that overlap past this stop showing
+ * enough of their own face to be read or pressed, so past it the hand shrinks
+ * instead of tightening.
+ */
+const MAX_OVERLAP = 0.35;
+
+/**
+ * How far the ends of the hand ride up on the painted table, in fractions of
+ * the dealing area's height.
+ *
+ * The baize is an ellipse. A row of feet on a straight line crosses its near
+ * edge twice, so the outermost cards stand off the table while the middle ones
+ * stand on it; following the curve keeps the whole hand on the felt.
+ */
+const ARC = 0.08;
 
 /**
  * The order the table is dealt in: impeded, then underway, then intended, then
@@ -62,8 +88,18 @@ export function baizeNumber(task: HiveTask, index: number): number {
 /**
  * Deal the ledger onto a rectangle of baize.
  *
- * Pure, so the ordering rule and the bound can be checked without a table, a
- * panel or a scene anywhere near them.
+ * As ONE spread hand, standing on the table. It used to be a four-by-two grid
+ * filling the dealing area, which put only the bottom row's feet anywhere near
+ * the felt: the back row had nothing under it at all and hung in the air over
+ * the parlour, which is what a grid of cards on a flat panel always looks like.
+ * A hand has one baseline, and that baseline is the painted table.
+ *
+ * The baize is an ellipse, so the baseline is a shallow arc rather than a
+ * straight line — a straight row of feet crosses the near edge of an oval twice
+ * and stands the outermost cards off the table.
+ *
+ * Pure, so the ordering rule, the bound and the geometry can be checked without
+ * a table, a panel or a scene anywhere near them.
  */
 export function dealBaize(
   tasks: readonly HiveTask[],
@@ -74,26 +110,40 @@ export function dealBaize(
     .sort((a, b) =>
       (DEAL_ORDER[a.task.status] ?? 9) - (DEAL_ORDER[b.task.status] ?? 9) || a.i - b.i)
     .slice(0, BAIZE_MAX);
+  const count = dealt.length;
+  if (count === 0) return [];
 
-  const rows = Math.max(1, Math.ceil(dealt.length / COLUMNS));
-  const cols = Math.min(COLUMNS, Math.max(1, dealt.length));
-  // A gutter proportional to the cell, so the cards read as separate objects at
-  // every panel size rather than merging into a block on a small window.
-  const cellW = baize.width / cols;
-  const cellH = baize.height / rows;
-  const padX = cellW * 0.12;
-  const padY = cellH * 0.12;
+  // As tall as the table allows and as wide as a card of that height is — but
+  // never so wide that the hand cannot be spread across the felt without cards
+  // covering more of each other than they can spare.
+  const width = Math.min(
+    baize.height * CARD.stand * CARD.aspect,
+    baize.width / (1 + (count - 1) * (1 - MAX_OVERLAP))
+  );
+  const height = width / CARD.aspect;
+  // Never further apart than their own width: two commissions are two cards
+  // laid beside each other, not one at each end of the table.
+  const pitch = count > 1
+    ? Math.min(width, (baize.width - width) / (count - 1))
+    : 0;
+  const spread = width + pitch * (count - 1);
+  const left = baize.left + (baize.width - spread) / 2;
+  const foot = baize.top + baize.height;
 
-  return dealt.map(({ task }, i) => ({
-    task,
-    n: baizeNumber(task, i),
-    box: {
-      left: baize.left + (i % cols) * cellW + padX,
-      top: baize.top + Math.floor(i / cols) * cellH + padY,
-      width: Math.max(1, cellW - padX * 2),
-      height: Math.max(1, cellH - padY * 2)
-    }
-  }));
+  return dealt.map(({ task }, i) => {
+    const u = count > 1 ? (i / (count - 1)) * 2 - 1 : 0;
+    const rise = baize.height * ARC * (1 - Math.sqrt(Math.max(0, 1 - u * u)));
+    return {
+      task,
+      n: baizeNumber(task, i),
+      box: {
+        left: left + pitch * i,
+        top: foot - rise - height,
+        width,
+        height
+      }
+    };
+  });
 }
 
 /**

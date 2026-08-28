@@ -68,7 +68,7 @@
     {
       "id": "parlour", "kind": "cardTable", "image": "./room-card-table.png",
       "natural": { "w": 1568, "h": 672 }, "row": 3, "col": 1,
-      "berths": [{ "id": "card-table-baize", "x": 0.335, "y": 0.400, "w": 0.335, "h": 0.300 }],
+      "berths": [{ "id": "card-table-baize", "x": 0.353, "y": 0.420, "w": 0.300, "h": 0.280 }],
       "props": [
         {
           "_comment": "The petitions, stacked on the cabinet top against the far wall.",
