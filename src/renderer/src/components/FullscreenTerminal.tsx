@@ -10,7 +10,7 @@ import { AgentControlStrip } from './AgentControlStrip';
 import { CommandCenterPanel } from './CommandCenterPanel';
 import { EditAgentModal } from './EditAgentModal';
 import { Icon } from './Icon';
-import { SpritePortrait } from './SpritePortrait';
+import { AgentFace } from './AgentFace';
 import { PORTRAIT_W } from '@/scene/office/portraitArt';
 import { RealtimeMichaelToggle } from './RealtimeMichaelToggle';
 import { CostHud } from '@/realtime/CostHud';
@@ -754,7 +754,7 @@ function SidebarRow({
         }}>
           {/* The sprite is drawn at exactly the tile's width, so the figure
               grows with the tile instead of floating in it. */}
-          <SpritePortrait character={agent.character} scale={scale.portraitScale} />
+          <AgentFace id={agent.id} name={agent.name} character={agent.character} scale={scale.portraitScale} isGod={agent.isGod} />
         </div>
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>

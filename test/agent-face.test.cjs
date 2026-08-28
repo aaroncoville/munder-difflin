@@ -116,3 +116,44 @@ test('the strip routes its cards through it', () => {
   assert.equal(worn[0].props.id, 'w-1', 'the face is dealt without knowing whose it is');
   assert.equal(worn[0].props.name, 'Enid');
 });
+
+test('nothing in the chrome draws a roster assistant as a pixel sprite', () => {
+  // The strip along the foot of the window was the first surface to be fixed
+  // and it was not the only one wearing the wrong cast: the avatar at the top
+  // of the sidebar, the rows in the command center's own lists and the head of
+  // the fullscreen terminal all drew the same assistants as office sprites
+  // while their cards downstairs wore painted faces.
+  //
+  // The rule, rather than a list: a component handed a ROSTER assistant draws
+  // its face through the shared component. A sprite drawn from a picker's cast
+  // member (`character={c.name}` in the add- and edit-agent forms) is a
+  // different thing — that is the pixel cast being chosen from, and choosing a
+  // painted portrait has its own picker.
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const dir = path.resolve(__dirname, '..', 'src/renderer/src/components');
+  const offenders = [];
+  for (const file of fs.readdirSync(dir).filter((f) => f.endsWith('.tsx'))) {
+    if (file === 'AgentFace.tsx') continue;
+    // Comments stripped first: a call site that is commented out is not a call
+    // site, and a rule that matches one is a rule that cannot fail.
+    const src = fs.readFileSync(path.join(dir, file), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/.*$/gm, '$1');
+    const m = src.match(/<SpritePortrait[^/>]*character=\{\s*(agent|a)\.character/);
+    if (m) offenders.push(`${file}: ${m[0].trim()}`);
+  }
+  assert.deepEqual(offenders, [],
+    `these draw an assistant from the roster as a sprite instead of through AgentFace:\n  `
+    + offenders.join('\n  '));
+});
+
+test('the rule above is one the chrome can actually break', () => {
+  // The check reads source, so it has to be shown finding something: a rule
+  // that matches nothing would pass just as happily over a codebase where every
+  // avatar had been switched back.
+  const probe = 'const x = <SpritePortrait character={agent.character} scale={1} />;';
+  assert.match(probe, /<SpritePortrait[^/>]*character=\{\s*(agent|a)\.character/);
+  const picker = 'const x = <SpritePortrait character={c.name} scale={2} />;';
+  assert.doesNotMatch(picker, /<SpritePortrait[^/>]*character=\{\s*(agent|a)\.character/);
+});

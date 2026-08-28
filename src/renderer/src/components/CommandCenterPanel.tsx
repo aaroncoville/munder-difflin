@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { PixelPanel } from './PixelPanel';
 import { PixelBadge } from './PixelBadge';
 import { PixelButton } from './PixelButton';
-import { SpritePortrait } from './SpritePortrait';
+import { AgentFace } from './AgentFace';
 import { PtyTerminalView } from './PtyTerminalView';
 import { MessageQueueComposer } from './MessageQueueComposer';
 import { TasksKanban } from './TasksKanban';
@@ -165,7 +165,7 @@ export function CommandCenterPanel({ agent, fullscreen = false }: { agent: Agent
           boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)',
           display: 'flex', alignItems: 'flex-end', justifyContent: 'center', overflow: 'hidden', flexShrink: 0
         }}>
-          <SpritePortrait character={agent.character} scale={1} />
+          <AgentFace id={agent.id} name={agent.name} character={agent.character} scale={1} isGod={agent.isGod} />
         </div>
         {/* Title + subtitle truncate; the control cluster never shrinks. At
             sidebar width the old header wrapped its 24-char display-font title
@@ -698,7 +698,7 @@ function FloorTab({ seed }: { seed: { text: string; seq: number } }) {
                 boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)',
                 display: 'flex', alignItems: 'flex-end', justifyContent: 'center', overflow: 'hidden', flexShrink: 0
               }}>
-                <SpritePortrait character={a.character} scale={1} />
+                <AgentFace id={a.id} name={a.name} character={a.character} scale={1} isGod={a.isGod} />
               </div>
               <button
                 onClick={() => select(a.id)}
@@ -1041,7 +1041,7 @@ function ArchivedSection() {
             boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)',
             display: 'flex', alignItems: 'flex-end', justifyContent: 'center', overflow: 'hidden', flexShrink: 0
           }}>
-            <SpritePortrait character={a.character} scale={1} />
+            <AgentFace id={a.id} name={a.name} character={a.character} scale={1} isGod={a.isGod} />
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontFamily: 'var(--cth-font-ui)', fontSize: 12, color: 'var(--cth-ink-700)' }}>{a.name}</div>
