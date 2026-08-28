@@ -41,12 +41,25 @@ export interface LightPoint {
 }
 
 /** A normalized rectangle inside one room's panel: origin plus size, all in 0..1. */
-export interface Berth {
-  id: string;
+export interface Rect {
   x: number;
   y: number;
   w: number;
   h: number;
+}
+
+export interface Berth extends Rect {
+  id: string;
+  /**
+   * The open book the PAINTER put on this desk, read off the panel.
+   *
+   * Optional because only some of the reading rooms were painted with one. A
+   * berth that declares it is telling the scene that this piece of the painting
+   * is already spoken for: the card standing at the berth stops at the volume's
+   * top edge instead of at the desk surface, so the book stays visible in front
+   * of the portrait rather than under it.
+   */
+  volume?: Rect;
 }
 
 /**
@@ -150,6 +163,26 @@ function validateBerth(raw: unknown, roomId: string, what: string): Berth {
     throw new Error(
       `room manifest: ${id} hangs off the panel of ${roomId} (${out.x}+${out.w}, ${out.y}+${out.h})`
     );
+  }
+  if (o.volume !== undefined) out.volume = validateRect(o.volume, `${what}.volume`, roomId);
+  return out;
+}
+
+/** The same rules as a berth's own rectangle, for the ones that carry no id. */
+function validateRect(raw: unknown, what: string, roomId: string): Rect {
+  const o = asRecord(raw, what);
+  const out = {} as Rect;
+  for (const k of ['x', 'y', 'w', 'h'] as const) {
+    const v = o[k];
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > 1) {
+      throw new Error(
+        `room manifest: ${what}.${k} must be normalized to 0..1, got ${JSON.stringify(v)}`);
+    }
+    out[k] = v;
+  }
+  if (out.w <= 0 || out.h <= 0) throw new Error(`room manifest: ${what} has no area`);
+  if (out.x + out.w > 1 || out.y + out.h > 1) {
+    throw new Error(`room manifest: ${what} hangs off the panel of ${roomId}`);
   }
   return out;
 }

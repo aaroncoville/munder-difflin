@@ -215,7 +215,8 @@ export function houseFit(host: { w: number; h: number }): ViewBox {
  * The berth's BOTTOM EDGE is the painted desk surface — that is how every berth
  * in the manifest was read off its painting, and it is the one thing the whole
  * illusion rests on. So the card runs the full height of the setting and stands
- * on that edge. It used to stop at 78% of it, with the book filling the fifth
+ * on that edge, or on the top edge of the volume the painter left standing
+ * there — see `volumeBox`. It used to stop at 78% of it, with the book filling the fifth
  * underneath, and the arithmetic of that is the float somebody sees: a setting
  * 460 panel pixels tall left the card a hundred pixels clear of the desk it was
  * supposed to be standing at, and the grandest berth in the house — the god's,
@@ -244,35 +245,74 @@ export const PLACE_SETTING = {
   book: { gap: 0.04, aspect: 0.62, height: 0.22 }
 } as const;
 
-export function deskLayout(desk: Box):
+/**
+ * The book the PAINTING already put on this desk, projected onto its panel.
+ *
+ * A berth's bottom edge is the desk surface, and in two of the reading rooms
+ * the painter drew an open book lying on that surface directly in front of the
+ * chair — which is where the card, centred on the chair, then stands. Aaron:
+ * *"Cards are centered at the desks now (but they do cover the book)."*
+ *
+ * Beside the book is not somewhere the card can go: it is wider than the desk
+ * left on either side of the volume, so sliding it clear would take it off the
+ * chair it was centred on and undo the fix that centred it. BEHIND the book is,
+ * and it is what a desk actually looks like — so the card's foot rises to the
+ * volume's top edge and the painted book lies open in front of the portrait.
+ *
+ * `null` where the painter left the desk bare, which is most of the house.
+ */
+export function volumeBox(berth: Berth, view: ViewBox): Box | null {
+  if (!berth.volume) return null;
+  const v = berth.volume;
+  return {
+    left: view.x + v.x * view.w,
+    top: view.y + v.y * view.h,
+    width: v.w * view.w,
+    height: v.h * view.h
+  };
+}
+
+export function deskLayout(desk: Box, volume: Box | null = null):
 { card: Box; book: Box; scroll: { left: number; top: number; width: number } } {
   const book = PLACE_SETTING.book;
+  // What is left of the setting once the painting has had its share. The card
+  // stands on THIS floor; the drawn book stays down on the desk surface, where
+  // a second volume actually lies, and starts clear of the painted one.
+  const clear = volume
+    ? Math.max(0, Math.min(desk.height, desk.top + desk.height - volume.top))
+    : 0;
+  const height = Math.max(1, desk.height - clear);
   // The card's height is the setting's, so its foot lands on the painted desk;
   // its WIDTH is the portrait's proportion of that height, so the frame is the
   // shape of the art in it. Taking a share of the setting's width instead is
   // what cut every card landscape — and a different landscape per room, since
   // the settings are not all the same shape.
-  const cardW = Math.min(desk.height * CARD_ASPECT, desk.width * PLACE_SETTING.card);
+  const cardW = Math.min(height * CARD_ASPECT, desk.width * PLACE_SETTING.card);
   const cardLeft = desk.left + (desk.width - cardW) / 2;
   // Whatever is left of the setting to the card's right, less a hand's width of
   // clear desk at each end — the far end matters as much as the near one, since
   // a berth is read out to the corner of its desk and a book flush with that
-  // corner hangs over the edge of it. The book was a fixed share of the setting starting at 66% of
-  // it, which only did not collide with the card while the card was pinned to
-  // the left; measured from the card, the two cannot overlap however the
-  // setting is shaped.
-  const bookW = Math.max(
-    0, desk.left + desk.width - (cardLeft + cardW) - desk.width * book.gap * 2);
+  // corner hangs over the edge of it. The book was a fixed share of the setting
+  // starting at 66% of it, which only did not collide with the card while the
+  // card was pinned to the left; measured from the card, the two cannot overlap
+  // however the setting is shaped.
+  //
+  // It starts past the painted volume as well, where there is one: the card
+  // rises above that book but this one lies on the same surface it does, so
+  // nothing but the width of the desk keeps the two apart.
+  const past = Math.max(cardLeft + cardW, volume ? volume.left + volume.width : 0);
+  const bookLeft = past + desk.width * book.gap;
+  const bookW = Math.max(0, desk.left + desk.width - bookLeft - desk.width * book.gap);
   const bookH = Math.min(bookW * book.aspect, desk.height * book.height);
   return {
     card: {
       left: cardLeft,
       top: desk.top,
       width: cardW,
-      height: desk.height
+      height
     },
     book: {
-      left: cardLeft + cardW + desk.width * book.gap,
+      left: bookLeft,
       top: desk.top + desk.height - bookH,
       width: bookW,
       height: bookH
@@ -400,12 +440,14 @@ function useHouseBox(hostRef: React.RefObject<HTMLDivElement | null>): { w: numb
 }
 
 /** One assistant's place setting: card, book, and what they are saying. */
-function DeskPlace({ agent, desk, onSelect }: {
+function DeskPlace({ agent, desk, volume, onSelect }: {
   agent: SceneAgent;
   desk: Box;
+  /** The book the painting has already put on this desk, or null. */
+  volume: Box | null;
   onSelect: () => void;
 }): JSX.Element {
-  const { card, book, scroll } = deskLayout(desk);
+  const { card, book, scroll } = deskLayout(desk, volume);
   return (
     <>
       <SpeechScroll text={agent.speech} box={scroll} />
@@ -616,6 +658,7 @@ export function StudyScene(): JSX.Element {
   const occupantsOf = (room: Room, view: ViewBox): React.ReactNode =>
     room.berths.flatMap((berth) => {
       const desk = berthToBox(berth, view);
+      const volume = volumeBox(berth, view);
       return scene.agents
         .filter((agent) => agent.berthId === berth.id)
         .map((agent) => (
@@ -623,6 +666,7 @@ export function StudyScene(): JSX.Element {
             key={agent.id}
             agent={agent}
             desk={stackedBerth(desk, agent.stackIndex)}
+            volume={volume}
             onSelect={() => select(agent.id)}
           />
         ));

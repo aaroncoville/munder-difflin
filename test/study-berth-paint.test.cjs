@@ -80,3 +80,97 @@ test('finding a desk under a berth is a fact about that berth, not about the pai
       + 'so landing on one says nothing');
   }
 });
+
+/**
+ * Whether a colour is the cover of the open book painted on a desk.
+ *
+ * Every one of them is bound in the same saturated pink, which nothing else in
+ * these rooms is: the wood is warm but nearly grey beside it, and the pages
+ * above it are near-white. Red well clear of green, with blue coming back up
+ * again, is that cover and nothing else in the panel.
+ */
+const isBookCover = ([r, g, b]) => r > 140 && r - g > 55 && b - g > 10;
+
+/** And the leaves above it: near-white, and near enough to neutral that the
+ *  room's pink mirror and its lamplit panelling are not mistaken for pages. */
+const isPage = ([r, g, b]) =>
+  0.299 * r + 0.587 * g + 0.114 * b > 185 && Math.max(r, g, b) - Math.min(r, g, b) < 55;
+
+/** The berths whose painting already has a book lying open at the place. */
+const declared = deskRooms.flatMap((room) =>
+  room.berths.filter((berth) => berth.volume).map((berth) => ({ room, berth })));
+
+/**
+ * A declared volume is the book the painter drew, not a rectangle somebody
+ * liked the look of.
+ *
+ * This is the whole load-bearing claim of the volume: the card is laid out to
+ * stop at the volume's top edge, so a volume that is not on the painted book
+ * moves the card for nothing and leaves the book covered exactly as before.
+ */
+test('every declared volume is the open book painted at that place', () => {
+  assert.ok(declared.length > 0, 'no berth declares the book painted on its desk');
+  for (const { room, berth } of declared) {
+    const panel = panelOf(room);
+    const v = berth.volume;
+    let cover = 0;
+    let pages = 0;
+    for (let x = v.x * panel.width; x < (v.x + v.w) * panel.width; x += 2) {
+      for (let y = v.y * panel.height; y < (v.y + v.h) * panel.height; y += 2) {
+        if (isBookCover(panel.at(x, y))) cover++;
+        if (y < (v.y + v.h / 2) * panel.height && isPage(panel.at(x, y))) pages++;
+      }
+    }
+    // Both, because either alone has a look-alike in these rooms: the parlour
+    // wall carries a pink mirror, and a lit panel or a window is pale.
+    assert.ok(cover > 60,
+      `${room.id}/${berth.id}: the declared volume covers ${cover} pixels of book cover, `
+      + 'so it is a rectangle of wall or desk rather than the painted book');
+    assert.ok(pages > 200,
+      `${room.id}/${berth.id}: the declared volume has ${pages} pixels of open leaf in its `
+      + 'upper half — it is over something pink that is not a book');
+  }
+});
+
+test('a volume reaches the whole of the book it stands for', () => {
+  // A volume short of the paint is worse than no volume: the card would be
+  // lifted, and still cover the half of the book that was left out.
+  for (const { room, berth } of declared) {
+    const panel = panelOf(room);
+    const v = berth.volume;
+    const near = { x0: (berth.x - 0.06) * panel.width,
+      x1: (berth.x + berth.w + 0.06) * panel.width };
+    for (let x = Math.max(0, near.x0); x < Math.min(panel.width, near.x1); x++) {
+      for (let y = (berth.y + berth.h) * panel.height - 40;
+        y < Math.min(panel.height, (berth.y + berth.h) * panel.height + 12); y++) {
+        if (!isBookCover(panel.at(x, y))) continue;
+        assert.ok(
+          x >= v.x * panel.width - 1 && x <= (v.x + v.w) * panel.width + 1
+          && y >= v.y * panel.height - 1 && y <= (v.y + v.h) * panel.height + 1,
+          `${room.id}/${berth.id}: painted book at (${Math.round(x)}, ${Math.round(y)}) `
+          + 'is outside the volume declared for it');
+      }
+    }
+  }
+});
+
+test('a berth with no volume has no book painted at it', () => {
+  // The other half of the claim: a place setting that declares nothing has to
+  // be one the painter left bare, or the card is covering a book unannounced.
+  for (const room of deskRooms) {
+    const panel = panelOf(room);
+    for (const berth of room.berths) {
+      if (berth.volume) continue;
+      let cover = 0;
+      const wide = (berth.x + berth.w + 0.04) * panel.width;
+      for (let x = (berth.x - 0.04) * panel.width; x < wide; x++) {
+        for (let y = (berth.y + berth.h) * panel.height - 40;
+          y < Math.min(panel.height, (berth.y + berth.h) * panel.height + 12); y++) {
+          if (isBookCover(panel.at(Math.max(0, x), y))) cover++;
+        }
+      }
+      assert.ok(cover < 40,
+        `${room.id}/${berth.id}: ${cover} pixels of painted book at a place that declares none`);
+    }
+  }
+});

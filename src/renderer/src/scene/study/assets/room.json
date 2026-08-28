@@ -1,5 +1,5 @@
 {
-  "_comment": "Cross-section of the Study, storey by storey. Each room is a flat panel with its own image; every berth is normalized (0..1) to THAT panel, not to the house. Berths were read off the paintings themselves: a reading berth's bottom edge sits on the painted desk surface, so the card stands at the desk and the book lands on it. An anchor is either a room of its own kind or a `prop` standing inside somebody else's room — the parlour holds three, because a storey spent on a single prop is paid for by every card in the house.",
+  "_comment": "Cross-section of the Study, storey by storey. Each room is a flat panel with its own image; every berth is normalized (0..1) to THAT panel, not to the house. Berths were read off the paintings themselves: a reading berth's bottom edge sits on the painted desk surface, so the card stands at the desk and the book lands on it. A berth's optional `volume` is the open book the PAINTER already put on that desk, read off the panel the same way: the card stands behind it rather than over it, so the painting keeps the piece of itself it drew there. An anchor is either a room of its own kind or a `prop` standing inside somebody else's room — the parlour holds three, because a storey spent on a single prop is paid for by every card in the house.",
   "bandThickness": 18,
   "rooms": [
     {
@@ -23,8 +23,14 @@
       "id": "desk-1", "kind": "desk", "image": "./room-desk-a.png",
       "natural": { "w": 1568, "h": 672 }, "row": 1, "col": 0,
       "berths": [
-        { "id": "berth-1", "x": 0.115, "y": 0.200, "w": 0.300, "h": 0.460 },
-        { "id": "berth-2", "x": 0.575, "y": 0.185, "w": 0.300, "h": 0.460 }
+        {
+          "id": "berth-1", "x": 0.115, "y": 0.200, "w": 0.300, "h": 0.460,
+          "volume": { "x": 0.1862, "y": 0.6086, "w": 0.1448, "h": 0.0491 }
+        },
+        {
+          "id": "berth-2", "x": 0.575, "y": 0.185, "w": 0.300, "h": 0.460,
+          "volume": { "x": 0.6563, "y": 0.6101, "w": 0.1435, "h": 0.0476 }
+        }
       ],
       "lightPoints": [
         { "x": 0.139, "y": 0.525 }, { "x": 0.618, "y": 0.515 }, { "x": 0.500, "y": 0.310 }
@@ -43,8 +49,14 @@
       "id": "desk-3", "kind": "desk", "image": "./room-desk-c.png",
       "natural": { "w": 1568, "h": 672 }, "row": 2, "col": 0,
       "berths": [
-        { "id": "berth-5", "x": 0.115, "y": 0.195, "w": 0.300, "h": 0.460 },
-        { "id": "berth-6", "x": 0.580, "y": 0.195, "w": 0.300, "h": 0.460 }
+        {
+          "id": "berth-5", "x": 0.115, "y": 0.195, "w": 0.300, "h": 0.460,
+          "volume": { "x": 0.2015, "y": 0.6116, "w": 0.1390, "h": 0.0461 }
+        },
+        {
+          "id": "berth-6", "x": 0.580, "y": 0.195, "w": 0.300, "h": 0.460,
+          "volume": { "x": 0.6563, "y": 0.6101, "w": 0.1409, "h": 0.0461 }
+        }
       ],
       "lightPoints": [
         { "x": 0.191, "y": 0.521 }, { "x": 0.621, "y": 0.522 }, { "x": 0.497, "y": 0.322 }

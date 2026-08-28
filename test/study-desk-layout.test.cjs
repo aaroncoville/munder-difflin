@@ -21,7 +21,8 @@ const path = require('node:path');
 const readPng = require('./read-png.cjs');
 const loadTs = require('./load-ts.cjs');
 
-const { deskLayout } = loadTs('src/renderer/src/scene/study/StudyScene.tsx');
+const { deskLayout, volumeBox, stackedBerth, STACK_DEEPEST } =
+  loadTs('src/renderer/src/scene/study/StudyScene.tsx');
 
 const ASSETS = path.resolve(__dirname, '..', 'src/renderer/src/scene/study/assets');
 const manifest = JSON.parse(fs.readFileSync(path.join(ASSETS, 'room.json'), 'utf8'));
@@ -37,13 +38,28 @@ const seated = manifest.rooms
   .filter((room) => room.kind === 'desk' || room.kind === 'godStudy')
   .flatMap((room) => room.berths.map((berth) => ({ room, berth })));
 
-/** A berth as the scene lays it out, in the panel's own pixels. */
-const placeOf = ({ room, berth }) => deskLayout({
+/** The berth's own rectangle, in the panel's own pixels. */
+const boxOf = ({ room, berth }) => ({
   left: berth.x * room.natural.w,
   top: berth.y * room.natural.h,
   width: berth.w * room.natural.w,
   height: berth.h * room.natural.h
 });
+
+/** The book the painting put on that desk, in the panel's own pixels — or null. */
+const volumeOf = ({ room, berth }) =>
+  volumeBox(berth, { x: 0, y: 0, w: room.natural.w, h: room.natural.h });
+
+/** A berth as the scene lays it out, in the panel's own pixels. */
+const placeOf = (seat) => deskLayout(boxOf(seat), volumeOf(seat));
+
+/** Do two boxes share any area? Edges that meet do not — a card whose foot is
+ *  exactly on the volume's top edge is standing behind it, and the arithmetic
+ *  that puts it there lands a fraction of a pixel either side of true. */
+const TOUCHING = 0.01;
+const overlaps = (a, b) =>
+  a.left < b.left + b.width - TOUCHING && b.left < a.left + a.width - TOUCHING
+  && a.top < b.top + b.height - TOUCHING && b.top < a.top + a.height - TOUCHING;
 
 /** How wide a band under the card's foot has to read as desk. Not all of it:
  *  the desks are painted with an open book and a candlestick standing on them,
@@ -55,7 +71,10 @@ test('the card stands ON the desk, not above it', () => {
   for (const seat of seated) {
     const panel = readPng(path.join(ASSETS, seat.room.image));
     const { card } = placeOf(seat);
-    const foot = card.top + card.height;
+    // The setting's foot, which is the painted desk surface. Where the painter
+    // left an open book there, the card stops at the book's top edge instead —
+    // so the desk is looked for under the SETTING, in the card's own x-span.
+    const foot = boxOf(seat).top + boxOf(seat).height;
     let desk = 0;
     let sampled = 0;
     for (let i = 0; i < 7; i++) {
@@ -79,13 +98,8 @@ test('the book keeps its own place, clear of the card and inside the berth', () 
   // the card standing on the desk the book has to move beside it, and the two
   // must not end up as one pile.
   for (const seat of seated) {
-    const desk = {
-      left: seat.berth.x * seat.room.natural.w,
-      top: seat.berth.y * seat.room.natural.h,
-      width: seat.berth.w * seat.room.natural.w,
-      height: seat.berth.h * seat.room.natural.h
-    };
-    const { card, book } = deskLayout(desk);
+    const desk = boxOf(seat);
+    const { card, book } = deskLayout(desk, volumeOf(seat));
     const where = `${seat.room.id}/${seat.berth.id}`;
     assert.ok(book.left >= card.left + card.width, `${where}: the book is drawn over the card`);
     assert.ok(book.left + book.width <= desk.left + desk.width + 0.01,
@@ -104,13 +118,8 @@ test('the card stands in the middle of its place setting, where the chair is', (
   // which stood every assistant in the house a card's width to the left of the
   // chair they are sitting in.
   for (const seat of seated) {
-    const desk = {
-      left: seat.berth.x * seat.room.natural.w,
-      top: seat.berth.y * seat.room.natural.h,
-      width: seat.berth.w * seat.room.natural.w,
-      height: seat.berth.h * seat.room.natural.h
-    };
-    const { card } = deskLayout(desk);
+    const desk = boxOf(seat);
+    const { card } = deskLayout(desk, volumeOf(seat));
     const where = `${seat.room.id}/${seat.berth.id}`;
     assert.ok(Math.abs((card.left + card.width / 2) - (desk.left + desk.width / 2)) < 0.01,
       `${where}: the card is ${Math.round((card.left + card.width / 2)
@@ -126,13 +135,8 @@ test('the book lies flat, and keeps a hand of clear desk at both ends', () => {
   // read out to the corner of its desk, so a book flush with the far end of it
   // is a book over the edge of the desk. The god's study is where that showed.
   for (const seat of seated) {
-    const desk = {
-      left: seat.berth.x * seat.room.natural.w,
-      top: seat.berth.y * seat.room.natural.h,
-      width: seat.berth.w * seat.room.natural.w,
-      height: seat.berth.h * seat.room.natural.h
-    };
-    const { card, book } = deskLayout(desk);
+    const desk = boxOf(seat);
+    const { card, book } = deskLayout(desk, volumeOf(seat));
     const where = `${seat.room.id}/${seat.berth.id}`;
     assert.ok(book.width > book.height,
       `${where}: the book is ${Math.round(book.width)}×${Math.round(book.height)}, which is a book `
@@ -140,5 +144,56 @@ test('the book lies flat, and keeps a hand of clear desk at both ends', () => {
     assert.ok(book.left > card.left + card.width, `${where}: the book touches the card`);
     assert.ok(book.left + book.width < desk.left + desk.width - 0.01,
       `${where}: the book is flush with the far corner of the desk`);
+  }
+});
+
+/**
+ * The card stands BEHIND the book the painter already put on the desk.
+ *
+ * Aaron: *"Cards are centered at the desks now (but they do cover the book)."*
+ * Centring them at the chair — which is where an assistant sitting at that desk
+ * would be — put every card down on top of the open volume the painting has
+ * lying at exactly that spot, because the painter drew the book in front of the
+ * chair for the same reason.
+ *
+ * Beside it is not available: the card is wider than the desk left either side
+ * of the book, so sliding it clear would move it off its own chair. Standing
+ * the card behind the volume is: its foot rises to the volume's top edge, which
+ * is a lift of about a tenth of the setting, and the book then reads as lying
+ * open in front of the portrait rather than under it.
+ */
+test('the card clears the book the painting already put on the desk', () => {
+  const withVolume = seated.filter((seat) => seat.berth.volume);
+  assert.ok(withVolume.length > 0, 'no seat in the house has a painted book to clear');
+  for (const seat of withVolume) {
+    const volume = volumeOf(seat);
+    const { card, book } = placeOf(seat);
+    const where = `${seat.room.id}/${seat.berth.id}`;
+    assert.ok(!overlaps(card, volume),
+      `${where}: the card is drawn over the book the painting put on the desk`);
+    assert.ok(!overlaps(book, volume),
+      `${where}: the desk book is laid on top of the painted one`);
+    // ...and it is a lift, not a retreat to the far side of the desk: the card
+    // stays on the chair it was centred on.
+    assert.ok(Math.abs((card.left + card.width / 2) - (seat.berth.x + seat.berth.w / 2)
+      * seat.room.natural.w) < 0.01, `${where}: the card left its chair to clear the book`);
+    assert.ok(card.height > boxOf(seat).height * 0.8,
+      `${where}: clearing the book cost the card ${Math.round(
+        100 - (card.height / boxOf(seat).height) * 100)}% of its height`);
+  }
+});
+
+test('a card sharing a desk clears the painted book too, however deep it sits', () => {
+  // Every occupant of a shared desk stands on the same surface — that is what
+  // holding the far corner still buys — so every one of them meets the same
+  // book. A clearance applied to the first card only would put the second
+  // straight back on top of it.
+  for (const seat of seated.filter((s) => s.berth.volume)) {
+    const volume = volumeOf(seat);
+    for (let depth = 0; depth <= STACK_DEEPEST; depth++) {
+      const { card } = deskLayout(stackedBerth(boxOf(seat), depth), volumeOf(seat));
+      assert.ok(!overlaps(card, volume),
+        `${seat.room.id}/${seat.berth.id}: the card ${depth} back covers the painted book`);
+    }
   }
 });
