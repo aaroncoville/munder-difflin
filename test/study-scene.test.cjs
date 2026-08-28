@@ -525,14 +525,14 @@ test('the commissions are dealt onto the baize the manifest points at', async ()
   // catches, and it is invisible to a count of them.
   const table = roomOfKind(studyRoom, 'cardTable');
   const baize = berthToBox(table.berths[0], viewOf(table));
-  const cards = all(panelOf(view.tree, table.id), (n) => n.props?.['data-baize-card'] !== undefined);
-  assert.equal(cards.length, 2, 'two commissions, two cards');
+  const cards = all(panelOf(view.tree, table.id), (n) => n.props?.['data-baize-book'] !== undefined);
+  assert.equal(cards.length, 2, 'two commissions, two books');
   for (const c of cards) {
     const { left, top, width, height } = c.props.style;
     assert.ok(left >= baize.left - 0.01 && left + width <= baize.left + baize.width + 0.01,
-      'a card is off the side of the table');
+      'a book is off the side of the table');
     assert.ok(top >= baize.top - 0.01 && top + height <= baize.top + baize.height + 0.01,
-      'a card is off the end of the table');
+      'a book is off the end of the table');
   }
 });
 
@@ -551,9 +551,10 @@ test('the card table shows the ledger itself, stuck work first', async () => {
   // Read through `all`, not `text`: the cards are rendered by a component, and
   // `text` stops at the component node. Reading the tree the shallow way here
   // would report an empty table and call it a pass.
-  const cards = all(table, (n) => n.props?.['data-baize-card'] !== undefined);
-  assert.deepEqual(cards.map((c) => String(c.props.children)), ['4', '3', '1', '2', '5']);
-  assert.deepEqual(cards.map((c) => c.props['data-baize-card']),
+  const cards = all(table, (n) => n.props?.['data-baize-book'] !== undefined);
+  assert.deepEqual(cards.map((c) => String(c.props.children.props.children)),
+    ['4', '3', '1', '2', '5']);
+  assert.deepEqual(cards.map((c) => c.props['data-baize-book']),
     ['T-4', 'T-3', 'T-1', 'T-2', 'T-5'], 'the numbers are not the cards they name');
 });
 

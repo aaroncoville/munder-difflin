@@ -49,7 +49,7 @@ import {
 } from './roomManifest';
 import { AgentCard, CARD_ASPECT } from './AgentCard';
 import { AmbianceLayer } from './AmbianceLayer';
-import { BaizeCards } from './BaizeCards';
+import { BaizeStacks } from './BaizeStacks';
 import { ShelfArchive } from './ShelfArchive';
 import { DeskBook } from './DeskBook';
 import { SpeechScroll } from './SpeechScroll';
@@ -643,13 +643,13 @@ export function StudyScene(): JSX.Element {
   ): React.ReactNode => {
     const frame = { ...BADGES, ...anchorFrame(berth, view) };
     if (kind === 'cardTable') {
-      // The commissions themselves, dealt onto the baize the painting puts
+      // The commissions themselves, piled on the baize the painting puts
       // there. They replace the four column totals that used to sit here: a
       // total could only ever mean "open the whole board", which is what
       // clicking the room already does.
       if (!berth) return null;
       return (
-        <BaizeCards
+        <BaizeStacks
           tasks={scene.tasks}
           baize={berthToBox(berth, view)}
           onOpen={openTaskDetail}
