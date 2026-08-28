@@ -1,5 +1,5 @@
 /**
- * The volumes that finished work marks on the shelf wall.
+ * The volumes that concluded commissions mark on the shelf wall.
  *
  * Nothing here is drawn. Every mark is a rectangle of the shelves panel ITSELF,
  * re-laid at the same size and offset by its own position, then put through a
@@ -40,10 +40,10 @@ import { bookSlot, type ArchivedThing } from './shelfBooks';
  * Exported so the darkening can be measured against the actual painting rather
  * than asserted to exist.
  *
- * The wall is given only departed assistants now — finished commissions are
- * dealt onto the baize instead — but the shade for a commission stays, because
- * the wall is what draws a marked volume whatever it is handed, and a kind
- * without a shade paints as no mark at all rather than as a wrong one.
+ * The wall is given only concluded commissions now — a departed assistant is
+ * already off the floor and needs no second mark — but the shade for one stays,
+ * because the wall is what draws a marked volume whatever it is handed, and a
+ * kind without a shade paints as no mark at all rather than as a wrong one.
  */
 export const BOOK_SHADE: Record<ArchivedThing['kind'], string> = {
   commission: 'brightness(0.34) saturate(1.7)',

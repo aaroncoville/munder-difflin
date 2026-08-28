@@ -541,21 +541,22 @@ test('the card table shows the ledger itself, stuck work first', async () => {
   const { view } = await inhabit({
     agents: [person('w-1')],
     tasks: [card(1, 'todo'), card(2, 'todo'), card(3, 'doing'),
-      card(4, 'blocked'), card(5, 'done')]
+      card(4, 'blocked')]
   });
   const table = one(view.tree, (n) => n.props?.title === 'Tasks');
-  // Every commission on the ledger is on the table, numbered as the board
+  // Every OPEN commission on the ledger is on the table, numbered as the board
   // numbers it — and dealt impeded first, because what is stuck is what
-  // somebody glancing across the room needs to see.
+  // somebody glancing across the room needs to see. Concluded work has the
+  // shelf wall and is checked there.
   //
   // Read through `all`, not `text`: the cards are rendered by a component, and
   // `text` stops at the component node. Reading the tree the shallow way here
   // would report an empty table and call it a pass.
   const cards = all(table, (n) => n.props?.['data-baize-book'] !== undefined);
   assert.deepEqual(cards.map((c) => String(c.props.children.props.children)),
-    ['4', '3', '1', '2', '5']);
+    ['4', '3', '1', '2']);
   assert.deepEqual(cards.map((c) => c.props['data-baize-book']),
-    ['T-4', 'T-3', 'T-1', 'T-2', 'T-5'], 'the numbers are not the cards they name');
+    ['T-4', 'T-3', 'T-1', 'T-2'], 'the numbers are not the cards they name');
 });
 
 /**

@@ -90,10 +90,29 @@ test('every book lands on the baize, and none on the parlour wall', () => {
 
 test('what is stuck is piled first — that is what you cross the room to see', () => {
   const piled = B.stackBaize(
-    [task('T-1', 'done'), task('T-2', 'todo'), task('T-3', 'blocked'), task('T-4', 'doing')],
+    [task('T-2', 'todo'), task('T-3', 'blocked'), task('T-4', 'doing')],
     BAIZE
   );
-  assert.deepEqual(piled.map((d) => d.task.id), ['T-3', 'T-4', 'T-2', 'T-1']);
+  assert.deepEqual(piled.map((d) => d.task.id), ['T-3', 'T-4', 'T-2']);
+});
+
+test('the table carries OPEN work only — a concluded commission is off it', () => {
+  // The table says how much work the House is carrying. A pile that keeps every
+  // commission ever finished says "busy" for ever, and the piles it reads as
+  // are mostly of things nobody has to do: Aaron's note was that a whole table
+  // of mostly-done work does not make sense. Concluded work has the shelf wall.
+  const piled = B.stackBaize(
+    [task('T-1', 'done'), task('T-2', 'todo'), task('T-3', 'done'), task('T-4', 'doing')],
+    BAIZE
+  );
+  assert.deepEqual(piled.map((d) => d.task.id), ['T-4', 'T-2']);
+
+  // And the bound is over the open work, not over the ledger: a house with a
+  // long history still deals its whole backlog onto the felt.
+  const history = Array.from({ length: B.BAIZE_MAX }, (_, i) => task(`D-${i}`, 'done'));
+  const open = Array.from({ length: B.BAIZE_MAX }, (_, i) => task(`T-${i}`, 'todo'));
+  assert.equal(B.stackBaize([...history, ...open], BAIZE).length, B.BAIZE_MAX,
+    'finished work took the places the open work needed');
 });
 
 test('a book is numbered as the board numbers it', () => {

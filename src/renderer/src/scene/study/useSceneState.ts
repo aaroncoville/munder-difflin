@@ -13,6 +13,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStore, type Agent } from '@/store/store';
 import { parseTasks, waitsOnHuman, type HiveTask } from '@/components/TasksKanban';
+import { isOpen } from './BaizeStacks';
 import type { CardStatus } from './AgentCard';
 import type { BookState } from './DeskBook';
 import { deskBerths, godBerth } from './roomManifest';
@@ -48,9 +49,8 @@ export interface SceneState {
   openAskCount: number;
   kanbanCounts: { todo: number; doing: number; blocked: number; done: number };
   /**
-   * What the shelf wall holds: concluded commissions and departed assistants,
-   * newest last, already bounded — see `shelfArchive.ts` for the bound and for
-   * why an archived assistant has no date to bound it by.
+   * What the shelf wall holds: the concluded commissions, newest last, already
+   * bounded — see `shelfBooks.ts` for the bound.
    */
   archive: ArchivedThing[];
   /**
@@ -135,6 +135,43 @@ export function bookFor(tasks: readonly HiveTask[], agentId: string):
 }
 
 /**
+ * The work the House has concluded, as books on the shelf wall.
+ *
+ * The wall was the archive of departed ASSISTANTS, and Aaron read it as the
+ * archive of finished WORK. His reading is the better one and this is the flip
+ * to it: a departed assistant is already gone from the floor and needs no
+ * second mark, whereas a concluded commission has nowhere else to be now that
+ * the card table carries open work only. So the two surfaces divide the ledger
+ * between them — open on the felt, finished on the wall — and which surface a
+ * commission is on is what says whether it is done.
+ *
+ * The date is the last thing the ledger records happening on the card, not the
+ * date it was raised. Nothing in `tasks.json` records a completion time, and
+ * `createdAt` is the wrong stand-in for one: dating by it would drop a
+ * long-running commission off the fourteen-day window the moment it finished,
+ * which is precisely the commission most worth having marked. A card whose
+ * dates are all unreadable arrives with `at: null` and is bounded by the count
+ * alone, the way any undated thing on this wall is.
+ */
+export function lastTouched(task: HiveTask): number | null {
+  const stamps: (string | undefined)[] = [task.createdAt];
+  for (const qa of task.humanQA ?? []) stamps.push(qa.askedAt, qa.answeredAt, qa.dismissedAt);
+  const times = stamps
+    .map((stamp) => (stamp ? Date.parse(stamp) : NaN))
+    .filter((n) => Number.isFinite(n));
+  return times.length === 0 ? null : Math.max(...times);
+}
+
+export function archiveOf(tasks: readonly HiveTask[], now: number): ArchivedThing[] {
+  const things: ArchivedThing[] = tasks
+    .filter((t) => !isOpen(t))
+    .map((t) => ({
+      id: t.id, label: t.title, kind: 'commission' as const, at: lastTouched(t)
+    }));
+  return shelfBooks(things, now);
+}
+
+/**
  * Seat the roster.
  *
  * Reading desks are handed out in roster order, which is the order the user
@@ -160,32 +197,9 @@ export function bookFor(tasks: readonly HiveTask[], agentId: string):
  * assistant's index in the roster and nothing else: somebody new arriving at
  * the end never moves anybody already sitting down.
  */
-/**
- * The people the House has parted with, as books on the shelf wall.
- *
- * Concluded commissions used to be listed here too, and that was right while
- * the card table drew four column totals: the finished work had nowhere else to
- * be. It has somewhere else now — the baize deals every commission as a book of
- * its own, done ones included — so listing them here as well drew one thing
- * twice, in two rooms, with nothing to say which mark was which.
- *
- * An archived assistant carries no timestamp anywhere in the store, so these
- * keep the store's own order and are bounded by the count alone.
- */
-export function archiveOf(
-  archivedAgents: readonly Agent[],
-  now: number
-): ArchivedThing[] {
-  const things: ArchivedThing[] = archivedAgents.map((a) => ({
-    id: a.id, label: a.name, kind: 'assistant' as const, at: null
-  }));
-  return shelfBooks(things, now);
-}
-
 export function projectScene(
   agents: readonly Agent[],
   tasks: readonly HiveTask[],
-  archivedAgents: readonly Agent[] = [],
   now: number = Date.now()
 ): SceneState {
   const desks = deskBerths(studyRoom);
@@ -215,14 +229,13 @@ export function projectScene(
     agents: projected,
     openAskCount: tasks.filter(waitsOnHuman).length,
     kanbanCounts,
-    archive: archiveOf(archivedAgents, now),
+    archive: archiveOf(tasks, now),
     tasks
   };
 }
 
 export function useSceneState(): SceneState {
   const agents = useStore((s) => s.agents);
-  const archivedAgents = useStore((s) => s.archivedAgents);
   const [tasks, setTasks] = useState<HiveTask[]>([]);
 
   useEffect(() => {
@@ -243,7 +256,7 @@ export function useSceneState(): SceneState {
   // ledger changes is exact enough, and one that ticked would re-render the
   // whole house for nothing.
   return useMemo(
-    () => projectScene(agents, tasks, archivedAgents, Date.now()),
-    [agents, tasks, archivedAgents]
+    () => projectScene(agents, tasks, Date.now()),
+    [agents, tasks]
   );
 }

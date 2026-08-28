@@ -48,10 +48,12 @@ test('anything older than the window is off the wall', () => {
 });
 
 test('a thing with no date is bounded by the count and not by the clock', () => {
-  // An archived assistant carries no timestamp anywhere in the store, so there
-  // is no age to test it against. Dropping it for that would mean archived
-  // assistants never appeared on the wall at all — which the design asks for.
-  const undated = thing('someone', null, 'assistant');
+  // The ledger is a file edited by hand, so a card can reach the wall with no
+  // usable date on it at all. Dropping it for want of one would mean finished
+  // work vanishing rather than being archived, which is the opposite of what
+  // the wall is for — so the window filters what HAS a date and the count
+  // bounds everything.
+  const undated = thing('someone', null);
   const stale = thing('stale', NOW - (S.ARCHIVE_WINDOW_DAYS + 9) * DAY);
   assert.deepEqual(S.shelfBooks([stale, undated], NOW).map((k) => k.id), ['someone']);
   // ...but it is still bounded, or the wall fills with them.
@@ -167,6 +169,9 @@ const all = (n, pred, out = []) => {
   return out;
 };
 
+const shelfIn = (view) => all(view.tree, (n) => n.props?.['data-shelf-book'] !== undefined);
+const baizeIn = (view) => all(view.tree, (n) => n.props?.['data-baize-book'] !== undefined);
+
 async function inhabit({ archived = [], tasks = [] }) {
   global.window = {
     localStorage: { getItem: () => 'occult', setItem: () => {}, removeItem: () => {} },
@@ -189,47 +194,57 @@ async function inhabit({ archived = [], tasks = [] }) {
 }
 
 /**
- * The wall keeps the House's PEOPLE. The work it finished is dealt onto the
- * baize, and only onto the baize.
+ * The wall is where CONCLUDED WORK goes, and the table is where open work is.
  *
- * A concluded commission used to appear twice — once as a book on the card
- * table and again as a darkened spine on the shelf — because the card table
- * gained the commissions without the shelf giving them up. Two marks for one
- * thing is not an archive of it; it is a miscount, and the reader has no way to
- * tell which of the two they are looking at.
+ * The two surfaces divide the ledger between them and the division is the whole
+ * contract: a commission is on exactly one of them, and which one it is on is
+ * what tells you whether it is finished. Getting that wrong is not a cosmetic
+ * fault — a table of mostly-finished commissions says the House is busy when it
+ * is idle, and a wall that darkens for a departed assistant says work was
+ * concluded when somebody merely left.
  */
-test('a concluded commission is dealt onto the baize and never onto the shelf', async () => {
-  const view = await inhabit({
-    archived: [person('gone-1', { archived: true })],
-    tasks: [{ id: 'T-1', status: 'done', title: 'the seventh folio', dependsOn: [],
-      createdAt: new Date().toISOString() }]
-  });
-
-  const baize = all(view.tree, (n) => n.props?.['data-baize-book'] !== undefined);
-  assert.deepEqual(baize.map((b) => b.props['data-baize-book']), ['T-1'],
-    'the concluded commission is not on the baize exactly once');
-
-  const books = all(view.tree, (n) => n.props?.['data-shelf-book'] !== undefined);
-  const labels = books.map((b) => String(b.props.title));
-  assert.ok(labels.some((l) => /GONE-1/.test(l)),
-    'the departed assistant lost her spine along with the commissions');
-  assert.equal(books.length, 1,
-    `the shelf holds ${books.length} books for one departed assistant: ${labels.join(', ')}`);
-  assert.ok(!labels.some((l) => /seventh folio/.test(l)),
-    'the commission is drawn on the baize AND on the shelf — one thing, marked twice');
-});
-
-test('unfinished work is not on the shelf', async () => {
+test('an open commission is on the table and not on the wall', async () => {
   const view = await inhabit({
     tasks: [{ id: 'T-1', status: 'doing', title: 'still reading', dependsOn: [],
       createdAt: new Date().toISOString() }]
   });
-  assert.equal(all(view.tree, (n) => n.props?.['data-shelf-book'] !== undefined).length, 0);
+  assert.deepEqual(baizeIn(view).map((b) => b.props['data-baize-book']), ['T-1'],
+    'the open commission is not the one book on the table');
+  assert.equal(shelfIn(view).length, 0, 'open work was shelved as finished');
+});
+
+test('a concluded commission leaves the table for the wall', async () => {
+  const view = await inhabit({
+    tasks: [{ id: 'T-1', status: 'done', title: 'the seventh folio', dependsOn: [],
+      createdAt: new Date().toISOString() }]
+  });
+  assert.deepEqual(baizeIn(view).map((b) => b.props['data-baize-book']), [],
+    'finished work is still piled on the table with the open work');
+
+  const books = shelfIn(view);
+  assert.equal(books.length, 1,
+    `the wall holds ${books.length} marks for one concluded commission`);
+  assert.equal(books[0].props['data-shelf-kind'], 'commission');
+  assert.match(String(books[0].props.title), /seventh folio/,
+    'the mark does not name the commission it stands for');
+});
+
+test('an assistant who left the House does not mark the wall', async () => {
+  // The wall was the agent archive and Aaron read it as the finished-work
+  // archive, which is the more useful of the two: a departed assistant is
+  // already off the floor, and a darkened spine for one is a mark that says
+  // "concluded" about somebody who concluded nothing.
+  const view = await inhabit({ archived: [person('gone-1', { archived: true })] });
+  assert.equal(shelfIn(view).length, 0,
+    'a departed assistant still darkens a volume the finished work needs');
 });
 
 test('a mark is a piece of the wall itself, lined up by arithmetic', async () => {
-  const view = await inhabit({ archived: [person('gone-1', { archived: true })] });
-  const book = all(view.tree, (n) => n.props?.['data-shelf-book'] !== undefined)[0];
+  const view = await inhabit({
+    tasks: [{ id: 'T-1', status: 'done', title: 'the seventh folio', dependsOn: [],
+      createdAt: new Date().toISOString() }]
+  });
+  const book = shelfIn(view)[0];
   assert.ok(book, 'no book');
   const style = book.props.style;
   // Not a colour drawn over the painting — the painting, re-laid.
@@ -272,9 +287,11 @@ test('the darkening is measured against the wall it actually lands on', () => {
   // a kind the projection produced, and a table keyed by some other word
   // answers that with `undefined` — no filter at all.
   const { archiveOf } = loadTs('src/renderer/src/scene/study/useSceneState.ts');
-  const shelved = [...new Set(archiveOf([{ id: 'a-1', name: 'gone' }], Date.now())
-    .map((thing) => thing.kind))];
-  assert.deepEqual(shelved.sort(), ['assistant'],
+  const shelved = [...new Set(archiveOf([{
+    id: 'T-1', title: 'a folio', status: 'done', dependsOn: [],
+    createdAt: new Date().toISOString()
+  }], Date.now()).map((thing) => thing.kind))];
+  assert.deepEqual(shelved.sort(), ['commission'],
     'the archive shelves something this test has never seen');
   for (const kind of shelved) {
     assert.ok(src.BOOK_SHADE[kind],

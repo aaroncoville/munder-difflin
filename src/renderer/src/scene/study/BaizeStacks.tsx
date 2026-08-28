@@ -8,6 +8,10 @@
  * volume of it across the room before you read a single number, which is the
  * only thing the table has to say at this size.
  *
+ * The piles hold OPEN commissions only. Concluded work goes to the shelf wall,
+ * where a finished volume darkens in the painting — so each surface says one
+ * thing, and the height of the piles is how much is still to do.
+ *
  * So: up to four piles on the baize, each growing upward a spine at a time.
  * When a pile reaches its height the next one starts beside it, the way books
  * actually accumulate on a table. The number is printed sideways on the spine,
@@ -77,17 +81,31 @@ const LEAN = [0, 0.05, -0.04, 0.03, -0.05, 0.02];
 const ARC = 0.08;
 
 /**
- * The order the table is piled in: impeded, then underway, then intended, then
- * concluded.
+ * The order the table is piled in: impeded, then underway, then intended.
  *
  * The board's own order, and for the same reason — what somebody glancing at
  * the table needs to see is what is stuck, not what happens to have the lowest
  * id. Ties keep the ledger's own order, so the table does not restack itself
  * between polls when nothing has changed.
+ *
+ * Concluded work is not in it because concluded work is not on this table: the
+ * felt carries what the House still has to do, and a pile that also kept
+ * everything ever finished would read as a busy House for ever, most of it
+ * piles of things nobody has to touch. Finished commissions darken a volume on
+ * the shelf wall instead, which is the surface that means "done" — see
+ * `shelfBooks.ts`.
  */
-const PILE_ORDER: Record<HiveTask['status'], number> = {
-  blocked: 0, doing: 1, todo: 2, done: 3
+const PILE_ORDER: Record<OpenStatus, number> = {
+  blocked: 0, doing: 1, todo: 2
 };
+
+/** A commission the House has not finished — the only kind the table carries. */
+export type OpenTask = HiveTask & { status: OpenStatus };
+type OpenStatus = Exclude<HiveTask['status'], 'done'>;
+
+export function isOpen(task: HiveTask): task is OpenTask {
+  return task.status !== 'done';
+}
 
 /**
  * The number printed on a spine.
@@ -103,7 +121,7 @@ export function baizeNumber(task: HiveTask, index: number): number {
 }
 
 export interface Spine {
-  task: HiveTask;
+  task: OpenTask;
   box: Box;
   n: number;
   /** Which pile it is in, and how far up that pile — 0 is on the felt. */
@@ -119,6 +137,7 @@ export interface Spine {
  */
 export function stackBaize(tasks: readonly HiveTask[], baize: Box): Spine[] {
   const taken = tasks
+    .filter(isOpen)
     .map((task, i) => ({ task, i }))
     .sort((a, b) =>
       (PILE_ORDER[a.task.status] ?? 9) - (PILE_ORDER[b.task.status] ?? 9) || a.i - b.i)
@@ -173,7 +192,7 @@ export function stackBaize(tasks: readonly HiveTask[], baize: Box): Spine[] {
  *
  * Exported so the contrast of every pair can be measured rather than eyeballed.
  */
-export const SPINE_FACES: Record<HiveTask['status'],
+export const SPINE_FACES: Record<OpenStatus,
 { background: string; color: string; edge: string }> = {
   blocked: {
     background: 'var(--cth-coral-light)', color: 'var(--cth-ink-900)',
@@ -186,10 +205,6 @@ export const SPINE_FACES: Record<HiveTask['status'],
   todo: {
     background: 'var(--cth-paper-100)', color: 'var(--cth-ink-900)',
     edge: 'var(--cth-ink-300)'
-  },
-  done: {
-    background: 'var(--cth-paper-200)', color: 'var(--cth-ink-500)',
-    edge: 'var(--cth-ink-100)'
   }
 };
 

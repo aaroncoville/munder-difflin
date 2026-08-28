@@ -265,6 +265,72 @@ test('archived assistants have left the room', async () => {
     'the Study seats the live roster, same as the office floor');
 });
 
+/**
+ * What the shelf wall is handed.
+ *
+ * The wall used to be the agent archive. Aaron read it as the archive of
+ * finished WORK — which is the reading the house wants, because a departed
+ * assistant has already left the floor while a concluded commission has
+ * nowhere else to go once the table carries open work only.
+ */
+test('the wall is handed the concluded commissions, and nothing else', async () => {
+  const state = await project({
+    agents: [agent('w-1')],
+    tasks: [
+      task({ id: 'T-1', status: 'done', title: 'the seventh folio' }),
+      task({ id: 'T-2', status: 'doing', title: 'still reading' }),
+      task({ id: 'T-3', status: 'todo', title: 'not begun' })
+    ]
+  });
+  assert.deepEqual(state.archive.map((a) => a.id), ['T-1']);
+  assert.deepEqual(state.archive.map((a) => a.kind), ['commission']);
+  assert.equal(state.archive[0].label, 'the seventh folio');
+  assert.equal(typeof state.archive[0].at, 'number',
+    'a concluded commission reaches the wall with no date, so the window cannot bound it');
+});
+
+test('an assistant who left the House is not on the wall', async () => {
+  global.window = {
+    localStorage: { getItem: () => null, setItem: () => {} },
+    cth: { hiveTasks: async () => ({ tasks: [] }) }
+  };
+  useStore.setState({ agents: [], archivedAgents: [], restorableAgents: [] });
+  useStore.getState().addAgent(agent('w-1'));
+  useStore.getState().addAgent(agent('w-2'));
+  useStore.getState().archiveAgent('w-2');
+  let seen = null;
+  const Probe = () => { seen = useSceneState(); return null; };
+  const view = mount(Probe, {});
+  mounted.push(view);
+  await settle();
+  view.render();
+  assert.deepEqual(seen.archive, [], 'a departed assistant still darkens a volume');
+});
+
+/**
+ * How a commission is dated for the wall's fourteen-day window.
+ *
+ * The ledger records when a card was RAISED and nothing about when it was
+ * finished, so the closest thing to a conclusion time is the last time anything
+ * was written on the card at all. Dating a concluded commission by its creation
+ * would drop long-running work off the wall the moment it finished, which is
+ * the one commission most worth having marked.
+ */
+test('a commission is dated by the last thing that happened on it', async () => {
+  const state = await project({
+    agents: [agent('w-1')],
+    tasks: [task({
+      id: 'T-1', status: 'done', title: 'the long folio',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      humanQA: [{ q: 'which key?', askedAt: '2026-08-20T00:00:00.000Z',
+        a: 'the staging one', answeredAt: '2026-08-21T00:00:00.000Z' }]
+    })]
+  });
+  assert.deepEqual(state.archive.map((a) => a.id), ['T-1'],
+    'work begun long ago and finished today fell out of the window');
+  assert.equal(state.archive[0].at, Date.parse('2026-08-21T00:00:00.000Z'));
+});
+
 test('the role on the card is the hire line, not the live status', async () => {
   const state = await project({
     agents: [agent('w-1', { description: 'Keeper of the almanac', action: 'reading' })]
