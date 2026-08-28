@@ -20,20 +20,92 @@
  * teaches the wrong lesson about which marks are live. It opens through the
  * same `openTaskDetail` the other two use, by pointer and by key alike.
  *
+ * A book is BOUND FOR ITS ROOM. See `BOOK_BINDINGS`.
+ *
  * Pure CSS shapes, no images — so the book recolours with the theme and costs
  * nothing to load, and so the art track never has to produce three sprites per
- * task state.
+ * task state per room.
  */
 import type { CSSProperties } from 'react';
 import type { Box } from './StudyScene';
 
 export type BookState = 'closed' | 'open' | 'sealed';
 
+/**
+ * How a volume is bound, and why there is more than one way.
+ *
+ * The book was drawn once, in gilt on cream, and it was drawn for the two
+ * reading rooms on the LEFT of the house: both are warm dark wood, and a gilt
+ * volume on a wooden desk is simply a volume on a desk. The two rooms on the
+ * right are not those rooms, and the same book in them is a book that has to
+ * be looked for.
+ *
+ *   - The stone-arched room is grey masonry under gothic glass. A gilt board
+ *     there is one more warm smudge among the mullions, so its volume takes
+ *     its colour from the WINDOW instead — a violet board, clasped in gilt down
+ *     the fore-edge, which is then the one solid colour in the room. Its pages
+ *     are cut with an arch, the room's own shape.
+ *   - The attic is dusty rose plaster and pale beams, where gilt is very nearly
+ *     the wall. Its volume is bound in the complement — deep teal — and marked
+ *     with a warm ribbon hanging past the foot, which is what separates a small
+ *     dark rectangle from the shadow of a beam.
+ *
+ * Every value is a theme token, so a binding is a choice about WHICH of the
+ * palette a room uses and never a colour of its own. Nothing here is a room
+ * name: a binding is a look, and the floor plan is what says who wears it.
+ */
+export interface BookBinding {
+  /** The boards. */
+  cover: string;
+  /** The paper. */
+  pages: string;
+  /** The band down the spine of a shut book. */
+  spine: string;
+  /** The one mark that separates this volume from the wall behind it. */
+  mark: string;
+  /** Whether the pages are cut square or arched at the head. */
+  arched?: boolean;
+  /** Whether a marker hangs past the foot. */
+  ribbon?: boolean;
+}
+
+export const BOOK_BINDINGS = {
+  ledger: {
+    cover: 'var(--cth-gilt-soft)',
+    pages: 'var(--cth-cream-50)',
+    spine: 'var(--cth-gilt)',
+    mark: 'var(--cth-gilt)'
+  },
+  arch: {
+    cover: 'var(--cth-lilac)',
+    pages: 'var(--cth-cream-50)',
+    spine: 'var(--cth-lilac-light)',
+    mark: 'var(--cth-gilt)',
+    arched: true
+  },
+  attic: {
+    cover: 'var(--cth-sky)',
+    pages: 'var(--cth-cream-50)',
+    spine: 'var(--cth-sky-light)',
+    mark: 'var(--cth-peach)',
+    ribbon: true
+  }
+} as const satisfies Record<string, BookBinding>;
+
+export type BookBindingName = keyof typeof BOOK_BINDINGS;
+
+/** What a room that asks for nothing else gets — the volume the left-hand
+ *  reading rooms were drawn for. */
+export const DEFAULT_BINDING: BookBindingName = 'ledger';
+
 export interface DeskBookProps {
   state: BookState;
   /** The task's title, shown on hover. */
   title?: string;
   box: Box;
+  /** How this room binds its volumes. Absent is the default binding, drawn by
+   *  the same rules rather than by a second set of them. */
+  binding?: BookBindingName;
   /**
    * The commission this book stands for.
    *
@@ -72,25 +144,10 @@ const TURN_SHEET = `
 }
 `;
 
-const COVER: CSSProperties = {
-  position: 'absolute',
-  inset: 0,
-  background: 'var(--cth-gilt-soft)',
-  borderRadius: 'var(--cth-radius-badge)',
-  boxShadow: 'var(--cth-panel-border)'
-};
-
-/** Both halves of an open book, and the leaf between them, share these. */
-const PAGE: CSSProperties = {
-  position: 'absolute',
-  top: '12%',
-  width: '42%',
-  height: '76%',
-  background: 'var(--cth-cream-50)',
-  borderRadius: 'var(--cth-radius-badge)'
-};
-
-export function DeskBook({ state, title, box, taskId, onOpen }: DeskBookProps): JSX.Element {
+export function DeskBook({
+  state, title, box, binding, taskId, onOpen
+}: DeskBookProps): JSX.Element {
+  const bound: BookBinding = BOOK_BINDINGS[binding ?? DEFAULT_BINDING];
   const opens = Boolean(taskId) && typeof onOpen === 'function';
   const root: CSSProperties = {
     position: 'absolute',
@@ -110,9 +167,29 @@ export function DeskBook({ state, title, box, taskId, onOpen }: DeskBookProps): 
     perspective: box.width,
     transition: 'left var(--cth-dur-slow) var(--cth-ease-glide), top var(--cth-dur-slow) var(--cth-ease-glide)'
   };
+  const cover: CSSProperties = {
+    position: 'absolute',
+    inset: 0,
+    background: bound.cover,
+    borderRadius: 'var(--cth-radius-badge)',
+    boxShadow: 'var(--cth-panel-border)'
+  };
+  /** Both halves of an open book, and the leaf between them. An arched binding
+   *  cuts its paper at the head, which is that room's own window shape. */
+  const page: CSSProperties = {
+    position: 'absolute',
+    top: '12%',
+    width: '42%',
+    height: '76%',
+    background: bound.pages,
+    borderRadius: bound.arched
+      ? '50% 50% var(--cth-radius-badge) var(--cth-radius-badge)'
+      : 'var(--cth-radius-badge)'
+  };
   return (
     <div
       data-book-state={state}
+      data-book-binding={binding ?? DEFAULT_BINDING}
       {...(title ? { title } : {})}
       {...(opens
         ? {
@@ -138,20 +215,34 @@ export function DeskBook({ state, title, box, taskId, onOpen }: DeskBookProps): 
         : {})}
       style={root}
     >
-      <div style={COVER} />
+      <div style={cover} />
+      {/* The clasp down the fore-edge, on the bindings that have one. Over the
+          boards and under the paper, so it reads as metal holding the book
+          shut rather than as a stripe printed on a page. */}
+      {bound.arched ? (
+        <div
+          data-book-clasp=""
+          style={{
+            position: 'absolute',
+            right: 0, top: '22%', width: '6%', height: '56%',
+            background: bound.mark,
+            borderRadius: 'var(--cth-radius-badge)'
+          }}
+        />
+      ) : null}
       {state === 'open' ? (
         <>
           {/* Shipped with the open book alone, because it is the only state
               that turns anything. Identical sheets across several open books
               cost nothing — the rules are the same rules. */}
           <style>{TURN_SHEET}</style>
-          <div data-book-page="left" style={{ ...PAGE, left: '6%' }} />
-          <div data-book-page="right" style={{ ...PAGE, right: '6%' }} />
+          <div data-book-page="left" style={{ ...page, left: '6%' }} />
+          <div data-book-page="right" style={{ ...page, right: '6%' }} />
           <div
             data-book-leaf=""
             className={LEAF_CLASS}
             style={{
-              ...PAGE,
+              ...page,
               right: '6%',
               // Hinged at the gutter, which for the right-hand page is its
               // LEFT edge — that is the spine the sheet is sewn to.
@@ -168,10 +259,22 @@ export function DeskBook({ state, title, box, taskId, onOpen }: DeskBookProps): 
           style={{
             position: 'absolute',
             left: '14%', top: 0, width: '10%', height: '100%',
-            background: 'var(--cth-gilt)'
+            background: bound.spine
           }}
         />
       )}
+      {/* A marker left in the book, hanging past its foot — what separates a
+          small dark volume from a shadow in a room with no light on it. */}
+      {bound.ribbon ? (
+        <div
+          data-book-marker=""
+          style={{
+            position: 'absolute',
+            left: '62%', top: '55%', width: '7%', height: '58%',
+            background: bound.mark
+          }}
+        />
+      ) : null}
       {state === 'sealed' ? (
         <div
           data-book-ribbon=""

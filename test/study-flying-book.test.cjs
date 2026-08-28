@@ -394,3 +394,29 @@ test('the sky is bounded, so a window nobody watches cannot fill it', async () =
   assert.equal(inTheAir(view).length, SKY_MAX,
     'the sky holds its bound and no more');
 });
+
+test('a book in the air is still bound for the room it left', async () => {
+  // The bindings exist so a volume is legible against ITS room's paint. A book
+  // that changed binding the moment it took off would be a different book
+  // arriving than the one that left, which is the one thing an animation
+  // between two places must not be.
+  const { studyRoom: house } = loadTs(SCENE);
+  const { deskBerths } = loadTs('src/renderer/src/scene/study/roomManifest.ts');
+  const berths = deskBerths(house);
+  const bound = house.rooms.find((r) => r.kind === 'desk' && r.binding);
+  assert.ok(bound, 'some reading room binds its volumes its own way');
+  // Whoever is seated at that room's first berth: seating fills berths in the
+  // manifest's own order, so this is the assistant who lands there.
+  const seat = berths.findIndex((b) => bound.berths.some((x) => x.id === b.id));
+  const agents = berths.map((_, i) => person(`w-${i}`));
+  const holder = agents[seat].id;
+  const ledger = (status) => [card('T-1', status, { assignee: holder })];
+
+  const view = await watchLedger(agents, [ledger('doing'), ledger('blocked')]);
+  const [book] = inTheAir(view);
+  assert.ok(book, 'the book left the desk');
+  const worn = deep(book, (n) => n.props?.['data-book-binding'] !== undefined)
+    .map((n) => n.props['data-book-binding']);
+  assert.deepEqual(worn, [bound.binding],
+    `it keeps ${bound.id}'s binding all the way across the house`);
+});

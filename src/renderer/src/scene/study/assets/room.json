@@ -37,7 +37,7 @@
       ]
     },
     {
-      "id": "desk-2", "kind": "desk", "image": "./room-desk-b.png",
+      "id": "desk-2", "kind": "desk", "binding": "arch", "image": "./room-desk-b.png",
       "natural": { "w": 1568, "h": 672 }, "row": 1, "col": 1,
       "berths": [
         { "id": "berth-3", "x": 0.145, "y": 0.275, "w": 0.200, "h": 0.460 },
@@ -63,7 +63,7 @@
       ]
     },
     {
-      "id": "desk-4", "kind": "desk", "image": "./room-desk-d.png",
+      "id": "desk-4", "kind": "desk", "binding": "attic", "image": "./room-desk-d.png",
       "natural": { "w": 1568, "h": 672 }, "row": 2, "col": 1,
       "berths": [
         { "id": "berth-7", "x": 0.244, "y": 0.205, "w": 0.185, "h": 0.440 },

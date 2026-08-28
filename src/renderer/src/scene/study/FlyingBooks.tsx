@@ -27,7 +27,7 @@
  * of.
  */
 import type { CSSProperties } from 'react';
-import { DeskBook } from './DeskBook';
+import { DeskBook, type BookBindingName } from './DeskBook';
 import type { Flight } from './flight';
 import type { Box } from './StudyScene';
 
@@ -37,6 +37,15 @@ export interface FlightPath {
   from: Box;
   /** The berth on the felt, or the slot on the shelf, in the same coordinates. */
   land: Box;
+  /**
+   * The binding of the room it LEFT, not of the room it is going to.
+   *
+   * The bindings exist so a volume is legible against its own room's paint, and
+   * a book that changed binding on take-off would be a different book arriving
+   * than the one that left — which is the one thing an animation between two
+   * places must not be.
+   */
+  binding?: BookBindingName;
 }
 
 export interface FlyingBooksProps {
@@ -91,7 +100,7 @@ export function FlyingBooks({ paths, onLanded }: FlyingBooksProps): JSX.Element 
       style={{ position: 'absolute', inset: 0, pointerEvents: 'none', overflow: 'hidden' }}
     >
       <style>{FLIGHT_SHEET}</style>
-      {paths.map(({ flight, from, land }) => {
+      {paths.map(({ flight, from, land, binding }) => {
         const start: CSSProperties & Record<string, string | number> = {
           position: 'absolute',
           left: land.left,
@@ -134,6 +143,7 @@ export function FlyingBooks({ paths, onLanded }: FlyingBooksProps): JSX.Element 
             >
               <DeskBook
                 state={IN_FLIGHT[flight.to]}
+                binding={binding}
                 box={{ left: 0, top: 0, width: land.width, height: land.height }}
               />
             </div>

@@ -18,6 +18,7 @@
  * into a loud failure at load, where they are cheap to find.
  */
 import roomJson from './assets/room.json';
+import { BOOK_BINDINGS, type BookBindingName } from './DeskBook';
 
 /**
  * How a light marked in a panel burns.
@@ -116,6 +117,16 @@ export interface Room {
   props: Prop[];
   /** Where the ambiance layer hangs this room's glows. May be empty. */
   lightPoints: LightPoint[];
+  /**
+   * How this room's desks bind their volumes, or absent for the default.
+   *
+   * A binding belongs to the ROOM because it is a fact about the painting: a
+   * gilt volume reads on warm wood and vanishes on grey masonry, and which of
+   * those a room is is something only the panel knows. Declaring it here means
+   * a repainted room changes its binding in the same file it changes its
+   * berths in, and no component ever has to learn a room's name.
+   */
+  binding?: BookBindingName;
 }
 
 export interface RoomManifest {
@@ -251,9 +262,18 @@ function validateRoom(raw: unknown, index: number): Room {
     }
   }
   if (!Array.isArray(o.berths)) throw new Error(`room manifest: ${id}.berths must be an array`);
+  // Absent is the default binding, because most rooms want it — but a NAME
+  // nobody has drawn is not. `"binding": "vellm"` would otherwise fall back to
+  // the default and look exactly like a room that never asked, which is the
+  // failure nobody sees until they are staring at the running house.
+  if (o.binding !== undefined
+    && !Object.prototype.hasOwnProperty.call(BOOK_BINDINGS, o.binding as string)) {
+    throw new Error(`room manifest: ${id}.binding is unknown: ${JSON.stringify(o.binding)}`);
+  }
   return {
     id,
     kind,
+    ...(o.binding === undefined ? {} : { binding: o.binding as BookBindingName }),
     image: o.image,
     natural: { w: natural.w as number, h: natural.h as number },
     row: validateWhole(o.row, `${id}.row`),

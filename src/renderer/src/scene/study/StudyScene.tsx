@@ -51,7 +51,7 @@ import { AgentCard, CARD_ASPECT } from './AgentCard';
 import { AmbianceLayer, useReducedMotion } from './AmbianceLayer';
 import { BaizeStacks, stackBaize } from './BaizeStacks';
 import { ShelfArchive, NOTHING_PULLED, type PulledBooks } from './ShelfArchive';
-import { DeskBook } from './DeskBook';
+import { DeskBook, type BookBindingName } from './DeskBook';
 import { FlyingBooks, type FlightPath } from './FlyingBooks';
 import { flightsFor, houseSlot, seenStatuses, type Flight, type LaidStorey, type Seen }
   from './flight';
@@ -222,16 +222,27 @@ function houseView(room: Room): ViewBox | null {
   return { x: slot.x + view.x, y: slot.y + view.y, w: view.w, h: view.h };
 }
 
-/** The book on one assistant's desk, in the house's coordinates — the same box
- *  `DeskPlace` draws it in, one frame out. */
-function deskBookInHouse(agent: SceneAgent): Box | null {
+/**
+ * The book on one assistant's desk, in the house's coordinates — the same box
+ * `DeskPlace` draws it in, one frame out, and bound the same way.
+ *
+ * The binding travels WITH the box because both are facts about the room the
+ * book is leaving, and a flight that carried one without the other would take
+ * off as one volume and land as another.
+ */
+function deskBookInHouse(
+  agent: SceneAgent
+): { box: Box; binding?: BookBindingName } | null {
   for (const room of studyRoom.rooms) {
     const berth = room.berths.find((b) => b.id === agent.berthId);
     if (!berth) continue;
     const view = houseView(room);
     if (!view) return null;
     const desk = stackedBerth(berthToBox(berth, view), agent.stackIndex);
-    return deskLayout(desk, volumeBox(berth, view)).book;
+    return {
+      box: deskLayout(desk, volumeBox(berth, view)).book,
+      ...(room.binding ? { binding: room.binding } : {})
+    };
   }
   return null;
 }
@@ -578,9 +589,11 @@ export function placeDepth(stackIndex: number): number {
 export const LOOKED_AT_Z = STACK_DEEPEST + 1;
 
 /** One assistant's place setting: card, book, and what they are saying. */
-function DeskPlace({ agent, desk, volume, raised, onLook, onSelect, onOpenTask }: {
+function DeskPlace({ agent, desk, volume, binding, raised, onLook, onSelect, onOpenTask }: {
   agent: SceneAgent;
   desk: Box;
+  /** How this room binds its volumes — the floor plan's decision, carried in. */
+  binding?: BookBindingName;
   /** The book the painting has already put on this desk, or null. */
   volume: Box | null;
   raised: boolean;
@@ -622,6 +635,7 @@ function DeskPlace({ agent, desk, volume, raised, onLook, onSelect, onOpenTask }
           <DeskBook
             state={agent.bookState}
             title={agent.bookTitle}
+            binding={binding}
             taskId={agent.bookTaskId}
             onOpen={onOpenTask}
             box={book}
@@ -797,7 +811,9 @@ export function StudyScene(): JSX.Element {
     const land = flight.to === 'table'
       ? tableLanding(scene.tasks, flight.taskId)
       : shelfLanding(scene.archive, flight.taskId);
-    return from && land ? [{ flight, from, land }] : [];
+    return from && land
+      ? [{ flight, from: from.box, land, ...(from.binding ? { binding: from.binding } : {}) }]
+      : [];
   });
 
   /** The petitions are the god's to answer, so opening them selects him too —
@@ -872,6 +888,7 @@ export function StudyScene(): JSX.Element {
             agent={agent}
             desk={stackedBerth(desk, agent.stackIndex)}
             volume={volume}
+            binding={room.binding}
             raised={lookingAt === agent.id}
             onLook={(looking: boolean) =>
               setLookingAt((was) => (looking ? agent.id : was === agent.id ? null : was))}
