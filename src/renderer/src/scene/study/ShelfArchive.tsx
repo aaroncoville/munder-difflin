@@ -15,11 +15,17 @@
  * that they were doing more harm than good, and that the wall's own books were
  * what should come alive. That is what this is.
  *
- * `background-position` is the whole trick, and it is exact: the element is a
+ * `background-position` is the whole trick, and it is exact: the layer is a
  * window `box.width × box.height` onto a copy of the panel drawn at the panel's
  * own size, slid back by exactly where the window is. There is no scaling
  * factor to get wrong and no second coordinate system — if the panel is
  * repainted, every mark moves with the paint under it.
+ *
+ * The re-laid painting and its shade are a LAYER of the mark rather than the
+ * mark itself, and that separation is load-bearing: a CSS filter takes the
+ * element and everything inside it, so a shade on the mark would darken
+ * whatever the mark carries by exactly the amount that makes the painting
+ * recede. With the shade on its own layer, a mark can be drawn on.
  *
  * The marks are not buttons. The archive has no destination of its own yet, and
  * a control that does nothing is worse than a mark that does not claim to be
@@ -76,16 +82,24 @@ export function ShelfArchive({ books, panelSrc, view }: ShelfArchiveProps): JSX.
               top: view.y + box.top,
               width: box.width,
               height: box.height,
-              // The same painting, at the same size, slid back by exactly where
-              // this window onto it sits. Aligned by construction.
-              backgroundImage: `url(${panelSrc})`,
-              backgroundSize: `${view.w}px ${view.h}px`,
-              backgroundPosition: `${-box.left}px ${-box.top}px`,
-              backgroundRepeat: 'no-repeat',
-              filter: BOOK_SHADE[book.kind],
               pointerEvents: 'none'
             }}
-          />
+          >
+            <div
+              data-shelf-paint=""
+              style={{
+                position: 'absolute',
+                inset: 0,
+                // The same painting, at the same size, slid back by exactly
+                // where this window onto it sits. Aligned by construction.
+                backgroundImage: `url(${panelSrc})`,
+                backgroundSize: `${view.w}px ${view.h}px`,
+                backgroundPosition: `${-box.left}px ${-box.top}px`,
+                backgroundRepeat: 'no-repeat',
+                filter: BOOK_SHADE[book.kind]
+              }}
+            />
+          </div>
         );
       })}
     </>

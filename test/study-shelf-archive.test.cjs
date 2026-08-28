@@ -171,6 +171,8 @@ const all = (n, pred, out = []) => {
 
 const shelfIn = (view) => all(view.tree, (n) => n.props?.['data-shelf-book'] !== undefined);
 const baizeIn = (view) => all(view.tree, (n) => n.props?.['data-baize-book'] !== undefined);
+/** The layer inside a mark that carries the re-laid painting and its shade. */
+const paintOf = (book) => all(book, (n) => n.props?.['data-shelf-paint'] !== undefined)[0];
 
 async function inhabit({ archived = [], tasks = [] }) {
   global.window = {
@@ -273,7 +275,9 @@ test('a mark is a piece of the wall itself, lined up by arithmetic', async () =>
   });
   const book = shelfIn(view)[0];
   assert.ok(book, 'no book');
-  const style = book.props.style;
+  const paint = paintOf(book);
+  assert.ok(paint, 'the mark has no layer of re-laid painting');
+  const style = paint.props.style;
   // Not a colour drawn over the painting — the painting, re-laid.
   assert.match(String(style.backgroundImage), /^url\(/,
     'the mark paints something other than the wall it is marking');
@@ -286,10 +290,39 @@ test('a mark is a piece of the wall itself, lined up by arithmetic', async () =>
   const [bgW, bgH] = String(style.backgroundSize).split(' ').map(px);
   const [offX, offY] = String(style.backgroundPosition).split(' ').map(px);
   assert.ok(bgW > 0 && bgH > 0, `the copy has no size (${style.backgroundSize})`);
-  assert.equal(offX, -px(style.left), 'the copy is slid to the wrong column of the wall');
-  assert.equal(offY, -px(style.top), 'the copy is slid to the wrong shelf');
+  // The window's own position is on the mark; the copy inside it is slid back
+  // by exactly that much.
+  const where = book.props.style;
+  assert.equal(offX, -px(where.left), 'the copy is slid to the wrong column of the wall');
+  assert.equal(offY, -px(where.top), 'the copy is slid to the wrong shelf');
   assert.ok(Math.abs(bgW / bgH - 1568 / 672) < 0.01,
     `the copy is drawn at ${bgW}x${bgH}, which is not the panel's shape`);
+});
+
+/**
+ * The darkening is a LAYER of the mark, not the mark itself.
+ *
+ * A CSS filter takes the element and everything inside it, so a shade declared
+ * on the mark would darken whatever the mark comes to carry — a number, a
+ * label, a band — by exactly the amount that makes the painting behind it
+ * recede. Anything printed on a spine would then be readable only by accident,
+ * and the colour it was given would not be the colour on screen.
+ */
+test('a mark darkens the paint on a layer of its own, not everything it carries', async () => {
+  const view = await inhabit({
+    tasks: [{ id: 'T-1', status: 'done', title: 'the seventh folio', dependsOn: [],
+      createdAt: new Date().toISOString() }]
+  });
+  const book = shelfIn(view)[0];
+  assert.ok(book, 'no book');
+  assert.ok(!book.props.style?.filter,
+    'the shade is on the mark itself, so everything the mark carries is darkened with it');
+  const paint = paintOf(book);
+  assert.ok(paint, 'the mark has no layer of re-laid painting');
+  assert.match(String(paint.props.style.filter), /brightness\(0?\.\d+\)/,
+    'the paint layer does not darken');
+  assert.equal(all(paint, () => true).length, 1,
+    'the darkened layer has something inside it, which is darkened with it');
 });
 
 test('the darkening is measured against the wall it actually lands on', () => {
