@@ -40,6 +40,8 @@ export interface SceneAgent {
   /** Absent when this assistant has no card on the ledger. */
   bookState?: BookState;
   bookTitle?: string;
+  /** The commission the book stands for, so pressing it can open that one. */
+  bookTaskId?: string;
   /** '' renders nothing — see SpeechScroll. */
   speech: string;
 }
@@ -122,13 +124,13 @@ export function speechFor(agent: Pick<Agent, 'action' | 'lastPrompt'>): string {
  * is the thing worth noticing from across the study.
  */
 export function bookFor(tasks: readonly HiveTask[], agentId: string):
-{ bookState?: BookState; bookTitle?: string } {
+{ bookState?: BookState; bookTitle?: string; bookTaskId?: string } {
   const mine = tasks.filter((t) => t.assignee === agentId);
   for (const [status, book] of [
     ['blocked', 'sealed'], ['doing', 'open'], ['todo', 'closed']
   ] as const) {
     const hit = mine.find((t) => t.status === status);
-    if (hit) return { bookState: book, bookTitle: hit.title };
+    if (hit) return { bookState: book, bookTitle: hit.title, bookTaskId: hit.id };
   }
   return {};
 }

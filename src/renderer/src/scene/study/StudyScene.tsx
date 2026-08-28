@@ -463,7 +463,7 @@ export function placeDepth(stackIndex: number): number {
 export const LOOKED_AT_Z = STACK_DEEPEST + 1;
 
 /** One assistant's place setting: card, book, and what they are saying. */
-function DeskPlace({ agent, desk, volume, raised, onLook, onSelect }: {
+function DeskPlace({ agent, desk, volume, raised, onLook, onSelect, onOpenTask }: {
   agent: SceneAgent;
   desk: Box;
   /** The book the painting has already put on this desk, or null. */
@@ -471,6 +471,8 @@ function DeskPlace({ agent, desk, volume, raised, onLook, onSelect }: {
   raised: boolean;
   onLook: (looking: boolean) => void;
   onSelect: () => void;
+  /** Opens the commission the book on this desk stands for. */
+  onOpenTask: (id: string) => void;
 }): JSX.Element {
   const { card, book, scroll } = deskLayout(desk, volume);
   return (
@@ -501,7 +503,15 @@ function DeskPlace({ agent, desk, volume, raised, onLook, onSelect }: {
         onLook={onLook}
       />
       {agent.bookState
-        ? <DeskBook state={agent.bookState} title={agent.bookTitle} box={book} />
+        ? (
+          <DeskBook
+            state={agent.bookState}
+            title={agent.bookTitle}
+            taskId={agent.bookTaskId}
+            onOpen={onOpenTask}
+            box={book}
+          />
+        )
         : null}
     </div>
   );
@@ -727,6 +737,7 @@ export function StudyScene(): JSX.Element {
             onLook={(looking: boolean) =>
               setLookingAt((was) => (looking ? agent.id : was === agent.id ? null : was))}
             onSelect={() => select(agent.id)}
+            onOpenTask={openTaskDetail}
           />
         ));
     });
