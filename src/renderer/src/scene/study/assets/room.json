@@ -84,7 +84,7 @@
       "_lights": "Three chandeliers on the far wall, and the fire on the fireplace grate. `kind` says which light burns as which: the hearth is a prop in this room rather than a room of its own, so nothing about the parlour itself says which of its four lights is the fire.",
       "lightPoints": [
         { "x": 0.345, "y": 0.155 }, { "x": 0.505, "y": 0.075 }, { "x": 0.665, "y": 0.155 },
-        { "x": 0.093, "y": 0.700, "kind": "hearth" }
+        { "x": 0.100, "y": 0.640, "kind": "hearth" }
       ]
     }
   ]
