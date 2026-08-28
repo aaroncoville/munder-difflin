@@ -83,7 +83,7 @@ const boxOf = ({ room, berth }) => ({
 function crowded() {
   const desks = deskBerths(studyRoom);
   const roster = Array.from({ length: desks.length * TIMES_OVER }, (_, i) => agent(`w-${i}`));
-  const scene = projectScene(roster, [], [], 0);
+  const scene = projectScene(roster, [], 0);
   return scene.agents.map((a) => {
     const seat = seatOf.get(a.berthId);
     assert.ok(seat, `${a.berthId} is a berth in the house`);

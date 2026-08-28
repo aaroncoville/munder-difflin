@@ -439,17 +439,55 @@ function useHouseBox(hostRef: React.RefObject<HTMLDivElement | null>): { w: numb
   return box;
 }
 
+/**
+ * Where a place setting is drawn in the pile at its desk.
+ *
+ * A shared desk deals each occupant back from the one below it, and the one
+ * dealt back is drawn OVER the one it was dealt back from — so the card at the
+ * bottom of the pile shows only the band the others leave clear. Aaron asked
+ * for that band to be enough: hovering it should bring the buried card
+ * forward, and moving away should put it back exactly where it was.
+ *
+ * So it is a z-order and nothing else. Nothing moves, nothing resizes, and no
+ * neighbour is pushed aside — the buried card is drawn whole already, it is
+ * merely underneath, and being looked at is the only thing that changes.
+ *
+ * The depth is capped for the same reason `stackedBerth` caps the recession:
+ * the seating will hand out depths past it, and they share a place.
+ */
+export function placeDepth(stackIndex: number): number {
+  return Math.min(Math.max(stackIndex, 0), STACK_DEEPEST);
+}
+
+/** Above every place in the pile, and only ever one at a time. */
+export const LOOKED_AT_Z = STACK_DEEPEST + 1;
+
 /** One assistant's place setting: card, book, and what they are saying. */
-function DeskPlace({ agent, desk, volume, onSelect }: {
+function DeskPlace({ agent, desk, volume, raised, onLook, onSelect }: {
   agent: SceneAgent;
   desk: Box;
   /** The book the painting has already put on this desk, or null. */
   volume: Box | null;
+  raised: boolean;
+  onLook: (looking: boolean) => void;
   onSelect: () => void;
 }): JSX.Element {
   const { card, book, scroll } = deskLayout(desk, volume);
   return (
-    <>
+    <div
+      data-study-place={agent.id}
+      style={{
+        position: 'absolute',
+        inset: 0,
+        zIndex: raised ? LOOKED_AT_Z : placeDepth(agent.stackIndex),
+        // The layer spans the whole room, because that is the frame every piece
+        // in it is positioned against. It must therefore take no pointer at
+        // all, or the room underneath would stop being clickable everywhere a
+        // place setting is drawn — which is everywhere there is one. The pieces
+        // that ARE pressed take the pointer back themselves.
+        pointerEvents: 'none'
+      }}
+    >
       <SpeechScroll text={agent.speech} box={scroll} />
       <AgentCard
         name={agent.name}
@@ -460,11 +498,12 @@ function DeskPlace({ agent, desk, volume, onSelect }: {
         })}
         box={card}
         onClick={onSelect}
+        onLook={onLook}
       />
       {agent.bookState
         ? <DeskBook state={agent.bookState} title={agent.bookTitle} box={book} />
         : null}
-    </>
+    </div>
   );
 }
 
@@ -605,6 +644,8 @@ export function StudyScene(): JSX.Element {
   const requestCommandCenterTab = useStore((s) => s.requestCommandCenterTab);
   const openTaskDetail = useStore((s) => s.openTaskDetail);
   const godId = useStore((s) => s.agents.find((a) => a.isGod)?.id);
+  /** The one place setting being looked at, if any — see `DeskPlace`. */
+  const [lookingAt, setLookingAt] = useState<string | null>(null);
 
   /** The petitions are the god's to answer, so opening them selects him too —
    *  the same pair of actions the office floor's ASK ME board fires. */
@@ -667,6 +708,9 @@ export function StudyScene(): JSX.Element {
             agent={agent}
             desk={stackedBerth(desk, agent.stackIndex)}
             volume={volume}
+            raised={lookingAt === agent.id}
+            onLook={(looking: boolean) =>
+              setLookingAt((was) => (looking ? agent.id : was === agent.id ? null : was))}
             onSelect={() => select(agent.id)}
           />
         ));

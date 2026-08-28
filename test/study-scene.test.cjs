@@ -580,6 +580,92 @@ test('assistants sharing a desk are dealt out, not stacked out of sight', async 
     'every card in the crowd selects its own assistant');
 });
 
+/**
+ * The card at the back of a shared desk can be brought forward by looking at it.
+ *
+ * With overflow seating a berth holds a pile, and the card underneath shows
+ * only the band the one above it leaves clear. Aaron: *"it is definitely hard
+ * to really see the agent in the back. Is it possible to bring the one in the
+ * back to the foreground when the mouse is hovering over the showing bit of the
+ * back cards? And then when the mouse moves away it goes back."*
+ *
+ * So it is a z-order change and nothing else — no size, no position, no motion
+ * that would shove a neighbour aside. What is asserted here is both halves of
+ * that: the raise happens, and the geometry does not.
+ */
+async function shareADesk() {
+  const { deskBerths } = loadTs('src/renderer/src/scene/study/roomManifest.ts');
+  const crowd = deskBerths(studyRoom).length + 1;
+  const { view } = await inhabit({
+    agents: Array.from({ length: crowd }, (_, i) => person(`w-${i}`))
+  });
+  const placeOf = (id) => one(view.tree, (n) => n.props?.['data-study-place'] === id);
+  const cardOf = (id) => one(placeOf(id), (n) => n.props?.['data-study-card'] === id.toUpperCase());
+  // The first assistant and the last one share the first desk: the seating
+  // wraps round rather than piling onto whichever desk it ran out at.
+  return { view, front: `w-${crowd - 1}`, back: 'w-0', placeOf, cardOf };
+}
+
+const zOf = (node) => node.props.style.zIndex;
+const boxOf = (node) => {
+  const { left, top, width, height } = node.props.style;
+  return { left, top, width, height };
+};
+
+test('hovering the sliver of a buried card brings it to the front', async () => {
+  const { view, front, back, placeOf, cardOf } = await shareADesk();
+  const stacked = zOf(placeOf(back));
+  assert.ok(zOf(placeOf(front)) > stacked,
+    'the card dealt back is not drawn over the one it was dealt back from');
+
+  const resting = boxOf(cardOf(back));
+  const neighbour = boxOf(cardOf(front));
+  cardOf(back).props.onMouseEnter();
+  view.render();
+  assert.ok(zOf(placeOf(back)) > zOf(placeOf(front)),
+    'hovering the buried card left it buried');
+  assert.deepEqual(boxOf(cardOf(back)), resting,
+    'the raise moved the card as well as bringing it forward');
+  assert.deepEqual(boxOf(cardOf(front)), neighbour,
+    'raising one card shoved the one it was under');
+
+  cardOf(back).props.onMouseLeave();
+  view.render();
+  assert.equal(zOf(placeOf(back)), stacked, 'the card did not go back into the pile');
+  assert.ok(zOf(placeOf(front)) > zOf(placeOf(back)));
+});
+
+test('reaching a buried card by keyboard raises it the same way', async () => {
+  // The cards are focusable — `role="button"` with a tab stop — so a keyboard
+  // user arrives at the buried one exactly as a pointer does, and would
+  // otherwise be looking at a card they cannot see.
+  const { view, front, back, placeOf, cardOf } = await shareADesk();
+  const stacked = zOf(placeOf(back));
+  cardOf(back).props.onFocus();
+  view.render();
+  assert.ok(zOf(placeOf(back)) > zOf(placeOf(front)), 'focus left the card buried');
+  cardOf(back).props.onBlur();
+  view.render();
+  assert.equal(zOf(placeOf(back)), stacked);
+});
+
+test('the layer a place setting is raised in does not eat the room underneath', async () => {
+  // The raise needs a stacking context, and the cheapest one spans the whole
+  // room. A layer that took the pointer would make the room unclickable
+  // wherever a place setting is drawn — which is everywhere there is one.
+  const { view, back, placeOf, cardOf } = await shareADesk();
+  assert.equal(placeOf(back).props.style.pointerEvents, 'none',
+    'the place setting layer covers the room and takes the pointer');
+  assert.equal(cardOf(back).props.style.pointerEvents, 'auto',
+    'the card is inside a layer that takes no pointer, and takes none itself');
+  const book = one(placeOf(back), (n) => n.props?.['data-book-state'] !== undefined);
+  if (book) {
+    assert.equal(book.props.style.pointerEvents, 'auto',
+      'the desk book lost the tooltip it carries');
+  }
+  assert.ok(view);
+});
+
 test('a crowded house keeps every card inside the room it is drawn in', async () => {
   // Three times the desks: whatever the seating does with the overflow, a card
   // dealt off the edge of its own panel is clipped away by the panel's

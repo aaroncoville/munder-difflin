@@ -38,6 +38,9 @@ export function DeskBook({ state, title, box }: DeskBookProps): JSX.Element {
     top: box.top,
     width: box.width,
     height: box.height,
+    // Inside a layer that takes no pointer — see the place setting in
+    // StudyScene — so the book takes it back, or it loses its own tooltip.
+    pointerEvents: 'auto',
     transition: 'left var(--cth-dur-slow) var(--cth-ease-glide), top var(--cth-dur-slow) var(--cth-ease-glide)'
   };
   return (

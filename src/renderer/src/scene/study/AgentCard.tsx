@@ -51,6 +51,16 @@ export interface AgentCardProps {
   portraitSrc?: string;
   box: Box;
   onClick?: () => void;
+  /**
+   * Called with `true` while the pointer is over the card or the keyboard is
+   * on it, and `false` when it leaves.
+   *
+   * A card at a shared desk is dealt back behind the one above it and shows
+   * only the band that one leaves clear. Telling the scene when the card is
+   * being looked at is what lets it bring that card forward — the card itself
+   * cannot, because the order it is drawn in is not its own to change.
+   */
+  onLook?: (looking: boolean) => void;
 }
 
 const STATUS_COLOR: Record<CardStatus, string> = {
@@ -67,7 +77,7 @@ export function monogramFor(name: string): string {
 }
 
 export function AgentCard({
-  name, role, status, portraitSrc, box, onClick
+  name, role, status, portraitSrc, box, onClick, onLook
 }: AgentCardProps): JSX.Element {
   const interactive = typeof onClick === 'function';
   const root: CSSProperties = {
@@ -79,6 +89,10 @@ export function AgentCard({
     display: 'flex',
     flexDirection: 'column',
     overflow: 'hidden',
+    // The place setting is drawn in a layer that takes no pointer, so that the
+    // room underneath stays clickable everywhere a setting is laid. The card is
+    // the thing in it that IS pressed, so it takes the pointer back.
+    pointerEvents: 'auto',
     boxSizing: 'border-box',
     padding: 2,
     background: 'var(--cth-paper-100)',
@@ -114,6 +128,16 @@ export function AgentCard({
             onClick?.();
           },
           title: role ? `${name} — ${role}` : name
+        }
+        : {})}
+      {...(onLook
+        ? {
+          onMouseEnter: () => onLook(true),
+          onMouseLeave: () => onLook(false),
+          // The keyboard reaches a buried card exactly as the pointer does —
+          // it is a tab stop — and would otherwise land on one nobody can see.
+          onFocus: () => onLook(true),
+          onBlur: () => onLook(false)
         }
         : {})}
       data-study-card={name}
