@@ -605,12 +605,10 @@ export function StudyScene(): JSX.Element {
       );
     }
     if (kind === 'shelves') {
-      // Finished work, darkening the painted volumes it lands on. The shelves
-      // room's own marked points are where the painting puts its shelves, so a
-      // book stands on one rather than at a guessed coordinate.
-      return (
-        <ShelfArchive books={scene.archive} shelves={room.lightPoints ?? []} view={view} />
-      );
+      // Finished work, darkening the painted volumes it lands on — which are
+      // rectangles of this very panel, so the mark is one of the wall's own
+      // books rather than a book drawn over the wall.
+      return <ShelfArchive books={scene.archive} panelSrc={ROOM_SRC[room.image]} view={view} />;
     }
     if (kind === 'writingDesk' && scene.openAskCount > 0) {
       const plate = berth ? berthToBox(berth, view) : { width: view.w, height: view.h };

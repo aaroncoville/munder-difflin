@@ -47,8 +47,61 @@
  * differ only in case are a trap regardless of who resolves them first.
  */
 
-/** How many books the wall can carry and still be read across a room. */
-export const ARCHIVE_MAX = 24;
+/**
+ * Where each volume the wall can mark stands, normalized to the shelves panel.
+ *
+ * These are the painted books themselves. Aaron: *"the library books being
+ * archived don't even line up with the background books on the shelves — I was
+ * thinking you'd have the same image but with pieces darker that you could
+ * activate in that layer, so the actual background comes alive. These overlay
+ * books are doing more harm than good."* He is right, and the reason the old
+ * ones could not line up is structural: they were rectangles placed at the
+ * room's LIGHT points, which mark the shelf lamps, so a mark landed near a
+ * shelf and never on a spine. A drawn book can only ever approximate a painted
+ * one.
+ *
+ * So there is nothing drawn any more. Each entry below is one spine in
+ * `room-shelves.png`, read off the painting: six shelf rows, four volumes on
+ * each, spread along the row and kept clear of the ladder and the sleeping cat,
+ * which are the two things on that wall that are not books. Archiving darkens
+ * the painting inside one of these rectangles, so the volume that stands out is
+ * a volume the painter put there.
+ *
+ * The order is the order they are handed out in — along each shelf, top row
+ * first, which is how a wall of books fills.
+ *
+ * Read off the painting rather than authored freehand: each rectangle is a
+ * column of that panel where the paint is a spine from the shelf above it right
+ * down to the ledge, which is why the marks sit flush with the volumes either
+ * side of them rather than hovering somewhere near a shelf.
+ */
+export const SHELF_BOOKS: readonly { x: number; y: number; w: number; h: number }[] = [
+  { x: 0.0121, y: 0.0342, w: 0.0108, h: 0.1116 },
+  { x: 0.6084, y: 0.0268, w: 0.0179, h: 0.1190 },
+  { x: 0.8176, y: 0.0461, w: 0.0108, h: 0.0997 },
+  { x: 0.1091, y: 0.1964, w: 0.0128, h: 0.1071 },
+  { x: 0.5536, y: 0.1905, w: 0.0166, h: 0.1131 },
+  { x: 0.7902, y: 0.1979, w: 0.0134, h: 0.1057 },
+  { x: 0.9732, y: 0.1830, w: 0.0115, h: 0.1205 },
+  { x: 0.1301, y: 0.3512, w: 0.0166, h: 0.1131 },
+  { x: 0.3661, y: 0.3557, w: 0.0089, h: 0.1086 },
+  { x: 0.5835, y: 0.3408, w: 0.0102, h: 0.1235 },
+  { x: 0.7615, y: 0.3452, w: 0.0217, h: 0.1190 },
+  { x: 0.1091, y: 0.5074, w: 0.0121, h: 0.1146 },
+  { x: 0.3642, y: 0.5060, w: 0.0115, h: 0.1161 },
+  { x: 0.6084, y: 0.4970, w: 0.0198, h: 0.1250 },
+  { x: 0.0765, y: 0.6563, w: 0.0198, h: 0.1280 },
+  { x: 0.3482, y: 0.6652, w: 0.0198, h: 0.1190 },
+  { x: 0.6282, y: 0.6592, w: 0.0102, h: 0.1250 },
+  { x: 0.8176, y: 0.6741, w: 0.0102, h: 0.1101 },
+  { x: 0.1467, y: 0.8289, w: 0.0102, h: 0.1131 },
+  { x: 0.3782, y: 0.8170, w: 0.0121, h: 0.1250 },
+  { x: 0.5810, y: 0.8155, w: 0.0134, h: 0.1265 },
+  { x: 0.9700, y: 0.8363, w: 0.0128, h: 0.1057 }
+];
+
+/** How many books the wall can carry: one per painted volume it can mark. */
+export const ARCHIVE_MAX = SHELF_BOOKS.length;
 
 /** How far back the wall remembers, for the things that carry a date. */
 export const ARCHIVE_WINDOW_DAYS = 14;
@@ -90,62 +143,19 @@ export function shelfBooks(
 export interface Box { left: number; top: number; width: number; height: number }
 
 /**
- * How wide and tall a book is, as a fraction of the panel.
+ * One painted volume's rectangle, projected onto the box the room draws into.
  *
- * Wider than a painted spine on this wall, deliberately. The house is drawn at
- * its natural size and letterboxed into the window as one scaled drawing, so a
- * mark 44 panel pixels across arrives about ten pixels wide — the same as the
- * spines painted either side of it, which is exactly how a marked volume
- * disappears into the shelf it is standing on.
+ * Total in the index, because the count is data: `ARCHIVE_MAX` bounds the
+ * archive to the number of volumes the wall has, but a caller that asks for one
+ * past the end should get a book rather than `undefined` geometry that renders
+ * as a mark of no size at a coordinate of NaN.
  */
-const BOOK = { w: 0.042, h: 0.20 };
-
-/**
- * Where the nth book sits on the shelf wall.
- *
- * The positions come from the room's OWN light points, which the manifest has
- * carried since the rooms were painted and which sit on the painted shelf rows
- * — so a book lands on a shelf in the picture rather than at a coordinate
- * somebody guessed at. Past the last marked shelf it walks along the row it is
- * on, which is what a real shelf does when you put another book on it.
- *
- * A shelves room with no marked points is a real state — `room.json` is data
- * and the art track revises it — so it falls back to an even row rather than
- * dividing by zero and taking the Study down.
- */
-export function bookSlot(
-  index: number,
-  view: { w: number; h: number },
-  shelves: readonly { x: number; y: number }[]
-): Box {
-  const w = view.w * BOOK.w;
-  const h = view.h * BOOK.h;
-  const clamp = (v: number, hi: number): number => Math.max(0, Math.min(v, hi));
-
-  if (shelves.length === 0) {
-    // No marked shelves: lay them along the middle of the wall, spaced by their
-    // own width, and wrap before walking off the edge.
-    const perRow = Math.max(1, Math.floor(view.w / (w * 1.6)));
-    const col = index % perRow;
-    const row = Math.floor(index / perRow);
-    return {
-      left: clamp(col * w * 1.6, view.w - w),
-      top: clamp(view.h * 0.3 + row * h * 1.1, view.h - h),
-      width: w,
-      height: h
-    };
-  }
-
-  const shelf = shelves[index % shelves.length];
-  // Each pass around the shelves steps the book along that shelf, so the
-  // twelfth book stands beside the second rather than on top of it.
-  const pass = Math.floor(index / shelves.length);
+export function bookSlot(index: number, view: { w: number; h: number }): Box {
+  const book = SHELF_BOOKS[((index % SHELF_BOOKS.length) + SHELF_BOOKS.length) % SHELF_BOOKS.length];
   return {
-    left: clamp(shelf.x * view.w + pass * w * 1.25, view.w - w),
-    // The point marks the light on the shelf; the book stands ON that shelf, so
-    // it hangs below the mark rather than being centred on it.
-    top: clamp(shelf.y * view.h - h * 0.15, view.h - h),
-    width: w,
-    height: h
+    left: book.x * view.w,
+    top: book.y * view.h,
+    width: book.w * view.w,
+    height: book.h * view.h
   };
 }

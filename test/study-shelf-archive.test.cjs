@@ -1,15 +1,20 @@
 'use strict';
 /**
- * Finished work, lit on the shelf wall.
+ * Finished work, marked on the shelf wall.
  *
- * The shelves room is a painting of pale books, so an archived thing DARKENS
- * one of them. That is the inverse of the usual "light it up" and it is the
- * right way round here: against light books, darkening is what reads as
- * emphasis. The code says `darken` for that reason and not by accident.
+ * An archived thing DARKENS one of the painted volumes. That is the inverse of
+ * the usual "light it up" and it is the right way round here: the wall is a lit
+ * one, so a hole in it is what the eye finds.
  *
- * The bound is the part worth pinning hardest, because the failure mode is
- * quiet: a wall that keeps everything looks correct on the day it ships and is
- * an unreadable smear a month later.
+ * The part that has to be held is that the mark lands on a BOOK. Nothing about
+ * a rectangle says whether the paint inside it is a spine or a shelf ledge, and
+ * the previous version placed its marks at the room's light points — which mark
+ * the lamps — so every one of them stood beside a book rather than on one and
+ * the whole wall read as smudges. The pixels are the only thing that knows.
+ *
+ * The bound is the other part, because its failure mode is quiet: a wall that
+ * keeps everything looks correct on the day it ships and is an unreadable smear
+ * a month later.
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -58,30 +63,84 @@ test('an empty archive is an empty wall, not a crash', () => {
   assert.deepEqual(S.shelfBooks([], NOW), []);
 });
 
-test('every book lands on a shelf in the painting, and none overlap', () => {
-  const view = { x: 0, y: 0, w: 800, h: 343 };
-  const shelves = Array.from({ length: 10 }, (_, i) =>
-    ({ x: 0.1 + (i % 4) * 0.25, y: 0.3 + Math.floor(i / 4) * 0.28 }));
-  const boxes = Array.from({ length: S.ARCHIVE_MAX }, (_, i) => S.bookSlot(i, view, shelves));
-  for (const b of boxes) {
-    assert.ok(b.left >= 0 && b.top >= 0, 'a book is off the top or left of the panel');
-    assert.ok(b.left + b.width <= view.w + 0.01, 'a book is off the right of the panel');
-    assert.ok(b.top + b.height <= view.h + 0.01, 'a book is off the bottom of the panel');
-    assert.ok(b.width > 0 && b.height > 0);
+const readPng = require('./read-png.cjs');
+const fs = require('node:fs');
+const path = require('node:path');
+const at = (p) => path.resolve(__dirname, '..', p);
+const SHELVES = 'src/renderer/src/scene/study/assets/room-shelves.png';
+
+/**
+ * Whether a colour is the shelving rather than a book on it.
+ *
+ * The carcass, the ledges and the ladder are all the same warm mid-brown, and
+ * every volume painted on this wall is either much darker or much bluer than
+ * that. Two coarse tests separate them by a wide margin.
+ */
+const isShelving = ([r, g, b]) => r > b + 30 && r > 62;
+
+test('every volume the wall can mark is a book somebody painted', () => {
+  const panel = readPng(at(SHELVES));
+  assert.equal(S.SHELF_BOOKS.length, S.ARCHIVE_MAX, 'the wall claims slots it has no books for');
+  for (const [i, book] of S.SHELF_BOOKS.entries()) {
+    let shelving = 0;
+    let sampled = 0;
+    for (let y = book.y * panel.height; y < (book.y + book.h) * panel.height; y += 2) {
+      for (let x = book.x * panel.width; x < (book.x + book.w) * panel.width; x += 2) {
+        sampled++;
+        if (isShelving(panel.at(x, y))) shelving++;
+      }
+    }
+    assert.ok(sampled > 0, `volume ${i} covers no paint at all`);
+    assert.ok(shelving / sampled < 0.4,
+      `volume ${i} is ${Math.round((shelving / sampled) * 100)}% shelving — `
+      + 'it is standing on a ledge or a post rather than on a spine');
   }
-  // The first ten sit on the ten shelf positions the painting actually has, so
-  // no two of them are the same book darkened twice.
-  const first = boxes.slice(0, 10).map((b) => `${Math.round(b.left)},${Math.round(b.top)}`);
-  assert.equal(new Set(first).size, 10, 'two books were shelved in the same place');
 });
 
-test('a wall with no marked shelves still shelves its books', () => {
-  // room.json is data and the art track revises it. A shelves room that lost
-  // its light points must not take the Study down with it.
+test('finding a book under a mark is a fact about the mark, not about the paint', () => {
+  // Without this, a probe loose enough to call every dark pixel a book would
+  // pass the test above wherever the marks sat.
+  const panel = readPng(at(SHELVES));
+  let shelving = 0;
+  let sampled = 0;
+  for (let y = 0; y < panel.height; y += 3) {
+    for (let x = 0; x < panel.width; x += 3) {
+      sampled++;
+      if (isShelving(panel.at(x, y))) shelving++;
+    }
+  }
+  assert.ok(shelving / sampled > 0.2,
+    `only ${Math.round((shelving / sampled) * 100)}% of the wall reads as shelving, `
+    + 'so missing it says nothing');
+});
+
+test('no two archived things darken the same volume', () => {
   const view = { x: 0, y: 0, w: 800, h: 343 };
-  const b = S.bookSlot(3, view, []);
+  const boxes = Array.from({ length: S.ARCHIVE_MAX }, (_, i) => S.bookSlot(i, view));
+  for (const b of boxes) {
+    assert.ok(b.left >= 0 && b.top >= 0, 'a volume is off the top or left of the panel');
+    assert.ok(b.left + b.width <= view.w + 0.01, 'a volume is off the right of the panel');
+    assert.ok(b.top + b.height <= view.h + 0.01, 'a volume is off the bottom of the panel');
+    assert.ok(b.width > 0 && b.height > 0);
+  }
+  for (const a of boxes) {
+    for (const b of boxes) {
+      if (a === b) continue;
+      const apart = a.left + a.width <= b.left || b.left + b.width <= a.left
+        || a.top + a.height <= b.top || b.top + b.height <= a.top;
+      assert.ok(apart, 'two archived things were given the same painted volume');
+    }
+  }
+});
+
+test('a slot past the last volume is still a volume, not NaN geometry', () => {
+  // ARCHIVE_MAX bounds the archive to the wall's capacity, but the count is
+  // data: a caller reading past the end must get a book rather than an
+  // undefined rectangle that renders as a mark of no size at NaN.
+  const view = { x: 0, y: 0, w: 800, h: 343 };
+  const b = S.bookSlot(S.ARCHIVE_MAX + 3, view);
   assert.ok(Number.isFinite(b.left) && Number.isFinite(b.top), 'NaN geometry');
-  assert.ok(b.left >= 0 && b.left + b.width <= view.w + 0.01);
+  assert.ok(b.width > 0 && b.height > 0);
 });
 
 // ─── In the scene ───────────────────────────────────────────────────────────
@@ -150,53 +209,50 @@ test('unfinished work is not on the shelf', async () => {
   assert.equal(all(view.tree, (n) => n.props?.['data-shelf-book'] !== undefined).length, 0);
 });
 
-test('the books darken the painting rather than covering it', async () => {
+test('a mark is a piece of the wall itself, lined up by arithmetic', async () => {
   const view = await inhabit({ archived: [person('gone-1', { archived: true })] });
   const book = all(view.tree, (n) => n.props?.['data-shelf-book'] !== undefined)[0];
   assert.ok(book, 'no book');
-  // A book drawn as an opaque patch would hide the painting it is meant to be
-  // pointing at; multiply darkens what is already there.
-  assert.equal(book.props.style.mixBlendMode, 'multiply');
+  const style = book.props.style;
+  // Not a colour drawn over the painting — the painting, re-laid.
+  assert.match(String(style.backgroundImage), /^url\(/,
+    'the mark paints something other than the wall it is marking');
+  assert.match(String(style.filter), /brightness\(0?\.\d+\)/,
+    'the mark does not darken what it lands on');
+  // The alignment is the whole point, and it is arithmetic rather than an eye:
+  // a window of the panel drawn at the panel's own size, slid back by exactly
+  // where the window sits. Any other pair of numbers shows the wrong books.
+  const px = (v) => Math.round(parseFloat(String(v)));
+  const [bgW, bgH] = String(style.backgroundSize).split(' ').map(px);
+  const [offX, offY] = String(style.backgroundPosition).split(' ').map(px);
+  assert.ok(bgW > 0 && bgH > 0, `the copy has no size (${style.backgroundSize})`);
+  assert.equal(offX, -px(style.left), 'the copy is slid to the wrong column of the wall');
+  assert.equal(offY, -px(style.top), 'the copy is slid to the wrong shelf');
+  assert.ok(Math.abs(bgW / bgH - 1568 / 672) < 0.01,
+    `the copy is drawn at ${bgW}x${bgH}, which is not the panel's shape`);
 });
 
 test('the darkening is measured against the wall it actually lands on', () => {
-  // The wall this was designed for was assumed to be painted PALE, and it is
-  // not: room-shelves.png averages a luma of 61 out of 255, and the slots the
-  // books stand in average about 95. Multiplying a dark painting by a mid-tone
-  // accent moves it a few percent, which is why a marked volume was invisible
-  // among the painted spines. So the assertion is not "it multiplies" — it is
-  // how far the pixels under a book actually move.
-  const readPng = require('./read-png.cjs');
-  const fs = require('node:fs');
-  const path = require('node:path');
-  const at = (p) => path.resolve(__dirname, '..', p);
-  const png = readPng(at('src/renderer/src/scene/study/assets/room-shelves.png'));
+  // Not "it declares a filter" — how far the pixels under a mark actually move.
+  // The wall this was first designed for was assumed to be painted pale and is
+  // not: room-shelves.png averages a luma of 61 out of 255, and a mid-tone
+  // accent multiplied over that moves it a few percent, which is why a marked
+  // volume could not be found among the painted spines.
+  const png = readPng(at(SHELVES));
   const room = JSON.parse(fs.readFileSync(
     at('src/renderer/src/scene/study/assets/room.json'), 'utf8'))
     .rooms.find((r) => r.id === 'shelves');
-  const css = fs.readFileSync(
-    at('src/renderer/src/design/occult/occult-tokens.css'), 'utf8')
-    .replace(/\/\*[\s\S]*?\*\//g, '');
-  const token = (name) => {
-    const m = css.match(new RegExp(`${name}:\\s*#([0-9A-Fa-f]{6})`));
-    assert.ok(m, `${name} is not declared in the occult theme`);
-    return [0, 2, 4].map((i) => parseInt(m[1].slice(i, i + 2), 16));
-  };
   const luma = ([r, g, b]) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
 
   const src = loadTs('src/renderer/src/scene/study/ShelfArchive.tsx');
   const view = { x: 0, y: 0, w: room.natural.w, h: room.natural.h };
-  const box = S.bookSlot(0, view, room.lightPoints);
+  const box = S.bookSlot(0, view);
 
-  // Both kinds, because they were the two ends of the problem: the accents this
-  // started on moved the slot 55% (lilac) and 40% (peach), and the peach one
-  // was invisible where the lilac was merely weak.
-  //
-  // The kinds come from the archive itself rather than from the tint table's
+  // The kinds come from the archive itself rather than from the shade table's
   // own keys. Reading the table's keys asks it whether it agrees with itself,
-  // which any table does; what a volume actually gets is `BOOK_TINT[kind]` for
+  // which any table does; what a volume actually gets is `BOOK_SHADE[kind]` for
   // a kind the projection produced, and a table keyed by some other word
-  // answers that with `undefined` — no background at all.
+  // answers that with `undefined` — no filter at all.
   const { archiveOf } = loadTs('src/renderer/src/scene/study/useSceneState.ts');
   const kinds = [...new Set(archiveOf(
     [{ id: 'a-1', name: 'gone' }],
@@ -207,9 +263,10 @@ test('the darkening is measured against the wall it actually lands on', () => {
     'the archive shelves something this test has never seen');
 
   for (const kind of kinds) {
-    const name = src.BOOK_TINT[kind];
-    assert.ok(name, `a ${kind} volume has no tint, so it paints as no mark at all`);
-    const tint = token(name.replace(/^var\(|\)$/g, ''));
+    const shade = src.BOOK_SHADE[kind];
+    assert.ok(shade, `a ${kind} volume has no shade, so it paints as no mark at all`);
+    const brightness = Number(/brightness\(([\d.]+)\)/.exec(shade)?.[1]);
+    assert.ok(brightness > 0 && brightness < 1, `${kind}'s shade does not darken: ${shade}`);
     let before = 0;
     let after = 0;
     let n = 0;
@@ -217,42 +274,19 @@ test('the darkening is measured against the wall it actually lands on', () => {
       for (let x = Math.round(box.left); x < Math.round(box.left + box.width); x++) {
         const px = png.at(x, y);
         before += luma(px);
-        after += luma(px.map((c, i) => (c * tint[i]) / 255));
+        after += luma(px.map((c) => c * brightness));
         n++;
       }
     }
-    assert.ok(n > 0, 'the book covers no pixels of the painting');
+    assert.ok(n > 0, 'the volume covers no pixels of the painting');
     const drop = 1 - after / before;
-    assert.ok(drop >= 0.7,
-      `a ${kind} volume darkens its slot by ${(drop * 100).toFixed(0)}% — `
-      + 'not enough to pick out among the painted spines');
+    assert.ok(drop >= 0.6,
+      `a ${kind} volume darkens its spine by ${(drop * 100).toFixed(0)}% — `
+      + 'not enough to pick out among the painted volumes either side of it');
   }
-});
 
-test('a marked volume is bigger than a painted spine, and carries a gilt edge', async () => {
-  // At the scale the house is drawn at, a mark 44 panel-px wide arrives about
-  // ten pixels across — the same as the spines painted either side of it, so
-  // it reads as one more of them. It has to be wider than they are, and it has
-  // to carry something no painted spine has.
-  const room = JSON.parse(require('node:fs').readFileSync(
-    require('node:path').resolve(__dirname, '..',
-      'src/renderer/src/scene/study/assets/room.json'), 'utf8'))
-    .rooms.find((r) => r.id === 'shelves');
-  const view = { x: 0, y: 0, w: room.natural.w, h: room.natural.h };
-  const box = S.bookSlot(0, view, room.lightPoints);
-  assert.ok(box.width >= view.w * 0.038, `a volume is ${box.width.toFixed(0)} panel px wide`);
-  assert.ok(box.height >= view.h * 0.18, `a volume is ${box.height.toFixed(0)} panel px tall`);
-
-  const scene = await inhabit({ archived: [person('gone-1', { archived: true })] });
-  const gilt = all(scene.tree, (n) => n.props?.['data-shelf-gilt'] !== undefined);
-  assert.equal(gilt.length, 1, 'the volume has no gilt edge of its own');
-  // A SIBLING of the darkening patch, not a child of it: `mix-blend-mode` on
-  // the patch makes it a blend group, so gilt drawn inside it would be
-  // multiplied too — and multiply cannot lighten, so the gilt would come out
-  // as one more shade of the dark it is supposed to stand against.
-  assert.notEqual(gilt[0].props.style.mixBlendMode, 'multiply',
-    'the gilt is inside the darkening, where it can only ever be dark');
-  const book = all(scene.tree, (n) => n.props?.['data-shelf-book'] !== undefined)[0];
-  assert.ok(gilt[0].props.style.width >= book.props.style.width * 0.15,
-    'the gilt edge is a hairline the house scale erases');
+  // ...and the two kinds are told apart, or the wall says only "something
+  // finished" where the design says who or what.
+  assert.notEqual(src.BOOK_SHADE.assistant, src.BOOK_SHADE.commission,
+    'a departed assistant and a concluded commission mark the wall identically');
 });
