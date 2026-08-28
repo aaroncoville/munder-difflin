@@ -7,11 +7,11 @@
  * This is the arithmetic behind showing it: which cards just moved, and where
  * the two ends of the flight are in the building's own coordinates.
  *
- * Pure on purpose. Both halves are the kind of thing that is unreviewable in a
- * running app — a flight that launches on the wrong card is indistinguishable
- * from one that launches on the right card the moment you look away, and a
- * flight that lands a room to the left is only wrong if you know where the room
- * was supposed to be. Neither needs a scene to check.
+ * The arithmetic is pure on purpose. Both halves are the kind of thing that is
+ * unreviewable in a running app — a flight that launches on the wrong card is
+ * indistinguishable from one that launches on the right card the moment you
+ * look away, and a flight that lands a room to the left is only wrong if you
+ * know where the room was supposed to be. Neither needs a scene to check.
  */
 import type { HiveTask } from '@/components/TasksKanban';
 
@@ -19,8 +19,17 @@ import type { HiveTask } from '@/components/TasksKanban';
 export type FlightTo = 'table' | 'shelf';
 
 export interface Flight {
-  /** This flight's own key. The same commission can fly more than once — it can
-   *  be blocked, freed, and blocked again — so the commission's id is not one. */
+  /**
+   * This flight's own key, unique to the launch and to nothing else.
+   *
+   * The same commission can fly more than once — blocked, freed, and blocked
+   * again — and can do it faster than a flight lasts, so the second book takes
+   * off while the first is still crossing the house. Anything derived from the
+   * commission and the move it made gives those two books the same name, which
+   * is a duplicate key in the sky and, worse, a landing that removes both: the
+   * sky is a list filtered BY this. Hence a serial number rather than a
+   * description. The prefix is there to keep it readable in a devtools tree.
+   */
   id: string;
   taskId: string;
   /** Whose desk it leaves. Without an assistant there is no desk to leave. */
@@ -36,6 +45,19 @@ export type Seen = ReadonlyMap<string, HiveTask['status']>;
 export function seenStatuses(tasks: readonly HiveTask[]): Seen {
   return new Map(tasks.map((t) => [t.id, t.status]));
 }
+
+/**
+ * Launches so far, which is the only thing about a flight that is not a
+ * function of the ledger.
+ *
+ * A key has to survive the same commission making the same move twice while the
+ * first book is still in the air, and nothing in two consecutive ledgers
+ * distinguishes those two launches — the second poll looks exactly like the
+ * first. So identity is allocated rather than derived. It is deliberately not a
+ * random value: a serial reads as an order in a devtools tree, and there is
+ * only one house counting.
+ */
+let launches = 0;
 
 /**
  * Where each commission went since the house last looked.
@@ -78,7 +100,7 @@ export function flightsFor(
       : task.status === 'done' ? 'shelf' : null;
     if (!to) continue;
     out.push({
-      id: `${task.id}:${was}->${task.status}:${out.length}`,
+      id: `${task.id}:${was}->${task.status}:${++launches}`,
       taskId: task.id,
       agentId,
       title: task.title,

@@ -87,6 +87,19 @@ test('each flight carries what it needs to be drawn and to be told apart', () =>
     'a flight has its own key — the same commission can fly twice');
 });
 
+test('the same commission making the same move twice gets two different keys', () => {
+  // The key is what the sky is a list OF. Deriving it from the commission and
+  // the move it made means a card that is blocked, freed, and blocked again
+  // launches a second flight wearing the first one's name — and then landing
+  // either one takes both out of the air, because the list is filtered by that
+  // name. Nothing about the id may be a function of the move alone.
+  const seen = seenStatuses([card('T-1', 'doing')]);
+  const [first] = flightsFor(seen, [card('T-1', 'blocked')]);
+  const [second] = flightsFor(seen, [card('T-1', 'blocked')]);
+  assert.notEqual(first.id, second.id,
+    'two launches of one move are two books, not one book counted twice');
+});
+
 // ─── Where the rooms actually are ───────────────────────────────────────────
 // A book flying from a desk in one room to the table in another crosses two
 // panels, so for the first time in this scene something has to know where a
@@ -350,6 +363,29 @@ test('a commission that becomes impeded flies to the table', async () => {
   const air = inTheAir(view);
   assert.equal(air.length, 1);
   assert.equal(air[0].props['data-flight-to'], 'table');
+});
+
+test('a second flight of the same move is a second book, and lands alone', async () => {
+  // Blocked, freed, blocked again, faster than a flight lasts: the first book
+  // is still crossing the house when the second sets off. Two books, two keys —
+  // and catching one of them out of the air must leave the other flying, which
+  // a shared key cannot do.
+  const view = await watchLedger([person('w-1')], [
+    [card('T-1', 'doing')],
+    [card('T-1', 'blocked')],
+    [card('T-1', 'doing')],
+    [card('T-1', 'blocked')]
+  ]);
+  const air = inTheAir(view);
+  assert.equal(air.length, 2, 'the first book is still up there when the second leaves');
+  const [one, two] = air.map((n) => n.props['data-book-flight']);
+  assert.notEqual(one, two, 'two flights, two keys');
+  air[0].props.onAnimationEnd({
+    target: air[0], currentTarget: air[0], animationName: 'cth-book-fly-across'
+  });
+  view.render();
+  assert.deepEqual(inTheAir(view).map((n) => n.props['data-book-flight']), [two],
+    'the one that landed left the sky, and only it');
 });
 
 test('a book that lands leaves the sky', async () => {
