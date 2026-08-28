@@ -132,9 +132,14 @@ export function onTheTable(task: HiveTask): boolean {
  * digits — so the digits out of the id are what ties the two views together. An
  * id with no digits in it falls back to its place on the table, because a blank
  * spine is worse than an approximate handle.
+ *
+ * Asks for an id and nothing else, so a commission filed on the shelf wall —
+ * which reaches its spine as an archive entry rather than as a ledger card —
+ * gets the same number the table would have printed on it. Two views of one
+ * commission that number it differently are two commissions to the reader.
  */
-export function baizeNumber(task: HiveTask, index: number): number {
-  const digits = String(task.id ?? '').match(/\d+/);
+export function baizeNumber(item: { id: string }, index: number): number {
+  const digits = String(item.id ?? '').match(/\d+/);
   return digits ? Number(digits[0]) : index + 1;
 }
 
@@ -242,8 +247,13 @@ export const SPINE_FACES: Record<HiveTask['status'],
  * thickness of the spine is the number's LENGTH — which is why a three-digit
  * commission is set smaller than a two-digit one rather than running off the
  * end of its own book.
+ *
+ * It is therefore sized from the spine's THICKNESS alone, which is all this
+ * asks for: a book lying on a table is thick across its height, and a book
+ * standing on a shelf is thick across its width — the same rule, turned a
+ * quarter.
  */
-export function spineType(box: Box, n: number): { fontSize: number } {
+export function spineType(box: { height: number }, n: number): { fontSize: number } {
   const digits = String(n).length;
   return { fontSize: Math.min(box.height * 0.68, (box.height * 1.6) / digits) };
 }
