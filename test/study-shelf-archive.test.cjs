@@ -372,12 +372,54 @@ test('a shelved commission is filed as a spine carrying the done face and its nu
   const digits = all(label, (n) => typeof n.props?.children === 'number'
     || typeof n.props?.children === 'string')[0];
   assert.ok(digits, 'the label prints nothing');
-  assert.equal(String(digits.props.children), String(B.baizeNumber({ id: 'T-7' }, 0)),
+  assert.equal(String(digits.props.children), String(B.spineMark({ id: 'T-7' })),
     'the wall numbers the commission differently from the table');
   assert.match(String(digits.props.style.transform), /rotate\(90deg\)/,
     'the number runs across the spine, the way a book LYING DOWN carries it');
   assert.equal(typeof label.props.style.fontSize, 'number',
     'the number is a CSS token the house scale then shrinks to nothing');
+});
+
+/**
+ * One commission, one mark, on whichever surface it is standing.
+ *
+ * The felt and the wall deal into different lists — the table's index is a
+ * position among sorted open work, the wall's is a slot in the archive — so a
+ * mark derived from an index is a mark that changes when the commission is
+ * finished, and again when a neighbour arrives. Crossing surfaces is exactly
+ * when a reader most needs to recognise it.
+ */
+test('a digitless commission keeps its mark when it crosses from felt to shelf', async () => {
+  const card = (status, extra = {}) => ({
+    id: 'whoosh', status, title: 'the unnumbered folio', dependsOn: [],
+    createdAt: new Date().toISOString(), ...extra
+  });
+  const textOf = (node) => {
+    const printed = all(node, (n) => typeof n.props?.children === 'number'
+      || typeof n.props?.children === 'string')[0];
+    return printed ? String(printed.props.children) : null;
+  };
+
+  const open = await inhabit({ tasks: [card('doing')] });
+  const onFelt = baizeIn(open)[0];
+  assert.ok(onFelt, 'the open commission is not on the table');
+  const felt = textOf(onFelt);
+  assert.ok(felt, 'the spine on the felt prints nothing');
+
+  const done = await inhabit({ tasks: [card('done')] });
+  const onShelf = shelfIn(done)[0];
+  assert.ok(onShelf, 'the concluded commission is not on the wall');
+  assert.equal(textOf(numberOf(onShelf)), felt,
+    'the same commission is a different number on the wall than on the felt');
+
+  // ...and a neighbour arriving does not renumber it on either surface.
+  const crowded = await inhabit({
+    tasks: [{ id: 'T-1', status: 'done', title: 'a folio', dependsOn: [],
+      createdAt: new Date().toISOString() }, card('done')]
+  });
+  const still = shelfIn(crowded).find((b) => b.props['data-shelf-book'] === 'whoosh');
+  assert.ok(still, 'the commission left the wall when a neighbour arrived');
+  assert.equal(textOf(numberOf(still)), felt, 'a neighbour arriving renumbered the commission');
 });
 
 test('a departed assistant is still only a mark', async () => {
@@ -408,7 +450,7 @@ test('the number fits on every volume the wall can mark', () => {
   const view = { x: 0, y: 0, w: 1568, h: 672 };
   for (const [i] of S.SHELF_BOOKS.entries()) {
     const box = S.bookSlot(i, view);
-    for (const n of [7, 42, 128, 4096]) {
+    for (const n of [7, 42, 128, 4096, 'WH', '?']) {
       const { fontSize, height } = A.shelfLabel(box, n);
       assert.ok(fontSize > 0 && height > 0, `volume ${i} labels ${n} at no size at all`);
       assert.ok(fontSize * 0.62 * String(n).length <= height + 0.01,

@@ -129,27 +129,41 @@ export function onTheTable(task: HiveTask): boolean {
 }
 
 /**
- * The number printed on a spine.
+ * The mark printed on a spine.
  *
  * The board shows a commission's id, and a spine has room for about two
- * digits — so the digits out of the id are what ties the two views together. An
- * id with no digits in it falls back to its place on the table, because a blank
- * spine is worse than an approximate handle.
+ * characters — so the digits out of the id are what ties the two views
+ * together. An id with no digits in it gets its first letters instead, because
+ * a blank spine is worse than an approximate handle, and letters cannot be
+ * mistaken for another commission's number.
+ *
+ * The mark comes out of the COMMISSION and never out of where the commission
+ * happens to be standing. The fallback used to be the book's index in whatever
+ * list it had been dealt into, and the two surfaces deal into different lists:
+ * the table's index is a position among sorted open work, the wall's is a slot
+ * in the archive. So one commission was marked `3` on the felt and `1` on the
+ * wall, and either changed the moment a neighbour was added, finished or
+ * answered. A handle that moves is not a handle — it says two books are the
+ * same commission, or that one commission is two. There is no index to pass
+ * here now, which is what makes that unrepeatable rather than merely fixed.
  *
  * Asks for an id and nothing else, so a commission filed on the shelf wall —
  * which reaches its spine as an archive entry rather than as a ledger card —
- * gets the same number the table would have printed on it. Two views of one
- * commission that number it differently are two commissions to the reader.
+ * gets the same mark the table would have printed on it.
  */
-export function baizeNumber(item: { id: string }, index: number): number {
-  const digits = String(item.id ?? '').match(/\d+/);
-  return digits ? Number(digits[0]) : index + 1;
+export function spineMark(item: { id: string }): number | string {
+  const id = String(item.id ?? '');
+  const digits = id.match(/\d+/);
+  if (digits) return Number(digits[0]);
+  // The ledger is a file edited by hand, so an id can be blank or punctuation
+  // alone. A mark that admits it does not know still beats a blank spine.
+  return id.replace(/[^A-Za-z]/g, '').slice(0, 2).toUpperCase() || '?';
 }
 
 export interface Spine {
   task: HiveTask;
   box: Box;
-  n: number;
+  n: number | string;
   /** Which pile it is in, and how far up that pile — 0 is on the felt. */
   stack: number;
   level: number;
@@ -192,7 +206,7 @@ export function stackBaize(tasks: readonly HiveTask[], baize: Box): Spine[] {
     const lean = width * (LEAN[level % LEAN.length] ?? 0);
     return {
       task,
-      n: baizeNumber(task, i),
+      n: spineMark(task),
       stack,
       level,
       box: {
@@ -247,8 +261,8 @@ export const SPINE_FACES: Record<HiveTask['status'],
  * natural size and letterboxed into the window as one scaled drawing, so a
  * fixed 12px face arrives on screen at three or four pixels. And it is printed
  * SIDEWAYS, the way a book carries its title, so what has to fit across the
- * thickness of the spine is the number's LENGTH — which is why a three-digit
- * commission is set smaller than a two-digit one rather than running off the
+ * thickness of the spine is the mark's LENGTH — which is why a three-figure
+ * commission is set smaller than a two-figure one rather than running off the
  * end of its own book.
  *
  * It is therefore sized from the spine's THICKNESS alone, which is all this
@@ -256,9 +270,9 @@ export const SPINE_FACES: Record<HiveTask['status'],
  * standing on a shelf is thick across its width — the same rule, turned a
  * quarter.
  */
-export function spineType(box: { height: number }, n: number): { fontSize: number } {
-  const digits = String(n).length;
-  return { fontSize: Math.min(box.height * 0.68, (box.height * 1.6) / digits) };
+export function spineType(box: { height: number }, n: number | string): { fontSize: number } {
+  const figures = String(n).length;
+  return { fontSize: Math.min(box.height * 0.68, (box.height * 1.6) / figures) };
 }
 
 /**

@@ -57,7 +57,7 @@
  * and the same. A book goes back on the shelf when the LAST hand comes off it.
  */
 import { bookSlot, type ArchivedThing, type Box } from './shelfBooks';
-import { baizeNumber, spineType, SPINE_FACES } from './BaizeStacks';
+import { spineMark, spineType, SPINE_FACES } from './BaizeStacks';
 
 /**
  * How each kind of finished thing is taken out of the painting.
@@ -128,7 +128,9 @@ export function bookIsPulled(now: PulledBooks, id: string): boolean {
  * a share of one of them runs off the other. Capped at half the volume so a
  * label never becomes the book.
  */
-export function shelfLabel(box: Box, n: number): { fontSize: number; height: number } {
+export function shelfLabel(
+  box: Box, n: number | string
+): { fontSize: number; height: number } {
   const { fontSize } = spineType({ height: box.width }, n);
   const run = fontSize * (0.62 * String(n).length + 0.5);
   return { fontSize, height: Math.min(box.height * 0.5, run) };
@@ -157,7 +159,7 @@ export function ShelfArchive({
       {books.map((book, i) => {
         const box = bookSlot(i, view);
         const face = SPINE_FACES.done;
-        const n = baizeNumber(book, i);
+        const n = spineMark(book);
         const label = shelfLabel(box, n);
         const opens = book.kind === 'commission' && typeof onOpen === 'function';
         const hands = pulled ?? NOTHING_PULLED;

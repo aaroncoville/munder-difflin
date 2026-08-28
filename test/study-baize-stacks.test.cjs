@@ -121,9 +121,44 @@ test('a book is numbered as the board numbers it', () => {
   const piled = B.stackBaize([task('T-7'), task('task-19'), task('whoosh')], BAIZE);
   assert.equal(piled[0].n, 7);
   assert.equal(piled[1].n, 19);
-  // No number in the id at all: fall back to its place on the table rather than
-  // printing nothing, so every book still carries a handle.
-  assert.equal(piled[2].n, 3);
+  // No number in the id at all: a handle out of the id itself rather than
+  // nothing, because a blank spine is worse than an approximate handle.
+  assert.equal(piled[2].n, 'WH');
+});
+
+/**
+ * A commission's mark comes out of the commission, never out of where it is.
+ *
+ * The fallback for an id with no digits in it used to be the book's PLACE — its
+ * index in whatever list it had been dealt into. Two surfaces deal into
+ * different lists: the table's index is a position among sorted open work, and
+ * the shelf's is a slot in the archive. So one commission was numbered `3` on
+ * the felt and `1` on the wall, and either number changed the moment a
+ * neighbour was added, finished or answered. A handle that moves is not a
+ * handle — it says two books are the same commission, or that one commission
+ * is two.
+ */
+test('a commission with no digits in its id keeps one mark wherever it is dealt', () => {
+  const mark = (tasks, at) => B.stackBaize(tasks, BAIZE)[at].n;
+  const alone = mark([task('whoosh')], 0);
+  assert.equal(mark([task('T-7'), task('task-19'), task('whoosh')], 2), alone,
+    'the mark changed with the book\'s place on the table');
+  assert.equal(mark([task('whoosh'), task('T-7')], 0), alone,
+    'the mark changed when a neighbour arrived');
+  assert.equal(B.spineMark({ id: 'whoosh' }), alone,
+    'the rule and the table disagree about the same commission');
+  assert.notEqual(alone, 1, 'the mark is still the book\'s place, wearing another name');
+});
+
+test('a commission with no usable id at all still carries something', () => {
+  // The ledger is a file edited by hand. A blank spine is worse than a mark
+  // that admits it does not know, and `undefined` printed on a book is worse
+  // than either.
+  for (const id of ['', '---', null, undefined]) {
+    const m = B.spineMark({ id });
+    assert.ok(String(m).length > 0 && String(m) !== 'undefined',
+      `an id of ${JSON.stringify(id)} marks a spine ${JSON.stringify(m)}`);
+  }
 });
 
 // ─── In the scene ───────────────────────────────────────────────────────────
