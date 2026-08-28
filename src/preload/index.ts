@@ -976,6 +976,10 @@ const api = {
     ipcRenderer.on('app:closeRequested', listener);
     return () => ipcRenderer.removeListener('app:closeRequested', listener);
   },
+  /** Ask for the quit dialog from inside the floor — the office clock, the
+   *  Study's hearth. Always opens the confirmation; `window.close()` from a
+   *  floor window, or with no PTY alive, quits with nothing asked. */
+  requestQuit: (): Promise<void> => ipcRenderer.invoke('app:requestQuit'),
   confirmClose: (): Promise<void> => ipcRenderer.invoke('app:confirmClose'),
   cancelClose: (): Promise<void> => ipcRenderer.invoke('app:cancelClose'),
 

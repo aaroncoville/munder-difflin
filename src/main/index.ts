@@ -3731,6 +3731,33 @@ ipcMain.handle('app:cancelClose', () => {
   abortPendingRestart();
 });
 
+/**
+ * Quitting, asked for from INSIDE the floor — the clock on the office wall, the
+ * hearth in the Study's parlour.
+ *
+ * Those two used to call `window.close()`, on the assumption that the close
+ * interceptor would turn it into the quit dialog. It only does that when the
+ * window being closed is the primary one AND a PTY is alive: on a floor window
+ * `close` means "close this floor", and with no live PTY the interceptor has
+ * nothing to warn about and lets the window go. Either way the click quit
+ * without asking, which is the one thing a painted prop in a room must never do
+ * — there is no undo behind it and no way to tell it from any other click.
+ *
+ * So the prop asks for the quit dialog directly, and always gets it. It is
+ * shown by the primary window, wherever the click came from, because that is
+ * the window that renders it and quitting is app-wide however it was started.
+ */
+ipcMain.handle('app:requestQuit', () => {
+  const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+  if (!win || win.webContents.isDestroyed()) {
+    // Nothing left to ask with. Quitting is still what was asked for.
+    teardownAndQuit();
+    return;
+  }
+  win.focus();
+  win.webContents.send('app:closeRequested', { ptyCount: ptyManager.list().length });
+});
+
 // Open a new floor (independent office window). Gated by the multiWindow flag
 // inside openFloor(); returns whether a window opened so a renderer button can
 // reflect availability. The app-menu "New Floor" item calls openFloor() directly.

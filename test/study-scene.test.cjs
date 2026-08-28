@@ -278,11 +278,15 @@ const person = (id, over = {}) => ({
 
 /** Seed the world, mount the Study, and let its first ledger poll land. */
 async function inhabit({ agents = [], tasks = [], cth = {} } = {}) {
-  const calls = { tabs: [], selected: [], closed: 0 };
+  const calls = { tabs: [], selected: [], closed: 0, quitAsked: 0 };
   global.window = {
     localStorage: { getItem: () => 'occult', setItem: () => {}, removeItem: () => {} },
     close: () => { calls.closed++; },
-    cth: { hiveTasks: async () => ({ tasks }), ...cth }
+    cth: {
+      hiveTasks: async () => ({ tasks }),
+      requestQuit: async () => { calls.quitAsked++; },
+      ...cth
+    }
   };
   global.document = { documentElement: { dataset: {} } };
   useStore.setState({ agents: [], archivedAgents: [], restorableAgents: [] });
@@ -389,9 +393,11 @@ test('the props are the buttons, and each fires what the office prop fires', asy
   assert.deepEqual(calls.selected, ['god-1'],
     'the petitions go to the god, so he is who gets selected');
 
-  assert.equal(calls.closed, 0);
+  assert.equal(calls.quitAsked, 0);
   fire('Closing Time');
-  assert.equal(calls.closed, 1, 'the hearth closes the house');
+  assert.equal(calls.quitAsked, 1, 'the hearth does not ask to close the house');
+  assert.equal(calls.closed, 0,
+    'the hearth closed the window itself instead of asking for the quit dialog');
 });
 
 test('a prop standing in a room stops the click reaching the room behind it', async () => {

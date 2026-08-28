@@ -607,9 +607,11 @@ export function StudyScene(): JSX.Element {
     cardTable: () => requestCommandCenterTab('tasks'),
     writingDesk: openPetitions,
     almanac: () => requestCommandCenterTab('triggers'),
-    // Intercepted by the main process while terminals are alive — the same call
-    // the office floor's clock makes.
-    hearth: () => window.close()
+    // The quit dialog, never the quit itself — the same call the office floor's
+    // clock makes. `window.close()` was NOT that: on a floor window it closes
+    // that floor, and on the primary with no terminal alive it quits outright,
+    // so pressing the fire ended the app with nothing asked.
+    hearth: () => { void window.cth.requestQuit(); }
   };
 
   /** What one anchor draws on the patch of painting it stands on — whether

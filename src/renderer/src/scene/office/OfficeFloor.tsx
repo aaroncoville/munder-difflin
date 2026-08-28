@@ -1116,9 +1116,8 @@ export function OfficeFloor() {
 
       // ─── The office clock: clicking it is CLOCKING OUT ─────────────────────
       // The wall clock beside Michael's window doubles as the quit entry:
-      // a click runs the real close flow (window.close() → the main process
-      // intercepts while agents run → the "Quitting now?" dialog with its
-      // closing-time option). The office clock literally opens quitting time.
+      // a click asks for the "Quitting now?" dialog with its closing-time
+      // option. The office clock literally opens quitting time.
       const clockG = new Graphics();
       clockG.eventMode = 'static';
       clockG.cursor = 'pointer';
@@ -1127,7 +1126,10 @@ export function OfficeFloor() {
       clockG.zIndex = 3 * ts0;
       clockG.on('pointertap', (ev) => {
         ev.stopPropagation();
-        window.close(); // intercepted by the main process while PTYs are alive
+        // Asks for the dialog rather than closing the window: a floor window's
+        // close is not a quit, and on the primary with no PTY alive the
+        // interceptor has nothing to warn about and the app simply ends.
+        void window.cth.requestQuit();
       });
       charLayer.addChild(clockG);
 

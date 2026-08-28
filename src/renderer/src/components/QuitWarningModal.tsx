@@ -148,13 +148,21 @@ export function QuitWarningModal({ ptyCount, closing, onCancel, onConfirm, onClo
                       color: 'var(--cth-ink-900)',
                       marginBottom: 4
                     }}>
-                      {ptyCount} {ptyCount === 1 ? 'AGENT' : 'AGENTS'} STILL RUNNING
+                      {ptyCount === 0
+                        ? 'CLOSING THE HARNESS'
+                        : `${ptyCount} ${ptyCount === 1 ? 'AGENT' : 'AGENTS'} STILL RUNNING`}
                     </div>
                     <div style={{ fontSize: 15, lineHeight: '22px', color: 'var(--cth-ink-700)' }}>
-                      Closing the harness will terminate{' '}
-                      {ptyCount === 1 ? 'the running claude session' : `all ${ptyCount} running claude sessions`}{' '}
-                      and discard any unsaved progress they were holding in memory. The conversation
-                      history inside each session is lost when the PTY exits.
+                      {ptyCount === 0 ? (
+                        <>No claude session is running, so nothing is mid-thought and nothing is
+                        lost by closing now. Closing time still walks the floor first, if there is
+                        an orchestrator awake to walk it.</>
+                      ) : (
+                        <>Closing the harness will terminate{' '}
+                        {ptyCount === 1 ? 'the running claude session' : `all ${ptyCount} running claude sessions`}{' '}
+                        and discard any unsaved progress they were holding in memory. The conversation
+                        history inside each session is lost when the PTY exits.</>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -185,7 +193,7 @@ export function QuitWarningModal({ ptyCount, closing, onCancel, onConfirm, onClo
 
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
                   <PixelButton variant="secondary" size="md" onClick={onCancel} disabled={busy}>
-                    keep them running
+                    {ptyCount === 0 ? 'not yet' : 'keep them running'}
                   </PixelButton>
                   {onClosingTime && (
                     <PixelButton variant="primary" size="md" onClick={onClosingTime} disabled={busy}>
@@ -195,7 +203,9 @@ export function QuitWarningModal({ ptyCount, closing, onCancel, onConfirm, onClo
                     </PixelButton>
                   )}
                   <PixelButton variant="destructive" size="md" onClick={confirm} disabled={busy}>
-                    {busy ? 'killing...' : `kill ${ptyCount === 1 ? 'it' : 'all'} & quit`}
+                    {busy
+                      ? 'killing...'
+                      : ptyCount === 0 ? 'quit now' : `kill ${ptyCount === 1 ? 'it' : 'all'} & quit`}
                   </PixelButton>
                 </div>
               </>
