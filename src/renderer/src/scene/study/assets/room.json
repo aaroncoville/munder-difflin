@@ -76,12 +76,12 @@
           "berth": { "id": "petitions-stack", "x": 0.845, "y": 0.400, "w": 0.115, "h": 0.130 }
         },
         {
-          "_comment": "Closing time is the door out of the parlour, on the near wall.",
+          "_comment": "Closing time is the fire: the arched stone fireplace on the left wall.",
           "kind": "hearth",
-          "berth": { "id": "parlour-door", "x": 0.045, "y": 0.120, "w": 0.095, "h": 0.620 }
+          "berth": { "id": "parlour-fireplace", "x": 0.020, "y": 0.250, "w": 0.180, "h": 0.580 }
         }
       ],
-      "_lights": "Three chandeliers on the far wall, and the fire at the foot of the door. `kind` says which light burns as which: the hearth is a prop in this room rather than a room of its own, so nothing about the parlour itself says which of its four lights is the fire.",
+      "_lights": "Three chandeliers on the far wall, and the fire on the fireplace grate. `kind` says which light burns as which: the hearth is a prop in this room rather than a room of its own, so nothing about the parlour itself says which of its four lights is the fire.",
       "lightPoints": [
         { "x": 0.345, "y": 0.155 }, { "x": 0.505, "y": 0.075 }, { "x": 0.665, "y": 0.155 },
         { "x": 0.093, "y": 0.700, "kind": "hearth" }

@@ -1,20 +1,39 @@
-# The tasks parlour — the round baize table the kanban counts sit on.
+# The tasks parlour — the round baize table, and the fire that Closing Time is.
 #
 # The sheet the shipped panel was generated from. Reproduce it with the call in
 # this directory's README; the reference image is identified by digest rather
 # than by name because the request carried it inline.
+#
+# This panel took two passes. The first turned the reference photograph into
+# the parlour:
+#
+#   Repaint as a quiet parlor: keep the warm red paneled walls, chandeliers and
+#   lamps, remove the stag heads and the fireplace, place one large round table
+#   with a green baize top at the center, small rectangular paper notes arranged
+#   in tidy rows on its surface, a few simple wooden chairs around it,
+#   bookshelves at the sides. Render as FLAT 2D storybook game illustration:
+#   naive simple shapes, matte flat colors with soft paper-grain texture, NO
+#   realistic lighting, NO 3D rendering, NO photorealism. Straight-on elevation.
+#   No people, no animals, no readable text.
+#
+# — which is why the fireplace had to be put back. The parlour holds the hearth
+# anchor (Closing Time) as a prop, and the only thing that room had to hang it
+# on was a painted door: the fire's glow pooled at the foot of a doorway, which
+# reads as a mystery rather than as a hearth. The second pass, below, is the one
+# that produced the shipped PNG, and its reference is the panel the first pass
+# made.
 panel: src/renderer/src/scene/study/assets/room-card-table.png
 model: black-forest-labs/flux-kontext-pro
 input:
   prompt: |-
-    Repaint as a quiet parlor: keep the warm red paneled walls, chandeliers and lamps, remove the stag heads and the fireplace, place one large round table with a green baize top at the center, small rectangular paper notes arranged in tidy rows on its surface, a few simple wooden chairs around it, bookshelves at the sides. Render as FLAT 2D storybook game illustration: naive simple shapes, matte flat colors with soft paper-grain texture, NO realistic lighting, NO 3D rendering, NO photorealism. Straight-on elevation. No people, no animals, no readable text.
+    Same flat 2D storybook game room, exact same style, palette and furniture: replace the tall door on the left wall with an arched stone fireplace, a warm fire burning behind a black iron grate, embers glowing, soft firelight pooling on the floor in front of it. Keep the chandeliers, round green table, chairs, cabinets and bookshelf exactly as they are. NO realistic lighting, NO 3D — the same flat cut-paper look.
   aspect_ratio: "21:9"
   output_format: png
   input_image: "the reference below, supplied inline as a data: URI"
 reference:
   media_type: image/jpeg
-  bytes: 253739
-  sha256: 00c6ff71bd5c92d23cabc060a36846d79f73ba05b73a7ad772a20c5407782961
+  bytes: 224659
+  sha256: d2c45328563abbf19a5c566bbcf16e3b58b053070128567f531df013cb27580c
 output:
   width: 1568
   height: 672
