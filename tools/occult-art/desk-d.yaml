@@ -1,0 +1,26 @@
+# Reading room D — two desks in a rose attic, under sloping beams and an oxeye.
+#
+# The sheet the shipped panel was generated from. Reproduce it with the call in
+# this directory's README.
+#
+# Like reading room C, this one is a repaint of a panel that ships here rather
+# than of a lost photograph — reading room B — because the four reading rooms
+# had only two paintings between them and needed to stop repeating without
+# leaving the palette the rest of the house is painted in. The digest below is
+# that shipped panel's, byte for byte.
+panel: src/renderer/src/scene/study/assets/room-desk-d.png
+model: black-forest-labs/flux-kontext-pro
+input:
+  prompt: |-
+    Repaint as a clearly DIFFERENT attic study: dusty rose-plaster walls with dark exposed roof beams sloping at the top, ONE round oxeye window high on the wall, TWO simple writing desks side by side beneath the beams each with a lit candle and clear space above it, stacked wooden crates and rolled charts against one side, a small woven rug. Keep the exact illustration style, palette discipline and grain of the input but make it read as a NEW room, not a copy. Render as FLAT 2D storybook game illustration: naive simple shapes, matte flat colors with soft paper-grain texture, thin clean outlines, NO realistic lighting, NO 3D rendering, NO photorealism — the same flat cut-paper look as the input image. Straight-on elevation. No people, no readable text.
+  aspect_ratio: "21:9"
+  output_format: png
+  input_image: "the reference below, supplied inline as a data: URI"
+reference:
+  media_type: image/png
+  file: src/renderer/src/scene/study/assets/room-desk-b.png
+  bytes: 1380835
+  sha256: 6a3b51a6cb8d5848280ce96668b83c5752093bb9afc0de6584a9cc4525a9cfce
+output:
+  width: 1568
+  height: 672

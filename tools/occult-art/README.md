@@ -40,6 +40,10 @@ instead, so a candidate file can be confirmed to be the right one before a
 repaint is attempted. `card-table.yaml` and `shelves.yaml` share a digest:
 both rooms are repaints of the same photograph.
 
+Two sheets are the exception. `desk-c.yaml` and `desk-d.yaml` were repainted
+from panels that ship *here* — reading rooms A and B — so they name the file as
+well as the digest, and their references can be reproduced exactly.
+
 ## What is not generated
 
 Card frames, ornament and icons are hand-authored SVG. Nothing in this

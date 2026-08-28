@@ -1,0 +1,28 @@
+# Reading room C — two desks in a teal panelled room, under an amber window.
+#
+# The sheet the shipped panel was generated from. Reproduce it with the call in
+# this directory's README.
+#
+# Unusually for this directory, the reference is not a lost photograph: it is
+# reading room A, which ships in this repository. The four reading rooms used to
+# hang two paintings twice, and the House reading as two rooms repeated is
+# exactly what a room-per-berth layout cannot afford — so C and D were made by
+# repainting A and B into rooms that are plainly not them while keeping the
+# palette, the flat elevation and the grain that make the storeys look like one
+# building. The digest below is that shipped panel's, byte for byte.
+panel: src/renderer/src/scene/study/assets/room-desk-c.png
+model: black-forest-labs/flux-kontext-pro
+input:
+  prompt: |-
+    Repaint as a clearly DIFFERENT scholars' room: deep teal-green wall panels instead of the current wall color, ONE wide arched amber stained-glass window in the center of the wall, TWO dark-wood writing desks — one on each side of the window — each with a lit candle and clear space above it, a tall potted fern in one corner and a standing globe in the other, a patterned rug on the floor. Keep the exact illustration style, palette discipline and grain of the input but make it read as a NEW room, not a copy. Render as FLAT 2D storybook game illustration: naive simple shapes, matte flat colors with soft paper-grain texture, thin clean outlines, NO realistic lighting, NO 3D rendering, NO photorealism — the same flat cut-paper look as the input image. Straight-on elevation. No people, no readable text.
+  aspect_ratio: "21:9"
+  output_format: png
+  input_image: "the reference below, supplied inline as a data: URI"
+reference:
+  media_type: image/png
+  file: src/renderer/src/scene/study/assets/room-desk-a.png
+  bytes: 1227184
+  sha256: 766e86c9a08d402d5add271c184bca233b5377bd99f39115cf3c86119b77a461
+output:
+  width: 1568
+  height: 672

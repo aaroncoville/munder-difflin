@@ -371,3 +371,19 @@ test('the house marks the hearth light in the panel the hearth stands in', () =>
   assert.ok(x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h,
     `the fire is marked at (${x}, ${y}), outside the hearth at (${b.x}, ${b.y}) ${b.w}x${b.h}`);
 });
+
+test('no two rooms in the house are the same painting', () => {
+  // Six rooms and six paintings. Two of the reading rooms used to hang the same
+  // two panels twice, which is fine as far as every other check in the tree is
+  // concerned — the manifest validates, the berths land on desks, the seating
+  // works — and reads, in the one place it matters, as the House repeating
+  // itself. A room the eye has already been in is not another room.
+  const manifest = shippedHouse();
+  const seen = new Map();
+  for (const room of manifest.rooms) {
+    const twin = seen.get(room.image);
+    assert.equal(twin, undefined,
+      `${room.id} hangs the same painting as ${twin} — ${room.image}`);
+    seen.set(room.image, room.id);
+  }
+});
