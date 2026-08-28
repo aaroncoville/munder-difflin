@@ -17,6 +17,8 @@ const { mount } = require('./render-hooks.cjs');
 const loadTs = require('./load-ts.cjs');
 
 const { useSceneState } = loadTs('src/renderer/src/scene/study/useSceneState.ts');
+const { parseTasks } = loadTs('src/renderer/src/components/TasksKanban.tsx');
+const { ARCHIVE_MAX, ARCHIVE_WINDOW_DAYS } = loadTs('src/renderer/src/scene/study/shelfBooks.ts');
 const { useStore } = loadTs('src/renderer/src/store/store.ts');
 const { studyRoom } = loadTs('src/renderer/src/scene/study/StudyScene.tsx');
 const { deskBerths, godBerth } = loadTs('src/renderer/src/scene/study/roomManifest.ts');
@@ -69,6 +71,41 @@ async function project({ agents = [], tasks = [] }) {
   await settle();
   view.render(); // the first poll of the ledger has landed
   return seen;
+}
+
+/**
+ * Seed the world and KEEP the probe, so the ledger can be polled again.
+ *
+ * The hook re-parses the whole file every five seconds, and what a re-parse
+ * does with a card the ledger never dated is the whole of the question in the
+ * tests below — a projection asserted after one poll cannot see it.
+ */
+async function probe({ agents = [], tasks = [] }) {
+  global.window = {
+    localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+    cth: { hiveTasks: async () => ({ tasks }) }
+  };
+  useStore.setState({ agents: [], archivedAgents: [], restorableAgents: [] });
+  for (const a of agents) useStore.getState().addAgent(a);
+  let seen = null;
+  const Probe = () => { seen = useSceneState(); return null; };
+  const view = mount(Probe, {});
+  mounted.push(view);
+  await settle();
+  view.render();
+  return {
+    state: () => seen,
+    /** Another five seconds later: the same file, parsed again. */
+    async again() {
+      const stops = view.runEffects();
+      await settle();
+      view.render();
+      // The extra poll registers its own interval; stop it, or the runner
+      // never exits.
+      for (const stop of stops) stop?.();
+      return seen;
+    }
+  };
 }
 
 test.afterEach(() => {
@@ -316,6 +353,118 @@ test('a commission is dated by the last thing that happened on it', async () => 
   assert.deepEqual(state.archive.map((a) => a.id), ['T-1'],
     'work begun long ago and finished today fell out of the window');
   assert.equal(state.archive[0].at, Date.parse('2026-08-21T00:00:00.000Z'));
+});
+
+/**
+ * The clock the shelf wall is bounded by, and the two ways it was being lied to.
+ *
+ * The wall keeps fourteen days of finished work and drops the oldest first, so
+ * every mark on it depends on a date being either real or honestly absent.
+ * Neither held:
+ *
+ *   - the ledger is hand-written and a card may carry no `createdAt` at all.
+ *     The parse filled that in with the time of the parse, and the parse runs
+ *     every five seconds — so an undated commission was stamped "now" over and
+ *     over and stood at the newest end of the wall for ever, instead of taking
+ *     the documented undated behaviour of being bounded by the count alone.
+ *
+ *   - a timestamp from the future — a skewed clock, a hand-typed year — was
+ *     read as the newest thing that had happened. One such card sorts above
+ *     every real one and stays inside the fourteen-day window until fourteen
+ *     days after a date that has not happened yet.
+ *
+ * Both are quiet: the wall still draws, it just draws the wrong volumes.
+ */
+test('a commission the ledger never dated stays undated, poll after poll', async () => {
+  const p = await probe({
+    agents: [agent('w-1')],
+    tasks: [{ id: 'T-1', title: 'the undated folio', status: 'done', dependsOn: [] }]
+  });
+  const first = p.state().archive;
+  assert.deepEqual(first.map((a) => a.id), ['T-1']);
+  assert.equal(first[0].at, null,
+    'the parse invented a date for a card the ledger never dated');
+
+  const second = (await p.again()).archive;
+  assert.deepEqual(second.map((a) => a.id), ['T-1'], 'the second poll lost the commission');
+  assert.equal(second[0].at, null, 'the re-parse gave it a second, different date');
+});
+
+test('the parse leaves a missing date missing, however often it runs', async () => {
+  // Where the invented date came from. Two parses of the same file have to
+  // agree about a card they were told nothing about.
+  const raw = { tasks: [{ id: 'T-1', title: 'the undated folio', status: 'done' }] };
+  const [a, b] = [parseTasks(raw)[0], parseTasks(raw)[0]];
+  assert.equal(a.createdAt, undefined);
+  assert.equal(a.createdAt, b.createdAt);
+  assert.equal(a.id, b.id, 'the same card came back with a different identity');
+});
+
+test('an undated commission does not push dated work off a full wall', async () => {
+  // The consequence. A wall at capacity drops its OLDEST, and an undated card
+  // stamped "now" is the newest thing on it — so the undated one survived and
+  // real, recent, dated work fell off in its place.
+  const now = Date.now();
+  const dated = Array.from({ length: ARCHIVE_MAX }, (_, i) => ({
+    id: `D-${i}`, title: `dated ${i}`, status: 'done', dependsOn: [],
+    createdAt: new Date(now - (ARCHIVE_MAX - i) * 60_000).toISOString()
+  }));
+  const p = await probe({
+    agents: [agent('w-1')],
+    tasks: [...dated, { id: 'U-1', title: 'the undated folio', status: 'done', dependsOn: [] }]
+  });
+  const ids = p.state().archive.map((a) => a.id);
+  assert.equal(ids.length, ARCHIVE_MAX, 'the wall took more than it holds');
+  assert.ok(!ids.includes('U-1'), 'the undated commission displaced dated work');
+  assert.ok(ids.includes('D-0'), 'the oldest dated commission fell off for an undated one');
+});
+
+test('a stamp from the future is not the last thing that happened', async () => {
+  const now = Date.now();
+  const p = await probe({
+    agents: [agent('w-1')],
+    tasks: [{
+      id: 'T-1', title: 'the skewed folio', status: 'done', dependsOn: [],
+      createdAt: new Date(now - 3 * 86_400_000).toISOString(),
+      humanQA: [{ q: 'which key?', a: 'the staging one',
+        answeredAt: new Date(now + 365 * 86_400_000).toISOString() }]
+    }]
+  });
+  const [book] = p.state().archive;
+  assert.ok(book.at <= Date.now(), `the wall dated a commission at ${new Date(book.at)}`);
+  assert.equal(book.at, Date.parse(p.state().tasks[0].createdAt),
+    'a date that has not happened yet was taken as the newest thing on the card');
+});
+
+test('a commission with nothing but future stamps is undated, not newest', async () => {
+  const ahead = new Date(Date.now() + 365 * 86_400_000).toISOString();
+  const p = await probe({
+    agents: [agent('w-1')],
+    tasks: [{
+      id: 'T-1', title: 'the impossible folio', status: 'done', dependsOn: [],
+      createdAt: ahead, humanQA: [{ q: 'q', a: 'a', answeredAt: ahead }]
+    }]
+  });
+  assert.equal(p.state().archive[0].at, null);
+});
+
+test('a future stamp does not keep stale work inside the window', async () => {
+  // The window is the other half of the bound. A commission last touched long
+  // before the window opened is off the wall — and a date from next year on it
+  // must not be what readmits it.
+  const now = Date.now();
+  const stale = new Date(now - (ARCHIVE_WINDOW_DAYS + 30) * 86_400_000).toISOString();
+  const p = await probe({
+    agents: [agent('w-1')],
+    tasks: [
+      { id: 'OLD', title: 'long finished', status: 'done', dependsOn: [], createdAt: stale,
+        humanQA: [{ q: 'q', a: 'a', answeredAt: new Date(now + 86_400_000).toISOString() }] },
+      { id: 'NEW', title: 'just finished', status: 'done', dependsOn: [],
+        createdAt: new Date(now - 60_000).toISOString() }
+    ]
+  });
+  assert.deepEqual(p.state().archive.map((a) => a.id), ['NEW'],
+    'a stamp from the future carried stale work back inside the window');
 });
 
 test('the role on the card is the hire line, not the live status', async () => {

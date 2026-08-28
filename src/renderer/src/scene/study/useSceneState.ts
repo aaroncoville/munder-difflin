@@ -148,16 +148,28 @@ export function bookFor(tasks: readonly HiveTask[], agentId: string):
  * date it was raised. Nothing in `tasks.json` records a completion time, and
  * `createdAt` is the wrong stand-in for one: dating by it would drop a
  * long-running commission off the fourteen-day window the moment it finished,
- * which is precisely the commission most worth having marked. A card whose
- * dates are all unreadable arrives with `at: null` and is bounded by the count
- * alone, the way any undated thing on this wall is.
+ * which is precisely the commission most worth having marked.
+ *
+ * Two kinds of date are refused rather than believed, because the ledger is a
+ * hand-written file and both were quietly wrecking the wall:
+ *
+ *   - A stamp LATER than the projection's own clock did not happen. A skewed
+ *     machine or a hand-typed year puts one card above every real one and keeps
+ *     it inside the fourteen-day window until fourteen days after a date that
+ *     has not arrived — displacing recent work the whole time.
+ *   - A card with no readable date at all is `null`, and stays `null`. It is
+ *     then bounded by the count alone, which is the documented behaviour for
+ *     anything undated on this wall. What it must NOT do is acquire a date,
+ *     which is why `parseTasks` no longer invents one: a `createdAt` filled in
+ *     at parse time is re-filled every five seconds, so the least-known card on
+ *     the ledger stood at the newest end of the wall for ever.
  */
-export function lastTouched(task: HiveTask): number | null {
+export function lastTouched(task: HiveTask, now: number): number | null {
   const stamps: (string | undefined)[] = [task.createdAt];
   for (const qa of task.humanQA ?? []) stamps.push(qa.askedAt, qa.answeredAt, qa.dismissedAt);
   const times = stamps
     .map((stamp) => (stamp ? Date.parse(stamp) : NaN))
-    .filter((n) => Number.isFinite(n));
+    .filter((n) => Number.isFinite(n) && n <= now);
   return times.length === 0 ? null : Math.max(...times);
 }
 
@@ -165,7 +177,7 @@ export function archiveOf(tasks: readonly HiveTask[], now: number): ArchivedThin
   const things: ArchivedThing[] = tasks
     .filter((t) => !isOpen(t))
     .map((t) => ({
-      id: t.id, label: t.title, kind: 'commission' as const, at: lastTouched(t)
+      id: t.id, label: t.title, kind: 'commission' as const, at: lastTouched(t, now)
     }));
   return shelfBooks(things, now);
 }

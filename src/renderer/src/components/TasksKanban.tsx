@@ -30,7 +30,17 @@ export interface HiveTask {
   status: 'todo' | 'doing' | 'blocked' | 'done';
   dependsOn: string[];
   priority: number;
-  createdAt: string;
+  /**
+   * When the card was raised, as the ledger wrote it — absent when it did not.
+   *
+   * Optional on purpose. The ledger is a hand-written file and a card can
+   * legitimately arrive with no date at all; the parse used to fill that in
+   * with the time of the parse, which runs every five seconds, so an undated
+   * card was stamped "now" over and over. Anything that reasons about WHEN
+   * has to be able to tell "the ledger says nothing" from "the ledger says
+   * this instant", and it can only do that if the absence survives the parse.
+   */
+  createdAt?: string;
   /** First-class human feedback: the god appends {q} when a card needs the
    *  human; the ASK ME view fills in {a}. Full history stays on the card. */
   humanQA?: HumanQA[];
@@ -94,7 +104,10 @@ export function parseTasks(raw: unknown): HiveTask[] {
         ? (t.status as Status) : 'todo',
       dependsOn: Array.isArray(t.dependsOn) ? t.dependsOn.filter((d): d is string => typeof d === 'string') : [],
       priority: typeof t.priority === 'number' ? t.priority : 3,
-      createdAt: typeof t.createdAt === 'string' ? t.createdAt : new Date().toISOString(),
+      // Missing stays missing — see the field's own note. A synthesized `now`
+      // here is indistinguishable from a real one downstream, and it changes on
+      // every poll.
+      createdAt: typeof t.createdAt === 'string' ? t.createdAt : undefined,
       humanQA: Array.isArray(t.humanQA)
         ? (t.humanQA as unknown[])
           .filter((e): e is Record<string, unknown> => !!e && typeof e === 'object' && typeof (e as { q?: unknown }).q === 'string')
@@ -311,7 +324,10 @@ export function TaskDetail({ task, all, assigneeName, onMove, onAssign, onClose 
   const deps = (task.dependsOn ?? [])
     .map((id) => all.find((t) => t.id === id))
     .filter((t): t is HiveTask => !!t);
-  const created = new Date(task.createdAt);
+  // A card the ledger never dated shows no date, rather than one made up here
+  // — `new Date(undefined)` is already Invalid, and the row below prints
+  // nothing for that, but saying so is cheaper than relying on it.
+  const created = task.createdAt ? new Date(task.createdAt) : null;
   return (
     <div
       onClick={onClose}
@@ -342,7 +358,7 @@ export function TaskDetail({ task, all, assigneeName, onMove, onAssign, onClose 
                 : <span style={{ fontSize: 11, color: 'var(--cth-ink-300)' }}>{t('kanban.unassigned')}</span>}
               <PriorityDots level={Math.max(1, Math.min(5, task.priority))} />
               <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--cth-ink-500)', fontFamily: 'var(--cth-font-display)' }}>
-                {isNaN(created.getTime()) ? '' : created.toLocaleString()}
+                {!created || isNaN(created.getTime()) ? '' : created.toLocaleString()}
               </span>
             </div>
 
