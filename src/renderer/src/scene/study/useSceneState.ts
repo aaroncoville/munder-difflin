@@ -12,7 +12,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import { useStore, type Agent } from '@/store/store';
-import { parseTasks, waitsOnHuman, type HiveTask } from '@/components/TasksKanban';
+import { parseTasks, type HiveTask } from '@/components/TasksKanban';
 import { isOpen } from './BaizeStacks';
 import type { CardStatus } from './AgentCard';
 import type { BookState } from './DeskBook';
@@ -46,7 +46,6 @@ export interface SceneAgent {
 
 export interface SceneState {
   agents: SceneAgent[];
-  openAskCount: number;
   kanbanCounts: { todo: number; doing: number; blocked: number; done: number };
   /**
    * What the shelf wall holds: the concluded commissions, newest last, already
@@ -227,7 +226,6 @@ export function projectScene(
   for (const t of tasks) kanbanCounts[t.status]++;
   return {
     agents: projected,
-    openAskCount: tasks.filter(waitsOnHuman).length,
     kanbanCounts,
     archive: archiveOf(tasks, now),
     tasks

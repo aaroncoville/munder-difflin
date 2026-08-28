@@ -27,7 +27,7 @@
  * room is itself a button that opens the board. A click has to stop at the
  * book, or picking one up would open the board over the detail it just opened.
  */
-import type { HiveTask } from '@/components/TasksKanban';
+import { waitsOnHuman, type HiveTask } from '@/components/TasksKanban';
 
 export interface Box { left: number; top: number; width: number; height: number }
 
@@ -224,6 +224,18 @@ export function spineType(box: Box, n: number): { fontSize: number } {
   return { fontSize: Math.min(box.height * 0.68, (box.height * 1.6) / digits) };
 }
 
+/**
+ * The head a commission wears when it is waiting on the human.
+ *
+ * The parlour used to print the NUMBER of waiting petitions on the stack of
+ * letters, which the painting puts on the right-hand bookcase — a bare digit on
+ * a shelf of books, counting commissions that were already drawn as books on
+ * the felt in the same room. The mark belongs on the commission, so it is here:
+ * the same lilac the board's own "?" badge wears, at the head of the spine,
+ * where the status colour would otherwise be.
+ */
+export const PETITION_EDGE = 'var(--cth-lilac)';
+
 export interface BaizeStacksProps {
   tasks: readonly HiveTask[];
   baize: Box;
@@ -238,14 +250,18 @@ export function BaizeStacks({ tasks, baize, onOpen }: BaizeStacksProps): JSX.Ele
         // whole board on top of the commission that was just picked up.
         const open = (stop: () => void): void => { stop(); onOpen(task.id); };
         const face = SPINE_FACES[task.status];
+        const petition = waitsOnHuman(task);
         const { fontSize } = spineType(box, n);
         return (
           <div
             key={task.id}
             data-baize-book={task.id}
+            {...(petition ? { 'data-baize-petition': '' } : {})}
             role="button"
             tabIndex={0}
-            title={`${task.title} — ${task.status}`}
+            title={petition
+              ? `${task.title} — ${task.status}, awaiting you`
+              : `${task.title} — ${task.status}`}
             aria-label={task.title}
             onClick={(e: React.MouseEvent) => open(() => e.stopPropagation())}
             onKeyDown={(e: React.KeyboardEvent) => {
@@ -271,7 +287,8 @@ export function BaizeStacks({ tasks, baize, onOpen }: BaizeStacksProps): JSX.Ele
               // The head band at the spine's near end, and a hairline all round
               // so one book has an edge against the next. Proportional, for the
               // same reason the type is.
-              boxShadow: `inset ${Math.max(2, box.width * 0.06)}px 0 0 ${face.edge}, `
+              boxShadow: `inset ${Math.max(2, box.width * 0.06)}px 0 0 `
+                + `${petition ? PETITION_EDGE : face.edge}, `
                 + `inset 0 0 0 ${Math.max(1, box.height * 0.06)}px var(--cth-ink-300)`
             }}
           >

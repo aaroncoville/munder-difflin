@@ -357,58 +357,6 @@ export const ANCHOR_LABEL: Record<AnchorKind, string> = {
 
 const KANBAN_COLUMNS = ['todo', 'doing', 'blocked', 'done'] as const;
 
-/** The badge row a prop room carries, centred over its panel. */
-const BADGES: React.CSSProperties = {
-  position: 'absolute',
-  // A printed count, not a control. It is drawn OVER whatever carries the
-  // click — a room panel, or a prop standing in one — and a badge that ate the
-  // pointer would make the middle of the prop the one part of it you cannot
-  // press.
-  pointerEvents: 'none',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  fontFamily: 'var(--cth-font-display)',
-  color: 'var(--cth-ink-900)'
-};
-
-/**
- * How a number printed inside the house is sized.
- *
- * NOT from a type token. The house is laid out at its natural size and
- * letterboxed into the window as one scaled drawing, so a fixed CSS size
- * arrives on screen divided by that scale — `--cth-text-display-sm` is 8px,
- * which a 1280x720 floor delivers at two. A fraction of the plate the number
- * is printed on survives, because the plate is scaled by exactly the same
- * number the type would have been.
- */
-export function countType(plate: { width: number; height: number }): React.CSSProperties {
-  const size = plate.height * 0.52;
-  return {
-    fontSize: size,
-    lineHeight: 1,
-    padding: `${size * 0.12}px ${size * 0.4}px`,
-    borderRadius: 'var(--cth-radius-badge)'
-  };
-}
-
-/**
- * The patch of a prop room's panel its count is laid over.
- *
- * A badge is a position inside the painting like any other, so it goes through
- * the same projection a berth does. The room names ONE berth — the baize, the
- * open almanac, the stack of petitions, the armchair — and the count sits on
- * it, which is the difference between "3 tasks" printed on the card table and
- * "3 tasks" floating in the middle of the parlour's wall.
- *
- * A prop room that names no berth falls back to its whole panel, because the
- * centre of the room is the only honest guess when the manifest has not said
- * where in it the prop stands.
- */
-export function badgeBox(room: Room, view: ViewBox): React.CSSProperties {
-  return anchorFrame(room.berths[0], view);
-}
-
 /** The same patch, for an anchor that stands as a prop and so has no room of
  *  its own to fall back to. */
 export function anchorFrame(
@@ -641,7 +589,6 @@ export function StudyScene(): JSX.Element {
   const anchorContent = (
     kind: AnchorKind, room: Room, berth: Berth | undefined, view: ViewBox
   ): React.ReactNode => {
-    const frame = { ...BADGES, ...anchorFrame(berth, view) };
     if (kind === 'cardTable') {
       // The commissions themselves, piled on the baize the painting puts
       // there. They replace the four column totals that used to sit here: a
@@ -661,22 +608,6 @@ export function StudyScene(): JSX.Element {
       // rectangles of this very panel, so the mark is one of the wall's own
       // books rather than a book drawn over the wall.
       return <ShelfArchive books={scene.archive} panelSrc={ROOM_SRC[room.image]} view={view} />;
-    }
-    if (kind === 'writingDesk' && scene.openAskCount > 0) {
-      const plate = berth ? berthToBox(berth, view) : { width: view.w, height: view.h };
-      return (
-        <div data-study-badges="" style={frame}>
-          <div
-            style={{
-              ...countType(plate),
-              background: 'var(--cth-status-blocked)',
-              color: 'var(--cth-cream-50)'
-            }}
-          >
-            {scene.openAskCount}
-          </div>
-        </div>
-      );
     }
     return null;
   };

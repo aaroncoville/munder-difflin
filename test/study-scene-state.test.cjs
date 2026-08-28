@@ -156,7 +156,7 @@ test('an assistant at work has an open book named after the card', async () => {
     'an assistant with no card has no book on the desk');
 });
 
-test('impeded work is a sealed book, and an open question is a petition', async () => {
+test('impeded work is a sealed book', async () => {
   const state = await project({
     agents: [agent('w-1', { status: 'blocked' })],
     tasks: [task({
@@ -167,18 +167,6 @@ test('impeded work is a sealed book, and an open question is a petition', async 
   const one = state.agents[0];
   assert.equal(one.bookState, 'sealed');
   assert.equal(one.status, 'blocked');
-  assert.equal(state.openAskCount, 1, 'the writing desk shows the waiting letter');
-});
-
-test('an answered question is no longer waiting on anyone', async () => {
-  const state = await project({
-    agents: [agent('w-1')],
-    tasks: [task({
-      assignee: 'w-1', status: 'blocked',
-      humanQA: [{ q: 'which api key?', a: 'the staging one' }]
-    })]
-  });
-  assert.equal(state.openAskCount, 0);
 });
 
 test('the kanban counts mirror the ledger', async () => {
@@ -197,7 +185,6 @@ test('the kanban counts mirror the ledger', async () => {
 test('an empty ledger is a quiet room, not a crash', async () => {
   const state = await project({ agents: [agent('w-1')] });
   assert.deepEqual(state.kanbanCounts, { todo: 0, doing: 0, blocked: 0, done: 0 });
-  assert.equal(state.openAskCount, 0);
   assert.equal(state.agents[0].speech, '');
 });
 

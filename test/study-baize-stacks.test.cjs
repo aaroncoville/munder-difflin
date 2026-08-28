@@ -221,6 +221,44 @@ test('a book answers Enter and Space, the way the assistants cards do', async ()
   assert.equal(calls.opened.length, 2, 'any key at all opened the commission');
 });
 
+/**
+ * A commission waiting on the human, marked where the commission is.
+ *
+ * The parlour printed the number of waiting letters on the stack of petitions
+ * — which the painting puts on the right-hand bookcase, so what a reader saw
+ * was a bare digit floating on a shelf of books with nothing to attach it to.
+ * Aaron: *"The 3 on the right bookshelf is still there and looks out of place."*
+ *
+ * The number was also a second count of things already drawn: every commission
+ * it counted is a book on the felt three feet away. So the count comes off the
+ * shelf and the mark goes onto the spines themselves — the same lilac the
+ * board's own "?" badge wears, on the head of the book that is waiting.
+ */
+test('a commission waiting on the human is marked on its own spine', async () => {
+  const { view } = await inhabit([
+    task('T-1', 'blocked', { humanQA: [{ q: 'which key?' }] }),
+    task('T-2', 'blocked')
+  ]);
+  const books = booksIn(view);
+  const marked = books.filter((b) => b.props['data-baize-petition'] !== undefined);
+  assert.deepEqual(marked.map((b) => b.props['data-baize-book']), ['T-1'],
+    'the waiting commission is not the marked one');
+  assert.match(String(marked[0].props.title), /awaiting you/i,
+    'the mark says nothing about why the book is marked');
+  assert.match(String(marked[0].props.style.boxShadow), /--cth-lilac/,
+    'the marked spine wears the same head as every other book');
+  assert.doesNotMatch(
+    String(books.find((b) => b.props['data-baize-book'] === 'T-2').props.style.boxShadow),
+    /--cth-lilac/, 'a commission nobody asked about wears the petition mark');
+});
+
+test('an answered question leaves no mark on the spine', async () => {
+  const { view } = await inhabit([
+    task('T-1', 'blocked', { humanQA: [{ q: 'which key?', a: 'the staging one' }] })
+  ]);
+  assert.equal(booksIn(view)[0].props['data-baize-petition'], undefined);
+});
+
 test('an empty ledger leaves an empty table, not an empty book', async () => {
   const { view } = await inhabit([]);
   assert.equal(booksIn(view).length, 0);

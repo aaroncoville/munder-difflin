@@ -449,68 +449,33 @@ test('the archive is a room you can read but not press', async () => {
     'and offers no control, because pressing it would do nothing yet');
 });
 
-test('the writing desk carries the count of letters waiting on the human', async () => {
-  const waiting = (n) => ({
-    id: `t${n}`, assignee: 'w-1', status: 'blocked', title: `q${n}`, dependsOn: [],
-    humanQA: [{ q: `question ${n}` }]
-  });
-  const quiet = await inhabit({ agents: [person('w-1')] });
-  const countOf = (v) => {
-    const badges = all(v.tree, (n) => n.props?.['data-study-badges'] === '');
-    return badges.map((b) => text(b).join('')).join('').trim();
-  };
-  assert.equal(countOf(quiet.view), '',
-    'no letters, no badge — an empty desk is the resting state');
-
-  const busy = await inhabit({ agents: [person('w-1')], tasks: [waiting(1), waiting(2)] });
-  assert.equal(countOf(busy.view), '2', 'two letters, shown as two');
-});
-
-test('the count of waiting letters is sized by the house, not by a token', async () => {
-  // The house is laid out at its natural size and letterboxed into the window
-  // as one scaled drawing, so a fixed CSS size is delivered at a fraction of
-  // itself: `--cth-text-display-sm` is 8px, and 8px arrives on a 1280x720
-  // floor at about two. Anything meant to be READ inside the house has to be a
-  // fraction of the box it is printed in, because that box is scaled by the
-  // same number everything else is.
-  const { view } = await inhabit({
+/**
+ * Nothing in the house prints a bare number on the painting any more.
+ *
+ * The parlour used to letter the count of waiting petitions onto the stack the
+ * painting puts on its right-hand bookcase, so the house showed a digit sitting
+ * on a shelf of books with nothing to attach it to — and every commission it
+ * counted was already a book on the felt in the same room. The petitions are
+ * still a control: the stack opens the ASK ME board, and the commissions that
+ * are waiting carry the mark on their own spines.
+ */
+test('the petitions are a place to press, not a number printed on the shelf', async () => {
+  const { view, calls } = await inhabit({
     agents: [person('w-1')],
-    tasks: [{ id: 'a', status: 'blocked', title: 'a', dependsOn: [], humanQA: [{ q: 'q' }] }]
+    tasks: [{ id: 'a', status: 'blocked', title: 'a', dependsOn: [], humanQA: [{ q: 'q' }] },
+      { id: 'b', status: 'blocked', title: 'b', dependsOn: [], humanQA: [{ q: 'q' }] },
+      { id: 'c', status: 'blocked', title: 'c', dependsOn: [], humanQA: [{ q: 'q' }] }]
   });
-  const { room, berth } = anchorSeat(studyRoom, 'writingDesk');
-  const plate = berthToBox(berth, viewOf(room));
-  const badges = one(view.tree, (n) => n.props?.['data-study-badges'] === '');
-  const printed = one(badges, (n) => typeof n.props?.style?.fontSize === 'number');
-  assert.ok(printed, 'the count is sized from a token rather than from its plate');
-  const size = printed.props.style.fontSize;
-  assert.ok(size > plate.height * 0.2 && size <= plate.height,
-    `the count is ${size} on a plate ${plate.height} tall`);
+  assert.equal(all(view.tree, (n) => n.props?.['data-study-badges'] === '').length, 0,
+    'a count is still printed over the painting');
 
-  // And what that comes to on a window somebody actually has.
-  const { houseFit, HOUSE_NATURAL_WIDTH } = loadTs(SCENE);
-  const scale = houseFit({ w: 1280, h: 720 }).w / HOUSE_NATURAL_WIDTH;
-  assert.ok(size * scale >= 8,
-    `the count lands on screen at ${(size * scale).toFixed(1)}px, which is not a number you can read`);
-});
+  const printed = all(view.tree, (n) => typeof n.props?.children === 'string'
+    && n.props.children.trim() === '3');
+  assert.deepEqual(printed, [], 'the three waiting letters are still lettered onto the wall');
 
-test('a prop shows its count where the painting puts it', async () => {
-  const { view } = await inhabit({
-    agents: [person('w-1')],
-    tasks: [{ id: 'a', status: 'blocked', title: 'a', dependsOn: [], humanQA: [{ q: 'q' }] }]
-  });
-  // A count belongs ON the prop, not in the middle of the room's air: the room
-  // names ONE berth — the stack of petitions, the open almanac — and the badge
-  // has to be projected against that panel's letterboxed box like any other
-  // position inside the painting.
-  const { room: desk, berth } = anchorSeat(studyRoom, 'writingDesk');
-  assert.ok(berth, 'the writing desk declares where its letters are');
-  const want = berthToBox(berth, viewOf(desk));
-  const badges = one(panelOf(view.tree, desk.id), (n) => n.props?.['data-study-badges'] === '');
-  assert.deepEqual(
-    { left: badges.props.style.left, top: badges.props.style.top,
-      width: badges.props.style.width, height: badges.props.style.height },
-    want,
-    'the count is laid over the stack the manifest points at');
+  const stack = one(view.tree, (n) => n.props?.['data-study-kind'] === 'writingDesk');
+  stack.props.onClick({ stopPropagation: () => {} });
+  assert.deepEqual(calls.tabs, ['human'], 'the petitions stopped opening the ASK ME board');
 });
 
 test('the commissions are dealt onto the baize the manifest points at', async () => {
