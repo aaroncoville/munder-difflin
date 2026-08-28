@@ -16,7 +16,7 @@ const assert = require('node:assert/strict');
 const { mount } = require('./render-hooks.cjs');
 const loadTs = require('./load-ts.cjs');
 
-const { useSceneState } = loadTs('src/renderer/src/scene/study/useSceneState.ts');
+const { bookFor, useSceneState } = loadTs('src/renderer/src/scene/study/useSceneState.ts');
 const { parseTasks } = loadTs('src/renderer/src/components/TasksKanban.tsx');
 const { ARCHIVE_MAX, ARCHIVE_WINDOW_DAYS } = loadTs('src/renderer/src/scene/study/shelfBooks.ts');
 const { useStore } = loadTs('src/renderer/src/store/store.ts');
@@ -179,6 +179,22 @@ test('an assistant holding both a stuck card and a live one reads as stuck', asy
   });
   assert.equal(state.agents[0].bookState, 'sealed');
   assert.equal(state.agents[0].bookTitle, 'Which key?');
+});
+
+test('two cards of the same standing pick the ledger\'s first, every time', () => {
+  // Status settles which book is on the desk, and between two cards of the same
+  // status nothing does — so the tie has to be broken by something stable, or
+  // the desk shows a different title on each poll for no reason the room can
+  // account for. The ledger's own order is that something.
+  const mine = [
+    task({ id: 't-a', assignee: 'w-1', status: 'doing', title: 'Port the loader' }),
+    task({ id: 't-b', assignee: 'w-1', status: 'doing', title: 'Rewrite the parser' })
+  ];
+  for (const tasks of [mine, [...mine].reverse()]) {
+    assert.deepEqual(bookFor(tasks, 'w-1'), {
+      bookState: 'open', bookTitle: tasks[0].title, bookTaskId: tasks[0].id
+    }, 'whichever card the ledger lists first is the one on the desk');
+  }
 });
 
 test('an assistant at work has an open book named after the card', async () => {
