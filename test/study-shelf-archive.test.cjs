@@ -325,6 +325,106 @@ test('a mark darkens the paint on a layer of its own, not everything it carries'
     'the darkened layer has something inside it, which is darkened with it');
 });
 
+// ─── Filed as a book you could take down ────────────────────────────────────
+
+/**
+ * A shelved commission is a BOOK, and a book on a shelf carries its number.
+ *
+ * The wall used to be a set of marks and nothing else: you could see that
+ * something had been finished and never which thing. Aaron: *"Is it possible to
+ * have the books in the archive function like the ones on the table? Except
+ * file them away vertically on the archive shelf ... it should still show the
+ * book color of done, the task number on the spine."* So a mark carries the
+ * same two things a spine on the table carries — the done face, and the number
+ * out of the commission's id — and it carries them the way a STANDING book
+ * does: the number runs down the spine rather than across it.
+ *
+ * The number is asserted against the table's own rule rather than against a
+ * literal, because the point of it is that the two surfaces agree. A wall that
+ * numbers a commission differently from the table is two commissions.
+ */
+const B = loadTs('src/renderer/src/scene/study/BaizeStacks.tsx');
+const numberOf = (book) => all(book, (n) => n.props?.['data-shelf-number'] !== undefined)[0];
+
+test('a shelved commission is filed as a spine carrying the done face and its number', async () => {
+  const view = await inhabit({
+    tasks: [{ id: 'T-7', status: 'done', title: 'the seventh folio', dependsOn: [],
+      createdAt: new Date().toISOString() }]
+  });
+  const book = shelfIn(view)[0];
+  assert.ok(book, 'no book');
+  const label = numberOf(book);
+  assert.ok(label, 'the spine carries no number, so the wall says only that something finished');
+
+  const face = B.SPINE_FACES.done;
+  assert.equal(label.props.style.background, face.background,
+    'the label is not the done book colour the table prints on');
+  assert.equal(label.props.style.color, face.color,
+    'the number is not the done book ink the table prints in');
+
+  const digits = all(label, (n) => typeof n.props?.children === 'number'
+    || typeof n.props?.children === 'string')[0];
+  assert.ok(digits, 'the label prints nothing');
+  assert.equal(String(digits.props.children), String(B.baizeNumber({ id: 'T-7' }, 0)),
+    'the wall numbers the commission differently from the table');
+  assert.match(String(digits.props.style.transform), /rotate\(90deg\)/,
+    'the number runs across the spine, the way a book LYING DOWN carries it');
+  assert.equal(typeof label.props.style.fontSize, 'number',
+    'the number is a CSS token the house scale then shrinks to nothing');
+});
+
+test('a departed assistant is still only a mark', async () => {
+  // The wall draws whatever it is handed. A number belongs to a commission —
+  // an assistant has none — so the shade is the whole of that mark.
+  const A = loadTs('src/renderer/src/scene/study/ShelfArchive.tsx');
+  const rendered = A.ShelfArchive({
+    books: [{ id: 'gone-1', label: 'Someone', kind: 'assistant', at: null }],
+    panelSrc: 'shelves.png',
+    view: { x: 0, y: 0, w: 1568, h: 672 }
+  });
+  const mark = all(rendered, (n) => n.props?.['data-shelf-book'] !== undefined)[0];
+  assert.ok(mark, 'nothing was marked');
+  assert.equal(numberOf(mark), undefined, 'a departed assistant was given a commission number');
+});
+
+test('the number fits on every volume the wall can mark', () => {
+  // Printed down the spine, what has to fit along the spine's LENGTH is the
+  // number's own length, and what has to fit across its THICKNESS is the glyph.
+  // The wall's volumes are not one shape: the widest is more than twice the
+  // narrowest, so a label sized by a fixed fraction of one of them runs off the
+  // other.
+  const A = loadTs('src/renderer/src/scene/study/ShelfArchive.tsx');
+  const view = { x: 0, y: 0, w: 1568, h: 672 };
+  for (const [i] of S.SHELF_BOOKS.entries()) {
+    const box = S.bookSlot(i, view);
+    for (const n of [7, 42, 128, 4096]) {
+      const { fontSize, height } = A.shelfLabel(box, n);
+      assert.ok(fontSize > 0 && height > 0, `volume ${i} labels ${n} at no size at all`);
+      assert.ok(fontSize * 0.62 * String(n).length <= height + 0.01,
+        `${n} is set at ${fontSize.toFixed(1)} and runs off the end of a label `
+        + `${height.toFixed(1)} long on volume ${i}`);
+      assert.ok(fontSize <= box.width,
+        `${n} is set taller (${fontSize.toFixed(1)}) than volume ${i} is thick `
+        + `(${box.width.toFixed(1)})`);
+      assert.ok(height <= box.height,
+        `the label is longer than volume ${i} is tall`);
+    }
+  }
+});
+
+test('the number is set from the spine, not from a type token', () => {
+  // The house is laid out at natural size and letterboxed into the window as
+  // one scaled drawing, so a fixed 12px face arrives at three or four pixels.
+  // A standing book is thick across its WIDTH, which is what the size follows.
+  const A = loadTs('src/renderer/src/scene/study/ShelfArchive.tsx');
+  const wide = A.shelfLabel({ left: 0, top: 0, width: 40, height: 200 }, 7).fontSize;
+  const thin = A.shelfLabel({ left: 0, top: 0, width: 14, height: 200 }, 7).fontSize;
+  assert.ok(wide > thin, 'a thick book and a thin one print the same size number');
+  const one = A.shelfLabel({ left: 0, top: 0, width: 20, height: 200 }, 7).fontSize;
+  const three = A.shelfLabel({ left: 0, top: 0, width: 20, height: 200 }, 128).fontSize;
+  assert.ok(three < one, 'a three-figure commission is set as large as a one-figure one');
+});
+
 test('the darkening is measured against the wall it actually lands on', () => {
   // Not "it declares a filter" — how far the pixels under a mark actually move.
   // The wall this was first designed for was assumed to be painted pale and is

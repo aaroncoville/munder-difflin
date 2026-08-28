@@ -27,11 +27,17 @@
  * whatever the mark carries by exactly the amount that makes the painting
  * recede. With the shade on its own layer, a mark can be drawn on.
  *
- * The marks are not buttons. The archive has no destination of its own yet, and
- * a control that does nothing is worse than a mark that does not claim to be
- * one — but each carries its name as a tooltip, so the wall can be read.
+ * A concluded commission's mark is also a BOOK, and a book carries its number.
+ * The wall used to say only that something had been finished, never which
+ * thing — so a commission's mark wears the same done face the card table's
+ * spines wear, with the same number out of the same id, printed the way a
+ * STANDING book carries its title: down the spine rather than across it.
+ *
+ * A departed assistant's mark stays a mark. It has no commission number to
+ * print and nowhere to lead, and the wall draws whatever it is handed.
  */
-import { bookSlot, type ArchivedThing } from './shelfBooks';
+import { bookSlot, type ArchivedThing, type Box } from './shelfBooks';
+import { baizeNumber, spineType, SPINE_FACES } from './BaizeStacks';
 
 /**
  * How each kind of finished thing is taken out of the painting.
@@ -56,6 +62,27 @@ export const BOOK_SHADE: Record<ArchivedThing['kind'], string> = {
   assistant: 'brightness(0.34) saturate(0.18)'
 };
 
+/**
+ * How the number is set on a standing book, and how long a label it needs.
+ *
+ * The size comes from the spine's THICKNESS — its width, for a book on its end
+ * — because the house is drawn at natural size and letterboxed into the window
+ * as one scaled drawing: a fixed 12px face arrives on screen at three or four
+ * pixels, so type inside the house has to be a fraction of the thing it is
+ * printed on. That is the card table's rule exactly, turned a quarter.
+ *
+ * The label's LENGTH then follows the number rather than a fixed fraction of
+ * the volume, because the wall's volumes are not one shape: the widest painted
+ * spine is more than twice the thickness of the narrowest, so a label sized as
+ * a share of one of them runs off the other. Capped at half the volume so a
+ * label never becomes the book.
+ */
+export function shelfLabel(box: Box, n: number): { fontSize: number; height: number } {
+  const { fontSize } = spineType({ height: box.width }, n);
+  const run = fontSize * (0.62 * String(n).length + 0.5);
+  return { fontSize, height: Math.min(box.height * 0.5, run) };
+}
+
 interface ViewBox { x: number; y: number; w: number; h: number }
 
 export interface ShelfArchiveProps {
@@ -70,6 +97,9 @@ export function ShelfArchive({ books, panelSrc, view }: ShelfArchiveProps): JSX.
     <>
       {books.map((book, i) => {
         const box = bookSlot(i, view);
+        const face = SPINE_FACES.done;
+        const n = baizeNumber(book, i);
+        const label = shelfLabel(box, n);
         return (
           <div
             key={`${book.kind}:${book.id}`}
@@ -99,6 +129,50 @@ export function ShelfArchive({ books, panelSrc, view }: ShelfArchiveProps): JSX.
                 filter: BOOK_SHADE[book.kind]
               }}
             />
+            {book.kind === 'commission'
+              ? (
+                <div
+                  data-shelf-number=""
+                  style={{
+                    // At the foot of the spine, where a library's own call
+                    // number is pasted — clear of the head band and of the
+                    // shelf edge the book is standing on.
+                    position: 'absolute',
+                    left: 0,
+                    right: 0,
+                    bottom: box.height * 0.06,
+                    height: label.height,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    // The done face the card table prints on, so one commission
+                    // looks like itself on both surfaces. It is a plate rather
+                    // than bare ink because what is behind it is a photograph
+                    // of a painting: ink on the darkened paint would be legible
+                    // by whatever accident of pigment the volume happens to
+                    // have, and legibility here is measured.
+                    background: face.background,
+                    color: face.color,
+                    fontFamily: 'var(--cth-font-display)',
+                    fontSize: label.fontSize,
+                    lineHeight: 1,
+                    overflow: 'hidden'
+                  }}
+                >
+                  <div
+                    style={{
+                      // Turned a quarter, the way a title is printed on a book
+                      // that is STANDING: the digits run down the spine rather
+                      // than across its thickness.
+                      transform: 'rotate(90deg)',
+                      whiteSpace: 'nowrap'
+                    }}
+                  >
+                    {n}
+                  </div>
+                </div>
+              )
+              : null}
           </div>
         );
       })}
