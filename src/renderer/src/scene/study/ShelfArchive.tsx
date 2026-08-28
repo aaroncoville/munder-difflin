@@ -35,6 +35,19 @@
  *
  * A departed assistant's mark stays a mark. It has no commission number to
  * print and nowhere to lead, and the wall draws whatever it is handed.
+ *
+ * A commission's mark is a CONTROL, and it opens the same task detail a kanban
+ * card and a card-table spine open. The wall's marks were deliberately inert
+ * while the archive had no destination of its own — a control that does nothing
+ * is worse than a mark that does not claim to be one — and a concluded
+ * commission has one, so for those marks the rule is the other way round.
+ *
+ * At the size the house is drawn a mark is a few pixels across and gives no
+ * sign whatever that it can be pressed, so being looked at has to say so. It
+ * says so with a ring drawn OUTSIDE the volume and a raise above the volumes
+ * either side of it — never by moving the mark, because the mark's alignment
+ * with the paint under it is arithmetic: shift the window and the copy inside
+ * it slides too, and the book stops being the book the painter painted.
  */
 import { bookSlot, type ArchivedThing, type Box } from './shelfBooks';
 import { baizeNumber, spineType, SPINE_FACES } from './BaizeStacks';
@@ -90,9 +103,17 @@ export interface ShelfArchiveProps {
   /** The shelves panel's own src — the same image the room draws with. */
   panelSrc: string;
   view: ViewBox;
+  /** Opens the commission a mark stands for. Without it the wall is a wall. */
+  onOpen?: (id: string) => void;
+  /** The one book being looked at, and how to say which. Held above the wall
+   *  so only one is ever forward, the way a reader has one hand. */
+  pulled?: string | null;
+  onPull?: (id: string | null) => void;
 }
 
-export function ShelfArchive({ books, panelSrc, view }: ShelfArchiveProps): JSX.Element {
+export function ShelfArchive({
+  books, panelSrc, view, onOpen, pulled, onPull
+}: ShelfArchiveProps): JSX.Element {
   return (
     <>
       {books.map((book, i) => {
@@ -100,19 +121,60 @@ export function ShelfArchive({ books, panelSrc, view }: ShelfArchiveProps): JSX.
         const face = SPINE_FACES.done;
         const n = baizeNumber(book, i);
         const label = shelfLabel(box, n);
+        const opens = book.kind === 'commission' && typeof onOpen === 'function';
+        const held = opens && pulled === book.id;
+        const look = (at: boolean): void => onPull?.(at ? book.id : null);
         return (
           <div
             key={`${book.kind}:${book.id}`}
             data-shelf-book={book.id}
             data-shelf-kind={book.kind}
             title={book.kind === 'assistant' ? `${book.label} — departed` : book.label}
+            {...(opens
+              ? {
+                role: 'button',
+                tabIndex: 0,
+                'aria-label': book.label,
+                // A real <button> answers Enter and Space for free; `role`
+                // only promises that it does. The target check keeps a key
+                // pressed on the label inside from reading as a press of the
+                // book — the same guard the card-table spines use.
+                onClick: (event: React.MouseEvent) => {
+                  event.stopPropagation();
+                  onOpen?.(book.id);
+                },
+                onKeyDown: (event: React.KeyboardEvent) => {
+                  if (event.target !== event.currentTarget) return;
+                  if (event.key !== 'Enter' && event.key !== ' ') return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onOpen?.(book.id);
+                },
+                onMouseEnter: () => look(true),
+                onMouseLeave: () => look(false),
+                // The keyboard reaches a mark exactly as the pointer does — it
+                // is a tab stop — and would otherwise land on one nobody can
+                // see they are on.
+                onFocus: () => look(true),
+                onBlur: () => look(false)
+              }
+              : {})}
             style={{
               position: 'absolute',
               left: view.x + box.left,
               top: view.y + box.top,
               width: box.width,
               height: box.height,
-              pointerEvents: 'none'
+              // Above the volumes either side, so the ring is not overdrawn by
+              // whichever mark happens to come after this one.
+              zIndex: held ? 1 : 0,
+              // Outside the border box on purpose: an inset ring would be drawn
+              // under the layer of painting the mark carries.
+              boxShadow: held
+                ? `0 0 0 ${Math.max(1, box.width * 0.14)}px var(--cth-gilt)`
+                : 'none',
+              cursor: opens ? 'pointer' : 'default',
+              pointerEvents: opens ? 'auto' : 'none'
             }}
           >
             <div
@@ -135,8 +197,8 @@ export function ShelfArchive({ books, panelSrc, view }: ShelfArchiveProps): JSX.
                   data-shelf-number=""
                   style={{
                     // At the foot of the spine, where a library's own call
-                    // number is pasted — clear of the head band and of the
-                    // shelf edge the book is standing on.
+                    // number is pasted — held clear of the ledge the book is
+                    // standing on, so the label is not read as the shelf.
                     position: 'absolute',
                     left: 0,
                     right: 0,

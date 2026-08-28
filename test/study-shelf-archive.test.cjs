@@ -174,7 +174,11 @@ const baizeIn = (view) => all(view.tree, (n) => n.props?.['data-baize-book'] !==
 /** The layer inside a mark that carries the re-laid painting and its shade. */
 const paintOf = (book) => all(book, (n) => n.props?.['data-shelf-paint'] !== undefined)[0];
 
+/** What the wall asked the app to open, this test. */
+const opened = [];
+
 async function inhabit({ archived = [], tasks = [] }) {
+  opened.length = 0;
   global.window = {
     localStorage: { getItem: () => 'occult', setItem: () => {}, removeItem: () => {} },
     close: () => {},
@@ -185,7 +189,8 @@ async function inhabit({ archived = [], tasks = [] }) {
   useStore.getState().addAgent(person('w-1'));
   useStore.setState({
     archivedAgents: archived,
-    requestCommandCenterTab: () => {}, select: () => {}, openTaskDetail: () => {}
+    requestCommandCenterTab: () => {}, select: () => {},
+    openTaskDetail: (id) => opened.push(id)
   });
   const { StudyScene } = loadTs(SCENE);
   const view = mount(StudyScene, {});
@@ -385,6 +390,10 @@ test('a departed assistant is still only a mark', async () => {
   const mark = all(rendered, (n) => n.props?.['data-shelf-book'] !== undefined)[0];
   assert.ok(mark, 'nothing was marked');
   assert.equal(numberOf(mark), undefined, 'a departed assistant was given a commission number');
+  // ...and it leads nowhere, so it does not claim to be a control.
+  assert.equal(mark.props.role, undefined, 'a mark that opens nothing offers itself as a button');
+  assert.equal(mark.props.tabIndex, undefined, 'the keyboard stops on a mark that does nothing');
+  assert.equal(mark.props.style.pointerEvents, 'none');
 });
 
 test('the number fits on every volume the wall can mark', () => {
@@ -423,6 +432,120 @@ test('the number is set from the spine, not from a type token', () => {
   const one = A.shelfLabel({ left: 0, top: 0, width: 20, height: 200 }, 7).fontSize;
   const three = A.shelfLabel({ left: 0, top: 0, width: 20, height: 200 }, 128).fontSize;
   assert.ok(three < one, 'a three-figure commission is set as large as a one-figure one');
+});
+
+// ─── A book you can take down ───────────────────────────────────────────────
+
+/**
+ * A shelved commission opens, the way the ones on the table do.
+ *
+ * The wall's marks were deliberately not controls: the archive had no
+ * destination of its own, and a control that does nothing is worse than a mark
+ * that does not claim to be one. A concluded commission HAS a destination — the
+ * same task detail a kanban card opens, and the same one the card table's
+ * spines open — so for those marks the rule is now the other way round. Aaron:
+ * *"if I hover or click it takes me to the done task."*
+ *
+ * That is the whole of the interaction design: the Study is another way of
+ * looking at the same house, not a second house with surfaces of its own.
+ */
+const shelved = () => ({
+  tasks: [{ id: 'T-7', status: 'done', title: 'the seventh folio', dependsOn: [],
+    createdAt: new Date().toISOString() }]
+});
+
+test('taking a book off the shelf opens that concluded commission', async () => {
+  const view = await inhabit(shelved());
+  const book = shelfIn(view)[0];
+  assert.equal(book.props.role, 'button', 'a book you cannot press is a decoration');
+  assert.equal(book.props.tabIndex, 0, 'the book is not reachable by keyboard');
+  assert.equal(book.props.style.pointerEvents, 'auto',
+    'the mark still refuses the pointer, so nothing can be pressed');
+  assert.equal(book.props.style.cursor, 'pointer');
+  assert.ok(String(book.props['aria-label']).includes('seventh folio'),
+    'the control does not say what it opens');
+
+  let stopped = false;
+  book.props.onClick({ stopPropagation: () => { stopped = true; } });
+  assert.deepEqual(opened, ['T-7'], 'it opened the wrong commission, or none');
+  // The mark sits inside the archive room. That room does not navigate today,
+  // but a book that lets its click carry on into whatever the room becomes
+  // would open two things at once the day it does.
+  assert.ok(stopped, 'the click was never stopped from reaching the room');
+});
+
+test('a shelved book answers Enter and Space, as the table spines do', async () => {
+  const view = await inhabit(shelved());
+  const book = shelfIn(view)[0];
+  const press = (key) => book.props.onKeyDown({
+    key, target: 1, currentTarget: 1,
+    preventDefault: () => {}, stopPropagation: () => {}
+  });
+  press('Enter');
+  press(' ');
+  assert.deepEqual(opened, ['T-7', 'T-7'], 'the keyboard cannot take the book down');
+  press('a');
+  assert.equal(opened.length, 2, 'any key at all opened the commission');
+});
+
+/**
+ * A hand on a spine brings it forward.
+ *
+ * A mark is a window onto the painting, so at the size the house is drawn it is
+ * a few pixels wide and gives no sign at all that it is a control. Being looked
+ * at is what says so — and it is a ring drawn OUTSIDE the volume plus a raise
+ * above its neighbours, rather than anything that moves the mark, because the
+ * mark's alignment with the paint under it is arithmetic: shift the window and
+ * the copy inside it slides too, and the book stops being the book it was.
+ */
+test('hovering a shelved book brings it forward, and letting go puts it back', async () => {
+  const view = await inhabit(shelved());
+  const at = () => shelfIn(view)[0];
+  const resting = at().props.style;
+  assert.ok(!resting.boxShadow || resting.boxShadow === 'none',
+    'a book nobody is looking at already stands proud of the shelf');
+
+  at().props.onMouseEnter();
+  view.render();
+  const held = at().props.style;
+  assert.match(String(held.boxShadow), /var\(--cth-gilt\)/,
+    'a hand on the spine gives no sign the book can be taken down');
+  assert.ok(Number(held.zIndex) > Number(resting.zIndex ?? 0),
+    'the book was not raised above its neighbours, so the ring is drawn over');
+
+  at().props.onMouseLeave();
+  view.render();
+  assert.equal(at().props.style.boxShadow, resting.boxShadow, 'the book never went back');
+  assert.equal(at().props.style.zIndex, resting.zIndex);
+});
+
+test('the keyboard reaches a shelved book the way the pointer does', async () => {
+  const view = await inhabit(shelved());
+  const at = () => shelfIn(view)[0];
+  at().props.onFocus();
+  view.render();
+  assert.match(String(at().props.style.boxShadow), /var\(--cth-gilt\)/,
+    'a book tabbed to is a book nobody can see they are on');
+  at().props.onBlur();
+  view.render();
+  assert.ok(!at().props.style.boxShadow || at().props.style.boxShadow === 'none');
+});
+
+test('only one book is ever forward', async () => {
+  const view = await inhabit({
+    tasks: [1, 2, 3].map((i) => ({ id: `T-${i}`, status: 'done', title: `folio ${i}`,
+      dependsOn: [], createdAt: new Date().toISOString() }))
+  });
+  const held = () => shelfIn(view)
+    .filter((b) => /var\(--cth-gilt\)/.test(String(b.props.style.boxShadow)))
+    .map((b) => b.props['data-shelf-book']);
+  shelfIn(view)[0].props.onMouseEnter();
+  view.render();
+  assert.equal(held().length, 1);
+  shelfIn(view)[2].props.onMouseEnter();
+  view.render();
+  assert.deepEqual(held(), [shelfIn(view)[2].props['data-shelf-book']],
+    'two books are forward at once, or the wrong one is');
 });
 
 test('the darkening is measured against the wall it actually lands on', () => {

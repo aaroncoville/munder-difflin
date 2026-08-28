@@ -646,6 +646,9 @@ export function StudyScene(): JSX.Element {
   const godId = useStore((s) => s.agents.find((a) => a.isGod)?.id);
   /** The one place setting being looked at, if any — see `DeskPlace`. */
   const [lookingAt, setLookingAt] = useState<string | null>(null);
+  /** The one shelved commission being looked at. Held here rather than in the
+   *  wall so only ever one book is forward, the way a reader has one hand. */
+  const [pulledBook, setPulledBook] = useState<string | null>(null);
 
   /** The petitions are the god's to answer, so opening them selects him too —
    *  the same pair of actions the office floor's ASK ME board fires. */
@@ -689,8 +692,19 @@ export function StudyScene(): JSX.Element {
     if (kind === 'shelves') {
       // Finished work, darkening the painted volumes it lands on — which are
       // rectangles of this very panel, so the mark is one of the wall's own
-      // books rather than a book drawn over the wall.
-      return <ShelfArchive books={scene.archive} panelSrc={ROOM_SRC[room.image]} view={view} />;
+      // books rather than a book drawn over the wall. A concluded commission's
+      // volume opens that commission, through the same `openTaskDetail` the
+      // card table's spines and the board's own cards use.
+      return (
+        <ShelfArchive
+          books={scene.archive}
+          panelSrc={ROOM_SRC[room.image]}
+          view={view}
+          onOpen={openTaskDetail}
+          pulled={pulledBook}
+          onPull={setPulledBook}
+        />
+      );
     }
     return null;
   };
