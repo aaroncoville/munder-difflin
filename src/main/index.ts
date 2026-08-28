@@ -12,6 +12,7 @@ import { request as httpsRequest } from 'node:https';
 import { PtyManager, type SpawnOptions } from './pty';
 import { resolveCommand as resolveCliCommand, isSafeCommandName } from './shellEnv';
 import { initAutoUpdater, abortPendingRestart } from './updater';
+import { askToConfirmQuit } from './quitRequest';
 import { RealtimeFloorWatcher } from './realtimeFloorWatcher';
 import {
   readConfig, writeConfig, setAgentTokenCap, resetConfig, onConfigWritten, ensureHarnessHome, ensureClaudePermissionsAccepted,
@@ -3743,19 +3744,24 @@ ipcMain.handle('app:cancelClose', () => {
  * without asking, which is the one thing a painted prop in a room must never do
  * — there is no undo behind it and no way to tell it from any other click.
  *
- * So the prop asks for the quit dialog directly, and always gets it. It is
- * shown by the primary window, wherever the click came from, because that is
- * the window that renders it and quitting is app-wide however it was started.
+ * So the prop asks for the quit dialog directly, and always gets it. The primary
+ * window shows it wherever the click came from, because that is the window that
+ * renders it and quitting is app-wide however it was started — but a primary
+ * that has been closed is no reason to skip the asking, so the floor that asked
+ * (or any other still standing) shows it instead. See quitRequest.ts.
  */
-ipcMain.handle('app:requestQuit', () => {
-  const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
-  if (!win || win.webContents.isDestroyed()) {
-    // Nothing left to ask with. Quitting is still what was asked for.
-    teardownAndQuit();
-    return;
-  }
-  win.focus();
-  win.webContents.send('app:closeRequested', { ptyCount: ptyManager.list().length });
+ipcMain.handle('app:requestQuit', (event) => {
+  // Whichever renderer is still standing raises it: the primary, else the floor
+  // that asked, else any other floor. If none is, the request is REFUSED — an
+  // ask that cannot be put is not an ask that was answered yes, and this path
+  // used to read it as one and quit outright.
+  const ok = askToConfirmQuit({
+    primary: mainWindow,
+    sender: event?.sender,
+    windows: allWindows,
+    ptyCount: ptyManager.list().length
+  });
+  return { ok };
 });
 
 // Open a new floor (independent office window). Gated by the multiWindow flag
