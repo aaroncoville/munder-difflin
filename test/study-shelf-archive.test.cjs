@@ -237,9 +237,11 @@ test('a concluded commission leaves the table for the wall', async () => {
 });
 
 test('a concluded commission waiting on you is on the table, not yet on the wall', async () => {
-  // The wall's marks are pieces of the painting and deliberately not controls,
-  // so a question that reaches the wall is a question nobody can answer. A
-  // commission is therefore only archived once nothing on it is still waiting.
+  // A shelved commission opens, but the wall is bounded — an age window and one
+  // slot per painted volume — so a question that reaches the wall is a question
+  // the wall can drop, and every volume wears the same done face, so nothing
+  // there says which one is waiting. A commission is therefore only archived
+  // once nothing on it is still waiting.
   const view = await inhabit({
     tasks: [{ id: 'T-1', status: 'done', title: 'the seventh folio', dependsOn: [],
       createdAt: new Date().toISOString(), humanQA: [{ q: 'which key?' }] }]
@@ -249,7 +251,7 @@ test('a concluded commission waiting on you is on the table, not yet on the wall
   assert.equal(baize[0].props.role, 'button', 'the commission cannot be opened');
   assert.equal(baize[0].props['data-baize-petition'], '');
   assert.equal(shelfIn(view).length, 0,
-    'the question was shelved where nobody can reach it');
+    'the question was shelved where the wall can drop it');
 });
 
 test('answering the last question sends the concluded commission to the wall', async () => {

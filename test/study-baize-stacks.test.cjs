@@ -256,9 +256,10 @@ test('a commission waiting on the human is marked on its own spine', async () =>
  * A commission can be finished and still be waiting on you, and that state has
  * nowhere else in the Study to live.
  *
- * The wall does not take it — the marks there are pieces of the painting, not
- * controls, so a question shelved is a question nobody can reach — and the
- * board's own predicate did not even recognise it, because it asked for
+ * The wall does not take it — the wall is bounded by an age window and by the
+ * number of volumes the painting has, so a question shelved is a question the
+ * wall can drop, and nothing on the wall says which volume is waiting on you —
+ * and the board's own predicate did not even recognise it, because it asked for
  * `blocked` as well as an open question. An unanswered question is unanswered
  * whatever column the card is in, so the commission stays on the felt, marked
  * and pressable, until the question is resolved.

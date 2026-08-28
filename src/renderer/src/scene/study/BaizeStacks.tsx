@@ -12,9 +12,10 @@
  * the shelf wall, where a finished volume darkens in the painting — so each
  * surface says one thing, and the height of the piles is how much is still to
  * do. The one exception is a concluded commission that still holds an
- * unanswered question: the wall's marks are not controls, so shelving that
- * would put the question where nobody can reach it, and it stays here until
- * the question is resolved.
+ * unanswered question: the wall is BOUNDED, by an age window and by the number
+ * of volumes the painting has, so a question shelved is a question that can
+ * fall off the wall entirely — and the wall does not print the waiting-on-you
+ * mark in any case. It stays here until the question is resolved.
  *
  * So: up to four piles on the baize, each growing upward a spine at a time.
  * When a pile reaches its height the next one starts beside it, the way books
@@ -97,8 +98,8 @@ const ARC = 0.08;
  * A commission waiting on the human is dealt FIRST because of the bound. Open
  * work the bound cuts is still on the board and the table says as much; a
  * concluded commission the bound cut would be on NEITHER surface of the Study,
- * since the wall will not take it while the question stands and its marks are
- * not controls in any case. First is where the bound cannot reach it.
+ * since the wall will not take it while the question stands. First is where the
+ * bound cannot reach it.
  */
 const PILE_ORDER: Record<HiveTask['status'], number> = {
   blocked: 1, doing: 2, todo: 3, done: 4
@@ -115,11 +116,13 @@ export function pileRank(task: HiveTask): number {
  * everything ever finished would read as a busy House for ever, most of it
  * piles of things nobody has to touch, so concluded work darkens a volume on
  * the shelf wall instead. But a commission can be marked done and still hold a
- * question nobody has answered, and the wall is the wrong place for that: its
- * marks are pieces of the painting rather than controls, so shelving one puts
- * the question somewhere nobody can reach it. Such a commission stays here,
- * marked, until the question is resolved — which is a fact about the card, not
- * a status this code rewrites.
+ * question nobody has answered, and the wall is the wrong place for that. A
+ * shelved commission opens, so the question is reachable — but the wall is
+ * bounded by an age window and by the number of volumes the painting has, so a
+ * question put there is one the wall can drop; and the wall carries the done
+ * face on every volume alike, so nothing there says this one is waiting on you.
+ * Such a commission stays here, marked, until the question is resolved — which
+ * is a fact about the card, not a status this code rewrites.
  */
 export function onTheTable(task: HiveTask): boolean {
   return task.status !== 'done' || waitsOnHuman(task);
