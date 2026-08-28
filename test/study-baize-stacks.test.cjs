@@ -252,6 +252,55 @@ test('a commission waiting on the human is marked on its own spine', async () =>
     /--cth-lilac/, 'a commission nobody asked about wears the petition mark');
 });
 
+/**
+ * A commission can be finished and still be waiting on you, and that state has
+ * nowhere else in the Study to live.
+ *
+ * The wall does not take it — the marks there are pieces of the painting, not
+ * controls, so a question shelved is a question nobody can reach — and the
+ * board's own predicate did not even recognise it, because it asked for
+ * `blocked` as well as an open question. An unanswered question is unanswered
+ * whatever column the card is in, so the commission stays on the felt, marked
+ * and pressable, until the question is resolved.
+ */
+test('a concluded commission still waiting on you keeps its place on the table', async () => {
+  const { view, calls } = await inhabit([
+    task('T-1', 'done', { humanQA: [{ q: 'which key?' }] })
+  ]);
+  const books = booksIn(view);
+  assert.deepEqual(books.map((b) => b.props['data-baize-book']), ['T-1'],
+    'the finished commission was shelved with its question unanswered');
+  assert.equal(books[0].props['data-baize-petition'], '',
+    'it is on the table unmarked, so nothing says why it is still there');
+  assert.match(String(books[0].props.style.boxShadow), /--cth-lilac/);
+  books[0].props.onClick({ stopPropagation: () => {} });
+  assert.deepEqual(calls.opened, ['T-1'], 'the spine no longer opens its commission');
+});
+
+test('waiting on the human is an unanswered question, whatever column it is in', () => {
+  const { waitsOnHuman } = loadTs('src/renderer/src/components/TasksKanban.tsx');
+  const open = { q: 'which key?' };
+  assert.equal(waitsOnHuman(task('T-1', 'done', { humanQA: [open] })), true);
+  assert.equal(waitsOnHuman(task('T-2', 'blocked', { humanQA: [open] })), true);
+  assert.equal(waitsOnHuman(task('T-3', 'doing', { humanQA: [open] })), true);
+  assert.equal(waitsOnHuman(task('T-4', 'done', { humanQA: [{ q: 'q', a: 'a' }] })), false);
+  assert.equal(waitsOnHuman(task('T-5', 'blocked')), false);
+});
+
+test('a concluded commission waiting on you is never crowded off the table', () => {
+  // The bound is the reason this matters. Open work cut by the bound is still
+  // on the board, and the table says so; a concluded commission cut by it
+  // would be on NEITHER surface of the Study, because the wall will not take
+  // it while the question stands. So it is dealt first, where the bound cannot
+  // reach it.
+  const crowd = Array.from({ length: B.BAIZE_MAX * 2 }, (_, i) => task(`T-${i}`, 'blocked'));
+  const piled = B.stackBaize(
+    [...crowd, task('ASK-1', 'done', { humanQA: [{ q: 'which key?' }] })], BAIZE);
+  assert.equal(piled.length, B.BAIZE_MAX);
+  assert.equal(piled[0].task.id, 'ASK-1',
+    'a concluded commission waiting on the human was dealt behind the open work');
+});
+
 test('an answered question leaves no mark on the spine', async () => {
   const { view } = await inhabit([
     task('T-1', 'blocked', { humanQA: [{ q: 'which key?', a: 'the staging one' }] })

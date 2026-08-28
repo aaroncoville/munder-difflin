@@ -8,9 +8,13 @@
  * volume of it across the room before you read a single number, which is the
  * only thing the table has to say at this size.
  *
- * The piles hold OPEN commissions only. Concluded work goes to the shelf wall,
- * where a finished volume darkens in the painting — so each surface says one
- * thing, and the height of the piles is how much is still to do.
+ * The piles hold what the House is not finished with. Concluded work goes to
+ * the shelf wall, where a finished volume darkens in the painting — so each
+ * surface says one thing, and the height of the piles is how much is still to
+ * do. The one exception is a concluded commission that still holds an
+ * unanswered question: the wall's marks are not controls, so shelving that
+ * would put the question where nobody can reach it, and it stays here until
+ * the question is resolved.
  *
  * So: up to four piles on the baize, each growing upward a spine at a time.
  * When a pile reaches its height the next one starts beside it, the way books
@@ -81,30 +85,44 @@ const LEAN = [0, 0.05, -0.04, 0.03, -0.05, 0.02];
 const ARC = 0.08;
 
 /**
- * The order the table is piled in: impeded, then underway, then intended.
+ * The order the table is piled in: what needs YOU, then impeded, then underway,
+ * then intended, then the concluded — which are only ever here at all because
+ * they are still waiting on you.
  *
- * The board's own order, and for the same reason — what somebody glancing at
- * the table needs to see is what is stuck, not what happens to have the lowest
- * id. Ties keep the ledger's own order, so the table does not restack itself
- * between polls when nothing has changed.
+ * The board's own order after the first rank, and for the same reason — what
+ * somebody glancing at the table needs to see is what is stuck, not what
+ * happens to have the lowest id. Ties keep the ledger's own order, so the table
+ * does not restack itself between polls when nothing has changed.
  *
- * Concluded work is not in it because concluded work is not on this table: the
- * felt carries what the House still has to do, and a pile that also kept
- * everything ever finished would read as a busy House for ever, most of it
- * piles of things nobody has to touch. Finished commissions darken a volume on
- * the shelf wall instead, which is the surface that means "done" — see
- * `shelfBooks.ts`.
+ * A commission waiting on the human is dealt FIRST because of the bound. Open
+ * work the bound cuts is still on the board and the table says as much; a
+ * concluded commission the bound cut would be on NEITHER surface of the Study,
+ * since the wall will not take it while the question stands and its marks are
+ * not controls in any case. First is where the bound cannot reach it.
  */
-const PILE_ORDER: Record<OpenStatus, number> = {
-  blocked: 0, doing: 1, todo: 2
+const PILE_ORDER: Record<HiveTask['status'], number> = {
+  blocked: 1, doing: 2, todo: 3, done: 4
 };
 
-/** A commission the House has not finished — the only kind the table carries. */
-export type OpenTask = HiveTask & { status: OpenStatus };
-type OpenStatus = Exclude<HiveTask['status'], 'done'>;
+export function pileRank(task: HiveTask): number {
+  return waitsOnHuman(task) ? 0 : PILE_ORDER[task.status] ?? 9;
+}
 
-export function isOpen(task: HiveTask): task is OpenTask {
-  return task.status !== 'done';
+/**
+ * What the table carries: everything the House is not finished with.
+ *
+ * Not simply "not done". The felt holds open work — a pile that also kept
+ * everything ever finished would read as a busy House for ever, most of it
+ * piles of things nobody has to touch, so concluded work darkens a volume on
+ * the shelf wall instead. But a commission can be marked done and still hold a
+ * question nobody has answered, and the wall is the wrong place for that: its
+ * marks are pieces of the painting rather than controls, so shelving one puts
+ * the question somewhere nobody can reach it. Such a commission stays here,
+ * marked, until the question is resolved — which is a fact about the card, not
+ * a status this code rewrites.
+ */
+export function onTheTable(task: HiveTask): boolean {
+  return task.status !== 'done' || waitsOnHuman(task);
 }
 
 /**
@@ -121,7 +139,7 @@ export function baizeNumber(task: HiveTask, index: number): number {
 }
 
 export interface Spine {
-  task: OpenTask;
+  task: HiveTask;
   box: Box;
   n: number;
   /** Which pile it is in, and how far up that pile — 0 is on the felt. */
@@ -137,10 +155,9 @@ export interface Spine {
  */
 export function stackBaize(tasks: readonly HiveTask[], baize: Box): Spine[] {
   const taken = tasks
-    .filter(isOpen)
+    .filter(onTheTable)
     .map((task, i) => ({ task, i }))
-    .sort((a, b) =>
-      (PILE_ORDER[a.task.status] ?? 9) - (PILE_ORDER[b.task.status] ?? 9) || a.i - b.i)
+    .sort((a, b) => pileRank(a.task) - pileRank(b.task) || a.i - b.i)
     .slice(0, BAIZE_MAX);
   if (taken.length === 0) return [];
 
@@ -192,7 +209,7 @@ export function stackBaize(tasks: readonly HiveTask[], baize: Box): Spine[] {
  *
  * Exported so the contrast of every pair can be measured rather than eyeballed.
  */
-export const SPINE_FACES: Record<OpenStatus,
+export const SPINE_FACES: Record<HiveTask['status'],
 { background: string; color: string; edge: string }> = {
   blocked: {
     background: 'var(--cth-coral-light)', color: 'var(--cth-ink-900)',
@@ -205,6 +222,13 @@ export const SPINE_FACES: Record<OpenStatus,
   todo: {
     background: 'var(--cth-paper-100)', color: 'var(--cth-ink-900)',
     edge: 'var(--cth-ink-300)'
+  },
+  // Only ever drawn for a concluded commission that is still waiting on you —
+  // which then wears the petition head over this one. The face is here because
+  // a status without one paints as no face at all rather than as a wrong one.
+  done: {
+    background: 'var(--cth-paper-200)', color: 'var(--cth-ink-500)',
+    edge: 'var(--cth-ink-100)'
   }
 };
 

@@ -57,9 +57,19 @@ export function openQuestion(t: HiveTask): HumanQA | undefined {
   return undefined;
 }
 
-/** Waiting on the human = blocked with an unanswered question on the card. */
+/**
+ * Waiting on the human = an unanswered question on the card, whatever column
+ * the card is in.
+ *
+ * It also required `blocked`, and the two are not the same thing. A card can be
+ * moved to done — or left in doing — with a question on it that nobody has
+ * answered, and by that predicate the question stopped existing: off the ASK ME
+ * board, no mark on the kanban card, and nothing anywhere to say it had been
+ * asked. The status says what is happening to the WORK; the open question says
+ * what is being asked of YOU, and only the second one is this.
+ */
 export function waitsOnHuman(t: HiveTask): boolean {
-  return t.status === 'blocked' && !!openQuestion(t);
+  return !!openQuestion(t);
 }
 
 type Status = HiveTask['status'];

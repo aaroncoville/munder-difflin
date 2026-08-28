@@ -13,7 +13,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStore, type Agent } from '@/store/store';
 import { parseTasks, type HiveTask } from '@/components/TasksKanban';
-import { isOpen } from './BaizeStacks';
+import { onTheTable } from './BaizeStacks';
 import type { CardStatus } from './AgentCard';
 import type { BookState } from './DeskBook';
 import { deskBerths, godBerth } from './roomManifest';
@@ -175,7 +175,7 @@ export function lastTouched(task: HiveTask, now: number): number | null {
 
 export function archiveOf(tasks: readonly HiveTask[], now: number): ArchivedThing[] {
   const things: ArchivedThing[] = tasks
-    .filter((t) => !isOpen(t))
+    .filter((t) => !onTheTable(t))
     .map((t) => ({
       id: t.id, label: t.title, kind: 'commission' as const, at: lastTouched(t, now)
     }));
