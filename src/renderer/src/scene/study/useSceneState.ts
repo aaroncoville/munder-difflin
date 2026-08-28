@@ -153,7 +153,8 @@ export function bookFor(tasks: readonly HiveTask[], agentId: string):
  * with the eighth, and a house of three times its desks is three deep
  * everywhere rather than seventeen deep in one room. Depth is what costs: each
  * assistant past the first at a desk is dealt back from the one below by a
- * fixed step, and a pile deep enough walks off the edge of its own panel.
+ * fixed step, and a pile deep enough runs out of desk to recede into and stops
+ * receding — `STACK_DEEPEST` is where.
  *
  * Seating stays stable through it, because a place is a function of an
  * assistant's index in the roster and nothing else: somebody new arriving at

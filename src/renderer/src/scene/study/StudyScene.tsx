@@ -279,12 +279,40 @@ export function deskLayout(desk: Box):
  */
 export const STACK_OFFSET = { x: 0.14, y: 0.1 };
 
-/** Where the nth assistant at one berth sits. The first sits at the berth. */
+/**
+ * How many times a berth may be dealt back before the pile stops receding.
+ *
+ * Each step eats a fixed share of the setting, so the steps cannot go on: at
+ * seven the width is gone and at ten the height is, and a berth dealt past
+ * either is inside out — a card with a negative height has its foot above its
+ * head. The seating will produce those depths, because it round-robins and a
+ * house may hold many times its desks. So the recession stops here and the
+ * deepest occupants share a place. That is a worse drawing than a deeper pile
+ * would be; it is not a card through the floor.
+ */
+export const STACK_DEEPEST = 4;
+
+/**
+ * Where the nth assistant at one berth sits. The first sits at the berth.
+ *
+ * The berth SHRINKS by exactly what it is dealt back, so its bottom and right
+ * edges never move. The bottom edge is the painted desk surface and the whole
+ * place setting is measured down from it — a berth moved down without being
+ * shortened is a full-height card whose foot is below the desk, which is what
+ * every shared desk in the house used to draw once the seating wrapped round
+ * and started handing out stack index 1. Holding the far corner still means a
+ * pile leans back INTO the room: shorter and narrower the deeper it goes, and
+ * standing on the same surface all the way down.
+ */
 export function stackedBerth(desk: Box, stackIndex: number): Box {
+  const depth = Math.min(Math.max(stackIndex, 0), STACK_DEEPEST);
+  const back = desk.width * STACK_OFFSET.x * depth;
+  const down = desk.height * STACK_OFFSET.y * depth;
   return {
-    ...desk,
-    left: desk.left + desk.width * STACK_OFFSET.x * stackIndex,
-    top: desk.top + desk.height * STACK_OFFSET.y * stackIndex
+    left: desk.left + back,
+    top: desk.top + down,
+    width: desk.width - back,
+    height: desk.height - down
   };
 }
 
