@@ -48,14 +48,19 @@ import {
   type RoomManifest
 } from './roomManifest';
 import { AgentCard, CARD_ASPECT } from './AgentCard';
-import { AmbianceLayer } from './AmbianceLayer';
-import { BaizeStacks } from './BaizeStacks';
+import { AmbianceLayer, useReducedMotion } from './AmbianceLayer';
+import { BaizeStacks, stackBaize } from './BaizeStacks';
 import { ShelfArchive, NOTHING_PULLED, type PulledBooks } from './ShelfArchive';
 import { DeskBook } from './DeskBook';
+import { FlyingBooks, type FlightPath } from './FlyingBooks';
+import { flightsFor, houseSlot, seenStatuses, type Flight, type LaidStorey, type Seen }
+  from './flight';
+import { bookSlot, type ArchivedThing } from './shelfBooks';
 import { SpeechScroll } from './SpeechScroll';
 import { portraitFor } from './portraits';
 import { useSceneState, type SceneAgent } from './useSceneState';
 import { ROOM_SRC } from './roomImages';
+import type { HiveTask } from '@/components/TasksKanban';
 
 /** Re-exported so a test can hold the shipped imports against the paths
  *  room.json names: an image with no import behind it paints as a hole. */
@@ -184,6 +189,116 @@ const MASONRY = {
     'repeating-linear-gradient(0deg, rgba(0,0,0,0.22) 0 1px, transparent 1px 9px),'
     + ' repeating-linear-gradient(90deg, rgba(0,0,0,0.22) 0 1px, transparent 1px 26px)'
 } as const;
+
+/**
+ * Every storey as the layout actually measures it.
+ *
+ * The building is a flexbox: it has never computed where a room's PANEL is,
+ * only how big each one is relative to its storey, and every berth in the house
+ * is positioned inside its own panel. That was enough while nothing ever
+ * crossed a wall. A book flying from a desk in one room to the table in another
+ * does cross one, so the missing arithmetic has to exist — and it exists here,
+ * measured the same way the layout measures it, so the two cannot drift.
+ */
+const LAID_STOREYS: LaidStorey[] = STOREYS.map((rooms) => {
+  const height = storeyHeight(rooms, HOUSE_INNER_WIDTH, studyRoom.bandThickness);
+  return {
+    height,
+    rooms: rooms.map((r) => ({ id: r.id, width: (r.natural.w / r.natural.h) * height }))
+  };
+});
+
+/**
+ * A room's letterboxed view box, in the HOUSE's coordinates rather than its own.
+ *
+ * `RoomPanel` hands its children a view box relative to the panel, which is
+ * what everything drawn INSIDE one room wants. A flight is the one thing that
+ * is not inside one room, so it needs the same box carried out to the building.
+ */
+function houseView(room: Room): ViewBox | null {
+  const slot = houseSlot(LAID_STOREYS, studyRoom.bandThickness, HOUSE_INNER_WIDTH, room.id);
+  if (!slot) return null;
+  const view = containFit({ w: slot.w, h: slot.h }, room.natural);
+  return { x: slot.x + view.x, y: slot.y + view.y, w: view.w, h: view.h };
+}
+
+/** The book on one assistant's desk, in the house's coordinates — the same box
+ *  `DeskPlace` draws it in, one frame out. */
+function deskBookInHouse(agent: SceneAgent): Box | null {
+  for (const room of studyRoom.rooms) {
+    const berth = room.berths.find((b) => b.id === agent.berthId);
+    if (!berth) continue;
+    const view = houseView(room);
+    if (!view) return null;
+    const desk = stackedBerth(berthToBox(berth, view), agent.stackIndex);
+    return deskLayout(desk, volumeBox(berth, view)).book;
+  }
+  return null;
+}
+
+/** The room and berth an anchor stands on, whether it owns a room or is a prop
+ *  inside somebody else's. */
+function anchorPlace(kind: AnchorKind): { room: Room; berth: Berth } | null {
+  for (const room of studyRoom.rooms) {
+    if (room.kind === kind && room.berths[0]) return { room, berth: room.berths[0] };
+    const prop = room.props.find((p) => p.kind === kind);
+    if (prop) return { room, berth: prop.berth };
+  }
+  return null;
+}
+
+/**
+ * Where a book flying to the table comes down: the very spine that commission
+ * will be drawn as, so the flourish ends exactly where the still picture starts.
+ *
+ * The felt is bounded, so a commission can be on the ledger and have no spine on
+ * it. That book still went to the table — it lands in the middle of the baize
+ * at the size of a spine, which says the true thing without inventing a place.
+ */
+function tableLanding(tasks: readonly HiveTask[], taskId: string): Box | null {
+  const place = anchorPlace('cardTable');
+  const view = place && houseView(place.room);
+  if (!place || !view) return null;
+  const baize = berthToBox(place.berth, view);
+  const spine = stackBaize(tasks, baize).find((s) => s.task.id === taskId);
+  if (spine) return spine.box;
+  const width = baize.width * 0.06;
+  const height = baize.height * 0.22;
+  return {
+    left: baize.left + (baize.width - width) / 2,
+    top: baize.top + baize.height - height,
+    width,
+    height
+  };
+}
+
+/** Where a book flying to the wall comes down: the volume it will darken. A
+ *  commission the wall has no slot for lands on the wall all the same. */
+function shelfLanding(archive: readonly ArchivedThing[], taskId: string): Box | null {
+  const room = studyRoom.rooms.find((r) => r.kind === 'shelves');
+  const view = room && houseView(room);
+  if (!room || !view) return null;
+  const index = archive.findIndex((b) => b.kind === 'commission' && b.id === taskId);
+  const slot = bookSlot(Math.max(index, 0), view);
+  if (index >= 0) return { ...slot, left: view.x + slot.left, top: view.y + slot.top };
+  return {
+    ...slot,
+    left: view.x + (view.w - slot.width) / 2,
+    top: view.y + slot.top
+  };
+}
+
+/**
+ * How many books the sky will hold at once.
+ *
+ * A flight leaves the list when its animation ends, and an animation in a
+ * window nobody is looking at does not end — so a Study left open behind
+ * another window would otherwise accumulate one book per status change for as
+ * long as it is hidden, and put them all in the air at once when it comes back.
+ * The newest are kept, because the oldest is the one whose move is least worth
+ * announcing by then.
+ */
+export const SKY_MAX = 12;
 
 /**
  * Where the whole house lands on the floor it is given.
@@ -660,6 +775,30 @@ export function StudyScene(): JSX.Element {
    *  keyboard's, separately. Held here rather than in the wall so one shelf is
    *  what both agree about; see `pullBook`. */
   const [pulledBooks, setPulledBooks] = useState<PulledBooks>(NOTHING_PULLED);
+  /** The books currently crossing the house, and the ledger as it was when they
+   *  set off. The sighting is a ref rather than state: it is what the NEXT poll
+   *  is compared against, and nothing is drawn from it. */
+  const reducedMotion = useReducedMotion();
+  const [flights, setFlights] = useState<readonly Flight[]>([]);
+  const seenRef = useRef<Seen | null>(null);
+  useEffect(() => {
+    const launched = flightsFor(seenRef.current, scene.tasks, reducedMotion);
+    seenRef.current = seenStatuses(scene.tasks);
+    if (launched.length === 0) return;
+    setFlights((sky) => [...sky, ...launched].slice(-SKY_MAX));
+  }, [scene.tasks, reducedMotion]);
+
+  /** Each book in the air, with both ends of its journey. A flight whose desk
+   *  or destination cannot be placed — an assistant who left mid-flight, a room
+   *  the manifest no longer holds — is simply not drawn. */
+  const flightPaths: FlightPath[] = flights.flatMap((flight) => {
+    const agent = scene.agents.find((a) => a.id === flight.agentId);
+    const from = agent ? deskBookInHouse(agent) : null;
+    const land = flight.to === 'table'
+      ? tableLanding(scene.tasks, flight.taskId)
+      : shelfLanding(scene.archive, flight.taskId);
+    return from && land ? [{ flight, from, land }] : [];
+  });
 
   /** The petitions are the god's to answer, so opening them selects him too —
    *  the same pair of actions the office floor's ASK ME board fires. */
@@ -848,6 +987,27 @@ export function StudyScene(): JSX.Element {
           </Fragment>
           );
         })}
+        {/* The sky the books cross, over every storey. Its own frame rather
+            than the house's `inset: 0`, because an absolutely positioned child
+            is placed against the padding box and the house is padded by a band
+            of masonry — so `inset: 0` would start one wall in, and every flight
+            would land one band short of where its room is. */}
+        <div
+          data-study-sky=""
+          style={{
+            position: 'absolute',
+            left: -studyRoom.bandThickness,
+            top: -studyRoom.bandThickness,
+            width: HOUSE_NATURAL_WIDTH,
+            height: HOUSE_NATURAL_HEIGHT,
+            pointerEvents: 'none'
+          }}
+        >
+          <FlyingBooks
+            paths={flightPaths}
+            onLanded={(id) => setFlights((sky) => sky.filter((f) => f.id !== id))}
+          />
+        </div>
       </div>
     </div>
   );

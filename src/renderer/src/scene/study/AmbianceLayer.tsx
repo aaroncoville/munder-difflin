@@ -49,7 +49,7 @@ const EMBER = 0xc98a4b;
 
 /** Does this machine want less movement? Read once per mount, and re-read on
  *  change, because somebody can turn it on while the app is open. */
-function useReducedMotion(): boolean {
+export function useReducedMotion(): boolean {
   const [reduced, setReduced] = useState(false);
   useEffect(() => {
     if (typeof window === 'undefined' || !window.matchMedia) return;

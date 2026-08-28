@@ -1,0 +1,133 @@
+/**
+ * A commission leaving a desk, and where in the building it is leaving for.
+ *
+ * The house draws a commission on every surface it belongs to and redraws them
+ * all silently when the ledger changes, so the one moment worth noticing in a
+ * room full of steady state — the move itself — was the one thing invisible.
+ * This is the arithmetic behind showing it: which cards just moved, and where
+ * the two ends of the flight are in the building's own coordinates.
+ *
+ * Pure on purpose. Both halves are the kind of thing that is unreviewable in a
+ * running app — a flight that launches on the wrong card is indistinguishable
+ * from one that launches on the right card the moment you look away, and a
+ * flight that lands a room to the left is only wrong if you know where the room
+ * was supposed to be. Neither needs a scene to check.
+ */
+import type { HiveTask } from '@/components/TasksKanban';
+
+/** Where a flight ends: the felt in the parlour, or the shelf wall. */
+export type FlightTo = 'table' | 'shelf';
+
+export interface Flight {
+  /** This flight's own key. The same commission can fly more than once — it can
+   *  be blocked, freed, and blocked again — so the commission's id is not one. */
+  id: string;
+  taskId: string;
+  /** Whose desk it leaves. Without an assistant there is no desk to leave. */
+  agentId: string;
+  title: string;
+  to: FlightTo;
+}
+
+/** The ledger as the house last saw it: a status per commission, and nothing
+ *  else, because a status is the only thing a flight is a change of. */
+export type Seen = ReadonlyMap<string, HiveTask['status']>;
+
+export function seenStatuses(tasks: readonly HiveTask[]): Seen {
+  return new Map(tasks.map((t) => [t.id, t.status]));
+}
+
+/**
+ * Where each commission went since the house last looked.
+ *
+ * Only two moves are drawn, because only two are a commission leaving a desk:
+ * work that becomes impeded goes back to the table, and work that concludes
+ * goes to the wall. A card moving between two open states is a card staying
+ * where it is as far as the room is concerned.
+ *
+ * `prev` being null — the first sighting — launches nothing, and that is the
+ * load-bearing case rather than a nicety. A freshly opened house has no idea
+ * which cards were blocked a minute ago and which were blocked last month, so
+ * treating everything it finds as newly changed would empty every desk into the
+ * air at once, every time anyone opens the Study. Nothing flies until the house
+ * has watched the card in an earlier state itself.
+ *
+ * A commission with no assignee is skipped for the same reason: the flight
+ * starts at a desk book, and a commission nobody is holding has no book on any
+ * desk to leave.
+ *
+ * `reducedMotion` is answered here rather than downstream, because a request
+ * for less movement is a request to be taken literally: a house that launches
+ * the flights and then declines to draw them is still a house keeping a list of
+ * things in the air, and the moment one of them is drawn by accident the
+ * promise is broken. Nothing is launched at all.
+ */
+export function flightsFor(
+  prev: Seen | null, next: readonly HiveTask[], reducedMotion = false
+): Flight[] {
+  if (!prev || reducedMotion) return [];
+  const out: Flight[] = [];
+  for (const task of next) {
+    const agentId = (task.assignee || '').trim();
+    if (!agentId) continue;
+    const was = prev.get(task.id);
+    // Never seen before: it did not move, it arrived.
+    if (was === undefined || was === task.status) continue;
+    const to: FlightTo | null = task.status === 'blocked'
+      ? 'table'
+      : task.status === 'done' ? 'shelf' : null;
+    if (!to) continue;
+    out.push({
+      id: `${task.id}:${was}->${task.status}:${out.length}`,
+      taskId: task.id,
+      agentId,
+      title: task.title,
+      to
+    });
+  }
+  return out;
+}
+
+/** A rectangle in the house's own drawing: origin plus size, in panel pixels. */
+export interface ViewBox { x: number; y: number; w: number; h: number }
+
+/**
+ * One storey as the house actually lays it out.
+ *
+ * The building is a flexbox and has never computed a room's position — every
+ * berth is positioned inside its own panel, and the panel is put on screen by
+ * the layout. A book crossing from a desk in one room to the table in another
+ * is the first thing that needs the missing arithmetic, so the caller measures
+ * the storeys the way the layout does and this reproduces where they land.
+ */
+export interface LaidStorey {
+  height: number;
+  rooms: readonly { id: string; width: number }[];
+}
+
+/**
+ * Where a room's panel sits inside the house's natural drawing.
+ *
+ * The house is padded by one band of masonry all round, its storeys are stacked
+ * with a band between them, and a storey's rooms are laid left to right with a
+ * band between each pair — and CENTRED, because a storey narrower than the
+ * widest one stands in the middle of the building rather than at its left-hand
+ * end. Returns null for a room this house does not hold, which is what a caller
+ * has to be able to survive: the manifest is hand-edited.
+ */
+export function houseSlot(
+  storeys: readonly LaidStorey[], band: number, innerWidth: number, roomId: string
+): ViewBox | null {
+  let y = band;
+  for (const storey of storeys) {
+    const spread = storey.rooms.reduce((sum, r) => sum + r.width, 0)
+      + band * Math.max(0, storey.rooms.length - 1);
+    let x = band + (innerWidth - spread) / 2;
+    for (const room of storey.rooms) {
+      if (room.id === roomId) return { x, y, w: room.width, h: storey.height };
+      x += room.width + band;
+    }
+    y += storey.height + band;
+  }
+  return null;
+}

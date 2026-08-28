@@ -100,7 +100,10 @@ export function DeskBook({ state, title, box, taskId, onOpen }: DeskBookProps): 
     height: box.height,
     // Inside a layer that takes no pointer — see the place setting in
     // StudyScene — so the book takes it back, or it loses its own tooltip.
-    pointerEvents: 'auto',
+    // Only when it has something to answer with, though: a book drawn as pure
+    // scenery, with neither a tooltip nor a press, would otherwise swallow
+    // clicks meant for the room it is drawn over.
+    pointerEvents: title || opens ? 'auto' : 'none',
     cursor: opens ? 'pointer' : 'default',
     // The leaf turns about the gutter, so the box it turns in needs depth or
     // the page reads as a shutter closing rather than as paper.
