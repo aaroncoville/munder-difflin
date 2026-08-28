@@ -801,6 +801,22 @@ export function StudyScene(): JSX.Element {
     if (launched.length === 0) return;
     setFlights((sky) => [...sky, ...launched].slice(-SKY_MAX));
   }, [scene.tasks, reducedMotion]);
+  /**
+   * Ground whatever is already up there the moment stillness is asked for.
+   *
+   * Refusing to launch covers the books that have not left yet; it does nothing
+   * for the ones mid-flight. The media rule stops those dead — `animation:
+   * none` — so they never fire the animationend that takes them out of this
+   * list, and they sit in it invisibly: eating the bounded sky, and taking off
+   * late and out of nowhere if the preference is ever turned back off. The
+   * sighting above is untouched on purpose, so a house that was still while the
+   * ledger moved knows it has already seen those moves and does not fly them
+   * retrospectively.
+   */
+  useEffect(() => {
+    if (!reducedMotion) return;
+    setFlights((sky) => (sky.length === 0 ? sky : []));
+  }, [reducedMotion]);
 
   /** Each book in the air, with both ends of its journey. A flight whose desk
    *  or destination cannot be placed — an assistant who left mid-flight, a room

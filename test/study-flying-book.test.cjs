@@ -289,13 +289,17 @@ const person = (id, over = {}) => ({
  * skipped the teardown would leave the ledger's poll timer behind and stack one
  * more on each turn.
  */
-async function watchLedger(agents, ledgers, { reducedMotion = false } = {}) {
+async function watchLedger(agents, ledgers, { reducedMotion = false, stillness } = {}) {
   let poll = 0;
   global.window = {
     localStorage: { getItem: () => 'occult', setItem: () => {}, removeItem: () => {} },
     close: () => {},
+    // `stillness` is the same preference, read at ASK time rather than fixed at
+    // mount, so a case can turn it on and off under a house that is already
+    // running — which is what the real media query does.
     matchMedia: (query) => ({
-      matches: reducedMotion && /prefers-reduced-motion/.test(query),
+      matches: (stillness ? stillness.reduced : reducedMotion)
+        && /prefers-reduced-motion/.test(query),
       addEventListener: () => {},
       removeEventListener: () => {}
     }),
@@ -446,6 +450,57 @@ test('a machine that asked for stillness is given a house that never flies', asy
     [card('T-1', 'blocked')]
   ]);
   assert.equal(inTheAir(moving).length, 1);
+});
+
+test('stillness switched on mid-flight empties the sky, and keeps it empty', async (t) => {
+  // The refusal to launch is not enough on its own. Books already in the air
+  // when the preference turns on are hit by the media rule, which sets
+  // `animation: none` — so they never fire animationend, never leave the list,
+  // and sit there invisible. Turn the preference off again and every one of
+  // them starts animating, late and out of nowhere, having meanwhile eaten the
+  // sky's budget.
+  const stillness = { reduced: false };
+  const ledgers = [[card('T-1', 'doing')], [card('T-1', 'blocked')]];
+  const view = await watchLedger([person('w-1')], ledgers, { stillness });
+  assert.equal(inTheAir(view).length, 1, 'a book is in the air to be caught out');
+
+  let cleanups = [];
+  const round = async () => {
+    await settle();
+    view.render();
+    for (const c of cleanups) c?.();
+    cleanups = view.runEffects();
+  };
+  const rounds = async (n) => { for (let i = 0; i < n; i++) await round(); };
+  // A failed assertion must not leave the ledger's poll timer running, or the
+  // runner never exits and the failure is a hang instead of a report.
+  t.after(() => { for (const c of cleanups) c?.(); });
+
+  stillness.reduced = true;
+  await rounds(2); // one to read the preference, one to act on it
+  view.render();
+  assert.deepEqual(inTheAir(view), [], 'the still house is not holding hidden books');
+
+  // The house must keep WATCHING while it is still, or a move made during the
+  // quiet is a move it thinks it has yet to see — and flies once it can move
+  // again, minutes after it happened.
+  ledgers.push([card('T-1', 'done')]);
+  await rounds(2);
+
+  stillness.reduced = false;
+  await rounds(2);
+  view.render();
+  assert.deepEqual(inTheAir(view), [],
+    'the move made during the quiet is not flown retrospectively');
+
+  // ...and the house still flies, so the emptiness above is the fix and not a
+  // scene that has stopped watching the ledger.
+  ledgers.push([card('T-1', 'done'), card('T-2', 'doing')]);
+  await rounds(2);
+  ledgers.push([card('T-1', 'done'), card('T-2', 'done')]);
+  await rounds(2);
+  view.render();
+  assert.equal(inTheAir(view).length, 1, 'a move made after the quiet still flies');
 });
 
 test('the sky is bounded, so a window nobody watches cannot fill it', async () => {
