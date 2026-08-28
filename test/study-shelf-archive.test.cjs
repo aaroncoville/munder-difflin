@@ -533,6 +533,82 @@ test('the keyboard reaches a shelved book the way the pointer does', async () =>
   assert.ok(!at().props.style.boxShadow || at().props.style.boxShadow === 'none');
 });
 
+/**
+ * A book can be under the pointer AND under the keyboard at once.
+ *
+ * One piece of state for both, cleared unconditionally by either letting go,
+ * gets this wrong in both directions: move the pointer off a spine you have
+ * tabbed to and the focus ring goes while the focus stays, so the keyboard is
+ * somewhere nobody can see; tab away from a spine the pointer is still resting
+ * on and the same. The two modalities are independent and the raise has to be
+ * the OR of them — a book goes back on the shelf when the last hand comes off
+ * it, not when the first one does.
+ */
+test('a book tabbed to and then hovered stays forward when the pointer leaves', async () => {
+  const view = await inhabit(shelved());
+  const at = () => shelfIn(view)[0];
+  const forward = () => /var\(--cth-gilt\)/.test(String(at().props.style.boxShadow));
+
+  at().props.onFocus();
+  view.render();
+  at().props.onMouseEnter();
+  view.render();
+  assert.ok(forward(), 'a book both tabbed to and hovered is not forward at all');
+
+  at().props.onMouseLeave();
+  view.render();
+  assert.ok(forward(), 'the pointer leaving put back a book the keyboard is still on');
+
+  at().props.onBlur();
+  view.render();
+  assert.ok(!forward(), 'the book never went back once nothing was on it');
+});
+
+test('a book hovered and then tabbed to stays forward when focus goes', async () => {
+  const view = await inhabit(shelved());
+  const at = () => shelfIn(view)[0];
+  const forward = () => /var\(--cth-gilt\)/.test(String(at().props.style.boxShadow));
+
+  at().props.onMouseEnter();
+  view.render();
+  at().props.onFocus();
+  view.render();
+  assert.ok(forward(), 'a book both hovered and tabbed to is not forward at all');
+
+  at().props.onBlur();
+  view.render();
+  assert.ok(forward(), 'blur put back a book the pointer is still resting on');
+
+  at().props.onMouseLeave();
+  view.render();
+  assert.ok(!forward(), 'the book never went back once nothing was on it');
+});
+
+test('letting go of one book does not put back the one still held', () => {
+  // The rule on its own, without a scene: a modality only ever clears the book
+  // IT is on. Otherwise the pointer arriving at a new spine — leave the old,
+  // enter the new — would clear whatever the keyboard was on along the way.
+  const A = loadTs('src/renderer/src/scene/study/ShelfArchive.tsx');
+  const start = A.NOTHING_PULLED;
+  assert.deepEqual(start, { hover: null, focus: null });
+
+  const both = A.pullBook(A.pullBook(start, 'T-1', 'focus', true), 'T-1', 'hover', true);
+  assert.ok(A.bookIsPulled(both, 'T-1'));
+  assert.ok(A.bookIsPulled(A.pullBook(both, 'T-1', 'hover', false), 'T-1'),
+    'letting the pointer off cleared the keyboard too');
+  assert.ok(A.bookIsPulled(A.pullBook(both, 'T-1', 'focus', false), 'T-1'),
+    'blurring cleared the pointer too');
+  assert.ok(!A.bookIsPulled(
+    A.pullBook(A.pullBook(both, 'T-1', 'focus', false), 'T-1', 'hover', false), 'T-1'),
+  'the book stayed forward with nothing on it');
+
+  // The pointer crossing from one spine to the next must not clear the book the
+  // keyboard is on, and a stale leave must not clear the book just entered.
+  const moved = A.pullBook(A.pullBook(both, 'T-2', 'hover', true), 'T-1', 'hover', false);
+  assert.ok(A.bookIsPulled(moved, 'T-2'), 'a stale leave cleared the book just entered');
+  assert.ok(A.bookIsPulled(moved, 'T-1'), 'the keyboard lost its book to the pointer moving');
+});
+
 test('only one book is ever forward', async () => {
   const view = await inhabit({
     tasks: [1, 2, 3].map((i) => ({ id: `T-${i}`, status: 'done', title: `folio ${i}`,

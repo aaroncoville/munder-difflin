@@ -48,6 +48,13 @@
  * either side of it — never by moving the mark, because the mark's alignment
  * with the paint under it is arithmetic: shift the window and the copy inside
  * it slides too, and the book stops being the book the painter painted.
+ *
+ * Which book is forward is two facts, not one, because a book can be under the
+ * pointer AND under the keyboard at the same time. Held as one, cleared by
+ * either letting go, it is wrong in both directions: move the pointer off a
+ * spine you tabbed to and the ring goes while the focus stays, so the keyboard
+ * is somewhere nobody can see; tab away from a spine the pointer is resting on
+ * and the same. A book goes back on the shelf when the LAST hand comes off it.
  */
 import { bookSlot, type ArchivedThing, type Box } from './shelfBooks';
 import { baizeNumber, spineType, SPINE_FACES } from './BaizeStacks';
@@ -74,6 +81,37 @@ export const BOOK_SHADE: Record<ArchivedThing['kind'], string> = {
   commission: 'brightness(0.34) saturate(1.7)',
   assistant: 'brightness(0.34) saturate(0.18)'
 };
+
+/**
+ * Which book the pointer is on, and which one the keyboard is on.
+ *
+ * Two, because they are independent: either can be on a book the other is not,
+ * and both can be on the same one.
+ */
+export interface PulledBooks { hover: string | null; focus: string | null }
+
+/** Nothing in either hand. */
+export const NOTHING_PULLED: PulledBooks = { hover: null, focus: null };
+
+/**
+ * A hand arriving at a book, or coming off one.
+ *
+ * Letting go only ever clears the book that hand was actually on. Without that
+ * guard the pointer crossing from one spine to the next — which fires the leave
+ * of the old and the enter of the new, in an order nothing here controls —
+ * would clear whichever book had just been entered.
+ */
+export function pullBook(
+  now: PulledBooks, id: string, by: keyof PulledBooks, on: boolean
+): PulledBooks {
+  if (on) return { ...now, [by]: id };
+  return now[by] === id ? { ...now, [by]: null } : now;
+}
+
+/** Forward if ANY hand is on it. */
+export function bookIsPulled(now: PulledBooks, id: string): boolean {
+  return now.hover === id || now.focus === id;
+}
 
 /**
  * How the number is set on a standing book, and how long a label it needs.
@@ -105,10 +143,10 @@ export interface ShelfArchiveProps {
   view: ViewBox;
   /** Opens the commission a mark stands for. Without it the wall is a wall. */
   onOpen?: (id: string) => void;
-  /** The one book being looked at, and how to say which. Held above the wall
-   *  so only one is ever forward, the way a reader has one hand. */
-  pulled?: string | null;
-  onPull?: (id: string | null) => void;
+  /** Which book each hand is on, and how to say a hand has moved. Held above
+   *  the wall so the pointer and the keyboard agree about one shelf. */
+  pulled?: PulledBooks;
+  onPull?: (next: PulledBooks) => void;
 }
 
 export function ShelfArchive({
@@ -122,8 +160,10 @@ export function ShelfArchive({
         const n = baizeNumber(book, i);
         const label = shelfLabel(box, n);
         const opens = book.kind === 'commission' && typeof onOpen === 'function';
-        const held = opens && pulled === book.id;
-        const look = (at: boolean): void => onPull?.(at ? book.id : null);
+        const hands = pulled ?? NOTHING_PULLED;
+        const held = opens && bookIsPulled(hands, book.id);
+        const look = (by: keyof PulledBooks, on: boolean): void =>
+          onPull?.(pullBook(hands, book.id, by, on));
         return (
           <div
             key={`${book.kind}:${book.id}`}
@@ -150,13 +190,14 @@ export function ShelfArchive({
                   event.stopPropagation();
                   onOpen?.(book.id);
                 },
-                onMouseEnter: () => look(true),
-                onMouseLeave: () => look(false),
+                onMouseEnter: () => look('hover', true),
+                onMouseLeave: () => look('hover', false),
                 // The keyboard reaches a mark exactly as the pointer does — it
                 // is a tab stop — and would otherwise land on one nobody can
-                // see they are on.
-                onFocus: () => look(true),
-                onBlur: () => look(false)
+                // see they are on. Tracked apart from the pointer, so letting
+                // go of one hand does not put back a book the other holds.
+                onFocus: () => look('focus', true),
+                onBlur: () => look('focus', false)
               }
               : {})}
             style={{

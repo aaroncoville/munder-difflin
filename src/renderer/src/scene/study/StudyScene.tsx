@@ -50,7 +50,7 @@ import {
 import { AgentCard, CARD_ASPECT } from './AgentCard';
 import { AmbianceLayer } from './AmbianceLayer';
 import { BaizeStacks } from './BaizeStacks';
-import { ShelfArchive } from './ShelfArchive';
+import { ShelfArchive, NOTHING_PULLED, type PulledBooks } from './ShelfArchive';
 import { DeskBook } from './DeskBook';
 import { SpeechScroll } from './SpeechScroll';
 import { portraitFor } from './portraits';
@@ -646,9 +646,10 @@ export function StudyScene(): JSX.Element {
   const godId = useStore((s) => s.agents.find((a) => a.isGod)?.id);
   /** The one place setting being looked at, if any — see `DeskPlace`. */
   const [lookingAt, setLookingAt] = useState<string | null>(null);
-  /** The one shelved commission being looked at. Held here rather than in the
-   *  wall so only ever one book is forward, the way a reader has one hand. */
-  const [pulledBook, setPulledBook] = useState<string | null>(null);
+  /** Which shelved commission each hand is on — the pointer's and the
+   *  keyboard's, separately. Held here rather than in the wall so one shelf is
+   *  what both agree about; see `pullBook`. */
+  const [pulledBooks, setPulledBooks] = useState<PulledBooks>(NOTHING_PULLED);
 
   /** The petitions are the god's to answer, so opening them selects him too —
    *  the same pair of actions the office floor's ASK ME board fires. */
@@ -701,8 +702,8 @@ export function StudyScene(): JSX.Element {
           panelSrc={ROOM_SRC[room.image]}
           view={view}
           onOpen={openTaskDetail}
-          pulled={pulledBook}
-          onPull={setPulledBook}
+          pulled={pulledBooks}
+          onPull={setPulledBooks}
         />
       );
     }
