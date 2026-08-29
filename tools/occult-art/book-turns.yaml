@@ -1,0 +1,126 @@
+# The page turns — one short film per reading desk, of that desk's own painting.
+#
+# The book on a reading desk used to turn its pages with shapes of ours: two
+# cream rectangles and a third swinging across them on a CSS keyframe, laid over
+# the volume the painter had already drawn there. These clips are the painting
+# itself in motion instead — each one generated FROM the panel it plays over, so
+# what moves on the desk is that room's own book in that room's own colours.
+#
+# Unlike the panels, these are reproducible: the model takes a seed, and every
+# input that decides a clip is recorded below.
+model: wan-video/wan-2.2-i2v-fast
+input:
+  prompt: |-
+    A single page of the open book turns: one leaf lifts from the right-hand page, sweeps across the spine and settles onto the left-hand page. The camera is completely locked off and static — no zoom, no push in, no pull back, no pan, no camera movement of any kind. The desk, the chair and the wall do not move or change at all. Flat 2D storybook illustration: naive simple shapes, matte flat colours with soft paper grain, thin clean outlines, no realistic lighting, no 3D rendering, no photorealism.
+  resolution: "480p"
+  num_frames: 81      # the model's floor; a shorter request is refused outright
+  go_fast: true
+  # The loop lever. This model takes a LAST frame as well as a first, and
+  # passing the same image as both conditions the clip to come back to the
+  # painting's own pixels — which is what lets it repeat without a cut.
+  image: the crop below, as a data: URI
+  last_image: the same image
+output:
+  width: 832
+  height: 464         # NOT the 854x480 that goes in: the model picks the bucket
+  duration: 5.06s
+
+# Reproducing one clip:
+#
+#   sips -c 162 288 --cropOffset <y> <x> <panel> --out crop.png
+#   sips -z 480 854 crop.png --out in.png
+#   curl -s -X POST https://api.replicate.com/v1/models/wan-video/wan-2.2-i2v-fast/predictions \
+#     -H "Authorization: Bearer $(cat ~/.config/replicate/token)" \
+#     -H 'Content-Type: application/json' -H 'Prefer: wait' \
+#     -d "$(jq -n --arg p "$PROMPT" --arg img "data:image/png;base64,$(base64 -i in.png)" --argjson s <seed> \
+#           '{input:{prompt:$p,image:$img,last_image:$img,resolution:"480p",num_frames:81,seed:$s,go_fast:true}}')"
+#
+# THE CROP IS DATA, NOT ARITHMETIC. It is not derived from the painted volume,
+# and it is not the same rectangle in every room. Each was chosen to hold the
+# book with room above it for a page to rise into, WHILE keeping that room's
+# candle out of frame — because the model animates whatever else is in shot, and
+# a flame it invented would burn beside the one the ambiance layer already draws
+# at the manifest's own light point. Four of the eight desks have a candle close
+# enough that the window had to be pushed off-centre to exclude it; at berth-5
+# the flame is 17px from the book and the crop's left edge sits flush with it.
+#
+# The same rectangles are carried in the room manifest as each berth's `turn`,
+# which is what the scene draws against. This file is why they are those values.
+berths:
+  berth-1:
+    panel: src/renderer/src/scene/study/assets/room-desk-a.png
+    clip: src/renderer/src/scene/study/assets/book-turn-berth-1.mp4
+    crop: { x: 261, y: 344, w: 288, h: 162 }   # panel pixels of a 1568x672 panel
+    book_within_crop: { x: 31, y: 65, w: 227, h: 33 }
+    nearest_flame_clearance: 43px
+    seed: 101
+    prediction: asnrxwkjhdrmt0d09g991wx8b0
+  berth-2:
+    panel: src/renderer/src/scene/study/assets/room-desk-a.png
+    clip: src/renderer/src/scene/study/assets/book-turn-berth-2.mp4
+    crop: { x: 1010, y: 345, w: 288, h: 162 }   # panel pixels of a 1568x672 panel
+    book_within_crop: { x: 19, y: 65, w: 225, h: 32 }
+    nearest_flame_clearance: 41px
+    seed: 102
+    prediction: j41p7wef85rmw0d09g98wnwz3r
+  berth-3:
+    panel: src/renderer/src/scene/study/assets/room-desk-e.png
+    clip: src/renderer/src/scene/study/assets/book-turn-berth-3.mp4
+    crop: { x: 374, y: 348, w: 288, h: 162 }   # panel pixels of a 1568x672 panel
+    book_within_crop: { x: 5, y: 66, w: 199, h: 29 }
+    nearest_flame_clearance: 40px
+    seed: 103
+    prediction: cm7x5yh959rmw0d09g9rq0qc6g
+  berth-4:
+    panel: src/renderer/src/scene/study/assets/room-desk-e.png
+    clip: src/renderer/src/scene/study/assets/book-turn-berth-4.mp4
+    crop: { x: 1017, y: 348, w: 288, h: 162 }   # panel pixels of a 1568x672 panel
+    book_within_crop: { x: 17, y: 66, w: 211, h: 29 }
+    nearest_flame_clearance: 40px
+    seed: 104
+    prediction: y32hmcc3fdrmw0d09g9sn3zh84
+  berth-5:
+    panel: src/renderer/src/scene/study/assets/room-desk-c.png
+    clip: src/renderer/src/scene/study/assets/book-turn-berth-5.mp4
+    crop: { x: 316, y: 345, w: 288, h: 162 }   # panel pixels of a 1568x672 panel
+    book_within_crop: { x: 0, y: 66, w: 218, h: 31 }
+    nearest_flame_clearance: 17px
+    seed: 105
+    prediction: tny8t5xm0srmw0d09ga9jzqtjm
+  berth-6:
+    panel: src/renderer/src/scene/study/assets/room-desk-c.png
+    clip: src/renderer/src/scene/study/assets/book-turn-berth-6.mp4
+    crop: { x: 1014, y: 344, w: 288, h: 162 }   # panel pixels of a 1568x672 panel
+    book_within_crop: { x: 15, y: 66, w: 221, h: 31 }
+    nearest_flame_clearance: 40px
+    seed: 106
+    prediction: yza122bj0srmy0d09gav7a4gsc
+  berth-7:
+    panel: src/renderer/src/scene/study/assets/room-desk-f.png
+    clip: src/renderer/src/scene/study/assets/book-turn-berth-7.mp4
+    crop: { x: 279, y: 350, w: 288, h: 162 }   # panel pixels of a 1568x672 panel
+    book_within_crop: { x: 21, y: 63, w: 221, h: 35 }
+    nearest_flame_clearance: 41px
+    seed: 107
+    prediction: dwdzfeqbdnrmr0d09gasa2c6dm
+  berth-8:
+    panel: src/renderer/src/scene/study/assets/room-desk-f.png
+    clip: src/renderer/src/scene/study/assets/book-turn-berth-8.mp4
+    crop: { x: 1005, y: 350, w: 288, h: 162 }   # panel pixels of a 1568x672 panel
+    book_within_crop: { x: 29, y: 63, w: 220, h: 35 }
+    nearest_flame_clearance: 41px
+    seed: 108
+    prediction: y0aw0q4dm5rmw0d09gbbwypbfc
+
+# What the clips are NOT, measured rather than assumed:
+#
+#   - Not byte-identical to the panel. Frame 0 differs from the crop it was made
+#     from by a mean of 4.1-6.7 / 255 across the eight, with a worst pixel in the
+#     low tens — a flat level shift from the model and the codec, not a change of
+#     content. The scene answers that by FEATHERING the clip into the painting
+#     rather than butting a hard rectangle against it, and by drawing no clip at
+#     all on a desk at rest, so a quiet desk is the panel exactly as painted.
+#   - Not drifting. Measured over regions the turning page cannot reach, the
+#     worst frame of each clip differs from its first by a worst PIXEL of 8-20,
+#     and the desk's front edge moves under 0.05px. Nothing in the frame is
+#     moving except the page.

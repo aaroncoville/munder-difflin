@@ -122,6 +122,21 @@ export interface DeskBookProps {
   taskId?: string;
   onOpen?: (id: string) => void;
   /**
+   * Whether the ROOM'S OWN PAINTING is drawing this book.
+   *
+   * Set for a desk whose painter put a book on it and whose corner has been
+   * filmed — see `BookTurn`, which the place setting draws UNDER the card. When
+   * it is set the open book is not drawn at all: the film is already showing
+   * that room's book, and a cream rectangle of ours over it would be the second
+   * book on one desk this whole arrangement exists to avoid. What stays is
+   * everything the film cannot say — the press, the tooltip, and the band
+   * across a commission that is sealed or waiting on somebody.
+   *
+   * False for the god's study, whose painter left the desk bare: there is no
+   * painted book there to film, so that book is drawn, and turns, as before.
+   */
+  painted?: boolean;
+  /**
    * Whether this commission is waiting on the human.
    *
    * The card table prints the waiting-on-you mark at the head of a spine, and
@@ -177,10 +192,12 @@ const TURN_SHEET = `
 `;
 
 export function DeskBook({
-  state, title, box, binding, taskId, onOpen, petition
+  state, title, box, binding, taskId, onOpen, petition, painted: byTheRoom
 }: DeskBookProps): JSX.Element {
   const bound: BookBinding = BOOK_BINDINGS[binding ?? DEFAULT_BINDING];
   const opens = Boolean(taskId) && typeof onOpen === 'function';
+  /** Whether the room's own art is drawing this book rather than these shapes. */
+  const painted = state === 'open' && byTheRoom === true;
   const root: CSSProperties = {
     position: 'absolute',
     left: box.left,
@@ -251,11 +268,11 @@ export function DeskBook({
         : {})}
       style={root}
     >
-      <div style={cover} />
+      {painted ? null : <div style={cover} />}
       {/* The clasp down the fore-edge, on the bindings that have one. Over the
           boards and under the paper, so it reads as metal holding the book
           shut rather than as a stripe printed on a page. */}
-      {bound.arched ? (
+      {bound.arched && !painted ? (
         <div
           data-book-clasp=""
           style={{
@@ -266,7 +283,7 @@ export function DeskBook({
           }}
         />
       ) : null}
-      {state === 'open' ? (
+      {painted ? null : state === 'open' ? (
         <>
           {/* Shipped with the open book alone, because it is the only state
               that turns anything. Identical sheets across several open books
@@ -304,7 +321,7 @@ export function DeskBook({
       )}
       {/* A marker left in the book, hanging past its foot — what separates a
           small dark volume from a shadow in a room with no light on it. */}
-      {bound.ribbon ? (
+      {bound.ribbon && !painted ? (
         <div
           data-book-marker=""
           style={{

@@ -743,11 +743,16 @@ test('the orchestrator wears the face reserved for it', async () => {
     'the orchestrator was dealt a face instead of wearing its own');
 });
 
-test('the only unexpandable wrapper is the one that owns a canvas', () => {
-  // AmbianceLayer takes useRef/useState/useEffect because it owns a pixi
-  // application and a ticker; it is mounted and asserted properly in
-  // test/study-ambiance.test.cjs. Anything ELSE appearing here is a component
-  // that started throwing during render, and everything the walker would have
-  // found underneath it has silently stopped being checked.
-  assert.deepEqual([...UNEXPANDED].sort(), ['AmbianceLayer']);
+test('the only unexpandable wrappers are the ones that drive an element', () => {
+  // Both of these take hooks because they hold a real DOM node and tell it to
+  // do something: AmbianceLayer owns a pixi application and a ticker, BookTurn
+  // owns the video of a desk's page turn and has to start and stop it. Each is
+  // mounted and asserted properly on its own — test/study-ambiance.test.cjs and
+  // test/study-book-turn.test.cjs — including the effect that drives the node.
+  // Neither renders children, so nothing is hidden underneath them.
+  //
+  // Anything ELSE appearing here is a component that started throwing during
+  // render, and everything the walker would have found underneath it has
+  // silently stopped being checked.
+  assert.deepEqual([...UNEXPANDED].sort(), ['AmbianceLayer', 'BookTurn']);
 });

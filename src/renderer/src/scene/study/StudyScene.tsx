@@ -57,7 +57,9 @@ import { FlyingBooks, type FlightPath } from './FlyingBooks';
 import { flightsFor, houseSlot, seenStatuses, type Flight, type LaidStorey, type Seen }
   from './flight';
 import { bookFloat, clearBeside, deskPile } from './deskPile';
+import { TURN_SRC } from './bookTurns';
 import { SpineBook } from './SpineBook';
+import { BookTurn } from './BookTurn';
 import { bookSlot, type ArchivedThing } from './shelfBooks';
 import { SpeechScroll } from './SpeechScroll';
 import { portraitFor } from './portraits';
@@ -397,6 +399,30 @@ export function volumeBox(berth: Berth, view: ViewBox): Box | null {
   };
 }
 
+/**
+ * The patch of painting a desk's page turn is drawn over, projected onto its
+ * panel, with the clip that draws it.
+ *
+ * `null` for a desk the painter left bare, and for one whose clip the build
+ * does not carry — a berth naming a film nobody imported draws nothing rather
+ * than a black rectangle where the book was.
+ */
+export function turnBox(berth: Berth, view: ViewBox): { src: string; box: Box } | null {
+  const t = berth.turn;
+  if (!t) return null;
+  const src = TURN_SRC[t.clip];
+  if (!src) return null;
+  return {
+    src,
+    box: {
+      left: view.x + t.x * view.w,
+      top: view.y + t.y * view.h,
+      width: t.w * view.w,
+      height: t.h * view.h
+    }
+  };
+}
+
 export function deskLayout(desk: Box, volume: Box | null = null):
 { card: Box; book: Box; scroll: { left: number; top: number; width: number } } {
   const book = PLACE_SETTING.book;
@@ -589,7 +615,8 @@ export const LOOKED_AT_Z = STACK_DEEPEST + 1;
 
 /** One assistant's place setting: card, book, and what they are saying. */
 function DeskPlace({
-  agent, desk, volume, spine, lights, binding, raised, onLook, onSelect, onOpenTask
+  agent, desk, volume, spine, lights, turn, still, binding, raised, onLook, onSelect,
+  onOpenTask
 }: {
   agent: SceneAgent;
   desk: Box;
@@ -599,6 +626,10 @@ function DeskPlace({
    *  with two desks in it, so the light a reader keeps their books out of is a
    *  fact about the room rather than about their berth. */
   lights: readonly number[];
+  /** The page turn filmed from this room's own painting, where there is one. */
+  turn: { src: string; box: Box } | null;
+  /** Whether the House has been asked to hold still. */
+  still: boolean;
   /** How this room binds its volumes — the floor plan's decision, carried in. */
   binding?: BookBindingName;
   /** The book the painting has already put on this desk, or null. */
@@ -642,6 +673,23 @@ function DeskPlace({
       }}
     >
       <SpeechScroll text={agent.speech} box={scroll} />
+      {/*
+        The room's own book, turning, on the desks whose painter drew one.
+
+        BEFORE the card, and that ordering is the whole of it. The film is a
+        patch of the PANEL — desk, chair and wall as well as the book — and the
+        card stands on that desk with its foot on the book's top edge. Drawn
+        after the card, the film's own wall and chair wash across the portrait's
+        lower half, which is a card behind frosted glass. Drawn before it, the
+        card sits on the desk as painted and the film is what is behind it.
+
+        The cost is that a page rising above the book goes behind the card, so
+        the turn reads at the book rather than over it — which is what a page
+        lying on a desk seen from in front does anyway.
+      */}
+      {turn && inHand
+        ? <BookTurn src={turn.src} box={turn.box} playing={!still} />
+        : null}
       <AgentCard
         name={agent.name}
         role={agent.role}
@@ -691,6 +739,7 @@ function DeskPlace({
             taskId={inHand.id}
             onOpen={onOpenTask}
             box={book}
+            {...(turn ? { painted: true } : {})}
           />
         )
         : null}
@@ -948,6 +997,7 @@ export function StudyScene(): JSX.Element {
       const volume = volumeBox(berth, view);
       const spine = houseSpine(view);
       const lights = room.lightPoints.map((p) => view.x + p.x * view.w);
+      const turn = turnBox(berth, view);
       return scene.agents
         .filter((agent) => agent.berthId === berth.id)
         .map((agent) => (
@@ -958,6 +1008,8 @@ export function StudyScene(): JSX.Element {
             volume={volume}
             spine={spine}
             lights={lights}
+            turn={turn}
+            still={reducedMotion}
             binding={room.binding}
             raised={lookingAt === agent.id}
             onLook={(looking: boolean) =>

@@ -49,7 +49,27 @@ function readSheet(file) {
   };
 }
 
-const files = fs.readdirSync(SHEETS).filter((f) => f.endsWith('.yaml')).sort();
+const sheets = fs.readdirSync(SHEETS).filter((f) => f.endsWith('.yaml')).sort();
+
+/**
+ * The sheets that record a PANEL.
+ *
+ * There is a second kind of record here now — `book-turns.yaml`, which is one
+ * file describing the short films the reading desks play rather than one file
+ * per image. Splitting on whether a sheet names a panel keeps the panel rules
+ * below exactly as strict as they were: a panel sheet that lost its `panel:`
+ * key does not quietly reclassify itself as something else, because the only
+ * sheet allowed not to have one is named here.
+ */
+const TURNS = 'book-turns.yaml';
+const files = sheets.filter((f) => f !== TURNS);
+
+test('every yaml here is a panel sheet or the one sheet of page turns', () => {
+  for (const f of files) {
+    assert.ok(readSheet(f).panel, `${f} names no panel, and is not the turns sheet`);
+  }
+  assert.ok(sheets.includes(TURNS), `${TURNS} is gone, and the clips it records are unexplained`);
+});
 
 test('every panel the house paints with has a sheet, and every sheet a panel', () => {
   assert.ok(files.length > 0, 'there are sheets to check');
@@ -93,4 +113,53 @@ test('no sheet carries the reference image back into the repository', () => {
     // above, so hold the size too: a sheet is prose about one image.
     assert.ok(body.length < 8 * 1024, `${file} is a prompt sheet, not a payload`);
   }
+});
+
+/* ---- the page turns: one sheet, one entry per desk that plays one --------- */
+
+test('every page-turn clip has an entry, and every entry a clip on disk', () => {
+  // The same rule the panels get, for the same reason: a clip nobody can
+  // reproduce is a clip nobody can change, and an entry for a file that is not
+  // there is a record of something the house does not do.
+  const body = fs.readFileSync(path.join(SHEETS, TURNS), 'utf8');
+  const entries = [...body.matchAll(/^ {4}clip: (\S+)$/gm)].map((m) => m[1]);
+  assert.ok(entries.length > 0, 'the turns sheet records no clips at all');
+
+  const shipped = fs.readdirSync(ASSETS).filter((f) => /^book-turn-.*\.mp4$/.test(f)).sort();
+  assert.deepEqual(entries.map((e) => path.basename(e)).sort(), shipped,
+    'the clips in the tree and the clips in the sheet are not the same set');
+  for (const clip of entries) {
+    assert.ok(fs.existsSync(path.join(ROOT, clip)), `${clip} is recorded but not in the tree`);
+  }
+
+  // And the berths agree: what the manifest asks a desk to play is what was
+  // recorded as having been made for it.
+  const asked = manifest.rooms
+    .flatMap((r) => r.berths)
+    .filter((b) => b.turn)
+    .map((b) => path.basename(b.turn.clip))
+    .sort();
+  assert.deepEqual(asked, shipped, 'a desk plays a clip the sheet does not record making');
+});
+
+test('a page turn can actually be reproduced from what the sheet records', () => {
+  // Unlike the panels, these CAN be remade byte-for-byte intent: the model
+  // takes a seed. A sheet that recorded the crop but not the seed, or the seed
+  // but not the crop, would be a recipe missing an ingredient.
+  const body = fs.readFileSync(path.join(SHEETS, TURNS), 'utf8');
+  assert.match(body, /^model: \S+$/m, 'the turns sheet names no model');
+  assert.match(body, /^ {2}num_frames: \d+/m, 'no frame count');
+  const berths = [...body.matchAll(/^ {2}(berth-\d+):$/gm)].map((m) => m[1]);
+  assert.ok(berths.length > 0, 'no berths in the turns sheet');
+  for (const b of berths) {
+    const block = body.slice(body.indexOf(`  ${b}:`)).split(/\n {2}berth-/)[0];
+    assert.match(block, /^ {4}crop: \{ x: \d+, y: \d+, w: \d+, h: \d+ \}/m,
+      `${b} records no crop, so its clip cannot be cut again`);
+    assert.match(block, /^ {4}seed: \d+$/m, `${b} records no seed, so its clip cannot be remade`);
+  }
+  // The crops are what keeps each room's candle out of frame, so they are not
+  // all the same rectangle — a sheet that had drifted into one shared crop
+  // would reproduce eight clips with a flame in half of them.
+  const xs = new Set([...body.matchAll(/^ {4}crop: \{ x: (\d+)/gm)].map((m) => m[1]));
+  assert.ok(xs.size > 1, 'every desk records the same crop, which no room can be true of');
 });
