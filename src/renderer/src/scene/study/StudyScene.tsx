@@ -429,32 +429,8 @@ export function turnBox(
   };
 }
 
-/**
- * How far a reader's card rises off the book it is turning, as a share of the
- * film's own rectangle.
- *
- * The foot sits on the painted book's top edge where the book is still, and
- * that is right: the portrait stands behind the volume and the volume lies open
- * in front of it. A book that turns its pages breaks it, because a page does
- * not stay inside the book's rectangle — it rises, and what it rises into is
- * behind the card.
- *
- * Two measured facts fix the size of this. The turn is not one low leaf: it
- * fans the full remaining height of the film's rectangle, some 63px of a 162px
- * patch on a 1568px panel, so a card that cleared ALL of it would stand two
- * book-heights off the desk and stop reading as somebody sitting at one. And
- * nothing is filmed at a desk with nobody reading, so every pixel of the lift
- * is bare desk for most of the time the room is looked at. This is the trade:
- * enough to see the page come up, short of floating the portrait.
- *
- * A share of the FILM rather than of the desk, because the film is the only
- * reason for it — a desk the painter left bare gets none of it.
- */
-export const TURN_CLEARANCE = 0.15;
-
-export function deskLayout(
-  desk: Box, volume: Box | null = null, turn: Box | null = null
-): { card: Box; book: Box; scroll: { left: number; top: number; width: number } } {
+export function deskLayout(desk: Box, volume: Box | null = null):
+{ card: Box; book: Box; scroll: { left: number; top: number; width: number } } {
   const book = PLACE_SETTING.book;
   // What is left of the setting once the painting has had its share. The card
   // stands on THIS floor; the drawn book stays down on the desk surface, where
@@ -470,11 +446,6 @@ export function deskLayout(
   // the settings are not all the same shape.
   const cardW = Math.min(height * CARD_ASPECT, desk.width * PLACE_SETTING.card);
   const cardLeft = desk.left + (desk.width - cardW) / 2;
-  // The card RISES by the clearance rather than shrinking into it. Taking it
-  // out of the height would clear the same page and leave every filmed
-  // portrait in the house a little smaller than every unfilmed one, which is a
-  // difference in the drawing that means nothing about the work.
-  const lift = turn ? turn.height * TURN_CLEARANCE : 0;
   // Whatever is left of the setting to the card's right, less a hand's width of
   // clear desk at each end — the far end matters as much as the near one, since
   // a berth is read out to the corner of its desk and a book flush with that
@@ -493,7 +464,7 @@ export function deskLayout(
   return {
     card: {
       left: cardLeft,
-      top: desk.top - lift,
+      top: desk.top,
       width: cardW,
       height
     },
@@ -675,7 +646,7 @@ function DeskPlace({
   /** Opens the commission the book on this desk stands for. */
   onOpenTask: (id: string) => void;
 }): JSX.Element {
-  const { card, book: beside, scroll } = deskLayout(desk, volume, turn?.box ?? null);
+  const { card, book: beside, scroll } = deskLayout(desk, volume);
   const book = bookFloat(volume, beside);
   // The volume being READ takes the painting's own book; everything else this
   // assistant holds waits beside them as a spine.
