@@ -17,6 +17,8 @@ import deskA from './assets/room-desk-a.png';
 import deskB from './assets/room-desk-b.png';
 import deskC from './assets/room-desk-c.png';
 import deskD from './assets/room-desk-d.png';
+import deskE from './assets/room-desk-e.png';
+import deskF from './assets/room-desk-f.png';
 import godStudy from './assets/room-god-study.png';
 import shelves from './assets/room-shelves.png';
 
@@ -27,6 +29,8 @@ export const ROOM_SRC: Record<string, string> = {
   './room-desk-b.png': deskB,
   './room-desk-c.png': deskC,
   './room-desk-d.png': deskD,
+  './room-desk-e.png': deskE,
+  './room-desk-f.png': deskF,
   './room-god-study.png': godStudy,
   './room-shelves.png': shelves
 };

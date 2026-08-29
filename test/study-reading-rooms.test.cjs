@@ -11,12 +11,11 @@
  * where the work is happening — had nowhere to sit that the painting agreed
  * with.
  *
- * So the house hangs the two paintings whose desks come forward, and hangs each
- * of them twice. Repeating a painting was a real objection and it still is: a
- * room the eye has already been in is not another room. What answers it is the
- * BINDING — the two rooms that share a painting bind their volumes differently,
- * so the desks are told apart by what is lying on them, which is the thing the
- * eye is being asked to look at anyway.
+ * They were briefly answered by hanging the other two rooms' paintings twice,
+ * with the binding left to carry the whole weight of telling two identical
+ * rooms apart. That was a trade, and it is no longer needed: two panels were
+ * painted with the desks forward and a volume on each, so the house has four
+ * reading rooms and four paintings again.
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -37,45 +36,18 @@ test('every reading desk has the painted volume its card stands behind', () => {
   }
 });
 
-test('a painting may be hung twice only by rooms a volume tells apart', () => {
-  // Sharing a painting is what lets every desk in the house be one the eye can
-  // actually reach. The binding is what keeps the rooms that share one from
-  // being the same room twice — but a binding can only do that job for a room
-  // that DRAWS volumes. A room with no desk in it draws none, so its painting
-  // has to be its own.
-  //
-  // Checked over the whole house in one pass. Two earlier checks did this by
-  // kind — reading rooms against reading rooms, the rest against each other —
-  // and between them left the crossing case open: a reading room could hang the
-  // shelf wall's painting and neither check would look.
-  const byPainting = new Map();
+test('no two rooms in the house are the same painting', () => {
+  // The rule this house started with, and it is back. Two of the reading rooms
+  // briefly hung the paintings of the other two, because their own panels drew
+  // their desks small and far back with no volume on them — and a binding was
+  // asked to carry the whole weight of telling two identical rooms apart. Two
+  // new panels were painted instead, so the exception is gone and the plain
+  // rule holds again: a room the eye has already been in is not another room.
+  const seen = new Map();
   for (const room of studyRoom.rooms) {
-    const sharing = byPainting.get(room.image) ?? [];
-    sharing.push(room);
-    byPainting.set(room.image, sharing);
+    const twin = seen.get(room.image);
+    assert.equal(twin, undefined,
+      `${room.id} hangs the same painting as ${twin} — ${room.image}`);
+    seen.set(room.image, room.id);
   }
-  for (const [image, sharing] of byPainting) {
-    if (sharing.length === 1) continue;
-    const who = sharing.map((r) => `${r.id} (${r.kind}/${r.binding ?? 'ledger'})`).join(', ');
-    for (const room of sharing) {
-      assert.equal(room.kind, 'desk',
-        `${room.id} hangs ${image}, which is hung more than once — ${who}`);
-      assert.ok(room.berths.length > 0,
-        `${room.id} shares a painting but seats nobody, so no volume tells it apart`);
-    }
-    const bindings = sharing.map((r) => r.binding ?? 'ledger');
-    assert.equal(new Set(bindings).size, bindings.length,
-      `${image} is hung by rooms that bind their volumes alike — ${who}`);
-  }
-});
-
-test('the house really does hang a painting twice, so the check above has work', () => {
-  // A rule that no arrangement in the tree can break is a rule nobody is
-  // keeping. The repetition is deliberate and this is what says so.
-  const counts = new Map();
-  for (const room of studyRoom.rooms) {
-    counts.set(room.image, (counts.get(room.image) ?? 0) + 1);
-  }
-  assert.ok([...counts.values()].some((n) => n > 1),
-    'some painting is hung more than once, or the distinctness rule is vacuous');
 });

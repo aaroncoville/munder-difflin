@@ -37,21 +37,20 @@
       ]
     },
     {
-      "_comment": "Hangs desk-a's painting a second time, bound differently. Its own panel drew its desks small and far back in the room, and the house is letterboxed whole — so those desks arrived a few pixels high, with no painted volume for a book to lie in. See the reading-room tests for why a repeated painting is answered by the binding rather than by another panel.",
-      "id": "desk-2", "kind": "desk", "binding": "arch", "image": "./room-desk-a.png",
+      "id": "desk-2", "kind": "desk", "binding": "arch", "image": "./room-desk-e.png",
       "natural": { "w": 1568, "h": 672 }, "row": 1, "col": 1,
       "berths": [
         {
-          "id": "berth-3", "x": 0.115, "y": 0.200, "w": 0.300, "h": 0.460,
-          "volume": { "x": 0.1862, "y": 0.6086, "w": 0.1448, "h": 0.0491 }
+          "id": "berth-3", "x": 0.155, "y": 0.202, "w": 0.300, "h": 0.460,
+          "volume": { "x": 0.2417, "y": 0.6161, "w": 0.1269, "h": 0.0432 }
         },
         {
-          "id": "berth-4", "x": 0.575, "y": 0.185, "w": 0.300, "h": 0.460,
-          "volume": { "x": 0.6563, "y": 0.6101, "w": 0.1435, "h": 0.0476 }
+          "id": "berth-4", "x": 0.577, "y": 0.202, "w": 0.300, "h": 0.460,
+          "volume": { "x": 0.6594, "y": 0.6161, "w": 0.1346, "h": 0.0432 }
         }
       ],
       "lightPoints": [
-        { "x": 0.139, "y": 0.525 }, { "x": 0.618, "y": 0.515 }, { "x": 0.500, "y": 0.310 }
+        { "x": 0.213, "y": 0.527 }, { "x": 0.623, "y": 0.552 }, { "x": 0.503, "y": 0.375 }
       ]
     },
     {
@@ -72,21 +71,20 @@
       ]
     },
     {
-      "_comment": "Hangs desk-c's painting a second time, bound differently — see desk-2.",
-      "id": "desk-4", "kind": "desk", "binding": "attic", "image": "./room-desk-c.png",
+      "id": "desk-4", "kind": "desk", "binding": "attic", "image": "./room-desk-f.png",
       "natural": { "w": 1568, "h": 672 }, "row": 2, "col": 1,
       "berths": [
         {
-          "id": "berth-7", "x": 0.115, "y": 0.195, "w": 0.300, "h": 0.460,
-          "volume": { "x": 0.2015, "y": 0.6116, "w": 0.1390, "h": 0.0461 }
+          "id": "berth-7", "x": 0.104, "y": 0.208, "w": 0.300, "h": 0.460,
+          "volume": { "x": 0.1913, "y": 0.6146, "w": 0.1409, "h": 0.0521 }
         },
         {
-          "id": "berth-8", "x": 0.580, "y": 0.195, "w": 0.300, "h": 0.460,
-          "volume": { "x": 0.6563, "y": 0.6101, "w": 0.1409, "h": 0.0461 }
+          "id": "berth-8", "x": 0.570, "y": 0.208, "w": 0.300, "h": 0.460,
+          "volume": { "x": 0.6594, "y": 0.6146, "w": 0.1403, "h": 0.0521 }
         }
       ],
       "lightPoints": [
-        { "x": 0.191, "y": 0.521 }, { "x": 0.621, "y": 0.522 }, { "x": 0.497, "y": 0.322 }
+        { "x": 0.152, "y": 0.525 }, { "x": 0.615, "y": 0.527 }, { "x": 0.501, "y": 0.330 }
       ]
     },
     {

@@ -1,0 +1,28 @@
+# Reading room F — two desks in an indigo room with stone pilasters, under a pale gothic window.
+#
+# The sheet the shipped panel was generated from. Reproduce it with the call in
+# this directory's README.
+#
+# Like C and D before it, the reference is not a lost photograph: it is reading
+# room A, which ships in this repository. E and F exist because the house needs
+# FOUR reading rooms whose desks are near the front and carry a painted open
+# book — the two panels they replaced drew their desks small and far back, with
+# no volume on them at all, and were briefly answered by hanging A and C twice.
+# A room the eye has already been in is not another room, so they were painted
+# instead. The digest below is that shipped panel's, byte for byte.
+panel: src/renderer/src/scene/study/assets/room-desk-f.png
+model: black-forest-labs/flux-kontext-pro
+input:
+  prompt: |-
+    Repaint as a clearly DIFFERENT scholars' room with a COMPLETELY different wall color: cool slate INDIGO-BLUE plaster walls with pale grey stone pilasters. The walls must be BLUE-VIOLET — absolutely NOT brown, NOT red, NOT teal, NOT green. ONE wide half-moon fanlight window with milky white glass in the center of the wall, TWO large dark-wood writing desks — one on each side of the window — set well FORWARD toward the viewer, each with a lit candle, an OPEN BOOK lying flat on the desktop, and clear wall space above it, a tall longcase clock in one corner and a rolled map leaning in the other, a faded grey striped runner on the floor. Keep the exact illustration style, palette discipline and grain of the input but make it read as a NEW room, not a copy. Render as FLAT 2D storybook game illustration: naive simple shapes, matte flat colors with soft paper-grain texture, thin clean outlines, NO realistic lighting, NO 3D rendering, NO photorealism — the same flat cut-paper look as the input image. Straight-on elevation. No people, no readable text.
+  aspect_ratio: "21:9"
+  output_format: png
+  input_image: "the reference below, supplied inline as a data: URI"
+reference:
+  media_type: image/png
+  file: src/renderer/src/scene/study/assets/room-desk-a.png
+  bytes: 1227184
+  sha256: 766e86c9a08d402d5add271c184bca233b5377bd99f39115cf3c86119b77a461
+output:
+  width: 1568
+  height: 672

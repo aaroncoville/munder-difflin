@@ -27,12 +27,39 @@ const manifest = JSON.parse(fs.readFileSync(path.join(ASSETS, 'room.json'), 'utf
  * Whether a colour is a painted desk rather than wall, glass, sill or daylight.
  *
  * Every desk in the Study is dark warm wood, and the things a berth drifts onto
- * instead are either much brighter (a window, a stone sill, a lit wall) or much
- * less red (grey masonry, glass). Two coarse tests separate them by a wide
- * margin, which is what keeps this from failing over a repaint that only
- * changes the light.
+ * instead are either much brighter (a window, a stone sill, a lit wall), much
+ * less red (grey masonry, glass), or much MORE red — a deep oxblood wall is as
+ * dark as a desk and warmer than one, and read every panel of the red room as
+ * furniture. Wood is warm but nearly grey beside a painted wall: the desks in
+ * all four rooms sit between 18 and 43 points of red over green, and the
+ * oxblood wall at 90, so the three coarse tests separate them by a wide margin
+ * — which is what keeps this from failing over a repaint that only changes the
+ * light.
  */
-const isDeskWood = ([r, g, b]) => r >= b + 20 && 0.299 * r + 0.587 * g + 0.114 * b <= 100;
+const isDeskWood = ([r, g, b]) =>
+  r >= b + 20 && r - g <= 60 && 0.299 * r + 0.587 * g + 0.114 * b <= 100;
+
+/**
+ * Whether a colour is the cover of the open book painted on a desk.
+ *
+ * Every one of them is bound in the same saturated pink, which nothing else in
+ * these rooms is: the wood is warm but nearly grey beside it, and the pages
+ * above it are near-white. Red well clear of green, with blue coming back up
+ * again, is that cover and nothing else in the panel.
+ */
+const isBookCover = ([r, g, b]) => r > 140 && r - g > 55 && b - g > 10;
+
+/**
+ * What counts as finding the desk: its own wood, or the book lying on it.
+ *
+ * A berth's foot is set on the painted desk surface, and in one room it lands
+ * a few pixels inside the volume the painter drew there — which is still a
+ * desk, because a book on a wall is not a thing these paintings contain. The
+ * probe used to swallow that by accident: the cover's pink passed a rule meant
+ * for wood, being both red-over-blue and dark. Now the wood rule is tight
+ * enough to refuse pink, so the book has to be named rather than mistaken.
+ */
+const isDeskSurface = (paint) => isDeskWood(paint) || isBookCover(paint);
 
 /** How far below a berth's bottom edge the desk is looked for, in panel px. */
 const PROBE_DEPTHS = [4, 10, 16, 22];
@@ -52,7 +79,7 @@ test('the paintings have a desk under every berth, not a wall or a window', () =
       for (const depth of PROBE_DEPTHS) {
         const paint = panel.at(x, foot + depth);
         assert.ok(
-          isDeskWood(paint),
+          isDeskSurface(paint),
           `${room.id}/${berth.id}: ${depth}px under the berth the painting is `
           + `rgb(${paint.join(', ')}), which is not a desk`
         );
@@ -80,16 +107,6 @@ test('finding a desk under a berth is a fact about that berth, not about the pai
       + 'so landing on one says nothing');
   }
 });
-
-/**
- * Whether a colour is the cover of the open book painted on a desk.
- *
- * Every one of them is bound in the same saturated pink, which nothing else in
- * these rooms is: the wood is warm but nearly grey beside it, and the pages
- * above it are near-white. Red well clear of green, with blue coming back up
- * again, is that cover and nothing else in the panel.
- */
-const isBookCover = ([r, g, b]) => r > 140 && r - g > 55 && b - g > 10;
 
 /** And the leaves above it: near-white, and near enough to neutral that the
  *  room's pink mirror and its lamplit panelling are not mistaken for pages. */
