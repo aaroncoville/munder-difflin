@@ -19,6 +19,7 @@
  * they lie are both checkable without a room, a panel or a scene.
  */
 import { waitsOnHuman, type HiveTask } from '@/components/TasksKanban';
+import { concluded } from './BaizeStacks';
 import type { Box } from './BaizeStacks';
 import type { BookState } from './DeskBook';
 
@@ -161,4 +162,50 @@ export function deskPile(slot: Box, count: number): Box[] {
  */
 export function bookFloat(volume: Box | null, beside: Box): Box {
   return volume ?? beside;
+}
+
+/**
+ * Where every open commission goes: the desks, and what is left for the felt.
+ *
+ * One function, over the whole ledger, returning both halves — rather than two
+ * predicates asked separately and hoped to agree. They did not agree. The felt
+ * dropped everything a seated assistant held, the desk drew the first few, and
+ * the difference was drawn NOWHERE: the sixth open card of an assistant holding
+ * six, and a concluded commission still carrying an unanswered question, which
+ * no desk takes because it is finished and which the old felt rule dropped
+ * because somebody's name was on it.
+ *
+ * A card missing from the house entirely is worse than the double this replaced
+ * — a double is at least visible — and no predicate could have been trusted to
+ * prevent it, because the bound belongs to the DESK and a rule about one card
+ * cannot see it. So the split is made once, here, and the leftovers ARE the
+ * felt: every open commission the desks did not take, whatever the reason.
+ * Totality stops being a property to test for and becomes the shape of the
+ * function.
+ *
+ * Concluded work appears in neither. The shelf wall is the third surface and
+ * takes it, on its own rule — see `concluded`.
+ */
+export interface Placement {
+  /** What lies on each seated assistant's desk, the one in hand first. */
+  desks: ReadonlyMap<string, DeskVolume[]>;
+  /** The commissions on the felt, in the ledger's own order. */
+  felt: readonly HiveTask[];
+}
+
+export function placeOpenWork(
+  tasks: readonly HiveTask[], seated: ReadonlySet<string>
+): Placement {
+  const desks = new Map<string, DeskVolume[]>();
+  const taken = new Set<string>();
+  for (const holder of seated) {
+    const books = booksFor(tasks, holder);
+    if (books.length === 0) continue;
+    desks.set(holder, books);
+    for (const book of books) taken.add(book.id);
+  }
+  return {
+    desks,
+    felt: tasks.filter((task) => !concluded(task) && !taken.has(task.id))
+  };
 }

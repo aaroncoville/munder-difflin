@@ -23,7 +23,8 @@ const assert = require('node:assert/strict');
 const { mount } = require('./render-hooks.cjs');
 const loadTs = require('./load-ts.cjs');
 
-const { onTheTable, stackBaize } = loadTs('src/renderer/src/scene/study/BaizeStacks.tsx');
+const { stackBaize, concluded } = loadTs('src/renderer/src/scene/study/BaizeStacks.tsx');
+const { placeOpenWork, DESK_PILE_MAX } = loadTs('src/renderer/src/scene/study/deskPile.ts');
 const { useStore } = loadTs('src/renderer/src/store/store.ts');
 const SCENE = 'src/renderer/src/scene/study/StudyScene.tsx';
 
@@ -80,16 +81,16 @@ const atDesk = (view) => {
 };
 
 const seated = new Set(['ann']);
+/** What the felt is given for one ledger — the other half of the same split. */
+const feltFor = (tasks, who = seated) => placeOpenWork(tasks, who).felt.map((t) => t.id);
 
 test('the felt keeps only what nobody has picked up', () => {
-  assert.equal(onTheTable(card('T-1', 'doing', 'ann'), seated), false,
-    'work in hand is at a desk, not on the table');
-  assert.equal(onTheTable(card('T-2', 'todo', 'ann'), seated), false);
-  assert.equal(onTheTable(card('T-3', 'blocked', 'ann'), seated), false);
-  assert.equal(onTheTable(card('T-4', 'doing'), seated), true,
-    'unclaimed work is on the table');
-  assert.equal(onTheTable(card('T-5', 'todo', '   '), seated), true,
-    'an assignee of blank space is nobody');
+  const tasks = [
+    card('T-1', 'doing', 'ann'), card('T-2', 'todo', 'ann'), card('T-3', 'blocked', 'ann'),
+    card('T-4', 'doing'), card('T-5', 'todo', '   ')
+  ];
+  assert.deepEqual(feltFor(tasks), ['T-4', 'T-5'],
+    'work in hand is at a desk; unclaimed work, and an assignee of blank space, is not');
 });
 
 test('a commission held by somebody this house cannot seat stays on the felt', () => {
@@ -97,18 +98,21 @@ test('a commission held by somebody this house cannot seat stays on the felt', (
   // belong to an assistant who was dismissed, renamed, or never summoned here,
   // and taking such a card off the felt would draw it on no surface at all —
   // which is worse than the double, because a double is at least visible.
-  assert.equal(onTheTable(card('T-1', 'doing', 'ghost-of-nobody'), seated), true);
-  assert.equal(onTheTable(card('T-1', 'doing', 'ann'), new Set()), true,
+  assert.deepEqual(feltFor([card('T-1', 'doing', 'ghost-of-nobody')]), ['T-1']);
+  assert.deepEqual(feltFor([card('T-1', 'doing', 'ann')], new Set()), ['T-1'],
     'and a house that has seated nobody yet keeps everything on the felt');
 });
 
 test('a concluded commission still holding a question stays on the felt', () => {
   // The wall is bounded and prints no waiting-on-you mark, so a shelved
-  // petition is a question that can fall out of the house entirely. Being
-  // assigned does not change that: it is finished, so no desk claims it.
+  // petition is a question that can fall out of the house entirely. No desk
+  // takes it either — it is finished — so the felt is the only place left, and
+  // being held by somebody the house HAS seated must not change that.
   const asked = { ...card('T-1', 'done', 'ann'), humanQA: [{ q: 'which key?' }] };
-  assert.equal(onTheTable(asked), true);
-  assert.equal(stackBaize([asked], { left: 0, top: 0, width: 100, height: 40 }).length, 1);
+  assert.equal(concluded(asked), false, 'the wall does not consider it finished');
+  assert.deepEqual(feltFor([asked]), ['T-1']);
+  assert.equal(stackBaize([asked], { left: 0, top: 0, width: 100, height: 40 }).length, 1,
+    'and the felt draws what it is given');
 });
 
 test('an assigned commission is at its desk and NOT on the card table', async () => {
@@ -135,18 +139,65 @@ test('every open commission is drawn exactly once in the house', async () => {
   // The property behind all three cases: the two surfaces divide the ledger
   // rather than sharing it. A card on both is the reported bug; a card on
   // neither is the same bug's mirror image and would be worse.
+  //
+  // Read off the RENDERED house, and with enough cards to reach both bounds.
+  // A version of this that asked the predicates instead, with two cards and a
+  // seated assistant, agreed with itself and missed both ways a card can fall
+  // between the surfaces.
   const tasks = [
+    // One assistant holding more open work than a desk will draw.
+    ...Array.from({ length: DESK_PILE_MAX + 3 }, (_, i) => card(`H-${i}`, 'todo', 'ann')),
     card('T-1', 'doing', 'ann'), card('T-2', 'blocked', 'ann'),
     card('T-3', 'todo'), card('T-4', 'blocked'),
-    card('T-5', 'doing', 'nobody-here')
+    card('T-5', 'doing', 'nobody-here'),
+    // Concluded, but still holding a question — the wall will not take it, and
+    // being held by a seated assistant must not make it disappear either.
+    { ...card('T-6', 'done', 'ann'), humanQA: [{ q: 'which key?' }] }
   ];
   const view = await house(tasks);
   const felt = onFelt(view);
   const desk = atDesk(view).map(([title]) => title.replace('card ', ''));
   for (const t of tasks) {
     const places = [felt.includes(t.id), desk.includes(t.id)].filter(Boolean).length;
-    // T-5 is assigned to somebody the house has no seat for; it is on nobody's
-    // desk and so stays on the felt, which is the honest place for it.
     assert.equal(places, 1, `${t.id} is drawn on exactly one surface, not ${places}`);
   }
+  // Named, so a regression reads as itself rather than as an arithmetic slip.
+  assert.ok(felt.includes(`H-${DESK_PILE_MAX + 2}`),
+    'the open work a desk has no room for goes back onto the felt');
+  assert.ok(felt.includes('T-6'),
+    'a concluded commission still holding a question stays on the felt, held or not');
+  assert.ok(felt.includes('T-5'),
+    'work held by somebody the house cannot seat stays on the felt');
+});
+
+test('a desk draws no more than it can, and the rest is not lost', () => {
+  const held = Array.from({ length: DESK_PILE_MAX + 3 }, (_, i) => card(`H-${i}`, 'todo', 'ann'));
+  const { desks, felt } = placeOpenWork(held, new Set(['ann']));
+  assert.equal(desks.get('ann').length, DESK_PILE_MAX + 1, 'the desk takes its fill');
+  assert.deepEqual(felt.map((t) => t.id), ['H-5', 'H-6'],
+    'and the overflow is dealt onto the felt rather than dropped');
+});
+
+test('the partition is total over open work, by construction', () => {
+  // Not a restatement of the rendered test above: this one is over the FUNCTION
+  // that decides, so it can be given shapes the scene cannot easily be put in.
+  const seatedSet = new Set(['ann', 'bob']);
+  const tasks = [
+    ...Array.from({ length: 9 }, (_, i) => card(`A-${i}`, 'todo', 'ann')),
+    ...Array.from({ length: 2 }, (_, i) => card(`B-${i}`, 'doing', 'bob')),
+    card('U-1', 'todo'), card('U-2', 'blocked', '  '),
+    card('G-1', 'doing', 'ghost'),
+    { ...card('Q-1', 'done', 'ann'), humanQA: [{ q: 'well?' }] },
+    card('D-1', 'done', 'ann'), card('D-2', 'done')
+  ];
+  const { desks, felt } = placeOpenWork(tasks, seatedSet);
+  const drawn = [...felt.map((t) => t.id), ...[...desks.values()].flat().map((b) => b.id)];
+  assert.equal(new Set(drawn).size, drawn.length, 'nothing is drawn twice');
+  for (const t of tasks) {
+    const want = concluded(t) ? 0 : 1;
+    assert.equal(drawn.filter((id) => id === t.id).length, want,
+      `${t.id} (${t.status}) belongs on ${want} surface below the wall`);
+  }
+  assert.deepEqual([...desks.keys()].sort(), ['ann', 'bob'],
+    'only assistants the house seats are given desks');
 });

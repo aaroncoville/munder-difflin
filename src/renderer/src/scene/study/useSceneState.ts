@@ -17,7 +17,7 @@ import { concluded } from './BaizeStacks';
 import type { CardStatus } from './AgentCard';
 import type { BookState } from './DeskBook';
 import { deskBerths, godBerth } from './roomManifest';
-import { booksFor, type DeskVolume } from './deskPile';
+import { booksFor, placeOpenWork, type DeskVolume } from './deskPile';
 import { shelfBooks, type ArchivedThing } from './shelfBooks';
 import { studyRoom } from './StudyScene';
 
@@ -76,14 +76,13 @@ export interface SceneState {
    */
   tasks: readonly HiveTask[];
   /**
-   * Who has a desk in this house.
+   * What the card table has been given: every open commission no desk drew.
    *
-   * The card table needs it to tell a commission somebody is HOLDING from one
-   * merely assigned to a name: the ledger is hand-edited and can carry an
-   * assistant the house has no seat for, and a card held by nobody the house
-   * can draw has to stay on the felt or it is drawn nowhere at all.
+   * Carried rather than worked out again at the table, because the felt and
+   * the desks are two halves of ONE split — see `placeOpenWork`. Asking two
+   * questions separately is how a card came to be drawn on neither.
    */
-  seated: ReadonlySet<string>;
+  felt: readonly HiveTask[];
 }
 
 /** Same cadence as the kanban — the ledger is a file the god edits by hand. */
@@ -147,7 +146,12 @@ export function speechFor(agent: Pick<Agent, 'action' | 'lastPrompt'>): string {
  */
 export function bookFor(tasks: readonly HiveTask[], agentId: string):
 { books: DeskVolume[]; bookState?: BookState; bookTitle?: string; bookTaskId?: string } {
-  const books = booksFor(tasks, agentId);
+  return deskOf(booksFor(tasks, agentId));
+}
+
+/** One desk's volumes, with the first carried out separately. */
+function deskOf(books: DeskVolume[]):
+{ books: DeskVolume[]; bookState?: BookState; bookTitle?: string; bookTaskId?: string } {
   const first = books[0];
   return first
     ? { books, bookState: first.state, bookTitle: first.title, bookTaskId: first.id }
@@ -237,12 +241,17 @@ export function projectScene(
   const desks = deskBerths(studyRoom);
   const god = godBerth(studyRoom);
   /** How many are already sitting at each berth. */
-  const seated = new Map<string, number>();
+  const occupancy = new Map<string, number>();
   let seat = 0;
+  // Every assistant on the roster is dealt a berth, so the roster IS the
+  // seating — see the seating rule above. The open work is split between the
+  // desks and the felt ONCE, against that seating, so the two surfaces cannot
+  // each decide the other is drawing a card.
+  const placed = placeOpenWork(tasks, new Set(agents.map((a) => a.id)));
   const projected = agents.map((a) => {
     const berthId = a.isGod ? god.id : desks[seat++ % desks.length].id;
-    const stackIndex = seated.get(berthId) ?? 0;
-    seated.set(berthId, stackIndex + 1);
+    const stackIndex = occupancy.get(berthId) ?? 0;
+    occupancy.set(berthId, stackIndex + 1);
     return {
       id: a.id,
       name: a.name,
@@ -252,7 +261,7 @@ export function projectScene(
       berthId,
       stackIndex,
       speech: speechFor(a),
-      ...bookFor(tasks, a.id)
+      ...deskOf(placed.desks.get(a.id) ?? [])
     };
   });
   const kanbanCounts = { todo: 0, doing: 0, blocked: 0, done: 0 };
@@ -262,9 +271,7 @@ export function projectScene(
     kanbanCounts,
     archive: archiveOf(tasks, now),
     tasks,
-    // Every assistant on the roster is dealt a berth, so the roster IS the
-    // seating — see the seating rule above.
-    seated: new Set(projected.map((a) => a.id))
+    felt: placed.felt
   };
 }
 

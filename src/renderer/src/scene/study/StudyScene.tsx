@@ -867,8 +867,7 @@ export function StudyScene(): JSX.Element {
       if (!berth) return null;
       return (
         <BaizeStacks
-          tasks={scene.tasks}
-          seated={scene.seated}
+          tasks={scene.felt}
           baize={berthToBox(berth, view)}
           onOpen={openTaskDetail}
         />

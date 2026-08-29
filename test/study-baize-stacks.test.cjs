@@ -101,8 +101,15 @@ test('the table carries OPEN work only — a concluded commission is off it', ()
   // commission ever finished says "busy" for ever, and the piles it reads as
   // are mostly of things nobody has to do: Aaron's note was that a whole table
   // of mostly-done work does not make sense. Concluded work has the shelf wall.
+  //
+  // Membership is settled for the whole ledger at once now, so this asks the
+  // function that settles it. `stackBaize` decides order, bound and geometry
+  // over what it is handed, and asking it about membership as well is how the
+  // felt and the desks came to disagree about who was drawing a card.
+  const { placeOpenWork } = loadTs('src/renderer/src/scene/study/deskPile.ts');
+  const felt = (tasks) => placeOpenWork(tasks, new Set()).felt;
   const piled = B.stackBaize(
-    [task('T-1', 'done'), task('T-2', 'todo'), task('T-3', 'done'), task('T-4', 'doing')],
+    felt([task('T-1', 'done'), task('T-2', 'todo'), task('T-3', 'done'), task('T-4', 'doing')]),
     BAIZE
   );
   assert.deepEqual(piled.map((d) => d.task.id), ['T-4', 'T-2']);
@@ -111,7 +118,7 @@ test('the table carries OPEN work only — a concluded commission is off it', ()
   // long history still deals its whole backlog onto the felt.
   const history = Array.from({ length: B.BAIZE_MAX }, (_, i) => task(`D-${i}`, 'done'));
   const open = Array.from({ length: B.BAIZE_MAX }, (_, i) => task(`T-${i}`, 'todo'));
-  assert.equal(B.stackBaize([...history, ...open], BAIZE).length, B.BAIZE_MAX,
+  assert.equal(B.stackBaize(felt([...history, ...open]), BAIZE).length, B.BAIZE_MAX,
     'finished work took the places the open work needed');
 });
 
