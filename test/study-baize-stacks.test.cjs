@@ -557,3 +557,40 @@ test('every pile stands ON the painted table', () => {
     }
   }
 });
+
+test('how big a book is, and how a pile leans, is said once for the whole house', () => {
+  // A reading desk piles the very same volumes, so the two surfaces have to ASK
+  // one thing rather than each carry a copy of it. A copy is what lets a desk
+  // go on dealing the old size after the felt's has changed — which is exactly
+  // how the desks came to draw a book squashed to a quarter of the felt's.
+  const spine = B.feltSpine(BAIZE);
+  assert.ok(spine.width > 0 && spine.height > 0, 'a book with no size');
+
+  const piled = B.stackBaize(
+    Array.from({ length: B.STACK_HIGH }, (_, i) => task(`T-${i + 1}`)), BAIZE);
+  for (const { box } of piled) {
+    assert.equal(box.width, spine.width, 'the felt deals a book of some other width');
+    assert.equal(box.height, spine.height, 'or some other thickness');
+  }
+
+  // And the pile itself: each book above the last, leaning, standing on a foot.
+  const foot = { left: 12, bottom: 200 };
+  for (let level = 0; level < B.STACK_HIGH; level++) {
+    const box = B.pileBox(foot, spine, level);
+    assert.equal(box.width, spine.width);
+    assert.equal(box.height, spine.height);
+    assert.ok(Math.abs((foot.bottom - box.top) - spine.height * (level + 1)) < 1e-9,
+      `book ${level} of the pile does not stand on the one under it`);
+  }
+  assert.ok(new Set(Array.from({ length: B.STACK_HIGH }, (_, i) =>
+    B.pileBox(foot, spine, i).left)).size > 1, 'the pile is squared up like a bar chart');
+
+  // The felt's own piles ARE that function, rather than merely resembling it —
+  // so a desk built on it cannot drift away from what the card table draws.
+  const first = piled.filter((s) => s.stack === 0);
+  const stands = { left: first[0].box.left, bottom: first[0].box.top + first[0].box.height };
+  for (const s of first) {
+    assert.deepEqual(s.box, B.pileBox(stands, spine, s.level),
+      `the felt lays book ${s.level} somewhere its own pile rule does not`);
+  }
+});

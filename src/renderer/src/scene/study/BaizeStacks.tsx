@@ -77,6 +77,41 @@ const SPINE = {
 const LEAN = [0, 0.05, -0.04, 0.03, -0.05, 0.02];
 
 /**
+ * How big one book is, given the felt it is dealt onto.
+ *
+ * Stated here rather than inside the dealing, because a reading desk piles the
+ * SAME volumes and has to be able to ask what size they are. Asking is the
+ * whole point: a desk that carried its own copy of these proportions is a desk
+ * that goes on dealing the old book after the felt's has changed.
+ */
+export function feltSpine(baize: { width: number; height: number }):
+{ width: number; height: number } {
+  return { width: (baize.width / STACKS) * SPINE.width, height: baize.height * SPINE.thickness };
+}
+
+/**
+ * One book of a pile, `level` up from the surface the pile stands on.
+ *
+ * The foot is a point, not a box: what a pile needs to know is where the
+ * surface is and where the near end of it lies, and every surface in the house
+ * that carries books — the felt, a reading desk — has both. Level 0 stands on
+ * the surface, and each one above sits on the last, out of true by a fixed
+ * amount so the pile is a pile and not a bar chart.
+ */
+export function pileBox(
+  foot: { left: number; bottom: number },
+  spine: { width: number; height: number },
+  level: number
+): Box {
+  return {
+    left: foot.left + spine.width * (LEAN[level % LEAN.length] ?? 0),
+    top: foot.bottom - spine.height * (level + 1),
+    width: spine.width,
+    height: spine.height
+  };
+}
+
+/**
  * How far the ends of the row ride up on the painted table, in fractions of
  * the dealing area's height.
  *
@@ -185,9 +220,9 @@ export function stackBaize(tasks: readonly HiveTask[], baize: Box): Spine[] {
 
   const piles = Math.ceil(taken.length / STACK_HIGH);
   const slot = baize.width / STACKS;
-  const width = slot * SPINE.width;
+  const spine = feltSpine(baize);
+  const width = spine.width;
   const gap = slot - width;
-  const thickness = baize.height * SPINE.thickness;
   // Centred as a group: one pile stands in the middle of the table rather than
   // at the left-hand end of a row of three empty places.
   const spread = piles * width + (piles - 1) * gap;
@@ -203,18 +238,12 @@ export function stackBaize(tasks: readonly HiveTask[], baize: Box): Spine[] {
     const u = (x + width / 2 - middle) / (baize.width / 2);
     const rise = baize.height * ARC * (1 - Math.sqrt(Math.max(0, 1 - u * u)));
     const foot = baize.top + baize.height - rise;
-    const lean = width * (LEAN[level % LEAN.length] ?? 0);
     return {
       task,
       n: spineMark(task),
       stack,
       level,
-      box: {
-        left: x + lean,
-        top: foot - thickness * (level + 1),
-        width,
-        height: thickness
-      }
+      box: pileBox({ left: x, bottom: foot }, spine, level)
     };
   });
 }
