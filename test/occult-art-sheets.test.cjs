@@ -193,3 +193,14 @@ test('the sheet’s berth headings are the manifest’s berth ids, both ways', (
   }
 });
 
+test('the page-turn clips stay inside the bundle budget', () => {
+  // Video is the only thing in this repository that can grow by a megabyte
+  // without anybody noticing, because a clip is regenerated rather than edited
+  // and nothing about the diff says how big it is. The bound is a house rule,
+  // not a technical limit: 700,000 bytes for the whole set.
+  const clips = fs.readdirSync(ASSETS).filter((f) => /^book-turn-.*\.mp4$/.test(f));
+  assert.ok(clips.length > 0, 'no clips to weigh');
+  const total = clips.reduce((n, f) => n + fs.statSync(path.join(ASSETS, f)).size, 0);
+  assert.ok(total <= 700000,
+    `the page turns weigh ${total} bytes across ${clips.length} clips, over the 700,000 bound`);
+});

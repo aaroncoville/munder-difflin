@@ -46,6 +46,13 @@ output:
 #
 # The same rectangles are carried in the room manifest as each berth's `turn`,
 # which is what the scene draws against. This file is why they are those values.
+#
+# THE WHOLE SET MUST STAY UNDER 700,000 BYTES. Video is the one thing here that
+# can grow by a megabyte without anybody noticing, because a clip is regenerated
+# rather than edited and nothing in the diff says how big it is. The bound is a
+# house rule rather than a technical limit, and it is enforced by test — see
+# test/occult-art-sheets.test.cjs — so regenerating a clip at a longer duration
+# or a higher resolution fails there rather than in somebody's download.
 berths:
   berth-1:
     panel: src/renderer/src/scene/study/assets/room-desk-a.png
