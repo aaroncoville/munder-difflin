@@ -67,6 +67,14 @@ export interface BookTurnProps {
    * Without it this is a rectangle of somebody else's wall laid over the card.
    */
   matteId: string;
+  /**
+   * Whether to drop behind the reader's card instead of sweeping across it.
+   *
+   * True while the card is being looked at, because the caption the leaves pass
+   * over is the assistant's name and role, and a reader who has gone to the
+   * card to read it should not have to wait out a page turn.
+   */
+  behindCard: boolean;
 }
 
 /**
@@ -80,7 +88,9 @@ export interface BookTurnProps {
 const FEATHER =
   'radial-gradient(ellipse 60% 60% at 50% 62%, #000 50%, transparent 100%)';
 
-export function BookTurn({ src, box, playing, matteId }: BookTurnProps): JSX.Element {
+export function BookTurn({
+  src, box, playing, matteId, behindCard
+}: BookTurnProps): JSX.Element {
   const film = useRef<HTMLVideoElement | null>(null);
   useEffect(() => {
     const node = film.current;
@@ -106,11 +116,11 @@ export function BookTurn({ src, box, playing, matteId }: BookTurnProps): JSX.Ele
     // Scenery. The press belongs to the book — see the note above — and a film
     // that took the pointer would put the hit target on the desk around it.
     pointerEvents: 'none',
-    // In FRONT of the card, so a leaf that leaves the book crosses the portrait
-    // the way it would cross anything else standing on that desk. The matte is
-    // what makes that safe: everything that is not moving is cut away, so the
-    // card is covered by leaves and by nothing else.
-    zIndex: 1,
+    // In FRONT of the card by default, so a leaf that leaves the book crosses
+    // the portrait the way it would cross anything else standing on that desk.
+    // The matte is what makes that safe: everything that is not moving is cut
+    // away, so the card is covered by leaves and by nothing else.
+    zIndex: behindCard ? -1 : 1,
     filter: `url(#${matteId})`,
     // The matte already removes the rectangle's edge, since the edge does not
     // move. This stays for the pixels that DO move within a hand's width of the

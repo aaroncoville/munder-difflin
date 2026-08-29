@@ -729,6 +729,11 @@ function DeskPlace({
         else's wall across the portrait's lower half. Cut against the painting
         it was filmed from, only the part that MOVED is left, so the card is
         covered by leaves and by nothing else. See `TurnMattes`.
+
+        While the card is being looked at the film drops behind it instead. The
+        band the leaves sweep is the caption — the assistant's name and role —
+        and somebody who has gone to the card to read it should not have to wait
+        out a page turn.
       */}
       {turn && inHand
         ? (
@@ -737,6 +742,7 @@ function DeskPlace({
             box={turn.box}
             playing={!still}
             matteId={turn.matteId}
+            behindCard={raised}
           />
         )
         : null}

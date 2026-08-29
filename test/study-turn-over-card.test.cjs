@@ -97,6 +97,7 @@ async function house(tasks, { who = ['ann'] } = {}) {
 
 const placeOf = (view, id) => deep(view.tree, (n) => n.props?.['data-study-place'] === id)[0];
 const filmAt = (view, id) => deep(placeOf(view, id), (n) => n.type === BookTurn)[0];
+const cardAt = (view, id) => deep(placeOf(view, id), (n) => n.type === AgentCard)[0];
 const mattes = (view) => deep(view.tree, (n) => n.type === 'filter');
 
 /* ---- the order, and the cut that makes it safe --------------------------- */
@@ -198,6 +199,43 @@ test('the page sweeps over the card without taking the pointer from it', async (
   const seat = trail(view.tree, (n) => n.props?.['data-study-card'] !== undefined)[0];
   assert.ok(seat, 'no card is drawn to check');
   assert.ok(reachable(seat), 'the card under the film cannot be pressed');
+
+  // ...and the raise is a real change of layer, not a prop nobody reads.
+  const raisedFilm = mount(BookTurn, { ...handed, behindCard: true });
+  views.push(raisedFilm);
+  assert.ok(raisedFilm.tree.props.style.zIndex < 0,
+    'a card being looked at does not actually come in front of the film');
+});
+
+/* ---- looking at a card brings it forward --------------------------------- */
+
+test('looking at a card brings it in front of the page turning over it', async () => {
+  const view = await house([card('T-1', 'doing')]);
+  assert.equal(filmAt(view, 'ann').props.behindCard, false,
+    'the film starts behind the card, so nothing ever sweeps across it');
+  cardAt(view, 'ann').props.onLook(true);
+  view.render();
+  assert.equal(filmAt(view, 'ann').props.behindCard, true,
+    'looking at the card left the page turning over the caption being read');
+  cardAt(view, 'ann').props.onLook(false);
+  view.render();
+  assert.equal(filmAt(view, 'ann').props.behindCard, false,
+    'the page never comes back over the card once it has been looked at');
+});
+
+test('the card is brought forward by the keyboard as well as the mouse', async () => {
+  // The caption is the assistant's name and role. Reaching it by tabbing has to
+  // work the same way reaching it with a pointer does, or the page turn makes
+  // the house unreadable to anybody not using a mouse.
+  const view = await house([card('T-1', 'doing')]);
+  const seat = deep(view.tree, (n) => n.props?.['data-study-card'] !== undefined)[0];
+  assert.ok(seat, 'the card is not reachable by keyboard at all');
+  assert.equal(typeof seat.props.onFocus, 'function', 'focus does not raise the card');
+  assert.equal(typeof seat.props.onMouseEnter, 'function', 'hover does not raise the card');
+  seat.props.onFocus();
+  view.render();
+  assert.equal(filmAt(view, 'ann').props.behindCard, true,
+    'focusing the card left the page turning over it');
 });
 
 /* ---- a shared desk ------------------------------------------------------- */
@@ -211,6 +249,7 @@ test('each reader at a shared desk gets their own page over their own card', asy
   for (const id of who) {
     const film = filmAt(view, id);
     assert.ok(film, `${id} has no film`);
+    assert.equal(film.props.behindCard, false, `${id}'s page starts behind their card`);
     const key = film.props.matteId;
     if (!seen.has(key)) seen.set(key, []);
     seen.get(key).push(id);
@@ -218,8 +257,11 @@ test('each reader at a shared desk gets their own page over their own card', asy
   const shared = [...seen.values()].filter((desk) => desk.length > 1);
   assert.ok(shared.length > 0,
     `${who.length} readers filled ${seen.size} desks without any of them sharing one`);
-  for (const desk of shared) {
-    const named = new Set(desk.map((id) => filmAt(view, id).props.src));
-    assert.equal(named.size, 1, 'two readers at one desk are shown different films');
-  }
+  // Looking at one of them raises that one only.
+  const [first, second] = shared[0];
+  cardAt(view, first).props.onLook(true);
+  view.render();
+  assert.equal(filmAt(view, first).props.behindCard, true, `looking at ${first} did not raise it`);
+  assert.equal(filmAt(view, second).props.behindCard, false,
+    `looking at ${first} also raised ${second}, who is not being looked at`);
 });
