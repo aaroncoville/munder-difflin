@@ -51,11 +51,19 @@ const settle = () => new Promise((r) => setImmediate(r));
 const views = [];
 test.after(() => { for (const v of views) for (const c of v.cleanups ?? []) c?.(); });
 
-const card = (id, status) =>
-  ({ id, title: `card ${id}`, status, assignee: 'ann', dependsOn: [], humanQA: [] });
+const card = (id, status, assignee = 'ann') =>
+  ({ id, title: `card ${id}`, status, assignee, dependsOn: [], humanQA: [] });
 
-/** One assistant, seated by the projection itself — at a reading desk, or the god's. */
-async function house(tasks, { isGod = false } = {}) {
+/**
+ * A roster, seated by the projection itself — at reading desks, or the god's.
+ *
+ * `who` is every assistant to put on it, in order, because the order IS the
+ * seating: the projection deals berths round-robin, so a roster longer than the
+ * house has desks wraps and the extra assistants share. That is the only way to
+ * get a shared desk without deciding by hand which berth is shared, and
+ * deciding it by hand is what left the sharing untested.
+ */
+async function house(tasks, { isGod = false, who = ['ann'] } = {}) {
   global.window = {
     localStorage: { getItem: () => 'occult', setItem: () => {}, removeItem: () => {} },
     close: () => {},
@@ -64,11 +72,13 @@ async function house(tasks, { isGod = false } = {}) {
   };
   global.document = { documentElement: { dataset: {} } };
   useStore.setState({ agents: [], archivedAgents: [], restorableAgents: [] });
-  useStore.getState().addAgent({
-    id: 'ann', name: 'ANN', character: 'jim', accent: 'sky', description: '',
-    project: 'p', tmuxTarget: '', cwd: '/tmp', status: 'working', action: '', progress: 0,
-    ...(isGod ? { isGod: true } : {})
-  });
+  for (const id of who) {
+    useStore.getState().addAgent({
+      id, name: id.toUpperCase(), character: 'jim', accent: 'sky', description: '',
+      project: 'p', tmuxTarget: '', cwd: '/tmp', status: 'working', action: '', progress: 0,
+      ...(isGod ? { isGod: true } : {})
+    });
+  }
   useStore.setState({
     requestCommandCenterTab: () => {}, select: () => {}, openTaskDetail: () => {}
   });
@@ -190,22 +200,47 @@ test('a painted book with no film to show leaves the card where it was', () => {
     'a desk with no film lifted its card anyway');
 });
 
-test('a card sharing a filmed desk is lifted with it, however deep it sits', () => {
-  // Everybody at one desk meets the same page turn, and the pile's stagger is
-  // what says they are sharing — so the lift has to be the same for all of
-  // them, and none of them may be dealt out of the room by it.
-  for (const seat of seats.filter((s) => s.berth.turn)) {
-    const volume = S.volumeBox(seat.berth, panelView(seat.room));
-    const film = S.turnBox(seat.berth, panelView(seat.room)).box;
-    const first = S.deskLayout(boxOf(seat), volume, film).card;
-    const base = volume.top - (first.top + first.height);
-    for (let depth = 0; depth <= S.STACK_DEEPEST; depth++) {
-      const { card: seated } = S.deskLayout(
-        S.stackedBerth(boxOf(seat), depth), volume, film);
-      const where = `${seat.room.id}/${seat.berth.id}#${depth}`;
-      assert.ok(Math.abs((volume.top - (seated.top + seated.height)) - base) < 0.01,
-        `${where}: dealt back changed the lift`);
-      assert.ok(seated.top >= 0, `${where}: the lifted card is off the top of the room`);
+test('everybody at a shared filmed desk is lifted, not just the one in front', async () => {
+  // Everybody at one desk meets the same page turn, and the stagger between
+  // their cards is what says they are sharing it — so the lift has to reach the
+  // ones dealt back as well. Which it does is a decision made at the call site,
+  // where the place setting is handed its film, and a `deskLayout` called
+  // directly with a film at every depth has already made that decision for the
+  // code: passing the film only to the front card of a pile leaves such a test
+  // green and every deeper reader standing back on the book.
+  //
+  // So the desk is shared the way the house shares one. The roster is longer
+  // than the house has berths, the projection wraps it round, and the places
+  // that come out are grouped by the FILM they are drawn over — two places over
+  // one film are two people at one desk, and nothing here had to know which.
+  const who = Array.from({ length: 9 }, (_, i) => `r${i}`);
+  const view = await house(who.map((id, i) => card(`T-${i}`, 'doing', id)), { who });
+
+  const shelves = new Map();
+  for (const id of who) {
+    const film = filmBoxAt(view, id);
+    const seat = cardBoxAt(view, id);
+    const painted = drawnBooksAt(view, id)[0];
+    assert.ok(film && seat && painted, `${id} was not seated at a filmed desk with a book`);
+    const key = `${film.left},${film.top},${film.width},${film.height}`;
+    if (!shelves.has(key)) shelves.set(key, []);
+    shelves.get(key).push({ id, lift: painted.top - (seat.top + seat.height), top: seat.top });
+  }
+
+  const shared = [...shelves.values()].filter((desk) => desk.length > 1);
+  assert.ok(shared.length > 0,
+    `${who.length} readers filled ${shelves.size} desks without any of them sharing one`);
+  for (const desk of shared) {
+    const [front, ...behind] = desk;
+    assert.ok(front.lift > 0, `${front.id} is not lifted off the book at all`);
+    for (const back of behind) {
+      assert.ok(Math.abs(back.lift - front.lift) < 0.01,
+        `${back.id} shares a desk with ${front.id} but is lifted ${back.lift.toFixed(1)}px `
+        + `to their ${front.lift.toFixed(1)}px`);
+      // ...and the stagger that says they are sharing is still there: a pile
+      // whose cards all rose to the same line would read as one card.
+      assert.ok(back.top > front.top,
+        `${back.id} is not dealt back behind ${front.id}`);
     }
   }
 });
