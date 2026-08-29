@@ -33,7 +33,11 @@ function loadFile(filename) {
   // and copies the file; handing the bytes to transpileModule instead produces
   // garbage that only explodes once the component renders. The path stands in
   // for the bundler's URL — nothing under test can dereference it anyway.
-  if (/\.(png|jpe?g|gif|svg|webp|avif|woff2?)$/.test(filename)) {
+  //
+  // Video is on this list because the reading desks now play a few seconds of
+  // their own painting. Left off it, a .mp4 reached the TypeScript compiler and
+  // came back as several thousand "invalid character" diagnostics.
+  if (/\.(png|jpe?g|gif|svg|webp|avif|woff2?|mp4|webm)$/.test(filename)) {
     // __esModule matters: with esModuleInterop a default import of a module
     // without it compiles to `__importDefault(mod).default`, which wraps the
     // whole exports object — the component would then receive `{default: ...}`
