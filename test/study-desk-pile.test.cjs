@@ -1,0 +1,237 @@
+'use strict';
+/**
+ * A reading desk carries every commission its assistant is holding.
+ *
+ * The desk used to draw ONE book — the most impeded of an assistant's cards —
+ * because a desk that could show one thing had to choose. Everything it did not
+ * choose was still visible, on the card table, so choosing lost nothing.
+ *
+ * Once work in somebody's hands leaves the felt, that stops being true: the
+ * cards the desk did not choose would be drawn nowhere in the house at all. So
+ * the desk shows them all — the one in hand lying open, the rest stacked behind
+ * it on the same desk, the way a reader's other volumes actually sit.
+ *
+ * Which one lies open changes with it, and for the same reason. Impeded work
+ * outranked work in progress while the desk could show one book, because a
+ * sealed volume is the thing worth noticing from across the room. Now both are
+ * on the desk and the sealed one is seen either way, so the open slot goes to
+ * the commission actually being READ — which is the only thing the turning
+ * pages can honestly mean.
+ */
+const test = require('node:test');
+const assert = require('node:assert/strict');
+// Before any module that calls a React hook is loaded: this is what patches
+// them, and a component imported first keeps the real ones.
+const { mount } = require('./render-hooks.cjs');
+const loadTs = require('./load-ts.cjs');
+
+const { booksFor, deskPile, handHeld, DESK_PILE_MAX } =
+  loadTs('src/renderer/src/scene/study/deskPile.ts');
+const { projectScene } = loadTs('src/renderer/src/scene/study/useSceneState.ts');
+
+const card = (id, status, over) => ({
+  id, title: `card ${id}`, status, assignee: 'ann', humanQA: [], ...over
+});
+
+test('a desk holds every open commission its assistant has been given', () => {
+  const held = booksFor([
+    card('T-1', 'todo'), card('T-2', 'doing'), card('T-3', 'blocked'),
+    card('T-4', 'todo', { assignee: 'bob' }), card('T-5', 'todo', { assignee: '' })
+  ], 'ann');
+  assert.deepEqual(held.map((b) => b.id), ['T-2', 'T-3', 'T-1'],
+    "ann's three cards, and nobody else's");
+});
+
+test('the book lying open is the one in hand, not the one stuck', () => {
+  const held = booksFor([card('T-1', 'blocked'), card('T-2', 'doing')], 'ann');
+  assert.equal(held[0].id, 'T-2', 'the commission being worked lies open');
+  assert.equal(held[0].state, 'open', 'and it is drawn open, so its pages turn');
+  assert.equal(held[1].state, 'sealed', 'the impeded one is stacked behind it, sealed');
+});
+
+test('a commission with no work in hand still opens its desk with something', () => {
+  const stuck = booksFor([card('T-1', 'todo'), card('T-2', 'blocked')], 'ann');
+  assert.equal(stuck[0].id, 'T-2', 'impeded work leads when nothing is in hand');
+  assert.equal(stuck[0].state, 'sealed');
+  assert.equal(stuck[1].state, 'closed', 'work waiting its turn is a closed book');
+});
+
+test('concluded work is not on anybody’s desk — it is on the wall', () => {
+  assert.equal(handHeld(card('T-1', 'done')), false);
+  assert.deepEqual(booksFor([card('T-1', 'done')], 'ann'), []);
+});
+
+test('a commission nobody holds is on no desk', () => {
+  assert.equal(handHeld(card('T-1', 'doing', { assignee: '' })), false);
+  assert.equal(handHeld(card('T-1', 'doing', { assignee: '   ' })), false,
+    'an assignee of blank space is no assignee');
+  assert.equal(handHeld(card('T-1', 'doing')), true);
+});
+
+test('a commission waiting on the human is held like any other, and marked', () => {
+  // An assistant blocked on a question is still the assistant holding that
+  // card, so the desk is where the room says so. What must NOT be lost on the
+  // way is the mark — the felt prints it at the head of a spine, and a desk
+  // book that dropped it would be a sealed volume like any other.
+  const asked = card('T-1', 'doing', { humanQA: [{ q: 'which one?' }] });
+  assert.equal(handHeld(asked), true);
+  assert.equal(booksFor([asked], 'ann')[0].petition, true);
+  assert.equal(booksFor([card('T-2', 'doing')], 'ann')[0].petition, undefined,
+    'and a commission nobody is waiting on carries no mark');
+});
+
+test('a desk piled higher than it can carry stops piling', () => {
+  const many = Array.from({ length: 20 }, (_, i) => card(`T-${i}`, 'todo'));
+  assert.equal(booksFor(many, 'ann').length, DESK_PILE_MAX + 1,
+    'the open slot and the pile behind it, and no more');
+});
+
+test('the pile stacks back across the desk from the open book', () => {
+  const slot = { left: 100, top: 200, width: 40, height: 20 };
+  const pile = deskPile(slot, 3);
+  assert.equal(pile.length, 3);
+  for (const box of pile) {
+    assert.ok(box.height > 0 && box.height < slot.height,
+      'a closed volume is thinner than an open one');
+    assert.ok(box.width > 0 && box.width <= slot.width, 'and no wider than the desk allows');
+  }
+  // The house is drawn as a flat cross-section, so further UP the panel is
+  // further BACK on the desk. Each volume therefore sits above the last, and
+  // the first of them above the open book itself.
+  assert.ok(pile[0].top < slot.top, 'the first stacked volume sits behind the open one');
+  assert.ok(pile[1].top < pile[0].top, 'and the next behind that');
+  assert.ok(pile[2].top < pile[1].top);
+});
+
+test('the desk pile reaches the scene through the assistant it belongs to', () => {
+  const scene = projectScene(
+    [{ id: 'ann', name: 'Ann', status: 'working' }],
+    [card('T-1', 'doing'), card('T-2', 'todo')]
+  );
+  assert.deepEqual(scene.agents[0].books.map((b) => [b.id, b.state]),
+    [['T-1', 'open'], ['T-2', 'closed']]);
+});
+
+/* ---- and the same, drawn: the pile has to reach the panel ------------- */
+
+const { useStore } = loadTs('src/renderer/src/store/store.ts');
+const { deskBerths } = loadTs('src/renderer/src/scene/study/roomManifest.ts');
+
+const SCENE = 'src/renderer/src/scene/study/StudyScene.tsx';
+const { studyRoom } = loadTs(SCENE);
+
+const deep = (n, pred, out = []) => {
+  if (!n || typeof n !== 'object') return out;
+  if (Array.isArray(n)) { for (const k of n) deep(k, pred, out); return out; }
+  if (pred(n)) out.push(n);
+  if (n.props?.children !== undefined) deep(n.props.children, pred, out);
+  if (typeof n.type === 'function') {
+    let r; try { r = n.type(n.props); } catch { return out; }
+    deep(r, pred, out);
+  }
+  return out;
+};
+const settle = () => new Promise((r) => setImmediate(r));
+const seats = [];
+test.after(() => { for (const s of seats) for (const c of s.cleanups ?? []) c?.(); });
+
+/** One assistant at the first reading berth, holding whatever cards are given. */
+async function seatOne(tasks) {
+  global.window = {
+    localStorage: { getItem: () => 'occult', setItem: () => {}, removeItem: () => {} },
+    close: () => {},
+    cth: { hiveTasks: async () => ({ tasks }), requestQuit: async () => {} }
+  };
+  global.document = { documentElement: { dataset: {} } };
+  useStore.setState({ agents: [], archivedAgents: [], restorableAgents: [] });
+  useStore.getState().addAgent({
+    id: 'ann', name: 'ANN', character: 'jim', accent: 'sky', description: '',
+    project: 'p', tmuxTarget: '', cwd: '/tmp', status: 'working', action: '', progress: 0
+  });
+  useStore.setState({
+    requestCommandCenterTab: () => {}, select: () => {}, openTaskDetail: () => {}
+  });
+  const { StudyScene } = loadTs(SCENE);
+  const view = mount(StudyScene, {});
+  seats.push(view);
+  await settle();
+  view.render();
+  return view;
+}
+
+/** Every volume drawn at one assistant's place setting. */
+const volumesAt = (view, agentId) => {
+  const place = deep(view.tree, (n) => n.props?.['data-study-place'] === agentId)[0];
+  return deep(place, (n) => n.props?.['data-book-state'] !== undefined);
+};
+
+test('a desk draws all of its assistant’s commissions, not just one', async () => {
+  assert.ok(deskBerths(studyRoom).length > 0, 'the house has reading desks to draw on');
+  const view = await seatOne([
+    card('T-1', 'doing'), card('T-2', 'blocked'), card('T-3', 'todo')
+  ].map((c) => ({ ...c, assignee: 'ann' })));
+  const drawn = volumesAt(view, 'ann');
+  assert.equal(drawn.length, 3, 'three cards in hand, three volumes on the desk');
+  assert.deepEqual(
+    Object.fromEntries(drawn.map((n) => [n.props.title, n.props['data-book-state']])),
+    { 'card T-1': 'open', 'card T-2': 'sealed', 'card T-3': 'closed' },
+    'and each lies the way its commission stands'
+  );
+  // Painted back to front, so a volume nearer the front of the desk overlaps
+  // the one behind it and the book being READ is the one on top. The order the
+  // pile is drawn in is the order it is stacked in.
+  assert.equal(drawn[drawn.length - 1].props['data-book-state'], 'open',
+    'the open book is painted last, so nothing is stacked over the one in hand');
+});
+
+test('every volume on a desk is a door to its own commission', async () => {
+  const opened = [];
+  const view = await seatOne([
+    card('T-1', 'doing'), card('T-2', 'todo')
+  ].map((c) => ({ ...c, assignee: 'ann' })));
+  useStore.setState({ openTaskDetail: (id) => opened.push(id) });
+  view.render();
+  const drawn = volumesAt(view, 'ann');
+  assert.equal(drawn.length, 2, 'both volumes are on the desk');
+  for (const book of drawn) {
+    assert.equal(typeof book.props.onClick, 'function',
+      `the ${book.props['data-book-state']} volume can be pressed`);
+    book.props.onClick({ stopPropagation: () => {} });
+  }
+  // Each volume opens ITS OWN card. A pile whose books all opened the desk's
+  // first commission would look right and be useless, and would pass any check
+  // that only counted the presses.
+  assert.deepEqual([...opened].sort(), ['T-1', 'T-2']);
+});
+
+test('a stacked volume carries the same mark the felt prints on a spine', async () => {
+  const { spineMark } = loadTs('src/renderer/src/scene/study/BaizeStacks.tsx');
+  const view = await seatOne([
+    card('T-1', 'doing'), card('T-42', 'todo')
+  ].map((c) => ({ ...c, assignee: 'ann' })));
+  const drawn = volumesAt(view, 'ann');
+  const board = (title) => drawn.find((n) => n.props.title === title);
+  const markOn = (node) =>
+    deep(node, (n) => n.props?.['data-book-mark'] !== undefined)
+      .map((n) => n.props.children);
+
+  assert.deepEqual(markOn(board('card T-42')), [spineMark({ id: 'T-42' })],
+    'the closed volume is stamped with its commission, the way the felt stamps a spine');
+  assert.deepEqual(markOn(board('card T-1')), [],
+    'the open book is not — its face is the pages being read');
+});
+
+test('the waiting-on-you mark is drawn on the desk, not merely recorded', async () => {
+  const view = await seatOne([{
+    ...card('T-1', 'doing'), assignee: 'ann', humanQA: [{ q: 'which api key?' }]
+  }]);
+  const book = volumesAt(view, 'ann')[0];
+  const band = deep(book, (n) => n.props?.['data-book-ribbon'] !== undefined);
+  assert.equal(band.length, 1, 'the volume wears a band');
+  assert.notEqual(band[0].props['data-book-petition'], undefined,
+    'and it is the petition band, not the impeded one');
+  // The colour is the felt's own, so the two surfaces cannot drift apart about
+  // what a question looks like.
+  const { PETITION_EDGE } = loadTs('src/renderer/src/scene/study/BaizeStacks.tsx');
+  assert.equal(band[0].props.style.background, PETITION_EDGE);
+});

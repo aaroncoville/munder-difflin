@@ -49,12 +49,13 @@ import {
 } from './roomManifest';
 import { AgentCard, CARD_ASPECT } from './AgentCard';
 import { AmbianceLayer, useReducedMotion } from './AmbianceLayer';
-import { BaizeStacks, stackBaize } from './BaizeStacks';
+import { BaizeStacks, spineMark, stackBaize } from './BaizeStacks';
 import { ShelfArchive, NOTHING_PULLED, type PulledBooks } from './ShelfArchive';
 import { DeskBook, type BookBindingName } from './DeskBook';
 import { FlyingBooks, type FlightPath } from './FlyingBooks';
 import { flightsFor, houseSlot, seenStatuses, type Flight, type LaidStorey, type Seen }
   from './flight';
+import { deskPile } from './deskPile';
 import { bookSlot, type ArchivedThing } from './shelfBooks';
 import { SpeechScroll } from './SpeechScroll';
 import { portraitFor } from './portraits';
@@ -630,11 +631,35 @@ function DeskPlace({ agent, desk, volume, binding, raised, onLook, onSelect, onO
         onClick={onSelect}
         onLook={onLook}
       />
+      {/*
+        Every commission this assistant is holding. The first lies in the place
+        the painting gave it, down on the desk surface; the rest stack back
+        across the desk behind it, because the house is a flat cross-section and
+        further up the panel is further back on the desk.
+
+        Drawn back to front — the stack first, the open book last — so the
+        volume being read is the one on top where the pile leans over it, and so
+        the pointer reaches it rather than the closed board of the volume behind.
+      */}
+      {deskPile(book, Math.max(0, agent.books.length - 1)).map((box, i) => (
+        <DeskBook
+          key={agent.books[i + 1].id}
+          state={agent.books[i + 1].state}
+          title={agent.books[i + 1].title}
+          mark={spineMark(agent.books[i + 1])}
+          petition={agent.books[i + 1].petition}
+          binding={binding}
+          taskId={agent.books[i + 1].id}
+          onOpen={onOpenTask}
+          box={box}
+        />
+      )).reverse()}
       {agent.bookState
         ? (
           <DeskBook
             state={agent.bookState}
             title={agent.bookTitle}
+            petition={agent.books[0]?.petition}
             binding={binding}
             taskId={agent.bookTaskId}
             onOpen={onOpenTask}

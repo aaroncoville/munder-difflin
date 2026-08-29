@@ -1,0 +1,139 @@
+/**
+ * What lies on a reading desk: the commissions its assistant is holding.
+ *
+ * The house draws every commission on the surface that says where it IS, and
+ * for open work that surface is a desk — somebody is holding it, and the desk
+ * they hold it at is the fact worth drawing. The card table keeps the work
+ * nobody has picked up yet, so the two surfaces divide the ledger between them
+ * the way the felt and the shelf wall already divide it: unclaimed on the
+ * table, in hand at a desk, concluded on the wall.
+ *
+ * A desk therefore has to carry MORE than one volume. It used to carry exactly
+ * one, and choosing which cost nothing, because every card it did not choose
+ * was drawn on the felt anyway. Once work in somebody's hands leaves the felt
+ * that stops being true: the unchosen cards would be drawn nowhere in the house
+ * at all. So the desk shows them all — the one in hand lying open, the rest
+ * stacked behind it.
+ *
+ * Pure, and separate from the drawing: which volumes a desk holds and where
+ * they lie are both checkable without a room, a panel or a scene.
+ */
+import { waitsOnHuman, type HiveTask } from '@/components/TasksKanban';
+import type { Box } from './BaizeStacks';
+import type { BookState } from './DeskBook';
+
+/**
+ * Whether a commission is in somebody's hands, and therefore on their desk.
+ *
+ * One exclusion: concluded work is on the shelf wall, and a finished commission
+ * on a desk would say it is still being worked on. Everything else somebody
+ * holds is at their desk, INCLUDING a commission waiting on the human — an
+ * assistant blocked on a question is still the assistant holding that card, and
+ * the desk is where the room says so. The waiting-on-you mark travels with it;
+ * see `petition` on the desk book.
+ */
+export function handHeld(task: HiveTask): boolean {
+  if (task.status === 'done') return false;
+  return (task.assignee || '').trim().length > 0;
+}
+
+/** One volume on a desk: what it is, and how it is lying. */
+export interface DeskVolume {
+  id: string;
+  title: string;
+  state: BookState;
+  /** Set when the commission is waiting on the human, so the volume can carry
+   *  the mark the card table prints at the head of such a spine. */
+  petition?: boolean;
+}
+
+/**
+ * How many volumes stack BEHIND the open one before the desk stops taking them.
+ *
+ * Not a performance number, the same way the felt's bound is not: it is how
+ * many books a painted desk can carry before the pile stops reading as a pile
+ * and starts climbing up the portrait sitting at it. An assistant holding more
+ * than this is a real state, and the honest thing to do with it is show the
+ * ones a reader would have to hand and leave the board to show the rest.
+ */
+export const DESK_PILE_MAX = 4;
+
+/**
+ * The order a desk is piled in: what is being read, then what is stuck, then
+ * what is waiting its turn.
+ *
+ * Work IN HAND leads, which is a change from the single-book desk. While a desk
+ * could show one volume, impeded work outranked work in progress — a sealed
+ * book is the thing worth noticing from across the study, and it was that or
+ * nothing. Now both are on the desk and the sealed one is seen either way, so
+ * the open slot goes to the commission actually being read. That is the only
+ * thing turning pages can honestly mean, and a desk whose pages turned for a
+ * card nobody was touching would say the opposite of the truth.
+ *
+ * Ties keep the ledger's own order, so a desk does not restack itself between
+ * polls when nothing has changed.
+ */
+const DESK_ORDER: Partial<Record<HiveTask['status'], number>> = {
+  doing: 0, blocked: 1, todo: 2
+};
+
+/** How each status lies on the desk. */
+const DESK_STATE: Partial<Record<HiveTask['status'], BookState>> = {
+  doing: 'open', blocked: 'sealed', todo: 'closed'
+};
+
+/**
+ * The volumes on one assistant's desk, the open one first.
+ *
+ * The first is what lies in the painted book's place; the rest stack behind it.
+ * Bounded, so a desk handed thirty commissions draws a pile rather than a wall.
+ */
+export function booksFor(tasks: readonly HiveTask[], agentId: string): DeskVolume[] {
+  return tasks
+    .filter((t) => handHeld(t) && t.assignee === agentId)
+    .map((task, i) => ({ task, i }))
+    .sort((a, b) =>
+      (DESK_ORDER[a.task.status] ?? 9) - (DESK_ORDER[b.task.status] ?? 9) || a.i - b.i)
+    .slice(0, DESK_PILE_MAX + 1)
+    .map(({ task }) => ({
+      id: task.id,
+      title: task.title,
+      state: DESK_STATE[task.status] ?? 'closed',
+      ...(waitsOnHuman(task) ? { petition: true } : {})
+    }));
+}
+
+/**
+ * How thick a stacked volume is, as a fraction of the open book's height, and
+ * how far each one sits out of true.
+ *
+ * A closed book seen in a flat cross-section is much thinner than an open one —
+ * that is most of what says it is closed, before any of the drawing does. The
+ * lean is fixed rather than random, so the pile does not shuffle itself every
+ * time the ledger is polled, and small enough that the pile still stands over
+ * the book it rests on.
+ */
+const VOLUME = { thickness: 0.34, width: 0.92 };
+const LEAN = [0.03, -0.025, 0.02, -0.03];
+
+/**
+ * Where the stacked volumes lie, given the place the open book has.
+ *
+ * The house is drawn as a flat cross-section and straight on, so there is no
+ * depth to stack INTO: further up the panel is further back on the desk, which
+ * is exactly where a reader's other volumes are. Each one therefore sits above
+ * the last, starting immediately behind the open book — and the open book keeps
+ * the place the painting gave it, down on the desk surface where the painter
+ * drew a volume lying.
+ */
+export function deskPile(slot: Box, count: number): Box[] {
+  const height = slot.height * VOLUME.thickness;
+  const width = slot.width * VOLUME.width;
+  const left = slot.left + (slot.width - width) / 2;
+  return Array.from({ length: Math.max(0, count) }, (_, i) => ({
+    left: left + width * (LEAN[i % LEAN.length] ?? 0),
+    top: slot.top - height * (i + 1),
+    width,
+    height
+  }));
+}

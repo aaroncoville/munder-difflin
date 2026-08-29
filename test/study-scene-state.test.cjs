@@ -166,10 +166,16 @@ test('more assistants than desks gives everyone their own place at a desk', asyn
     'seating the same roster twice seats it the same way');
 });
 
-test('an assistant holding both a stuck card and a live one reads as stuck', async () => {
-  // Which of the two books lands on the desk is the whole point: a sealed book
-  // is what is worth noticing from across the room, and an open one beside it
-  // says the work is fine.
+test('an assistant holding a stuck card and a live one lies the live one open', async () => {
+  // The desk shows BOTH now, so the question is no longer which of the two the
+  // room can afford to draw — it is which one lies open. That goes to the card
+  // actually being worked, because turning pages cannot honestly mean anything
+  // else; the stuck one is stacked behind it, sealed, and seen either way.
+  //
+  // While the desk could draw one volume this went the other way round, and for
+  // a reason that held at the time: a sealed book is what is worth noticing
+  // from across the room, and everything the desk did not draw was still on the
+  // card table. Neither half of that is true any more.
   const state = await project({
     agents: [agent('w-1')],
     tasks: [
@@ -177,8 +183,11 @@ test('an assistant holding both a stuck card and a live one reads as stuck', asy
       task({ assignee: 'w-1', status: 'blocked', title: 'Which key?' })
     ]
   });
-  assert.equal(state.agents[0].bookState, 'sealed');
-  assert.equal(state.agents[0].bookTitle, 'Which key?');
+  assert.equal(state.agents[0].bookState, 'open');
+  assert.equal(state.agents[0].bookTitle, 'Port the loader');
+  assert.deepEqual(state.agents[0].books.map((b) => [b.title, b.state]),
+    [['Port the loader', 'open'], ['Which key?', 'sealed']],
+    'and the stuck card is on the same desk, behind it');
 });
 
 test('two cards of the same standing pick the ledger\'s first, every time', () => {
@@ -191,7 +200,8 @@ test('two cards of the same standing pick the ledger\'s first, every time', () =
     task({ id: 't-b', assignee: 'w-1', status: 'doing', title: 'Rewrite the parser' })
   ];
   for (const tasks of [mine, [...mine].reverse()]) {
-    assert.deepEqual(bookFor(tasks, 'w-1'), {
+    const { bookState, bookTitle, bookTaskId } = bookFor(tasks, 'w-1');
+    assert.deepEqual({ bookState, bookTitle, bookTaskId }, {
       bookState: 'open', bookTitle: tasks[0].title, bookTaskId: tasks[0].id
     }, 'whichever card the ledger lists first is the one on the desk');
   }

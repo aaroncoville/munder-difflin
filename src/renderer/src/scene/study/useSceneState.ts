@@ -17,6 +17,7 @@ import { onTheTable } from './BaizeStacks';
 import type { CardStatus } from './AgentCard';
 import type { BookState } from './DeskBook';
 import { deskBerths, godBerth } from './roomManifest';
+import { booksFor, type DeskVolume } from './deskPile';
 import { shelfBooks, type ArchivedThing } from './shelfBooks';
 import { studyRoom } from './StudyScene';
 
@@ -37,7 +38,18 @@ export interface SceneAgent {
    * the one below it, and this is the count it deals by.
    */
   stackIndex: number;
-  /** Absent when this assistant has no card on the ledger. */
+  /**
+   * Every commission this assistant is holding, the one in hand first.
+   *
+   * A desk draws them all. It used to draw one, and choosing cost nothing while
+   * the card table drew the rest — but the felt now keeps only the work nobody
+   * has picked up, so a card this list left out would be drawn nowhere in the
+   * house at all.
+   */
+  books: DeskVolume[];
+  /** The first of them, which is the one that lies in the painted book's place.
+   *  Carried separately because it is what a flight leaves from and what the
+   *  place setting draws open. Absent when the desk is clear. */
   bookState?: BookState;
   bookTitle?: string;
   /** The commission the book stands for, so pressing it can open that one. */
@@ -119,20 +131,18 @@ export function speechFor(agent: Pick<Agent, 'action' | 'lastPrompt'>): string {
 /**
  * The book on one assistant's desk, from the cards assigned to it.
  *
- * Impeded work outranks work in progress: an assistant holding a stuck card and
- * a live one is, in the only sense the room can show, stuck — and a sealed book
- * is the thing worth noticing from across the study.
+ * The one in hand lies open in the painted book's place and the rest stack
+ * behind it — see `deskPile.ts` for which is which and why. This carries the
+ * first of them out separately, because it is the volume the place setting
+ * draws open and the volume a flight leaves from.
  */
 export function bookFor(tasks: readonly HiveTask[], agentId: string):
-{ bookState?: BookState; bookTitle?: string; bookTaskId?: string } {
-  const mine = tasks.filter((t) => t.assignee === agentId);
-  for (const [status, book] of [
-    ['blocked', 'sealed'], ['doing', 'open'], ['todo', 'closed']
-  ] as const) {
-    const hit = mine.find((t) => t.status === status);
-    if (hit) return { bookState: book, bookTitle: hit.title, bookTaskId: hit.id };
-  }
-  return {};
+{ books: DeskVolume[]; bookState?: BookState; bookTitle?: string; bookTaskId?: string } {
+  const books = booksFor(tasks, agentId);
+  const first = books[0];
+  return first
+    ? { books, bookState: first.state, bookTitle: first.title, bookTaskId: first.id }
+    : { books };
 }
 
 /**

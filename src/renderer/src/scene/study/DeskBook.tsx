@@ -27,7 +27,7 @@
  * task state per room.
  */
 import type { CSSProperties } from 'react';
-import type { Box } from './StudyScene';
+import { PETITION_EDGE, spineType, type Box } from './BaizeStacks';
 
 export type BookState = 'closed' | 'open' | 'sealed';
 
@@ -116,6 +116,31 @@ export interface DeskBookProps {
    */
   taskId?: string;
   onOpen?: (id: string) => void;
+  /**
+   * The commission's handle, stamped on a closed board.
+   *
+   * The same mark the card table prints on a spine and the shelf wall on a
+   * volume, printed the same way — sideways, in the display face, sized from
+   * the board it is on. A desk carrying several volumes needs it for the reason
+   * the felt does: a closed book is a rectangle, and without the mark a pile of
+   * them says how much work is in hand but never which work.
+   *
+   * Only a CLOSED board carries it. An open book's face is its pages, and a
+   * number printed across those would be printed on the very thing the reader
+   * is reading.
+   */
+  mark?: number | string;
+  /**
+   * Whether this commission is waiting on the human.
+   *
+   * The card table prints the waiting-on-you mark at the head of a spine, and
+   * for as long as every petition was dealt onto the felt that was the only
+   * place it had to exist. A commission somebody is holding is now on their
+   * DESK instead, so the mark has to be able to live on a desk book too, or an
+   * assistant blocked on a question would be a sealed volume like any other and
+   * nothing in the house would say the question is yours to answer.
+   */
+  petition?: boolean;
 }
 
 /** The leaf mid-turn, and the rule that stops it. Scoped by class so the sheet
@@ -145,7 +170,7 @@ const TURN_SHEET = `
 `;
 
 export function DeskBook({
-  state, title, box, binding, taskId, onOpen
+  state, title, box, binding, taskId, onOpen, mark, petition
 }: DeskBookProps): JSX.Element {
   const bound: BookBinding = BOOK_BINDINGS[binding ?? DEFAULT_BINDING];
   const opens = Boolean(taskId) && typeof onOpen === 'function';
@@ -254,14 +279,38 @@ export function DeskBook({
           />
         </>
       ) : (
-        <div
-          data-book-spine=""
-          style={{
-            position: 'absolute',
-            left: '14%', top: 0, width: '10%', height: '100%',
-            background: bound.spine
-          }}
-        />
+        <>
+          <div
+            data-book-spine=""
+            style={{
+              position: 'absolute',
+              left: '14%', top: 0, width: '10%', height: '100%',
+              background: bound.spine
+            }}
+          />
+          {mark === undefined ? null : (
+            <div
+              data-book-mark=""
+              style={{
+                position: 'absolute',
+                inset: 0,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                // Turned a quarter, the way a title is printed on a book that
+                // is lying down — the same quarter the felt turns its spines.
+                transform: 'rotate(90deg)',
+                fontFamily: 'var(--cth-font-display)',
+                fontSize: spineType(box, mark).fontSize,
+                lineHeight: 1,
+                color: bound.pages,
+                pointerEvents: 'none'
+              }}
+            >
+              {mark}
+            </div>
+          )}
+        </>
       )}
       {/* A marker left in the book, hanging past its foot — what separates a
           small dark volume from a shadow in a room with no light on it. */}
@@ -275,13 +324,19 @@ export function DeskBook({
           }}
         />
       ) : null}
-      {state === 'sealed' ? (
+      {/* The band across the book: impeded work is sealed, and a commission
+          waiting on YOU is sealed in the petition's own colour — the same
+          lilac the card table prints at the head of such a spine. A petition
+          shows it whatever state the book is in, because the question stands
+          whether or not the work under it is moving. */}
+      {state === 'sealed' || petition ? (
         <div
           data-book-ribbon=""
+          data-book-petition={petition ? '' : undefined}
           style={{
             position: 'absolute',
             left: 0, top: '42%', width: '100%', height: '16%',
-            background: 'var(--cth-status-blocked)',
+            background: petition ? PETITION_EDGE : 'var(--cth-status-blocked)',
             boxShadow: 'var(--cth-panel-border)'
           }}
         />
