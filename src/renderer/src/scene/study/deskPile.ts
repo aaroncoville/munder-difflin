@@ -185,6 +185,16 @@ export function bookFloat(volume: Box | null, beside: Box): Box {
  *
  * Concluded work appears in neither. The shelf wall is the third surface and
  * takes it, on its own rule — see `concluded`.
+ *
+ * What this settles is MEMBERSHIP: which surface each open commission belongs
+ * to. Whether that surface then has room to draw it is a separate question with
+ * a separate answer — the felt is bounded at four piles of six and the desk at
+ * five volumes, both because of what the painting can carry rather than for
+ * anything to do with cost. The desk's overflow comes back here and lands on
+ * the felt; the felt's own overflow is not drawn, and the card table is a door
+ * to the whole board precisely so that it can still be read. Do not read the
+ * totality below as a promise that everything is drawn — it is a promise that
+ * nothing is unaccounted for.
  */
 export interface Placement {
   /** What lies on each seated assistant's desk, the one in hand first. */

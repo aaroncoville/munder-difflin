@@ -81,6 +81,10 @@ export interface SceneState {
    * Carried rather than worked out again at the table, because the felt and
    * the desks are two halves of ONE split — see `placeOpenWork`. Asking two
    * questions separately is how a card came to be drawn on neither.
+   *
+   * Longer than the table can draw, when the ledger is: the felt's bound is
+   * applied where the piles are laid out, and what it cuts is the work least
+   * worth crossing the room for. Pressing the table opens the whole board.
    */
   felt: readonly HiveTask[];
 }

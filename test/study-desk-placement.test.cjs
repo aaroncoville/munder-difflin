@@ -25,6 +25,7 @@ const loadTs = require('./load-ts.cjs');
 
 const { stackBaize, concluded } = loadTs('src/renderer/src/scene/study/BaizeStacks.tsx');
 const { placeOpenWork, DESK_PILE_MAX } = loadTs('src/renderer/src/scene/study/deskPile.ts');
+const { BAIZE_MAX } = loadTs('src/renderer/src/scene/study/BaizeStacks.tsx');
 const { useStore } = loadTs('src/renderer/src/store/store.ts');
 const SCENE = 'src/renderer/src/scene/study/StudyScene.tsx';
 
@@ -135,15 +136,16 @@ test('a commission nobody holds is on the card table and on no desk', async () =
   assert.deepEqual(atDesk(view), []);
 });
 
-test('every open commission is drawn exactly once in the house', async () => {
+test('the surfaces divide the open work — nothing on both, nothing on neither', async () => {
   // The property behind all three cases: the two surfaces divide the ledger
   // rather than sharing it. A card on both is the reported bug; a card on
   // neither is the same bug's mirror image and would be worse.
   //
-  // Read off the RENDERED house, and with enough cards to reach both bounds.
-  // A version of this that asked the predicates instead, with two cards and a
-  // seated assistant, agreed with itself and missed both ways a card can fall
-  // between the surfaces.
+  // Scoped to what is genuinely total: which SURFACE each commission belongs
+  // to. Whether that surface then has room to draw it is a separate question
+  // with a separate answer — the felt is bounded, deliberately, and the next
+  // test is about that. An earlier version of this claimed to reach every
+  // bound and reached only the desk's, which made its own name false.
   const tasks = [
     // One assistant holding more open work than a desk will draw.
     ...Array.from({ length: DESK_PILE_MAX + 3 }, (_, i) => card(`H-${i}`, 'todo', 'ann')),
@@ -154,6 +156,8 @@ test('every open commission is drawn exactly once in the house', async () => {
     // being held by a seated assistant must not make it disappear either.
     { ...card('T-6', 'done', 'ann'), humanQA: [{ q: 'which key?' }] }
   ];
+  assert.ok(tasks.length <= BAIZE_MAX,
+    'this fixture stays under the felt bound, so what it shows is the partition');
   const view = await house(tasks);
   const felt = onFelt(view);
   const desk = atDesk(view).map(([title]) => title.replace('card ', ''));
@@ -168,6 +172,48 @@ test('every open commission is drawn exactly once in the house', async () => {
     'a concluded commission still holding a question stays on the felt, held or not');
   assert.ok(felt.includes('T-5'),
     'work held by somebody the house cannot seat stays on the felt');
+});
+
+test('past the felt bound the table shows the work worth crossing the room for', async () => {
+  // The felt is bounded at four piles of six, and the bound is a fact about the
+  // painting rather than about performance: past that the piles stop reading as
+  // piles. So a house with more open work than the table can carry draws some
+  // of it and not the rest — which is NOT the "drawn nowhere" defect, on one
+  // condition: what gets cut has to be the work least worth crossing the room
+  // for, and there has to be somewhere the rest can still be read.
+  //
+  // Both are asserted here, because a bound nobody has held to a fixture is a
+  // bound nobody is keeping. This fixture is one card OVER it.
+  const glut = Array.from({ length: BAIZE_MAX }, (_, i) => card(`U-${i}`, 'todo'));
+  const urgent = { ...card('U-ASK', 'todo'), humanQA: [{ q: 'which key?' }] };
+  const tasks = [...glut, urgent];
+  const { felt } = placeOpenWork(tasks, new Set(['ann']));
+  assert.equal(felt.length, BAIZE_MAX + 1,
+    'the partition keeps every one of them — the cut is the drawing, not the split');
+
+  const view = await house(tasks);
+  const drawn = onFelt(view);
+  assert.equal(drawn.length, BAIZE_MAX, 'the table draws as many as it has places for');
+  assert.ok(drawn.includes('U-ASK'),
+    'and the commission waiting on YOU is one of them, however long the ledger');
+  assert.equal(drawn.includes(`U-${BAIZE_MAX - 1}`), false,
+    'what is cut is the last of the work nobody is waiting on');
+  assert.deepEqual(atDesk(view), [], 'none of it is held, so no desk drew any of it');
+});
+
+test('the rest of the ledger is one press away, on the board', async () => {
+  // Which is what makes the bound above honest rather than a hole. The card
+  // table itself is the door to the whole ledger — the same board the kanban
+  // shows — so work the felt has no room for is not work the House has hidden.
+  const asked = [];
+  const view = await house([card('T-1', 'todo')]);
+  useStore.setState({ requestCommandCenterTab: (tab) => asked.push(tab) });
+  view.render();
+  const parlour = deep(view.tree, (n) => n.props?.['data-study-room'] === 'parlour')[0];
+  assert.ok(parlour, 'the parlour is drawn');
+  assert.equal(typeof parlour.props.onClick, 'function', 'and the room is a door');
+  parlour.props.onClick({ stopPropagation: () => {} });
+  assert.deepEqual(asked, ['tasks'], 'pressing the card table opens the whole board');
 });
 
 test('a desk draws no more than it can, and the rest is not lost', () => {
