@@ -88,12 +88,15 @@ test('a desk piled higher than it can carry stops piling', () => {
 
 test('the volumes pile up from the book’s place on the desk', () => {
   const slot = { left: 100, top: 200, width: 40, height: 20 };
-  const pile = deskPile(slot, 3);
+  // The size is the card table's, handed in — the slot says only WHERE the pile
+  // stands. Handing in a book that is nothing like the slot is the point: a
+  // pile that came out slot-shaped anyway would be the squash all over again.
+  const spine = { width: 14, height: 3 };
+  const pile = deskPile(slot, spine, 3);
   assert.equal(pile.length, 3);
   for (const box of pile) {
-    assert.ok(box.height > 0 && box.height < slot.height,
-      'a closed volume is thinner than an open one');
-    assert.ok(box.width > 0 && box.width <= slot.width, 'and no wider than the desk allows');
+    assert.equal(box.width, spine.width, 'the pile was cut to the slot rather than dealt');
+    assert.equal(box.height, spine.height);
   }
   // The house is drawn as a flat cross-section, so further UP the panel is
   // further BACK on the desk. With nothing being read, the bottom volume takes
@@ -105,7 +108,7 @@ test('the volumes pile up from the book’s place on the desk', () => {
 
   // And when a volume IS being read, it keeps that place and the pile starts
   // above it — a reader's other books sit behind the one open in front of them.
-  const behind = deskPile(slot, 2, true);
+  const behind = deskPile(slot, spine, 2, true);
   assert.ok(behind[0].top + behind[0].height <= slot.top + 0.001,
     'the pile clears the open book rather than lying on it');
 });

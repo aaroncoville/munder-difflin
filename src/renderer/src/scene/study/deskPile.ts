@@ -19,7 +19,7 @@
  * they lie are both checkable without a room, a panel or a scene.
  */
 import { waitsOnHuman, type HiveTask } from '@/components/TasksKanban';
-import { concluded } from './BaizeStacks';
+import { concluded, pileBox } from './BaizeStacks';
 import type { Box } from './BaizeStacks';
 import type { BookState } from './DeskBook';
 
@@ -109,19 +109,6 @@ export function booksFor(tasks: readonly HiveTask[], agentId: string): DeskVolum
 }
 
 /**
- * How thick a stacked volume is, as a fraction of the open book's height, and
- * how far each one sits out of true.
- *
- * A closed book seen in a flat cross-section is much thinner than an open one —
- * that is most of what says it is closed, before any of the drawing does. The
- * lean is fixed rather than random, so the pile does not shuffle itself every
- * time the ledger is polled, and small enough that the pile still stands over
- * the book it rests on.
- */
-const VOLUME = { thickness: 0.34, width: 0.92 };
-const LEAN = [0.03, -0.025, 0.02, -0.03];
-
-/**
  * Where the stacked volumes lie, given the place the open book has.
  *
  * The house is drawn as a flat cross-section and straight on, so there is no
@@ -140,18 +127,28 @@ const LEAN = [0.03, -0.025, 0.02, -0.03];
  * it does the pile starts above it, because a reader's other volumes sit behind
  * the one open in front of them; when it does not, the pile stands on the desk
  * itself and the bottom of it takes the painted book's place.
+ *
+ * How BIG each volume is does not come from the slot. It used to, and that is
+ * what made a waiting book on a desk unrecognisable as the thing the felt
+ * deals: the slot is the painted volume's box, which is a book lying open on an
+ * angled desk with the room's perspective already worked out — wide and very
+ * shallow. An upright spine squeezed into it comes out four times flatter than
+ * the same component on the card table. The size is the card table's own now,
+ * handed in, and the slot decides only where the pile stands.
+ *
+ * Nothing shrinks a volume to fit a slot it is too big for, deliberately: a
+ * desk with less clear surface than a book is wide is a berth read wrong off
+ * its painting, and a pile that quietly scaled itself down would hide that
+ * while re-introducing the very squash this replaced.
  */
-export function deskPile(slot: Box, count: number, restingOn = false): Box[] {
-  const height = slot.height * VOLUME.thickness;
-  const width = slot.width * VOLUME.width;
-  const left = slot.left + (slot.width - width) / 2;
-  const foot = restingOn ? slot.top : slot.top + slot.height;
-  return Array.from({ length: Math.max(0, count) }, (_, i) => ({
-    left: left + width * (LEAN[i % LEAN.length] ?? 0),
-    top: foot - height * (i + 1),
-    width,
-    height
-  }));
+export function deskPile(
+  slot: Box, spine: { width: number; height: number }, count: number, restingOn = false
+): Box[] {
+  const foot = {
+    left: slot.left + (slot.width - spine.width) / 2,
+    bottom: restingOn ? slot.top : slot.top + slot.height
+  };
+  return Array.from({ length: Math.max(0, count) }, (_, i) => pileBox(foot, spine, i));
 }
 
 /**

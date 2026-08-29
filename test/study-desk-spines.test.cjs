@@ -115,6 +115,42 @@ test('a volume waiting on a desk is the same object as one on the felt', async (
     'the handle is turned the quarter a book lying down turns its title');
 });
 
+test('a volume waiting on a desk is the size the card table deals it', async () => {
+  // It was fitted to the box the PAINTING's open book occupies. That box is the
+  // room's perspective already worked out — a volume lying on an angled desk is
+  // drawn wide and shallow — so squeezing an upright spine into it came out
+  // four times flatter than the same component on the felt, and read as a strip
+  // of veneer rather than a book. Aaron, of the running house: *"There's like
+  // 'books' in front of Marinette but they are too squashed. The books not
+  // being worked on should just be the same books that are on the card table."*
+  //
+  // So the size comes from the card table now, and from nothing on the desk.
+  const view = await house([card('T-1', 'todo', 'ann'), card('T-2', 'todo', '')]);
+  const drawn = spines(view);
+  const desk = drawn['T-1'].props.style;
+  const felt = drawn['T-2'].props.style;
+  assert.ok(Math.abs(desk.width - felt.width) < 0.01,
+    `the desk deals a book ${desk.width} long where the felt deals ${felt.width}`);
+  assert.ok(Math.abs(desk.height - felt.height) < 0.01,
+    `and ${desk.height} thick where the felt deals ${felt.height}`);
+
+  // Absolutely, as well as by agreement: two surfaces asking one function agree
+  // however wrong that function is, so the shape is pinned to the world too. A
+  // book lying down is several times longer than it is thick; the painted
+  // volume's box is nearer twenty times, which is the squash this replaced.
+  const shape = desk.width / desk.height;
+  assert.ok(shape > 3 && shape < 6,
+    `a waiting volume is ${Math.round(desk.width)}x${Math.round(desk.height)}, `
+    + `which is ${shape.toFixed(1)} times longer than thick — not a book lying down`);
+
+  // And it is not the painted volume's shape by coincidence, either.
+  const room = studyRoom.rooms.find((r) => r.kind === 'desk');
+  const view0 = containFit({ w: room.natural.w, h: room.natural.h }, room.natural);
+  const painted = volumeBox(room.berths[0], view0);
+  assert.ok(Math.abs(shape - painted.width / painted.height) > 1,
+    'the waiting volume is still cut to the painted book\'s proportions');
+});
+
 test('an impeded volume on a desk wears the felt’s impeded face', async () => {
   const view = await house([card('T-1', 'blocked', 'ann'), card('T-2', 'blocked', '')]);
   const drawn = spines(view);
@@ -141,12 +177,17 @@ test('the volumes lie where the painting put a book', async () => {
   const drawn = Object.values(spines(view)).map((n) => n.props.style);
   assert.equal(drawn.length, 3, 'three commissions waiting, three volumes');
   const bottom = drawn.reduce((a, b) => (a.top > b.top ? a : b));
-  assert.ok(Math.abs(bottom.left - painted.left) < painted.width * 0.12
+  // Centred on the painted book rather than flush with its left end: a book of
+  // ours is the card table's size now and the painted one is the room's own
+  // perspective, so the two are not the same width and never were going to be.
+  const middle = (b) => b.left + b.width / 2;
+  assert.ok(Math.abs(middle(bottom) - middle(painted)) < painted.width * 0.12
     && Math.abs((bottom.top + bottom.height) - (painted.top + painted.height))
        < painted.height * 0.4,
   `the volume on the desk stands where the painted book is: `
-  + `drawn ${bottom.left.toFixed(1)},${(bottom.top + bottom.height).toFixed(1)} `
-  + `vs painted ${painted.left.toFixed(1)},${(painted.top + painted.height).toFixed(1)}`);
+  + `drawn ${middle(bottom).toFixed(1)},${(bottom.top + bottom.height).toFixed(1)} `
+  + `vs painted ${middle(painted).toFixed(1)},`
+  + `${(painted.top + painted.height).toFixed(1)}`);
 
   // And they are a PILE: each above the last, leaning, the way the felt stacks.
   const byHeight = [...drawn].sort((a, b) => b.top - a.top);

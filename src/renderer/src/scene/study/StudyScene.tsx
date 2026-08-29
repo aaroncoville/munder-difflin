@@ -40,6 +40,7 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 import { useStore } from '@/store/store';
 import {
   ANCHOR_KINDS,
+  anchorSeat,
   houseRows,
   loadRoomManifest,
   type AnchorKind,
@@ -49,7 +50,7 @@ import {
 } from './roomManifest';
 import { AgentCard, CARD_ASPECT } from './AgentCard';
 import { AmbianceLayer, useReducedMotion } from './AmbianceLayer';
-import { BaizeStacks, spineMark, stackBaize } from './BaizeStacks';
+import { BaizeStacks, feltSpine, spineMark, stackBaize } from './BaizeStacks';
 import { ShelfArchive, NOTHING_PULLED, type PulledBooks } from './ShelfArchive';
 import { DeskBook, type BookBindingName } from './DeskBook';
 import { FlyingBooks, type FlightPath } from './FlyingBooks';
@@ -352,6 +353,24 @@ export const PLACE_SETTING = {
 } as const;
 
 /**
+ * How big a book is drawn in a room: the size the card table deals one at.
+ *
+ * Every bound volume in the house is the same object — see `SpineBook` — so
+ * there is one answer to this and the card table is where it is settled, being
+ * the surface a reader learns the shape of a book from. A reading desk asks
+ * here rather than measuring anything of its own, which is what stops a
+ * commission changing size as it moves from the felt to the desk that took it.
+ *
+ * The baize is projected onto the asking room's OWN panel, not the parlour's,
+ * so the answer is in that room's pixels.
+ */
+export function houseSpine(view: ViewBox): { width: number; height: number } {
+  const { berth } = anchorSeat(studyRoom, 'cardTable');
+  if (!berth) throw new Error('the Study has a card table with no baize to deal on');
+  return feltSpine(berthToBox(berth, view));
+}
+
+/**
  * The book the PAINTING already put on this desk, projected onto its panel.
  *
  * A berth's bottom edge is the desk surface, and in two of the reading rooms
@@ -569,9 +588,13 @@ export function placeDepth(stackIndex: number): number {
 export const LOOKED_AT_Z = STACK_DEEPEST + 1;
 
 /** One assistant's place setting: card, book, and what they are saying. */
-function DeskPlace({ agent, desk, volume, binding, raised, onLook, onSelect, onOpenTask }: {
+function DeskPlace({
+  agent, desk, volume, spine, binding, raised, onLook, onSelect, onOpenTask
+}: {
   agent: SceneAgent;
   desk: Box;
+  /** How big a bound volume is drawn in this room — see `houseSpine`. */
+  spine: { width: number; height: number };
   /** How this room binds its volumes — the floor plan's decision, carried in. */
   binding?: BookBindingName;
   /** The book the painting has already put on this desk, or null. */
@@ -630,7 +653,7 @@ function DeskPlace({ agent, desk, volume, binding, raised, onLook, onSelect, onO
 
         Painted back to front, so a nearer volume overlaps the one behind it.
       */}
-      {deskPile(book, waiting.length, Boolean(inHand)).map((slot, i) => (
+      {deskPile(book, spine, waiting.length, Boolean(inHand)).map((slot, i) => (
         <SpineBook
           key={waiting[i].id}
           id={waiting[i].id}
@@ -910,6 +933,7 @@ export function StudyScene(): JSX.Element {
     room.berths.flatMap((berth) => {
       const desk = berthToBox(berth, view);
       const volume = volumeBox(berth, view);
+      const spine = houseSpine(view);
       return scene.agents
         .filter((agent) => agent.berthId === berth.id)
         .map((agent) => (
@@ -918,6 +942,7 @@ export function StudyScene(): JSX.Element {
             agent={agent}
             desk={stackedBerth(desk, agent.stackIndex)}
             volume={volume}
+            spine={spine}
             binding={room.binding}
             raised={lookingAt === agent.id}
             onLook={(looking: boolean) =>
