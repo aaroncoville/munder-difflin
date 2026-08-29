@@ -11,16 +11,16 @@
  * anything, showed the book plainly and looked better for it.
  *
  * The rule that comes out of that: a commission NOT in hand is drawn the way
- * the card table draws it — same face, same turned mark, same sizing — because
- * it is the same thing in the same state, and a reader should not have to learn
- * a second alphabet to cross the room.
+ * the card table draws it — same face, same turned mark, same SIZE — because it
+ * is the same thing in the same state, and a reader should not have to learn a
+ * second alphabet to cross the room. Taking the size from the desk instead is
+ * what squashed them: the place they were fitted into is the painted book's
+ * box, a volume lying open at the room's own angle, so an upright spine came
+ * out four times flatter there than on the felt.
  *
- * Where they lie is the painted book's own place. A closed volume covering the
- * painted open book is right: the painting put a book on that desk, and what
- * the House has to say is which book is there now. What was wrong was the
- * DRAWING — bare boards where the felt deals bound volumes — and, when an
- * assistant holds more than one, that they did not stack the way a pile of
- * books on a table stacks.
+ * Where they lie is beside the reader, at the end of the desk with no candle
+ * burning on it. Not over the painted book — that hides the one thing on that
+ * desk the painter drew for us, and it is where the book being READ goes.
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -30,7 +30,7 @@ const loadTs = require('./load-ts.cjs');
 const SCENE = 'src/renderer/src/scene/study/StudyScene.tsx';
 const B = loadTs('src/renderer/src/scene/study/BaizeStacks.tsx');
 const { useStore } = loadTs('src/renderer/src/store/store.ts');
-const { studyRoom, volumeBox, containFit } = loadTs(SCENE);
+const { studyRoom, volumeBox, containFit, berthToBox, deskLayout } = loadTs(SCENE);
 
 const deep = (n, pred, out = []) => {
   if (!n || typeof n !== 'object') return out;
@@ -162,35 +162,64 @@ test('an impeded volume on a desk wears the felt’s impeded face', async () => 
   assert.equal(drawn['T-1'].props.style.background, B.SPINE_FACES.blocked.background);
 });
 
-test('the volumes lie where the painting put a book', async () => {
-  // Not beside it. The painting drew a book on that desk and the House says
-  // which book is there now, so a volume of ours stands in its place — and
-  // when several are held they pile up from it, the way books pile on a table.
+test('the volumes wait beside the reader, on the side without the candle', async () => {
+  // They stood in the painted book's own place, covering it. Aaron, on the
+  // running house: *"The books not being worked on ... when not being worked on
+  // they should be stacked just like on the card table but off to the side of
+  // the card where the candle isn't."*
+  //
+  // Which side that is belongs to the ROOM, not to a constant: every reading
+  // room is one painting with a flame somewhere in it, and the pile goes where
+  // the flame is not.
   const view = await house([
     card('T-1', 'todo', 'ann'), card('T-2', 'todo', 'ann'), card('T-3', 'todo', 'ann')
   ]);
   const room = studyRoom.rooms.find((r) => r.kind === 'desk');
   const berth = room.berths[0];
   const view0 = containFit({ w: room.natural.w, h: room.natural.h }, room.natural);
+  const desk = berthToBox(berth, view0);
   const painted = volumeBox(berth, view0);
+  const seat = deskLayout(desk, painted).card;
 
   const drawn = Object.values(spines(view)).map((n) => n.props.style);
   assert.equal(drawn.length, 3, 'three commissions waiting, three volumes');
-  const bottom = drawn.reduce((a, b) => (a.top > b.top ? a : b));
-  // Centred on the painted book rather than flush with its left end: a book of
-  // ours is the card table's size now and the painted one is the room's own
-  // perspective, so the two are not the same width and never were going to be.
-  const middle = (b) => b.left + b.width / 2;
-  assert.ok(Math.abs(middle(bottom) - middle(painted)) < painted.width * 0.12
-    && Math.abs((bottom.top + bottom.height) - (painted.top + painted.height))
-       < painted.height * 0.4,
-  `the volume on the desk stands where the painted book is: `
-  + `drawn ${middle(bottom).toFixed(1)},${(bottom.top + bottom.height).toFixed(1)} `
-  + `vs painted ${middle(painted).toFixed(1)},`
-  + `${(painted.top + painted.height).toFixed(1)}`);
+  const span = {
+    left: Math.min(...drawn.map((b) => b.left)),
+    right: Math.max(...drawn.map((b) => b.left + b.width))
+  };
 
-  // And they are a PILE: each above the last, leaning, the way the felt stacks.
+  // Beside the card, not under it and not over the book the painter drew.
+  assert.ok(span.left >= seat.left + seat.width || span.right <= seat.left,
+    `the pile at ${span.left.toFixed(0)}..${span.right.toFixed(0)} is under the card at `
+    + `${seat.left.toFixed(0)}..${(seat.left + seat.width).toFixed(0)}`);
+  assert.ok(span.left >= painted.left + painted.width || span.right <= painted.left,
+    `the pile at ${span.left.toFixed(0)}..${span.right.toFixed(0)} covers the painted book `
+    + `at ${painted.left.toFixed(0)}..${(painted.left + painted.width).toFixed(0)}`);
+
+  // And on the unlit side. Read off the painting rather than off the rule: the
+  // flames this room marks are where they are, and the test asks only that no
+  // book of ours is standing in one, and that the pile went to the far side of
+  // the card from the nearest of them.
+  const flames = room.lightPoints
+    .map((p) => view0.x + p.x * view0.w)
+    .filter((x) => x >= desk.left && x <= desk.left + desk.width);
+  assert.ok(flames.length > 0, 'this reading room has no candle to keep clear of');
+  const nearest = flames.reduce((a, b) =>
+    (Math.abs(a - (seat.left + seat.width / 2)) < Math.abs(b - (seat.left + seat.width / 2))
+      ? a : b));
+  for (const flame of flames) {
+    assert.ok(flame <= span.left || flame >= span.right,
+      `a candle burns at ${flame.toFixed(0)}, inside the pile`);
+  }
+  const pileOnLeft = span.right <= seat.left;
+  assert.equal(pileOnLeft, nearest > seat.left + seat.width / 2,
+    'the books were put down on the candle\'s side of the reader');
+
+  // And they are a PILE: each above the last, leaning, the way the felt stacks,
+  // standing on the desk surface rather than floating over it.
   const byHeight = [...drawn].sort((a, b) => b.top - a.top);
+  assert.ok(Math.abs((byHeight[0].top + byHeight[0].height) - (desk.top + desk.height)) < 0.01,
+    'the bottom volume does not stand on the desk');
   assert.ok(byHeight[1].top < byHeight[0].top, 'the second volume sits on the first');
   assert.ok(byHeight[2].top < byHeight[1].top, 'and the third on the second');
   assert.ok(new Set(drawn.map((s) => s.left)).size > 1,

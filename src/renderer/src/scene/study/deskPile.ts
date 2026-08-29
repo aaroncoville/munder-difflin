@@ -109,29 +109,74 @@ export function booksFor(tasks: readonly HiveTask[], agentId: string): DeskVolum
 }
 
 /**
- * Where the stacked volumes lie, given the place the open book has.
+ * What else is standing on one reading desk, and where the light is.
+ *
+ * `occupied` is what already lies on that surface — the volume the painter drew
+ * there, the book being read. `lights` are the room's flames as panel x, which
+ * is why this is not a fact about a berth: a reading room is ONE painting with
+ * two desks in it, so a berth's neighbour has a candle of its own, and it is
+ * the room that knows where every flame is.
+ */
+export interface DeskClear {
+  desk: Box;
+  card: Box;
+  occupied: readonly Box[];
+  lights: readonly number[];
+}
+
+/**
+ * The clear desk beside the reader that a pile of waiting volumes stands on.
+ *
+ * A reader puts the books they are not holding down beside themselves, and
+ * which side that is settles itself: the candle is the one thing on a desk
+ * that cannot be moved, so the books go where it is not. Aaron, of the running
+ * house: *"they should be stacked just like on the card table but off to the
+ * side of the card where the candle isn't."*
+ *
+ * So both ends of the desk are measured and the roomier one wins, where "room"
+ * means clear surface — surface with no flame on it and nothing already lying
+ * there. That is one rule rather than a candle rule and a book rule, and it is
+ * why the pile also keeps off the volume the painter drew: a painted book that
+ * runs past the card's edge takes that end of the desk with it.
+ *
+ * Only what is ON this desk counts. A flame at the far berth is twice as far
+ * away and across somebody else's place setting, and counting it would send
+ * half the piles in the house to the wrong end of their desk.
+ *
+ * An exact tie goes to the far end, which is where a house read left to right
+ * puts what comes after the reader.
+ */
+export function clearBeside({ desk, card, occupied, lights }: DeskClear): Box {
+  const end = desk.left + desk.width;
+  const cardEnd = card.left + card.width;
+  const onDesk = [
+    ...occupied.filter((b) => b.left < end && b.left + b.width > desk.left),
+    ...lights.filter((x) => x >= desk.left && x <= end).map((x) => ({ left: x, width: 0 }))
+  ];
+  // Where the clear surface on each side of the card runs out: the nearest
+  // thing standing between the card and that end of the desk.
+  const near = Math.min(card.left, ...onDesk.map((o) => o.left).filter((l) => l < card.left));
+  const far = Math.max(cardEnd,
+    ...onDesk.map((o) => o.left + o.width).filter((r) => r > cardEnd));
+  const strip = (left: number, width: number): Box =>
+    ({ left, top: desk.top, width: Math.max(0, width), height: desk.height });
+  const beforeIt = strip(desk.left, near - desk.left);
+  const afterIt = strip(far, end - far);
+  return afterIt.width >= beforeIt.width ? afterIt : beforeIt;
+}
+
+/**
+ * A pile of waiting volumes standing on a patch of desk.
  *
  * The house is drawn as a flat cross-section and straight on, so there is no
  * depth to stack INTO: further up the panel is further back on the desk, which
  * is exactly where a reader's other volumes are. Each one therefore sits above
- * the last.
- *
- * The slot is the book's place on that desk — the volume the painter drew — and
- * the pile stands in it rather than beside it. A closed volume covering the
- * painted book is the House saying which book is on that desk NOW, which is the
- * one thing a reading desk is for. What must not happen is a stack of bare
- * boards there; the drawing is `SpineBook`'s business, and it deals the same
- * bound volume the card table deals.
- *
- * `restingOn` says whether the book being READ already lies in the slot. When
- * it does the pile starts above it, because a reader's other volumes sit behind
- * the one open in front of them; when it does not, the pile stands on the desk
- * itself and the bottom of it takes the painted book's place.
+ * the last, on the surface the slot's bottom edge marks.
  *
  * How BIG each volume is does not come from the slot. It used to, and that is
  * what made a waiting book on a desk unrecognisable as the thing the felt
- * deals: the slot is the painted volume's box, which is a book lying open on an
- * angled desk with the room's perspective already worked out — wide and very
+ * deals: the slot was the painted volume's box, which is a book lying open on
+ * an angled desk with the room's perspective already worked out — wide and very
  * shallow. An upright spine squeezed into it comes out four times flatter than
  * the same component on the card table. The size is the card table's own now,
  * handed in, and the slot decides only where the pile stands.
@@ -142,11 +187,11 @@ export function booksFor(tasks: readonly HiveTask[], agentId: string): DeskVolum
  * while re-introducing the very squash this replaced.
  */
 export function deskPile(
-  slot: Box, spine: { width: number; height: number }, count: number, restingOn = false
+  slot: Box, spine: { width: number; height: number }, count: number
 ): Box[] {
   const foot = {
     left: slot.left + (slot.width - spine.width) / 2,
-    bottom: restingOn ? slot.top : slot.top + slot.height
+    bottom: slot.top + slot.height
   };
   return Array.from({ length: Math.max(0, count) }, (_, i) => pileBox(foot, spine, i));
 }

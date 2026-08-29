@@ -25,7 +25,7 @@ const assert = require('node:assert/strict');
 const { mount } = require('./render-hooks.cjs');
 const loadTs = require('./load-ts.cjs');
 
-const { booksFor, deskPile, handHeld, DESK_PILE_MAX } =
+const { booksFor, clearBeside, deskPile, handHeld, DESK_PILE_MAX } =
   loadTs('src/renderer/src/scene/study/deskPile.ts');
 const { projectScene } = loadTs('src/renderer/src/scene/study/useSceneState.ts');
 
@@ -106,11 +106,117 @@ test('the volumes pile up from the book’s place on the desk', () => {
   assert.ok(pile[1].top < pile[0].top, 'the next sits on it');
   assert.ok(pile[2].top < pile[1].top);
 
-  // And when a volume IS being read, it keeps that place and the pile starts
-  // above it — a reader's other books sit behind the one open in front of them.
-  const behind = deskPile(slot, spine, 2, true);
-  assert.ok(behind[0].top + behind[0].height <= slot.top + 0.001,
-    'the pile clears the open book rather than lying on it');
+});
+
+test('the waiting pile takes the side of the card the candle is not on', () => {
+  // A reader puts the books they are not holding down where the light is not,
+  // because the candle is the one thing on that desk that cannot be moved.
+  const desk = { left: 0, top: 0, width: 300, height: 100 };
+  const card = { left: 120, top: 0, width: 60, height: 100 };
+
+  const lit = (x) => clearBeside({ desk, card, occupied: [], lights: [x] });
+  const litLeft = lit(40);
+  assert.equal(litLeft.left, card.left + card.width,
+    'a candle on the left did not send the books to the reader\'s other side');
+
+  const litRight = lit(260);
+  assert.equal(litRight.left + litRight.width, card.left,
+    'and a candle on the right did not send them back');
+
+  // The two are one rule read in either direction, which is the whole of the
+  // claim: a room with its light on the other side gets the other answer.
+  assert.ok(litLeft.left > card.left && litRight.left < card.left,
+    'the side does not follow the candle at all');
+});
+
+test('a candle at the next desk is not this reader\'s candle', () => {
+  // Every room in the house is one painting with two desks in it, so a berth's
+  // neighbour has a flame of its own — twice as far away and on the far side of
+  // a whole other place setting. A rule that counted it would send half the
+  // house's piles to the wrong end of the desk.
+  const desk = { left: 100, top: 0, width: 200, height: 100 };
+  const card = { left: 180, top: 0, width: 40, height: 100 };
+  // This reader's own flame is at the far end, so their books go to the near
+  // end. The neighbour's is off this desk entirely, and is placed where
+  // counting it would flip that answer — so the test fails if it is counted.
+  const alone = clearBeside({ desk, card, occupied: [], lights: [280] });
+  assert.equal(alone.left, desk.left, 'a candle at the far end did not clear the near end');
+  const shared = clearBeside({ desk, card, occupied: [], lights: [280, 60] });
+  assert.deepEqual(shared, alone,
+    'the flame across the room decided where this reader put their books');
+});
+
+test('the waiting pile does not stand on what is already lying on the desk', () => {
+  // The volume being read lies open on that desk. Books waiting their turn go
+  // BESIDE it — beside the reader — and a strip that started at the card's edge
+  // would put them half on top of a book whose own box runs past it.
+  const desk = { left: 0, top: 0, width: 300, height: 100 };
+  const card = { left: 120, top: 0, width: 60, height: 100 };
+  const open = { left: 100, top: 80, width: 110, height: 18 };
+  const clear = clearBeside({ desk, card, occupied: [open], lights: [] });
+  assert.ok(clear.left >= open.left + open.width || clear.left + clear.width <= open.left,
+    `the pile at ${clear.left}..${clear.left + clear.width} overlaps the open book at `
+    + `${open.left}..${open.left + open.width}`);
+});
+
+test('the pile stands on the desk surface, whatever is beside it', () => {
+  const desk = { left: 0, top: 40, width: 300, height: 100 };
+  const card = { left: 120, top: 40, width: 60, height: 100 };
+  const clear = clearBeside({ desk, card, occupied: [], lights: [] });
+  assert.equal(clear.top + clear.height, desk.top + desk.height,
+    'the books float above the desk, or sink through it');
+});
+
+test('every seat in the house has clear desk to put a pile of books down on', () => {
+  // Not the first berth — every one of them, and the god's chair too. A rule
+  // read off one painting is a rule that holds for one painting: the berths
+  // were each measured off their own room, their painted volumes are different
+  // shapes, and the flames are not in the same place twice.
+  const S = loadTs('src/renderer/src/scene/study/StudyScene.tsx');
+  const seats = S.studyRoom.rooms
+    .filter((r) => r.kind === 'desk' || r.kind === 'godStudy')
+    .flatMap((r) => r.berths.map((b) => ({ room: r, berth: b })));
+  assert.ok(seats.length >= 8, `only ${seats.length} seats found to check`);
+
+  for (const { room, berth } of seats) {
+    const view = S.containFit({ w: room.natural.w, h: room.natural.h }, room.natural);
+    const desk = S.berthToBox(berth, view);
+    const painted = S.volumeBox(berth, view);
+    const { card, book: aside } = S.deskLayout(desk, painted);
+    const open = painted ?? aside;
+    const flames = room.lightPoints.map((p) => view.x + p.x * view.w);
+    const spine = S.houseSpine(view);
+    const clear = clearBeside({ desk, card, occupied: [open], lights: flames });
+
+    const pile = deskPile(clear, spine, DESK_PILE_MAX);
+    assert.equal(pile.length, DESK_PILE_MAX);
+    const span = {
+      left: Math.min(...pile.map((b) => b.left)),
+      right: Math.max(...pile.map((b) => b.left + b.width))
+    };
+    const where = `${berth.id}: pile ${span.left.toFixed(0)}..${span.right.toFixed(0)}`;
+
+    assert.ok(span.left >= desk.left - 0.01 && span.right <= desk.left + desk.width + 0.01,
+      `${where} hangs off the desk ${desk.left.toFixed(0)}..`
+      + `${(desk.left + desk.width).toFixed(0)}`);
+    assert.ok(span.left >= card.left + card.width || span.right <= card.left,
+      `${where} is under the card ${card.left.toFixed(0)}..`
+      + `${(card.left + card.width).toFixed(0)}`);
+    assert.ok(span.left >= open.left + open.width || span.right <= open.left,
+      `${where} covers the open book ${open.left.toFixed(0)}..`
+      + `${(open.left + open.width).toFixed(0)}`);
+    for (const flame of flames) {
+      assert.ok(flame <= span.left || flame >= span.right, `${where} stands in a candle at `
+        + `${flame.toFixed(0)}`);
+    }
+    // Standing on the desk surface, and every volume the size the felt deals.
+    assert.ok(Math.abs((pile[0].top + pile[0].height) - (desk.top + desk.height)) < 0.01,
+      `${berth.id}: the bottom volume does not stand on the desk`);
+    for (const box of pile) {
+      assert.equal(box.width, spine.width, `${berth.id}: a volume of some other size`);
+      assert.equal(box.height, spine.height);
+    }
+  }
 });
 
 test('the desk pile reaches the scene through the assistant it belongs to', () => {

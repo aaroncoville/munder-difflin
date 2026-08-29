@@ -56,7 +56,7 @@ import { DeskBook, type BookBindingName } from './DeskBook';
 import { FlyingBooks, type FlightPath } from './FlyingBooks';
 import { flightsFor, houseSlot, seenStatuses, type Flight, type LaidStorey, type Seen }
   from './flight';
-import { bookFloat, deskPile } from './deskPile';
+import { bookFloat, clearBeside, deskPile } from './deskPile';
 import { SpineBook } from './SpineBook';
 import { bookSlot, type ArchivedThing } from './shelfBooks';
 import { SpeechScroll } from './SpeechScroll';
@@ -589,12 +589,16 @@ export const LOOKED_AT_Z = STACK_DEEPEST + 1;
 
 /** One assistant's place setting: card, book, and what they are saying. */
 function DeskPlace({
-  agent, desk, volume, spine, binding, raised, onLook, onSelect, onOpenTask
+  agent, desk, volume, spine, lights, binding, raised, onLook, onSelect, onOpenTask
 }: {
   agent: SceneAgent;
   desk: Box;
   /** How big a bound volume is drawn in this room — see `houseSpine`. */
   spine: { width: number; height: number };
+  /** Where this ROOM's flames burn, in panel x. A reading room is one painting
+   *  with two desks in it, so the light a reader keeps their books out of is a
+   *  fact about the room rather than about their berth. */
+  lights: readonly number[];
   /** How this room binds its volumes — the floor plan's decision, carried in. */
   binding?: BookBindingName;
   /** The book the painting has already put on this desk, or null. */
@@ -612,6 +616,16 @@ function DeskPlace({
   const held = agent.books.findIndex((b) => b.state === 'open');
   const inHand = held < 0 ? undefined : agent.books[held];
   const waiting = agent.books.filter((_, i) => i !== held);
+  // The patch of desk the waiting volumes stand on: beside the reader, at the
+  // end of the desk with no flame on it and nothing already lying there. The
+  // painted volume counts whether or not anybody is reading it — it is drawn on
+  // that desk either way.
+  const standing = clearBeside({
+    desk,
+    card,
+    occupied: [volume, inHand ? book : null].filter((b): b is Box => b !== null),
+    lights
+  });
   return (
     <div
       data-study-place={agent.id}
@@ -641,19 +655,18 @@ function DeskPlace({
       />
       {/*
         The commissions this assistant is holding but is NOT reading, drawn as
-        the card table draws them — the same component, so the two surfaces
-        cannot drift into looking nearly alike.
+        the card table draws them — the same component at the same size, so the
+        two surfaces cannot drift into looking nearly alike.
 
-        They stand in the book's place on that desk, over the volume the painter
-        drew, because what a reading desk has to say is which book is on it now.
-        When several are held they PILE, each above the last and leaning, the way
-        books pile on a table — bare boards lying flat said only that something
-        was there. And when one is being read, the pile starts above it: a
-        reader's other volumes sit behind the one open in front of them.
+        They lie BESIDE the reader, on the end of the desk the room's candle is
+        not burning at, and pile there the way the felt piles: each above the
+        last and leaning. They used to stand in the painted book's own place and
+        cover it, which hid the one thing on that desk the painter drew for us
+        and squashed them flat into its box on the way.
 
         Painted back to front, so a nearer volume overlaps the one behind it.
       */}
-      {deskPile(book, spine, waiting.length, Boolean(inHand)).map((slot, i) => (
+      {deskPile(standing, spine, waiting.length).map((slot, i) => (
         <SpineBook
           key={waiting[i].id}
           id={waiting[i].id}
@@ -934,6 +947,7 @@ export function StudyScene(): JSX.Element {
       const desk = berthToBox(berth, view);
       const volume = volumeBox(berth, view);
       const spine = houseSpine(view);
+      const lights = room.lightPoints.map((p) => view.x + p.x * view.w);
       return scene.agents
         .filter((agent) => agent.berthId === berth.id)
         .map((agent) => (
@@ -943,6 +957,7 @@ export function StudyScene(): JSX.Element {
             desk={stackedBerth(desk, agent.stackIndex)}
             volume={volume}
             spine={spine}
+            lights={lights}
             binding={room.binding}
             raised={lookingAt === agent.id}
             onLook={(looking: boolean) =>
