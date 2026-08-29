@@ -77,6 +77,16 @@ export function SpineBook({
         borderRadius: 'var(--cth-radius-badge)',
         cursor: 'pointer',
         userSelect: 'none',
+        // Takes the pointer back for itself, the way every other pressable
+        // piece in the house does. A place setting is drawn as one layer
+        // spanning its whole room and that layer takes NO pointer, or the room
+        // underneath would stop being clickable everywhere somebody is sitting.
+        // A book standing on a desk therefore inherits "untouchable" unless it
+        // says otherwise, and said nothing — so it was drawn correctly, wore
+        // the right face, carried a handler, and was dead to the mouse. On the
+        // felt there is no such layer, which is why the identical component
+        // worked on one surface and not the other.
+        pointerEvents: 'auto',
         background: face.background,
         // The head band at the spine's near end, and a hairline all round so
         // one book has an edge against the next. Proportional, for the same

@@ -325,6 +325,82 @@ test('every volume on a desk is a door to its own commission', async () => {
   assert.deepEqual([...opened].sort(), ['T-1', 'T-2']);
 });
 
+/**
+ * Every ancestor of a node, nearest first, in the tree as it actually renders.
+ *
+ * `deep` throws the path away, and the path is the whole question here: a piece
+ * of the house can carry a perfectly good click handler and still be dead,
+ * because a layer ABOVE it took the pointer away. Nothing about the node itself
+ * says so.
+ */
+const trail = (root, want, path = [], out = []) => {
+  if (!root || typeof root !== 'object') return out;
+  if (Array.isArray(root)) { for (const k of root) trail(k, want, path, out); return out; }
+  const here = root.props?.style ? [root, ...path] : path;
+  if (want(root)) out.push(here);
+  if (root.props?.children !== undefined) trail(root.props.children, want, here, out);
+  if (typeof root.type === 'function') {
+    let r; try { r = root.type(root.props); } catch { return out; }
+    trail(r, want, here, out);
+  }
+  return out;
+};
+
+/** Whether a pointer can reach a node, given everything drawn over and around
+ *  it: the nearest ancestor that has an opinion is the one that decides. */
+const reachable = (path) => {
+  for (const node of path) {
+    const said = node.props?.style?.pointerEvents;
+    if (said !== undefined) return said !== 'none';
+  }
+  return true;
+};
+
+test('a volume waiting on a desk can actually be pressed', async () => {
+  // Not "has an onClick" — every one of them has always had an onClick, and a
+  // test that reaches into the tree and calls it by hand proves only that the
+  // handler exists. A place setting is drawn as one layer spanning the whole
+  // room, and that layer takes NO pointer, or the room underneath would stop
+  // being clickable everywhere somebody is sitting. Each piece that is meant to
+  // be pressed takes the pointer back for itself — the card does, the open book
+  // does, a shelved volume does. A waiting volume never did, so it was drawn
+  // perfectly and was dead to the mouse.
+  const view = await seatOne([
+    card('T-1', 'doing'), card('T-2', 'todo'), card('T-3', 'blocked')
+  ].map((c) => ({ ...c, assignee: 'ann' })));
+
+  const waiting = trail(view.tree, (n) => n.props?.['data-spine-on'] === 'desk');
+  assert.equal(waiting.length, 2, 'two commissions waiting on the desk');
+  for (const path of waiting) {
+    assert.ok(reachable(path),
+      `the waiting volume ${path[0].props['data-spine-book']} is under a layer that `
+      + 'takes no pointer, so nothing can press it');
+  }
+
+  // The felt's books are the control: same component, a surface that never took
+  // the pointer away. If this ever goes red the check itself has rotted.
+  const felt = trail(view.tree, (n) => n.props?.['data-spine-on'] === 'felt');
+  for (const path of felt) assert.ok(reachable(path), 'a book on the felt cannot be pressed');
+});
+
+test('nothing in the house is drawn pressable and left dead to the pointer', async () => {
+  // The class of fault, not the one instance. Anything carrying a click handler
+  // is something a reader is invited to press, and one drawn inside a layer
+  // that takes no pointer is a promise the house does not keep.
+  const view = await seatOne([
+    card('T-1', 'doing'), card('T-2', 'todo')
+  ].map((c) => ({ ...c, assignee: 'ann' })));
+  const pressable = trail(view.tree,
+    (n) => typeof n.props?.onClick === 'function' && n.props?.style !== undefined);
+  assert.ok(pressable.length >= 4, `only ${pressable.length} pressable pieces found to check`);
+  const dead = pressable.filter((path) => !reachable(path)).map((path) => {
+    const p = path[0].props;
+    return p['data-spine-book'] ?? p['data-study-kind'] ?? p['data-book-state']
+      ?? p['data-study-room'] ?? p.title ?? p['aria-label'] ?? 'an unnamed piece';
+  });
+  assert.deepEqual(dead, [], `drawn pressable but dead to the pointer: ${dead.join(', ')}`);
+});
+
 test('the waiting-on-you mark is drawn on the desk, not merely recorded', async () => {
   const view = await seatOne([{
     ...card('T-1', 'doing'), assignee: 'ann', humanQA: [{ q: 'which api key?' }]
