@@ -60,6 +60,7 @@ import { bookFloat, clearBeside, deskPile } from './deskPile';
 import { TURN_SRC } from './bookTurns';
 import { SpineBook } from './SpineBook';
 import { BookTurn } from './BookTurn';
+import { TurnMattes, matteId } from './TurnMattes';
 import { bookSlot, type ArchivedThing } from './shelfBooks';
 import { SpeechScroll } from './SpeechScroll';
 import { portraitFor } from './portraits';
@@ -407,13 +408,18 @@ export function volumeBox(berth: Berth, view: ViewBox): Box | null {
  * does not carry — a berth naming a film nobody imported draws nothing rather
  * than a black rectangle where the book was.
  */
-export function turnBox(berth: Berth, view: ViewBox): { src: string; box: Box } | null {
+export function turnBox(
+  berth: Berth, view: ViewBox
+): { src: string; box: Box; matteId: string } | null {
   const t = berth.turn;
   if (!t) return null;
   const src = TURN_SRC[t.clip];
   if (!src) return null;
   return {
     src,
+    // The matte is this berth's, because it is cut against this berth's own
+    // patch of painting — see `TurnMattes`, which defines one per berth.
+    matteId: matteId(berth.id),
     box: {
       left: view.x + t.x * view.w,
       top: view.y + t.y * view.h,
@@ -656,7 +662,7 @@ function DeskPlace({
    *  fact about the room rather than about their berth. */
   lights: readonly number[];
   /** The page turn filmed from this room's own painting, where there is one. */
-  turn: { src: string; box: Box } | null;
+  turn: { src: string; box: Box; matteId: string } | null;
   /** Whether the House has been asked to hold still. */
   still: boolean;
   /** How this room binds its volumes — the floor plan's decision, carried in. */
@@ -702,24 +708,6 @@ function DeskPlace({
       }}
     >
       <SpeechScroll text={agent.speech} box={scroll} />
-      {/*
-        The room's own book, turning, on the desks whose painter drew one.
-
-        BEFORE the card, and that ordering is the whole of it. The film is a
-        patch of the PANEL — desk, chair and wall as well as the book — and the
-        card stands on that desk just above the book. Drawn after the card, the
-        film's own wall and chair wash across the portrait's lower half, which
-        is a card behind frosted glass. Drawn before it, the card sits on the
-        desk as painted and the film is what is behind it.
-
-        The cost is that a page rising high enough still goes behind the card.
-        The foot is lifted clear of the book for exactly that reason — see
-        `TURN_CLEARANCE` — but the fan reaches further than a card can rise and
-        still be sitting at a desk, so the top of it stays hidden.
-      */}
-      {turn && inHand
-        ? <BookTurn src={turn.src} box={turn.box} playing={!still} />
-        : null}
       <AgentCard
         name={agent.name}
         role={agent.role}
@@ -731,6 +719,27 @@ function DeskPlace({
         onClick={onSelect}
         onLook={onLook}
       />
+      {/*
+        The room's own book, turning, on the desks whose painter drew one.
+
+        AFTER the card, so a leaf that leaves the book crosses the portrait the
+        way it would cross anything else standing on that desk. What makes that
+        safe is the matte: the film is a patch of the PANEL — desk, chair and
+        wall as well as the book — and drawn over the card whole it is somebody
+        else's wall across the portrait's lower half. Cut against the painting
+        it was filmed from, only the part that MOVED is left, so the card is
+        covered by leaves and by nothing else. See `TurnMattes`.
+      */}
+      {turn && inHand
+        ? (
+          <BookTurn
+            src={turn.src}
+            box={turn.box}
+            playing={!still}
+            matteId={turn.matteId}
+          />
+        )
+        : null}
       {/*
         The commissions this assistant is holding but is NOT reading, drawn as
         the card table draws them — the same component at the same size, so the
@@ -1092,6 +1101,12 @@ export function StudyScene(): JSX.Element {
         background: 'var(--cth-cream-300)'
       }}
     >
+      {/*
+        The mattes every page turn is drawn through, defined once for the whole
+        house. A filter is referenced by id, and two readers sharing one desk
+        would otherwise define the same id twice. See `TurnMattes`.
+      */}
+      <TurnMattes rooms={studyRoom.rooms} />
       <div
         data-study-house=""
         style={{

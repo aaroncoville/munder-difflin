@@ -228,30 +228,13 @@ test('the film really drives the element, not just an attribute', async () => {
 
 /* ---- one book on a desk, and the door is still the book ------------------ */
 
-test('the film is drawn behind the portrait, not over it', async () => {
-  // The clip is a patch of the PANEL — desk, chair and wall as well as the book
-  // — and the card stands on that desk with its foot on the book's top edge.
-  // Painted after the card, the film's own wall washes across the portrait's
-  // lower half and the assistant is behind frosted glass. This is the one thing
-  // about the arrangement that cannot be seen from the clip alone, because the
-  // clip was cut from a room with nobody sitting in it.
-  const view = await house([card('T-1', 'doing')]);
-  const order = [];
-  const walk = (n) => {
-    if (!n || typeof n !== 'object') return;
-    if (Array.isArray(n)) { n.forEach(walk); return; }
-    if (n.type === BookTurn) order.push('film');
-    if (n.type === AgentCard) order.push('card');
-    if (n.props?.children !== undefined) walk(n.props.children);
-    if (typeof n.type === 'function') {
-      let r; try { r = n.type(n.props); } catch { return; }
-      walk(r);
-    }
-  };
-  walk(view.tree);
-  assert.deepEqual(order, ['film', 'card'],
-    'the film is painted over the portrait, which puts the room’s wall across the card');
-});
+/*
+ * Where the film is painted relative to the card used to be held here, as
+ * "behind the portrait, not over it". It is over it now, and the reason that is
+ * safe — the matte that cuts everything static out of the clip — is inseparable
+ * from the order itself: either half without the other is a defect. Both are
+ * held together in `study-turn-over-card`.
+ */
 
 test('the drawn pages are gone where the film draws them', async () => {
   // Both would be two books on one desk — the exact doubling the painted volume

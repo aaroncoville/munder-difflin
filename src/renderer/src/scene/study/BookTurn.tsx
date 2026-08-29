@@ -9,17 +9,22 @@
  * the thing that moves is the painting rather than a stand-in for it.
  *
  * WHAT IS AND IS NOT DRAWN HERE. The clip is scenery: it takes no pointer at
- * all. The book stays a DOOR through `DeskBook`, which keeps the root box, the
- * title and the press — the hit target is the book, not the whole patch of room
- * the film covers, and a reader should not find themselves clicking a desk leg
- * to open a commission.
+ * all. That matters more than it used to, because this is drawn OVER the
+ * reader's card — a layer above a door that took the pointer would close it.
+ * The book stays a DOOR through `DeskBook`, which keeps the root box, the title
+ * and the press, and the card stays one through `AgentCard`.
  *
- * WHY IT IS FEATHERED. The clip and the panel are the same pixels, but not to
- * the byte: the model and the codec shift the overall level a few parts in 255,
- * flat across the frame, with no structural change. Against a hard rectangle
- * edge that flat shift is a faintly visible pane of glass over the desk;
- * feathered, there is no edge for it to show against. So the mask is not
- * decoration, it is what makes a generated frame sit inside a painted one.
+ * ONLY WHAT MOVES IS DRAWN. The clip is a rectangle of panel, and the panel is
+ * what is already painted underneath it, so drawing the rectangle whole means
+ * drawing the room twice — over the card, that is the room's wall across the
+ * portrait. It is therefore cut against the painting it was filmed from, and
+ * what survives is the part that turns. See `TurnMattes` for how, and for the
+ * measured drift the cut has to ignore.
+ *
+ * WHY IT IS STILL FEATHERED. The matte removes the rectangle's edge already,
+ * because an edge that does not move is not drawn. This is for the pixels that
+ * DO move within a hand's width of the border: a leaf caught half in shot would
+ * otherwise stop at a straight line.
  *
  * WHY IT IS BIGGER THAN THE BOOK. A page needs somewhere to go. The rectangle
  * is read data on the berth — see `turn` in the room manifest — chosen per desk
@@ -31,8 +36,12 @@
  * not draw this at all — the panel underneath is the book at rest, and it is
  * the painting itself, so a quiet desk is exactly as painted. When the House is
  * asked to hold still the clip is mounted and PAUSED on its first frame instead
- * of being torn out, because a reader who has asked for stillness should still
- * see the book somebody is holding.
+ * of being torn out. Note what the matte makes of that: a first frame differs
+ * from its own painting only by the codec's drift, which the cut discards, so a
+ * house holding still draws no leaf at all. That is the right answer to being
+ * asked for stillness, and it is worth saying plainly rather than leaving the
+ * old claim that a paused frame shows which book is in whose hands — it never
+ * did, because the frame it pauses on IS the painting.
  */
 import { useEffect, useRef } from 'react';
 import type { CSSProperties } from 'react';
@@ -51,6 +60,13 @@ export interface BookTurnProps {
    * is ever false — a desk with nothing in hand does not render this at all.
    */
   playing: boolean;
+  /**
+   * The matte that cuts the moving pages out of the still painting — see
+   * `TurnMattes`, which defines one per desk.
+   *
+   * Without it this is a rectangle of somebody else's wall laid over the card.
+   */
+  matteId: string;
 }
 
 /**
@@ -64,7 +80,7 @@ export interface BookTurnProps {
 const FEATHER =
   'radial-gradient(ellipse 60% 60% at 50% 62%, #000 50%, transparent 100%)';
 
-export function BookTurn({ src, box, playing }: BookTurnProps): JSX.Element {
+export function BookTurn({ src, box, playing, matteId }: BookTurnProps): JSX.Element {
   const film = useRef<HTMLVideoElement | null>(null);
   useEffect(() => {
     const node = film.current;
@@ -90,6 +106,15 @@ export function BookTurn({ src, box, playing }: BookTurnProps): JSX.Element {
     // Scenery. The press belongs to the book — see the note above — and a film
     // that took the pointer would put the hit target on the desk around it.
     pointerEvents: 'none',
+    // In FRONT of the card, so a leaf that leaves the book crosses the portrait
+    // the way it would cross anything else standing on that desk. The matte is
+    // what makes that safe: everything that is not moving is cut away, so the
+    // card is covered by leaves and by nothing else.
+    zIndex: 1,
+    filter: `url(#${matteId})`,
+    // The matte already removes the rectangle's edge, since the edge does not
+    // move. This stays for the pixels that DO move within a hand's width of the
+    // border — a leaf half in shot would otherwise end at a straight line.
     WebkitMaskImage: FEATHER,
     maskImage: FEATHER
   };
