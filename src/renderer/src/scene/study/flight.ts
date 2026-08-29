@@ -15,8 +15,17 @@
  */
 import type { HiveTask } from '@/components/TasksKanban';
 
-/** Where a flight ends: the felt in the parlour, or the shelf wall. */
-export type FlightTo = 'table' | 'shelf';
+/**
+ * Where a flight ends.
+ *
+ * One destination, and it is not an oversight. A flight is a commission LEAVING
+ * a desk, and the only move that takes one off a desk is concluding: held work
+ * lies at the desk of whoever holds it in every other state, so becoming
+ * impeded seals the volume where it lies rather than sending it anywhere. The
+ * type stays a union of one so that a second destination, if the house ever
+ * grows one, has an obvious place to be added.
+ */
+export type FlightTo = 'shelf';
 
 export interface Flight {
   /**
@@ -62,10 +71,12 @@ let launches = 0;
 /**
  * Where each commission went since the house last looked.
  *
- * Only two moves are drawn, because only two are a commission leaving a desk:
- * work that becomes impeded goes back to the table, and work that concludes
- * goes to the wall. A card moving between two open states is a card staying
- * where it is as far as the room is concerned.
+ * One move is drawn, because only one is a commission leaving a desk: work that
+ * concludes goes to the wall. Everything else is a card staying where it is as
+ * far as the room is concerned — including work that becomes impeded, which
+ * used to fly back to the card table and no longer can. The felt stopped
+ * carrying held work, so that flight would cross the house to land on a surface
+ * that does not draw the card and disappear there.
  *
  * `prev` being null — the first sighting — launches nothing, and that is the
  * load-bearing case rather than a nicety. A freshly opened house has no idea
@@ -95,10 +106,8 @@ export function flightsFor(
     const was = prev.get(task.id);
     // Never seen before: it did not move, it arrived.
     if (was === undefined || was === task.status) continue;
-    const to: FlightTo | null = task.status === 'blocked'
-      ? 'table'
-      : task.status === 'done' ? 'shelf' : null;
-    if (!to) continue;
+    if (task.status !== 'done') continue;
+    const to: FlightTo = 'shelf';
     out.push({
       id: `${task.id}:${was}->${task.status}:${++launches}`,
       taskId: task.id,

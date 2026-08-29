@@ -38,11 +38,16 @@ test('the first sighting of the ledger launches nothing', () => {
     'an opened house does not empty every desk into the air');
 });
 
-test('work that becomes impeded flies to the table, from whatever it was', () => {
+test('work that becomes impeded stays at the desk that is holding it', () => {
+  // It flew to the card table while the felt carried held work. The felt does
+  // not any more: a commission somebody is holding is drawn at their desk in
+  // every state, and becoming impeded changes how the volume lies, not where
+  // it is. A flight to the table would now be a book crossing the house to
+  // land on a surface that does not draw it, and vanishing there.
   for (const was of ['todo', 'doing']) {
-    const flights = flightsFor(seenStatuses([card('T-1', was)]), [card('T-1', 'blocked')]);
-    assert.deepEqual(flights.map((f) => [f.taskId, f.to, f.agentId]), [['T-1', 'table', 'w-1']],
-      `${was} → blocked flies to the table`);
+    assert.deepEqual(
+      flightsFor(seenStatuses([card('T-1', was)]), [card('T-1', 'blocked')]), [],
+      `${was} → blocked does not leave the desk`);
   }
 });
 
@@ -89,19 +94,19 @@ test('each flight carries what it needs to be drawn and to be told apart', () =>
 
 test('the same commission making the same move twice gets two different keys', () => {
   // The key is what the sky is a list OF. Deriving it from the commission and
-  // the move it made means a card that is blocked, freed, and blocked again
-  // launches a second flight wearing the first one's name — and then landing
-  // either one takes both out of the air, because the list is filtered by that
-  // name. Nothing about the id may be a function of the move alone.
+  // the move it made means a card that is concluded, reopened, and concluded
+  // again launches a second flight wearing the first one's name — and then
+  // landing either one takes both out of the air, because the list is filtered
+  // by that name. Nothing about the id may be a function of the move alone.
   const seen = seenStatuses([card('T-1', 'doing')]);
-  const [first] = flightsFor(seen, [card('T-1', 'blocked')]);
-  const [second] = flightsFor(seen, [card('T-1', 'blocked')]);
+  const [first] = flightsFor(seen, [card('T-1', 'done')]);
+  const [second] = flightsFor(seen, [card('T-1', 'done')]);
   assert.notEqual(first.id, second.id,
     'two launches of one move are two books, not one book counted twice');
 });
 
 // ─── Where the rooms actually are ───────────────────────────────────────────
-// A book flying from a desk in one room to the table in another crosses two
+// A book flying from a desk in one room to the shelf wall in another crosses two
 // panels, so for the first time in this scene something has to know where a
 // room's panel lands inside the whole building. The house is laid out by flex
 // and never computed one, which is why this arithmetic exists.
@@ -387,26 +392,25 @@ test('the sky covers the whole building, walls included', async () => {
   assert.equal(sky.props.style.height, HOUSE_NATURAL_HEIGHT);
 });
 
-test('a commission that becomes impeded flies to the table', async () => {
+test('a commission that becomes impeded puts no book in the air', async () => {
   const view = await watchLedger([person('w-1')], [
     [card('T-1', 'doing')],
     [card('T-1', 'blocked')]
   ]);
-  const air = inTheAir(view);
-  assert.equal(air.length, 1);
-  assert.equal(air[0].props['data-flight-to'], 'table');
+  assert.deepEqual(inTheAir(view), [],
+    'the volume seals itself where it lies; nothing crosses the house');
 });
 
 test('a second flight of the same move is a second book, and lands alone', async () => {
-  // Blocked, freed, blocked again, faster than a flight lasts: the first book
-  // is still crossing the house when the second sets off. Two books, two keys —
-  // and catching one of them out of the air must leave the other flying, which
-  // a shared key cannot do.
+  // Concluded, reopened, concluded again, faster than a flight lasts: the first
+  // book is still crossing the house when the second sets off. Two books, two
+  // keys — and catching one of them out of the air must leave the other flying,
+  // which a shared key cannot do.
   const view = await watchLedger([person('w-1')], [
     [card('T-1', 'doing')],
-    [card('T-1', 'blocked')],
+    [card('T-1', 'done')],
     [card('T-1', 'doing')],
-    [card('T-1', 'blocked')]
+    [card('T-1', 'done')]
   ]);
   const air = inTheAir(view);
   assert.equal(air.length, 2, 'the first book is still up there when the second leaves');
@@ -423,7 +427,7 @@ test('a second flight of the same move is a second book, and lands alone', async
 test('a book that lands leaves the sky', async () => {
   const view = await watchLedger([person('w-1')], [
     [card('T-1', 'doing')],
-    [card('T-1', 'blocked')]
+    [card('T-1', 'done')]
   ]);
   const [book] = inTheAir(view);
   book.props.onAnimationEnd({
@@ -440,14 +444,14 @@ test('a machine that asked for stillness is given a house that never flies', asy
   // here and still be keeping a list of things in the air.
   const view = await watchLedger([person('w-1')], [
     [card('T-1', 'doing')],
-    [card('T-1', 'blocked')]
+    [card('T-1', 'done')]
   ], { reducedMotion: true });
   assert.deepEqual(inTheAir(view), []);
   // And the same ledger without the request does fly, so the emptiness above
   // is the preference and not a broken fixture.
   const moving = await watchLedger([person('w-1')], [
     [card('T-1', 'doing')],
-    [card('T-1', 'blocked')]
+    [card('T-1', 'done')]
   ]);
   assert.equal(inTheAir(moving).length, 1);
 });
@@ -460,7 +464,7 @@ test('stillness switched on mid-flight empties the sky, and keeps it empty', asy
   // them starts animating, late and out of nowhere, having meanwhile eaten the
   // sky's budget.
   const stillness = { reduced: false };
-  const ledgers = [[card('T-1', 'doing')], [card('T-1', 'blocked')]];
+  const ledgers = [[card('T-1', 'doing')], [card('T-1', 'done')]];
   const view = await watchLedger([person('w-1')], ledgers, { stillness });
   assert.equal(inTheAir(view).length, 1, 'a book is in the air to be caught out');
 
@@ -510,7 +514,7 @@ test('the sky is bounded, so a window nobody watches cannot fill it', async () =
   const many = Array.from({ length: SKY_MAX + 5 }, (_, i) => `T-${i}`);
   const view = await watchLedger([person('w-1')], [
     many.map((id) => card(id, 'doing')),
-    many.map((id) => card(id, 'blocked'))
+    many.map((id) => card(id, 'done'))
   ]);
   assert.equal(inTheAir(view).length, SKY_MAX,
     'the sky holds its bound and no more');
@@ -533,7 +537,7 @@ test('a book in the air is still bound for the room it left', async () => {
   const holder = agents[seat].id;
   const ledger = (status) => [card('T-1', status, { assignee: holder })];
 
-  const view = await watchLedger(agents, [ledger('doing'), ledger('blocked')]);
+  const view = await watchLedger(agents, [ledger('doing'), ledger('done')]);
   const [book] = inTheAir(view);
   assert.ok(book, 'the book left the desk');
   const worn = deep(book, (n) => n.props?.['data-book-binding'] !== undefined)
