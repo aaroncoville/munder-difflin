@@ -267,12 +267,14 @@ function anchorPlace(kind: AnchorKind): { room: Room; berth: Berth } | null {
  * it. That book still went to the table — it lands in the middle of the baize
  * at the size of a spine, which says the true thing without inventing a place.
  */
-function tableLanding(tasks: readonly HiveTask[], taskId: string): Box | null {
+function tableLanding(
+  tasks: readonly HiveTask[], seated: ReadonlySet<string>, taskId: string
+): Box | null {
   const place = anchorPlace('cardTable');
   const view = place && houseView(place.room);
   if (!place || !view) return null;
   const baize = berthToBox(place.berth, view);
-  const spine = stackBaize(tasks, baize).find((s) => s.task.id === taskId);
+  const spine = stackBaize(tasks, baize, seated).find((s) => s.task.id === taskId);
   if (spine) return spine.box;
   const width = baize.width * 0.06;
   const height = baize.height * 0.22;
@@ -850,7 +852,7 @@ export function StudyScene(): JSX.Element {
     const agent = scene.agents.find((a) => a.id === flight.agentId);
     const from = agent ? deskBookInHouse(agent) : null;
     const land = flight.to === 'table'
-      ? tableLanding(scene.tasks, flight.taskId)
+      ? tableLanding(scene.tasks, scene.seated, flight.taskId)
       : shelfLanding(scene.archive, flight.taskId);
     return from && land
       ? [{ flight, from: from.box, land, ...(from.binding ? { binding: from.binding } : {}) }]
@@ -891,6 +893,7 @@ export function StudyScene(): JSX.Element {
       return (
         <BaizeStacks
           tasks={scene.tasks}
+          seated={scene.seated}
           baize={berthToBox(berth, view)}
           onOpen={openTaskDetail}
         />

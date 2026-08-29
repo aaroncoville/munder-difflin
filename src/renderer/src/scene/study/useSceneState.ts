@@ -13,7 +13,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStore, type Agent } from '@/store/store';
 import { parseTasks, type HiveTask } from '@/components/TasksKanban';
-import { onTheTable } from './BaizeStacks';
+import { concluded } from './BaizeStacks';
 import type { CardStatus } from './AgentCard';
 import type { BookState } from './DeskBook';
 import { deskBerths, godBerth } from './roomManifest';
@@ -75,6 +75,15 @@ export interface SceneState {
    * cannot disagree about what is on the board.
    */
   tasks: readonly HiveTask[];
+  /**
+   * Who has a desk in this house.
+   *
+   * The card table needs it to tell a commission somebody is HOLDING from one
+   * merely assigned to a name: the ledger is hand-edited and can carry an
+   * assistant the house has no seat for, and a card held by nobody the house
+   * can draw has to stay on the felt or it is drawn nowhere at all.
+   */
+  seated: ReadonlySet<string>;
 }
 
 /** Same cadence as the kanban — the ledger is a file the god edits by hand. */
@@ -187,7 +196,7 @@ export function lastTouched(task: HiveTask, now: number): number | null {
 
 export function archiveOf(tasks: readonly HiveTask[], now: number): ArchivedThing[] {
   const things: ArchivedThing[] = tasks
-    .filter((t) => !onTheTable(t))
+    .filter(concluded)
     .map((t) => ({
       id: t.id, label: t.title, kind: 'commission' as const, at: lastTouched(t, now)
     }));
@@ -252,7 +261,10 @@ export function projectScene(
     agents: projected,
     kanbanCounts,
     archive: archiveOf(tasks, now),
-    tasks
+    tasks,
+    // Every assistant on the roster is dealt a berth, so the roster IS the
+    // seating — see the seating rule above.
+    seated: new Set(projected.map((a) => a.id))
   };
 }
 

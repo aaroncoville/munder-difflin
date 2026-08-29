@@ -110,9 +110,14 @@ export function pileRank(task: HiveTask): number {
 }
 
 /**
- * What the table carries: everything the House is not finished with.
+ * What the table carries: the open work nobody has picked up.
  *
- * Not simply "not done". The felt holds open work — a pile that also kept
+ * Not simply "not done", and not simply "open" either. Work in somebody's hands
+ * is drawn at their DESK — that is what a desk in this house says, and a card
+ * dealt onto the felt as well was drawn twice: a bold spine in the middle of
+ * the parlour and a small volume across the house, of which only the spine
+ * reads at that size. So the felt holds what is unclaimed. Beyond that, it
+ * holds open work — a pile that also kept
  * everything ever finished would read as a busy House for ever, most of it
  * piles of things nobody has to touch, so concluded work darkens a volume on
  * the shelf wall instead. But a commission can be marked done and still hold a
@@ -124,8 +129,39 @@ export function pileRank(task: HiveTask): number {
  * Such a commission stays here, marked, until the question is resolved — which
  * is a fact about the card, not a status this code rewrites.
  */
-export function onTheTable(task: HiveTask): boolean {
-  return task.status !== 'done' || waitsOnHuman(task);
+export function onTheTable(task: HiveTask, seated: ReadonlySet<string> = EMPTY): boolean {
+  if (concluded(task)) return false;
+  return !heldBySomebodySeated(task, seated);
+}
+
+/**
+ * Whether a commission is at a desk in THIS house rather than merely assigned.
+ *
+ * An assignee is a name on a card, and a name is not a desk: the ledger is a
+ * hand-edited file and can carry an assistant who has been dismissed, renamed,
+ * or never summoned here at all. The felt has to keep those, because a card
+ * held by nobody the house can draw is a card that would otherwise be on no
+ * surface in the building — worse than the double it replaces, since a
+ * commission drawn twice is at least visible.
+ */
+function heldBySomebodySeated(task: HiveTask, seated: ReadonlySet<string>): boolean {
+  const holder = (task.assignee || '').trim();
+  return holder.length > 0 && seated.has(holder);
+}
+
+const EMPTY: ReadonlySet<string> = new Set();
+
+/**
+ * Whether the House is finished with a commission — the shelf wall's own test.
+ *
+ * Stated on its own rather than as "not on the table", which is what it used to
+ * be. The three surfaces divide the ledger between them, and defining any one
+ * of them by the absence of another makes them share a single rule: the moment
+ * the felt stopped taking work that is in somebody's hands, every held card
+ * became "not on the table" and would have been filed on the wall as concluded.
+ */
+export function concluded(task: HiveTask): boolean {
+  return task.status === 'done' && !waitsOnHuman(task);
 }
 
 /**
@@ -175,9 +211,11 @@ export interface Spine {
  * Pure, so the ordering rule, the bound and the geometry can be checked without
  * a table, a panel or a scene anywhere near them.
  */
-export function stackBaize(tasks: readonly HiveTask[], baize: Box): Spine[] {
+export function stackBaize(
+  tasks: readonly HiveTask[], baize: Box, seated: ReadonlySet<string> = EMPTY
+): Spine[] {
   const taken = tasks
-    .filter(onTheTable)
+    .filter((task) => onTheTable(task, seated))
     .map((task, i) => ({ task, i }))
     .sort((a, b) => pileRank(a.task) - pileRank(b.task) || a.i - b.i)
     .slice(0, BAIZE_MAX);
@@ -290,13 +328,15 @@ export const PETITION_EDGE = 'var(--cth-lilac)';
 export interface BaizeStacksProps {
   tasks: readonly HiveTask[];
   baize: Box;
+  /** Who has a desk in this house — see `heldBySomebodySeated`. */
+  seated?: ReadonlySet<string>;
   onOpen: (id: string) => void;
 }
 
-export function BaizeStacks({ tasks, baize, onOpen }: BaizeStacksProps): JSX.Element {
+export function BaizeStacks({ tasks, baize, seated, onOpen }: BaizeStacksProps): JSX.Element {
   return (
     <>
-      {stackBaize(tasks, baize).map(({ task, box, n }) => {
+      {stackBaize(tasks, baize, seated).map(({ task, box, n }) => {
         // Stopping the event is what keeps the room underneath from opening the
         // whole board on top of the commission that was just picked up.
         const open = (stop: () => void): void => { stop(); onOpen(task.id); };
