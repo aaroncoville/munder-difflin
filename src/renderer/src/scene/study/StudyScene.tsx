@@ -423,8 +423,32 @@ export function turnBox(berth: Berth, view: ViewBox): { src: string; box: Box } 
   };
 }
 
-export function deskLayout(desk: Box, volume: Box | null = null):
-{ card: Box; book: Box; scroll: { left: number; top: number; width: number } } {
+/**
+ * How far a reader's card rises off the book it is turning, as a share of the
+ * film's own rectangle.
+ *
+ * The foot sits on the painted book's top edge where the book is still, and
+ * that is right: the portrait stands behind the volume and the volume lies open
+ * in front of it. A book that turns its pages breaks it, because a page does
+ * not stay inside the book's rectangle — it rises, and what it rises into is
+ * behind the card.
+ *
+ * Two measured facts fix the size of this. The turn is not one low leaf: it
+ * fans the full remaining height of the film's rectangle, some 63px of a 162px
+ * patch on a 1568px panel, so a card that cleared ALL of it would stand two
+ * book-heights off the desk and stop reading as somebody sitting at one. And
+ * nothing is filmed at a desk with nobody reading, so every pixel of the lift
+ * is bare desk for most of the time the room is looked at. This is the trade:
+ * enough to see the page come up, short of floating the portrait.
+ *
+ * A share of the FILM rather than of the desk, because the film is the only
+ * reason for it — a desk the painter left bare gets none of it.
+ */
+export const TURN_CLEARANCE = 0.15;
+
+export function deskLayout(
+  desk: Box, volume: Box | null = null, turn: Box | null = null
+): { card: Box; book: Box; scroll: { left: number; top: number; width: number } } {
   const book = PLACE_SETTING.book;
   // What is left of the setting once the painting has had its share. The card
   // stands on THIS floor; the drawn book stays down on the desk surface, where
@@ -440,6 +464,11 @@ export function deskLayout(desk: Box, volume: Box | null = null):
   // the settings are not all the same shape.
   const cardW = Math.min(height * CARD_ASPECT, desk.width * PLACE_SETTING.card);
   const cardLeft = desk.left + (desk.width - cardW) / 2;
+  // The card RISES by the clearance rather than shrinking into it. Taking it
+  // out of the height would clear the same page and leave every filmed
+  // portrait in the house a little smaller than every unfilmed one, which is a
+  // difference in the drawing that means nothing about the work.
+  const lift = turn ? turn.height * TURN_CLEARANCE : 0;
   // Whatever is left of the setting to the card's right, less a hand's width of
   // clear desk at each end — the far end matters as much as the near one, since
   // a berth is read out to the corner of its desk and a book flush with that
@@ -458,7 +487,7 @@ export function deskLayout(desk: Box, volume: Box | null = null):
   return {
     card: {
       left: cardLeft,
-      top: desk.top,
+      top: desk.top - lift,
       width: cardW,
       height
     },
@@ -640,7 +669,7 @@ function DeskPlace({
   /** Opens the commission the book on this desk stands for. */
   onOpenTask: (id: string) => void;
 }): JSX.Element {
-  const { card, book: beside, scroll } = deskLayout(desk, volume);
+  const { card, book: beside, scroll } = deskLayout(desk, volume, turn?.box ?? null);
   const book = bookFloat(volume, beside);
   // The volume being READ takes the painting's own book; everything else this
   // assistant holds waits beside them as a spine.
@@ -678,14 +707,15 @@ function DeskPlace({
 
         BEFORE the card, and that ordering is the whole of it. The film is a
         patch of the PANEL — desk, chair and wall as well as the book — and the
-        card stands on that desk with its foot on the book's top edge. Drawn
-        after the card, the film's own wall and chair wash across the portrait's
-        lower half, which is a card behind frosted glass. Drawn before it, the
-        card sits on the desk as painted and the film is what is behind it.
+        card stands on that desk just above the book. Drawn after the card, the
+        film's own wall and chair wash across the portrait's lower half, which
+        is a card behind frosted glass. Drawn before it, the card sits on the
+        desk as painted and the film is what is behind it.
 
-        The cost is that a page rising above the book goes behind the card, so
-        the turn reads at the book rather than over it — which is what a page
-        lying on a desk seen from in front does anyway.
+        The cost is that a page rising high enough still goes behind the card.
+        The foot is lifted clear of the book for exactly that reason — see
+        `TURN_CLEARANCE` — but the fan reaches further than a card can rise and
+        still be sitting at a desk, so the top of it stays hidden.
       */}
       {turn && inHand
         ? <BookTurn src={turn.src} box={turn.box} playing={!still} />
