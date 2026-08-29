@@ -163,3 +163,33 @@ test('a page turn can actually be reproduced from what the sheet records', () =>
   const xs = new Set([...body.matchAll(/^ {4}crop: \{ x: (\d+)/gm)].map((m) => m[1]));
   assert.ok(xs.size > 1, 'every desk records the same crop, which no room can be true of');
 });
+
+test('the sheet’s berth headings are the manifest’s berth ids, both ways', () => {
+  // The heading is what ties a seed and a crop to the desk they were chosen
+  // for. Renaming one — or renaming a berth in the manifest — detaches a recipe
+  // from the thing it makes without changing a single byte of either file's
+  // other contents, and every other check here would stay green: the clips
+  // would still all exist, and every entry would still name a file.
+  const body = fs.readFileSync(path.join(SHEETS, TURNS), 'utf8');
+  const heads = [...body.matchAll(/^ {2}(\S+):$/gm)].map((m) => m[1]).sort();
+  const berths = manifest.rooms
+    .flatMap((r) => r.berths)
+    .filter((b) => b.turn)
+    .map((b) => b.id)
+    .sort();
+  assert.ok(berths.length > 0, 'no berth in the manifest plays a turn');
+  assert.deepEqual(heads, berths,
+    'the sheet records recipes for desks the house does not have, or misses ones it does');
+
+  // And each heading's own block names the clip that berth actually plays, so a
+  // recipe cannot be filed under the right name and describe the wrong desk.
+  for (const b of manifest.rooms.flatMap((r) => r.berths).filter((x) => x.turn)) {
+    const block = body.slice(body.indexOf(`  ${b.id}:`)).split(/\n {2}\S+:$/m)[0];
+    assert.ok(block.includes(path.basename(b.turn.clip)),
+      `the ${b.id} block does not mention ${b.turn.clip}, which is what that desk plays`);
+    const panel = manifest.rooms.find((r) => r.berths.some((x) => x.id === b.id)).image;
+    assert.ok(block.includes(path.basename(panel)),
+      `the ${b.id} block was cut from some panel other than ${panel}`);
+  }
+});
+
