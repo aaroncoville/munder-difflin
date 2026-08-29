@@ -6,8 +6,11 @@
  *
  *   - a panel is repainted and its sheet is not, so the sheet describes an
  *     image that is no longer in the tree;
- *   - a sheet is added for a panel that was never shipped, or a shipped panel
- *     is left with no sheet at all;
+ *   - a shipped panel is left with no sheet at all, or a sheet is added for a
+ *     panel that is not in the tree. A painting the house owns but is not
+ *     currently hanging keeps its sheet: the record of how it was made does not
+ *     stop being true because it came off the wall, and the panel is still
+ *     there to hang again;
  *   - the reference image the request carried inline is pasted back in. Each
  *     one is 170–410KB of base64 and there are eight of them; they belong
  *     outside the repository, identified by digest.
@@ -48,12 +51,22 @@ function readSheet(file) {
 
 const files = fs.readdirSync(SHEETS).filter((f) => f.endsWith('.yaml')).sort();
 
-test('every painted panel the house names has a sheet, and every sheet a panel', () => {
+test('every panel the house paints with has a sheet, and every sheet a panel', () => {
   assert.ok(files.length > 0, 'there are sheets to check');
-  const painted = [...new Set(manifest.rooms.map((r) => path.basename(r.image)))].sort();
-  const claimed = files.map((f) => path.basename(readSheet(f).panel)).sort();
-  assert.deepEqual(claimed, painted,
-    'the sheets and the panels the manifest paints with are the same set');
+  const claimed = new Set(files.map((f) => path.basename(readSheet(f).panel)));
+  for (const room of manifest.rooms) {
+    assert.ok(claimed.has(path.basename(room.image)),
+      `${room.id} paints with ${room.image}, which no sheet accounts for`);
+  }
+  // The other direction is checked against the ASSETS, not against the
+  // manifest: a painting the house is not currently hanging still exists, and
+  // its sheet is still the record of how it was made. A sheet for a file that
+  // is not in the tree at all is the rot this catches.
+  const onDisk = new Set(fs.readdirSync(ASSETS).filter((f) => f.endsWith('.png')));
+  for (const file of files) {
+    const panel = path.basename(readSheet(file).panel);
+    assert.ok(onDisk.has(panel), `${file} describes ${panel}, which is not in the tree`);
+  }
 });
 
 test('a sheet describes a panel that is on disk at the size the sheet claims', () => {

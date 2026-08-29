@@ -120,8 +120,9 @@ export interface Room {
   /**
    * How this room's desks bind their volumes, or absent for the default.
    *
-   * A binding belongs to the ROOM because it is a fact about the painting: a
-   * gilt volume reads on warm wood and vanishes on grey masonry, and which of
+   * A binding belongs to the ROOM because it is a fact about the painting — a
+   * gilt volume reads on warm wood and vanishes on grey masonry — and, where
+   * two rooms hang the same painting, it is also what tells them apart. Which of
    * those a room is is something only the panel knows. Declaring it here means
    * a repainted room changes its binding in the same file it changes its
    * berths in, and no component ever has to learn a room's name.

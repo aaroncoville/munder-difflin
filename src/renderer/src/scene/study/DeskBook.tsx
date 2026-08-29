@@ -34,21 +34,26 @@ export type BookState = 'closed' | 'open' | 'sealed';
 /**
  * How a volume is bound, and why there is more than one way.
  *
- * The book was drawn once, in gilt on cream, and it was drawn for the two
- * reading rooms on the LEFT of the house: both are warm dark wood, and a gilt
- * volume on a wooden desk is simply a volume on a desk. The two rooms on the
- * right are not those rooms, and the same book in them is a book that has to
- * be looked for.
+ * The book was drawn once, in gilt on cream, for a warm dark wooden desk. A
+ * second binding began as an answer to a room the gilt vanished in, and is now
+ * doing a second job as well: the house hangs two of its paintings twice, so
+ * for two pairs of rooms the volume lying on the desk is what says which room
+ * you are looking at. A repeated painting is answered by an unrepeated book.
  *
- *   - The stone-arched room is grey masonry under gothic glass. A gilt board
- *     there is one more warm smudge among the mullions, so its volume takes
- *     its colour from the WINDOW instead — a violet board, clasped in gilt down
- *     the fore-edge, which is then the one solid colour in the room. Its pages
- *     are cut with an arch, the room's own shape.
- *   - The attic is dusty rose plaster and pale beams, where gilt is very nearly
- *     the wall. Its volume is bound in the complement — deep teal — and marked
- *     with a warm ribbon hanging past the foot, which is what separates a small
- *     dark rectangle from the shadow of a beam.
+ *   - `ledger` is the original — gilt boards, cream pages — and it is what a
+ *     volume looks like when nothing argues with it.
+ *   - `arch` takes a violet board, clasped in gilt down the fore-edge, and cuts
+ *     its pages with an arch. It was drawn for a room of grey masonry under
+ *     gothic glass, where a gilt board was one more warm smudge among the
+ *     mullions and the violet was the window's own colour.
+ *   - `attic` is bound in deep teal and marked with a warm ribbon hanging past
+ *     the foot. It was drawn for dusty rose plaster and pale beams, where gilt
+ *     is very nearly the wall and the ribbon is what separates a small dark
+ *     rectangle from the shadow of one.
+ *
+ * Both were chosen to stand off a painting, which is why they still work as
+ * marks of WHICH desk: a colour picked to be unmissable against one room is not
+ * going to be missed against another.
  *
  * Every value is a theme token, so a binding is a choice about WHICH of the
  * palette a room uses and never a colour of its own. Nothing here is a room
