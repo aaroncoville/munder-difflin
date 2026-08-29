@@ -33,6 +33,7 @@
  * book, or picking one up would open the board over the detail it just opened.
  */
 import { waitsOnHuman, type HiveTask } from '@/components/TasksKanban';
+import { SpineBook } from './SpineBook';
 
 export interface Box { left: number; top: number; width: number; height: number }
 
@@ -296,72 +297,18 @@ export interface BaizeStacksProps {
 export function BaizeStacks({ tasks, baize, onOpen }: BaizeStacksProps): JSX.Element {
   return (
     <>
-      {stackBaize(tasks, baize).map(({ task, box, n }) => {
-        // Stopping the event is what keeps the room underneath from opening the
-        // whole board on top of the commission that was just picked up.
-        const open = (stop: () => void): void => { stop(); onOpen(task.id); };
-        const face = SPINE_FACES[task.status];
-        const petition = waitsOnHuman(task);
-        const { fontSize } = spineType(box, n);
-        return (
-          <div
-            key={task.id}
-            data-baize-book={task.id}
-            {...(petition ? { 'data-baize-petition': '' } : {})}
-            role="button"
-            tabIndex={0}
-            title={petition
-              ? `${task.title} — ${task.status}, awaiting you`
-              : `${task.title} — ${task.status}`}
-            aria-label={task.title}
-            onClick={(e: React.MouseEvent) => open(() => e.stopPropagation())}
-            onKeyDown={(e: React.KeyboardEvent) => {
-              if (e.target !== e.currentTarget) return;
-              if (e.key !== 'Enter' && e.key !== ' ') return;
-              e.preventDefault();
-              open(() => e.stopPropagation());
-            }}
-            style={{
-              position: 'absolute',
-              left: box.left,
-              top: box.top,
-              width: box.width,
-              height: box.height,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              boxSizing: 'border-box',
-              borderRadius: 'var(--cth-radius-badge)',
-              cursor: 'pointer',
-              userSelect: 'none',
-              background: face.background,
-              // The head band at the spine's near end, and a hairline all round
-              // so one book has an edge against the next. Proportional, for the
-              // same reason the type is.
-              boxShadow: `inset ${Math.max(2, box.width * 0.06)}px 0 0 `
-                + `${petition ? PETITION_EDGE : face.edge}, `
-                + `inset 0 0 0 ${Math.max(1, box.height * 0.06)}px var(--cth-ink-300)`
-            }}
-          >
-            <div
-              data-baize-number=""
-              style={{
-                // Turned a quarter, the way a title is printed on a book that
-                // is lying down: the digits run across the thickness of the
-                // spine rather than along its length.
-                transform: 'rotate(90deg)',
-                fontFamily: 'var(--cth-font-display)',
-                fontSize,
-                lineHeight: 1,
-                color: face.color,
-                pointerEvents: 'none'
-              }}
-            >
-              {n}
-            </div>
-          </div>
-        );
-      })}
+      {stackBaize(tasks, baize).map(({ task, box }) => (
+        <SpineBook
+          key={task.id}
+          id={task.id}
+          title={task.title}
+          status={task.status}
+          petition={waitsOnHuman(task)}
+          box={box}
+          surface="felt"
+          onOpen={onOpen}
+        />
+      ))}
     </>
   );
 }

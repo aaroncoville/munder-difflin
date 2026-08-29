@@ -170,7 +170,7 @@ const all = (n, pred, out = []) => {
 };
 
 const shelfIn = (view) => all(view.tree, (n) => n.props?.['data-shelf-book'] !== undefined);
-const baizeIn = (view) => all(view.tree, (n) => n.props?.['data-baize-book'] !== undefined);
+const baizeIn = (view) => all(view.tree, (n) => n.props?.['data-spine-on'] === 'felt');
 /** The layer inside a mark that carries the re-laid painting and its shade. */
 const paintOf = (book) => all(book, (n) => n.props?.['data-shelf-paint'] !== undefined)[0];
 
@@ -215,7 +215,7 @@ test('an open commission is on the table and not on the wall', async () => {
     tasks: [{ id: 'T-1', status: 'doing', title: 'still reading', dependsOn: [],
       createdAt: new Date().toISOString() }]
   });
-  assert.deepEqual(baizeIn(view).map((b) => b.props['data-baize-book']), ['T-1'],
+  assert.deepEqual(baizeIn(view).map((b) => b.props['data-spine-book']), ['T-1'],
     'the open commission is not the one book on the table');
   assert.equal(shelfIn(view).length, 0, 'open work was shelved as finished');
 });
@@ -225,7 +225,7 @@ test('a concluded commission leaves the table for the wall', async () => {
     tasks: [{ id: 'T-1', status: 'done', title: 'the seventh folio', dependsOn: [],
       createdAt: new Date().toISOString() }]
   });
-  assert.deepEqual(baizeIn(view).map((b) => b.props['data-baize-book']), [],
+  assert.deepEqual(baizeIn(view).map((b) => b.props['data-spine-book']), [],
     'finished work is still piled on the table with the open work');
 
   const books = shelfIn(view);
@@ -247,9 +247,9 @@ test('a concluded commission waiting on you is on the table, not yet on the wall
       createdAt: new Date().toISOString(), humanQA: [{ q: 'which key?' }] }]
   });
   const baize = baizeIn(view);
-  assert.deepEqual(baize.map((b) => b.props['data-baize-book']), ['T-1']);
+  assert.deepEqual(baize.map((b) => b.props['data-spine-book']), ['T-1']);
   assert.equal(baize[0].props.role, 'button', 'the commission cannot be opened');
-  assert.equal(baize[0].props['data-baize-petition'], '');
+  assert.equal(baize[0].props['data-spine-petition'], '');
   assert.equal(shelfIn(view).length, 0,
     'the question was shelved where the wall can drop it');
 });

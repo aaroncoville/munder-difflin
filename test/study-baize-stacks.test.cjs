@@ -214,7 +214,7 @@ async function inhabit(tasks) {
   return { view, calls };
 }
 
-const booksIn = (view) => all(view.tree, (n) => n.props?.['data-baize-book'] !== undefined);
+const booksIn = (view) => all(view.tree, (n) => n.props?.['data-spine-on'] === 'felt');
 
 test('the commissions on the ledger are piled onto the table', async () => {
   const { view } = await inhabit([task('T-1'), task('T-2', 'doing'), task('T-3', 'blocked')]);
@@ -282,15 +282,15 @@ test('a commission waiting on the human is marked on its own spine', async () =>
     task('T-2', 'blocked')
   ]);
   const books = booksIn(view);
-  const marked = books.filter((b) => b.props['data-baize-petition'] !== undefined);
-  assert.deepEqual(marked.map((b) => b.props['data-baize-book']), ['T-1'],
+  const marked = books.filter((b) => b.props['data-spine-petition'] !== undefined);
+  assert.deepEqual(marked.map((b) => b.props['data-spine-book']), ['T-1'],
     'the waiting commission is not the marked one');
   assert.match(String(marked[0].props.title), /awaiting you/i,
     'the mark says nothing about why the book is marked');
   assert.match(String(marked[0].props.style.boxShadow), /--cth-lilac/,
     'the marked spine wears the same head as every other book');
   assert.doesNotMatch(
-    String(books.find((b) => b.props['data-baize-book'] === 'T-2').props.style.boxShadow),
+    String(books.find((b) => b.props['data-spine-book'] === 'T-2').props.style.boxShadow),
     /--cth-lilac/, 'a commission nobody asked about wears the petition mark');
 });
 
@@ -311,9 +311,9 @@ test('a concluded commission still waiting on you keeps its place on the table',
     task('T-1', 'done', { humanQA: [{ q: 'which key?' }] })
   ]);
   const books = booksIn(view);
-  assert.deepEqual(books.map((b) => b.props['data-baize-book']), ['T-1'],
+  assert.deepEqual(books.map((b) => b.props['data-spine-book']), ['T-1'],
     'the finished commission was shelved with its question unanswered');
-  assert.equal(books[0].props['data-baize-petition'], '',
+  assert.equal(books[0].props['data-spine-petition'], '',
     'it is on the table unmarked, so nothing says why it is still there');
   assert.match(String(books[0].props.style.boxShadow), /--cth-lilac/);
   books[0].props.onClick({ stopPropagation: () => {} });
@@ -348,7 +348,7 @@ test('an answered question leaves no mark on the spine', async () => {
   const { view } = await inhabit([
     task('T-1', 'blocked', { humanQA: [{ q: 'which key?', a: 'the staging one' }] })
   ]);
-  assert.equal(booksIn(view)[0].props['data-baize-petition'], undefined);
+  assert.equal(booksIn(view)[0].props['data-spine-petition'], undefined);
 });
 
 test('an empty ledger leaves an empty table, not an empty book', async () => {
@@ -434,12 +434,14 @@ test('the number is printed sideways on the spine, and sized from it', () => {
     baize: { left: 0, top: 0, width: 600, height: 300 },
     onOpen: () => {}
   });
-  const books = rendered.props.children;
+  // The felt draws each commission with the shared spine component, so the
+  // element the table returns is that component and its style is one render in.
+  const books = [].concat(rendered.props.children).map((el) => el.type(el.props));
   assert.ok(books.length > 0, 'nothing was piled');
   for (const book of books) {
     const spine = book.props.style;
     const number = book.props.children;
-    assert.equal(number.props['data-baize-number'], '', 'the spine carries no number');
+    assert.equal(number.props['data-spine-number'], '', 'the spine carries no number');
     const { fontSize, transform } = number.props.style;
     assert.equal(typeof fontSize, 'number',
       `the number is still a CSS token (${String(fontSize)}) the house scale then shrinks`);

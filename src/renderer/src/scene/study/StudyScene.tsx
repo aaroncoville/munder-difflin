@@ -56,6 +56,7 @@ import { FlyingBooks, type FlightPath } from './FlyingBooks';
 import { flightsFor, houseSlot, seenStatuses, type Flight, type LaidStorey, type Seen }
   from './flight';
 import { bookFloat, deskPile } from './deskPile';
+import { SpineBook } from './SpineBook';
 import { bookSlot, type ArchivedThing } from './shelfBooks';
 import { SpeechScroll } from './SpeechScroll';
 import { portraitFor } from './portraits';
@@ -583,6 +584,11 @@ function DeskPlace({ agent, desk, volume, binding, raised, onLook, onSelect, onO
 }): JSX.Element {
   const { card, book: beside, scroll } = deskLayout(desk, volume);
   const book = bookFloat(volume, beside);
+  // The volume being READ takes the painting's own book; everything else this
+  // assistant holds waits beside them as a spine.
+  const held = agent.books.findIndex((b) => b.state === 'open');
+  const inHand = held < 0 ? undefined : agent.books[held];
+  const waiting = agent.books.filter((_, i) => i !== held);
   return (
     <div
       data-study-place={agent.id}
@@ -611,36 +617,42 @@ function DeskPlace({ agent, desk, volume, binding, raised, onLook, onSelect, onO
         onLook={onLook}
       />
       {/*
-        Every commission this assistant is holding. The first lies in the place
-        the painting gave it, down on the desk surface; the rest stack back
-        across the desk behind it, because the house is a flat cross-section and
-        further up the panel is further back on the desk.
+        The commissions this assistant is holding but is NOT reading, drawn as
+        the card table draws them — the same component, so the two surfaces
+        cannot drift into looking nearly alike.
 
-        Drawn back to front — the stack first, the open book last — so the
-        volume being read is the one on top where the pile leans over it, and so
-        the pointer reaches it rather than the closed board of the volume behind.
+        They stand in the book's place on that desk, over the volume the painter
+        drew, because what a reading desk has to say is which book is on it now.
+        When several are held they PILE, each above the last and leaning, the way
+        books pile on a table — bare boards lying flat said only that something
+        was there. And when one is being read, the pile starts above it: a
+        reader's other volumes sit behind the one open in front of them.
+
+        Painted back to front, so a nearer volume overlaps the one behind it.
       */}
-      {deskPile(book, Math.max(0, agent.books.length - 1)).map((box, i) => (
-        <DeskBook
-          key={agent.books[i + 1].id}
-          state={agent.books[i + 1].state}
-          title={agent.books[i + 1].title}
-          mark={spineMark(agent.books[i + 1])}
-          petition={agent.books[i + 1].petition}
-          binding={binding}
-          taskId={agent.books[i + 1].id}
+      {deskPile(book, waiting.length, Boolean(inHand)).map((slot, i) => (
+        <SpineBook
+          key={waiting[i].id}
+          id={waiting[i].id}
+          title={waiting[i].title}
+          status={waiting[i].status}
+          petition={waiting[i].petition}
+          box={slot}
+          surface="desk"
           onOpen={onOpenTask}
-          box={box}
         />
       )).reverse()}
-      {agent.bookState
+      {/* And the one being read, open on the book the painting drew, turning
+          its pages. Only this one — an assistant with nothing in hand leaves
+          the painted volume exactly as the painter left it. */}
+      {inHand
         ? (
           <DeskBook
-            state={agent.bookState}
-            title={agent.bookTitle}
-            petition={agent.books[0]?.petition}
+            state="open"
+            title={inHand.title}
+            petition={inHand.petition}
             binding={binding}
-            taskId={agent.bookTaskId}
+            taskId={inHand.id}
             onOpen={onOpenTask}
             box={book}
           />

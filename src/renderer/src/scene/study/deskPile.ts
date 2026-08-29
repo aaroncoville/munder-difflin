@@ -43,6 +43,9 @@ export interface DeskVolume {
   id: string;
   title: string;
   state: BookState;
+  /** The ledger's own status, so a volume waiting its turn can be drawn with
+   *  the face the card table gives that status — see `SpineBook`. */
+  status: HiveTask['status'];
   /** Set when the commission is waiting on the human, so the volume can carry
    *  the mark the card table prints at the head of such a spine. */
   petition?: boolean;
@@ -100,6 +103,7 @@ export function booksFor(tasks: readonly HiveTask[], agentId: string): DeskVolum
       id: task.id,
       title: task.title,
       state: DESK_STATE[task.status] ?? 'closed',
+      status: task.status,
       ...(waitsOnHuman(task) ? { petition: true } : {})
     }));
 }
@@ -123,17 +127,28 @@ const LEAN = [0.03, -0.025, 0.02, -0.03];
  * The house is drawn as a flat cross-section and straight on, so there is no
  * depth to stack INTO: further up the panel is further back on the desk, which
  * is exactly where a reader's other volumes are. Each one therefore sits above
- * the last, starting immediately behind the open book — and the open book keeps
- * the place the painting gave it, down on the desk surface where the painter
- * drew a volume lying.
+ * the last.
+ *
+ * The slot is the book's place on that desk — the volume the painter drew — and
+ * the pile stands in it rather than beside it. A closed volume covering the
+ * painted book is the House saying which book is on that desk NOW, which is the
+ * one thing a reading desk is for. What must not happen is a stack of bare
+ * boards there; the drawing is `SpineBook`'s business, and it deals the same
+ * bound volume the card table deals.
+ *
+ * `restingOn` says whether the book being READ already lies in the slot. When
+ * it does the pile starts above it, because a reader's other volumes sit behind
+ * the one open in front of them; when it does not, the pile stands on the desk
+ * itself and the bottom of it takes the painted book's place.
  */
-export function deskPile(slot: Box, count: number): Box[] {
+export function deskPile(slot: Box, count: number, restingOn = false): Box[] {
   const height = slot.height * VOLUME.thickness;
   const width = slot.width * VOLUME.width;
   const left = slot.left + (slot.width - width) / 2;
+  const foot = restingOn ? slot.top : slot.top + slot.height;
   return Array.from({ length: Math.max(0, count) }, (_, i) => ({
     left: left + width * (LEAN[i % LEAN.length] ?? 0),
-    top: slot.top - height * (i + 1),
+    top: foot - height * (i + 1),
     width,
     height
   }));

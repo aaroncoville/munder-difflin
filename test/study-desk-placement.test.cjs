@@ -73,12 +73,19 @@ async function house(tasks) {
 
 /** Every commission drawn on the felt, and every volume drawn at Ann's desk. */
 const onFelt = (view) =>
-  deep(view.tree, (n) => n.props?.['data-baize-book'] !== undefined)
-    .map((n) => n.props['data-baize-book']);
+  deep(view.tree, (n) => n.props?.['data-spine-on'] === 'felt')
+    .map((n) => n.props['data-spine-book']);
 const atDesk = (view) => {
   const place = deep(view.tree, (n) => n.props?.['data-study-place'] === 'ann')[0];
-  return deep(place, (n) => n.props?.['data-book-state'] !== undefined)
-    .map((n) => [n.props.title, n.props['data-book-state']]);
+  // A desk draws the commission in hand as an open book on the painted volume,
+  // and everything else it holds as a spine beside the reader. Both are the
+  // desk drawing that commission.
+  return [
+    ...deep(place, (n) => n.props?.['data-book-state'] !== undefined)
+      .map((n) => [n.props.title, n.props['data-book-state']]),
+    ...deep(place, (n) => n.props?.['data-spine-on'] === 'desk')
+      .map((n) => [n.props['aria-label'], 'waiting'])
+  ];
 };
 
 const seated = new Set(['ann']);
@@ -124,10 +131,14 @@ test('an assigned commission is at its desk and NOT on the card table', async ()
     'and it is not also dealt onto the felt — that is the double that hid the desk');
 });
 
-test('an assigned commission waiting its turn is a closed book at that desk', async () => {
-  const view = await house([card('T-1', 'todo', 'ann')]);
-  assert.deepEqual(atDesk(view), [['card T-1', 'closed']]);
-  assert.deepEqual(onFelt(view), []);
+test('an assigned commission waiting its turn waits at that desk, not on the felt', () => {
+  // Waiting work is a spine beside its reader — the same object the card table
+  // deals, which is what says it is the same kind of thing in the same state.
+  const view = house([card('T-1', 'todo', 'ann')]);
+  return view.then((v) => {
+    assert.deepEqual(atDesk(v), [['card T-1', 'waiting']]);
+    assert.deepEqual(onFelt(v), []);
+  });
 });
 
 test('a commission nobody holds is on the card table and on no desk', async () => {

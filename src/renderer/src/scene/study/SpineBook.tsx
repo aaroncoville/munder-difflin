@@ -1,0 +1,107 @@
+/**
+ * A commission seen end-on: the bound volume both the card table and a reading
+ * desk draw it as.
+ *
+ * It was the card table's alone, drawn inline where the piles are laid out, and
+ * a desk drew its waiting volumes as something else — its own boards, its own
+ * room's binding, no printed handle. Two alphabets for one object. A commission
+ * nobody has opened is the same thing whichever surface it is standing on, and
+ * the surface is already saying the thing that differs: on the felt nobody has
+ * picked it up, on a desk somebody is holding it.
+ *
+ * So it lives here, and both surfaces render THIS. Not a shared stylesheet or a
+ * copied block — the same component, so the two cannot drift apart into looking
+ * nearly alike, which is worse than looking different.
+ *
+ * The volume in HAND is not this. It is an open book, bound for its room, with
+ * its pages turning — see `DeskBook`. That difference is the whole signal.
+ */
+import { PETITION_EDGE, SPINE_FACES, spineMark, spineType, type Box } from './BaizeStacks';
+import type { HiveTask } from '@/components/TasksKanban';
+
+export interface SpineBookProps {
+  id: string;
+  title: string;
+  status: HiveTask['status'];
+  /** Waiting on the human: wears the petition head instead of the status one. */
+  petition?: boolean;
+  box: Box;
+  /**
+   * Which surface it is standing on.
+   *
+   * Drawn identically on both — that is the point of this component — but the
+   * house has to be able to ASK. The felt holds what nobody has picked up and a
+   * desk holds what somebody is holding, and telling those apart is the whole
+   * of the placement rule; a mark that named only the object would make every
+   * question about the card table quietly answer for the desks as well.
+   */
+  surface: 'felt' | 'desk';
+  onOpen: (id: string) => void;
+}
+
+export function SpineBook({
+  id, title, status, petition, box, surface, onOpen
+}: SpineBookProps): JSX.Element {
+  const face = SPINE_FACES[status];
+  const n = spineMark({ id });
+  const { fontSize } = spineType(box, n);
+  // Stopping the event is what keeps the surface underneath — a room that opens
+  // the board, a place setting that selects an assistant — from firing as well.
+  const open = (stop: () => void): void => { stop(); onOpen(id); };
+  return (
+    <div
+      data-spine-book={id}
+      data-spine-on={surface}
+      {...(petition ? { 'data-spine-petition': '' } : {})}
+      role="button"
+      tabIndex={0}
+      title={petition ? `${title} — ${status}, awaiting you` : `${title} — ${status}`}
+      aria-label={title}
+      onClick={(e: React.MouseEvent) => open(() => e.stopPropagation())}
+      onKeyDown={(e: React.KeyboardEvent) => {
+        if (e.target !== e.currentTarget) return;
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        open(() => e.stopPropagation());
+      }}
+      style={{
+        position: 'absolute',
+        left: box.left,
+        top: box.top,
+        width: box.width,
+        height: box.height,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        boxSizing: 'border-box',
+        borderRadius: 'var(--cth-radius-badge)',
+        cursor: 'pointer',
+        userSelect: 'none',
+        background: face.background,
+        // The head band at the spine's near end, and a hairline all round so
+        // one book has an edge against the next. Proportional, for the same
+        // reason the type is.
+        boxShadow: `inset ${Math.max(2, box.width * 0.06)}px 0 0 `
+          + `${petition ? PETITION_EDGE : face.edge}, `
+          + `inset 0 0 0 ${Math.max(1, box.height * 0.06)}px var(--cth-ink-300)`
+      }}
+    >
+      <div
+        data-spine-number=""
+        style={{
+          // Turned a quarter, the way a title is printed on a book that is
+          // lying down: the digits run across the thickness of the spine rather
+          // than along its length.
+          transform: 'rotate(90deg)',
+          fontFamily: 'var(--cth-font-display)',
+          fontSize,
+          lineHeight: 1,
+          color: face.color,
+          pointerEvents: 'none'
+        }}
+      >
+        {n}
+      </div>
+    </div>
+  );
+}

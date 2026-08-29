@@ -27,7 +27,7 @@
  * task state per room.
  */
 import type { CSSProperties } from 'react';
-import { PETITION_EDGE, spineType, type Box } from './BaizeStacks';
+import { PETITION_EDGE, type Box } from './BaizeStacks';
 
 export type BookState = 'closed' | 'open' | 'sealed';
 
@@ -122,20 +122,6 @@ export interface DeskBookProps {
   taskId?: string;
   onOpen?: (id: string) => void;
   /**
-   * The commission's handle, stamped on a closed board.
-   *
-   * The same mark the card table prints on a spine and the shelf wall on a
-   * volume, printed the same way — sideways, in the display face, sized from
-   * the board it is on. A desk carrying several volumes needs it for the reason
-   * the felt does: a closed book is a rectangle, and without the mark a pile of
-   * them says how much work is in hand but never which work.
-   *
-   * Only a CLOSED board carries it. An open book's face is its pages, and a
-   * number printed across those would be printed on the very thing the reader
-   * is reading.
-   */
-  mark?: number | string;
-  /**
    * Whether this commission is waiting on the human.
    *
    * The card table prints the waiting-on-you mark at the head of a spine, and
@@ -155,7 +141,13 @@ const LEAF_CLASS = 'cth-desk-book-leaf';
 /**
  * One page lifting off the right-hand side and falling over to the left.
  *
- * It RISES as it goes, and that is not decoration. A book on one of these desks
+ * It is a NARROW sheet and it barely leaves the desk. The house is letterboxed
+ * whole, so a painted volume is a few dozen pixels across: a leaf sweeping the
+ * full width of the page there is a shutter banging rather than somebody
+ * reading. What turns is the outer part of the right-hand page, lifting a
+ * little and going over.
+ *
+ * It rises as it goes, and that is not decoration. A book on one of these desks
  * is seen from in front and a little above — its painted volume is wide and
  * shallow, foreshortened the way a book lying on an angled desk is — so a page
  * standing up off it comes towards the viewer and reads higher on the panel.
@@ -175,8 +167,8 @@ const LEAF_CLASS = 'cth-desk-book-leaf';
 const TURN_SHEET = `
 @keyframes cth-desk-book-turn {
   0%, 10% { transform: translateY(0) rotateY(0deg); opacity: 1; }
-  40% { transform: translateY(-18%) rotateY(-84deg); }
-  55% { transform: translateY(-14%) rotateY(-120deg); opacity: 0.92; }
+  40% { transform: translateY(-6%) rotateY(-84deg); }
+  55% { transform: translateY(-5%) rotateY(-120deg); opacity: 0.92; }
   70%, 100% { transform: translateY(0) rotateY(-168deg); opacity: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -185,7 +177,7 @@ const TURN_SHEET = `
 `;
 
 export function DeskBook({
-  state, title, box, binding, taskId, onOpen, mark, petition
+  state, title, box, binding, taskId, onOpen, petition
 }: DeskBookProps): JSX.Element {
   const bound: BookBinding = BOOK_BINDINGS[binding ?? DEFAULT_BINDING];
   const opens = Boolean(taskId) && typeof onOpen === 'function';
@@ -287,6 +279,9 @@ export function DeskBook({
             className={LEAF_CLASS}
             style={{
               ...page,
+              // Narrower than the page it lifts off: a corner of the sheet
+              // turning, not the whole leaf swinging across the book.
+              width: '26%',
               right: '6%',
               // Hinged at the gutter, which for the right-hand page is its
               // LEFT edge — that is the spine the sheet is sewn to.
@@ -298,38 +293,14 @@ export function DeskBook({
           />
         </>
       ) : (
-        <>
-          <div
-            data-book-spine=""
-            style={{
-              position: 'absolute',
-              left: '14%', top: 0, width: '10%', height: '100%',
-              background: bound.spine
-            }}
-          />
-          {mark === undefined ? null : (
-            <div
-              data-book-mark=""
-              style={{
-                position: 'absolute',
-                inset: 0,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                // Turned a quarter, the way a title is printed on a book that
-                // is lying down — the same quarter the felt turns its spines.
-                transform: 'rotate(90deg)',
-                fontFamily: 'var(--cth-font-display)',
-                fontSize: spineType(box, mark).fontSize,
-                lineHeight: 1,
-                color: bound.pages,
-                pointerEvents: 'none'
-              }}
-            >
-              {mark}
-            </div>
-          )}
-        </>
+        <div
+          data-book-spine=""
+          style={{
+            position: 'absolute',
+            left: '14%', top: 0, width: '10%', height: '100%',
+            background: bound.spine
+          }}
+        />
       )}
       {/* A marker left in the book, hanging past its foot — what separates a
           small dark volume from a shadow in a room with no light on it. */}

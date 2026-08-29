@@ -348,10 +348,14 @@ test('work in progress is an open book and a scroll of what is being said', asyn
         humanQA: [{ q: 'which api key?' }] }
     ]
   });
+  // The commission being worked is an open book on the volume its painting
+  // drew; the impeded one, which nobody is reading, waits beside its reader as
+  // a spine — the same object the card table deals.
   const books = all(view.tree, (n) => n.type === DeskBook);
-  assert.equal(books.length, 2);
-  assert.equal(books.find((b) => b.props.title === 'Port the loader').props.state, 'open');
-  assert.equal(books.find((b) => b.props.title === 'Which key?').props.state, 'sealed');
+  assert.deepEqual(books.map((b) => [b.props.title, b.props.state]),
+    [['Port the loader', 'open']]);
+  const waiting = all(view.tree, (n) => n.props?.['data-spine-on'] === 'desk');
+  assert.deepEqual(waiting.map((n) => n.props['aria-label']), ['Which key?']);
 
   const scrolls = all(view.tree, (n) => n.type === SpeechScroll);
   const spoken = scrolls.map((s) => s.props.text).filter(Boolean);
@@ -490,7 +494,7 @@ test('the commissions are dealt onto the baize the manifest points at', async ()
   // catches, and it is invisible to a count of them.
   const table = roomOfKind(studyRoom, 'cardTable');
   const baize = berthToBox(table.berths[0], viewOf(table));
-  const cards = all(panelOf(view.tree, table.id), (n) => n.props?.['data-baize-book'] !== undefined);
+  const cards = all(panelOf(view.tree, table.id), (n) => n.props?.['data-spine-on'] === 'felt');
   assert.equal(cards.length, 2, 'two commissions, two books');
   for (const c of cards) {
     const { left, top, width, height } = c.props.style;
@@ -517,10 +521,10 @@ test('the card table shows the ledger itself, stuck work first', async () => {
   // Read through `all`, not `text`: the cards are rendered by a component, and
   // `text` stops at the component node. Reading the tree the shallow way here
   // would report an empty table and call it a pass.
-  const cards = all(table, (n) => n.props?.['data-baize-book'] !== undefined);
+  const cards = all(table, (n) => n.props?.['data-spine-on'] === 'felt');
   assert.deepEqual(cards.map((c) => String(c.props.children.props.children)),
     ['4', '3', '1', '2']);
-  assert.deepEqual(cards.map((c) => c.props['data-baize-book']),
+  assert.deepEqual(cards.map((c) => c.props['data-spine-book']),
     ['T-4', 'T-3', 'T-1', 'T-2'], 'the numbers are not the cards they name');
 });
 
