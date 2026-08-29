@@ -51,8 +51,16 @@ test.after(() => { for (const v of views) for (const c of v.cleanups ?? []) c?.(
 const card = (id, status, over = {}) =>
   ({ id, title: `card ${id}`, status, assignee: 'ann', dependsOn: [], humanQA: [], ...over });
 
-/** One assistant at the first reading berth, with the House still or moving. */
-async function house(tasks, { still = false } = {}) {
+/**
+ * One assistant, with the House still or moving.
+ *
+ * `isGod` seats them in the god's study instead of a reading room, which is the
+ * only desk in the house whose painter left no book on it — see the god-path
+ * test at the bottom. It has to go through THIS, the real projection, because
+ * which berth somebody sits at is the projection's decision and a desk mounted
+ * by hand has already had that decision made for it.
+ */
+async function house(tasks, { still = false, isGod = false } = {}) {
   global.window = {
     localStorage: { getItem: () => 'occult', setItem: () => {}, removeItem: () => {} },
     close: () => {},
@@ -63,7 +71,8 @@ async function house(tasks, { still = false } = {}) {
   useStore.setState({ agents: [], archivedAgents: [], restorableAgents: [] });
   useStore.getState().addAgent({
     id: 'ann', name: 'ANN', character: 'jim', accent: 'sky', description: '',
-    project: 'p', tmuxTarget: '', cwd: '/tmp', status: 'working', action: '', progress: 0
+    project: 'p', tmuxTarget: '', cwd: '/tmp', status: 'working', action: '', progress: 0,
+    ...(isGod ? { isGod: true } : {})
   });
   useStore.setState({
     requestCommandCenterTab: () => {}, select: () => {}, openTaskDetail: () => {}
@@ -267,21 +276,45 @@ test('the film is scenery; the book is still the door', async () => {
   assert.deepEqual(opened, ['T-1'], 'pressing the book did not open its commission');
 });
 
-test('a desk the painter left bare still draws its own book, and it still turns', async () => {
-  // The god's study has no painted volume, so there was nothing to film. That
-  // desk keeps the drawn book and the drawn turn — removing them would leave
-  // the one seat in the house with no way to say it is being worked at.
+test('the desk the painter left bare still draws its own book, and it still turns', async () => {
+  // THROUGH THE SCENE, not by mounting a book with the answer already handed to
+  // it. The god's study is the one seat with no painted volume and so no film,
+  // and whether it keeps its drawn turn is decided by two pieces of production
+  // wiring — `turnBox`, which must return null for a berth with no clip, and
+  // the place setting, which must only set `painted` when it got one. A book
+  // mounted by hand exercises neither: it tests that DeskBook can draw a leaf,
+  // which was never in doubt.
   const god = studyRoom.rooms.find((r) => r.kind === 'godStudy');
   assert.ok(god && god.berths[0] && !god.berths[0].volume,
     'the god now has a painted volume; this test is about the case where none exists');
   assert.equal(god.berths[0].turn, undefined, 'the god has a film but no book to film');
 
-  const { DeskBook } = loadTs('src/renderer/src/scene/study/DeskBook.tsx');
-  const bare = mount(DeskBook, {
-    state: 'open', box: { left: 0, top: 0, width: 40, height: 14 }
-  });
-  views.push(bare);
-  assert.equal(deep(bare.tree, (n) => n.props?.['data-book-turn'] !== undefined).length, 0);
-  assert.equal(deep(bare.tree, (n) => n.props?.['data-book-leaf'] !== undefined).length, 1,
-    'a book with no film of it lost its drawn page turn');
+  const view = await house([card('T-1', 'doing')], { isGod: true });
+  const place = deep(view.tree, (n) => n.props?.['data-study-place'] === 'ann')[0];
+  assert.ok(place, 'the god is not seated in the house at all');
+
+  assert.equal(films(view).length, 0,
+    'a film is playing at the god’s desk, where the painter drew no book to film');
+  const open = deep(place, (n) => n.props?.['data-book-state'] === 'open');
+  assert.equal(open.length, 1, 'the god’s commission is not an open book');
+  assert.equal(leaves(view).length, 1,
+    'the god’s book lost its drawn page turn, so that desk cannot say it is being worked at');
+  // And it is a real book, not an empty frame with a leaf in it: `painted`
+  // strips the boards and the pages, and passing it here would leave the god
+  // with a page turning over bare desk.
+  assert.ok(deep(open[0], (n) => n.props?.['data-book-page'] === 'left').length === 1,
+    'the god’s book has no pages, which is what `painted` does to a book');
+});
+
+test('turnBox refuses a berth with no film, which is what protects the bare desk', () => {
+  // The other half of the same seam, stated directly: the place setting only
+  // sets `painted` when turnBox hands it something.
+  const god = studyRoom.rooms.find((r) => r.kind === 'godStudy');
+  const view = containFit({ w: god.natural.w, h: god.natural.h }, god.natural);
+  assert.equal(turnBox(god.berths[0], view), null,
+    'the god’s berth was given a film box out of nothing');
+  // A berth that names a clip the build does not carry is the same case: draw
+  // nothing rather than a black rectangle where the book was.
+  assert.equal(turnBox({ ...god.berths[0], turn: { x: 0, y: 0, w: 0.1, h: 0.1, clip: './nope.mp4' } },
+    view), null, 'a berth naming a clip nobody imported still got a film box');
 });
