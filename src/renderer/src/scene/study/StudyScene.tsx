@@ -55,7 +55,7 @@ import { DeskBook, type BookBindingName } from './DeskBook';
 import { FlyingBooks, type FlightPath } from './FlyingBooks';
 import { flightsFor, houseSlot, seenStatuses, type Flight, type LaidStorey, type Seen }
   from './flight';
-import { deskPile } from './deskPile';
+import { bookFloat, deskPile } from './deskPile';
 import { bookSlot, type ArchivedThing } from './shelfBooks';
 import { SpeechScroll } from './SpeechScroll';
 import { portraitFor } from './portraits';
@@ -231,8 +231,8 @@ function houseView(room: Room): ViewBox | null {
  * book is leaving, and a flight that carried one without the other would take
  * off as one volume and land as another.
  */
-function deskBookInHouse(
-  agent: SceneAgent
+export function deskBookInHouse(
+  agent: Pick<SceneAgent, 'berthId' | 'stackIndex'>
 ): { box: Box; binding?: BookBindingName } | null {
   for (const room of studyRoom.rooms) {
     const berth = room.berths.find((b) => b.id === agent.berthId);
@@ -240,8 +240,11 @@ function deskBookInHouse(
     const view = houseView(room);
     if (!view) return null;
     const desk = stackedBerth(berthToBox(berth, view), agent.stackIndex);
+    const painted = volumeBox(berth, view);
     return {
-      box: deskLayout(desk, volumeBox(berth, view)).book,
+      // The same place the desk draws it in — a flight that set off from where
+      // the book is not would be a book appearing out of the desk beside it.
+      box: bookFloat(painted, deskLayout(desk, painted).book),
       ...(room.binding ? { binding: room.binding } : {})
     };
   }
@@ -578,7 +581,8 @@ function DeskPlace({ agent, desk, volume, binding, raised, onLook, onSelect, onO
   /** Opens the commission the book on this desk stands for. */
   onOpenTask: (id: string) => void;
 }): JSX.Element {
-  const { card, book, scroll } = deskLayout(desk, volume);
+  const { card, book: beside, scroll } = deskLayout(desk, volume);
+  const book = bookFloat(volume, beside);
   return (
     <div
       data-study-place={agent.id}

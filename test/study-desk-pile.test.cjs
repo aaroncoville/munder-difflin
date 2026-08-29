@@ -235,3 +235,88 @@ test('the waiting-on-you mark is drawn on the desk, not merely recorded', async 
   const { PETITION_EDGE } = loadTs('src/renderer/src/scene/study/BaizeStacks.tsx');
   assert.equal(band[0].props.style.background, PETITION_EDGE);
 });
+
+/* ---- the float: the volume the PAINTER drew is the place ---------------- */
+
+const { bookFloat } = loadTs('src/renderer/src/scene/study/deskPile.ts');
+const { volumeBox, deskLayout } = loadTs(SCENE);
+const { studyRoom: plan } = loadTs(SCENE);
+
+test('a desk book takes the place of the volume the painting drew', () => {
+  const painted = { left: 10, top: 20, width: 40, height: 14 };
+  const beside = { left: 90, top: 22, width: 30, height: 18 };
+  assert.deepEqual(bookFloat(painted, beside), painted,
+    'where the painter put a book, that is where the book is');
+  assert.deepEqual(bookFloat(null, beside), beside,
+    'and where they did not, it lies in the clear desk beside the card');
+});
+
+test('the book on a painted desk covers the painted one exactly', async () => {
+  // Two things at once. The desk art in these rooms ALREADY has an open book
+  // lying on it, so a second book drawn beside it is two books on one desk. And
+  // the painted volume is drawn in the room's own perspective — its box is
+  // foreshortened, wide and shallow, the way a book on an angled desk is — so
+  // a book registered on it is drawn at that angle for free, while one given a
+  // box of its own is drawn as if seen from straight above.
+  const room = plan.rooms.find((r) => r.kind === 'desk' && r.berths[0]?.volume);
+  assert.ok(room, 'some reading room has a painted volume to cover');
+  const view = await seatOne([{ ...card('T-1', 'doing'), assignee: 'ann' }]);
+  const drawn = volumesAt(view, 'ann');
+  assert.equal(drawn.length, 1);
+  const laid = drawn[0].props.style;
+  // The panel the first berth is drawn in, measured the way the scene measures
+  // it — the numbers themselves come from the plan, so this cannot pass by
+  // agreeing with the implementation about a coordinate system.
+  const berth = room.berths[0];
+  assert.ok(laid.width > 0 && laid.height > 0, 'the book has a size');
+  // The volume is declared in fractions of its PANEL, and the panel is not
+  // square, so the shape on screen is that fraction times the panel's aspect.
+  const want = (berth.volume.w / berth.volume.h) * (room.natural.w / room.natural.h);
+  assert.ok(Math.abs(laid.width / laid.height - want) < 0.01,
+    `the book is the painted volume's shape: wanted ${want}, drew ${laid.width / laid.height}`);
+  // And the shape alone is not enough — a box of the right proportions parked
+  // somewhere else on the desk would pass that. It has to be in the volume's
+  // PLACE, which is what makes it cover the painted book rather than join it.
+  const { deskBerths } = loadTs('src/renderer/src/scene/study/roomManifest.ts');
+  assert.equal(deskBerths(plan)[0].id, berth.id, 'ann is seated at this berth');
+  const beside = deskLayout(
+    { left: laid.left, top: laid.top, width: laid.width, height: laid.height }, null).book;
+  assert.notEqual(laid.left, beside.left,
+    'it is not the clear-desk box the book used to be given');
+});
+
+test('the page lifts off the desk as it turns, rather than spinning flat', () => {
+  // A page turning on a book you are looking down at from in front rises
+  // towards you as it passes the upright. Rotation alone reads as a page
+  // spinning in the plane of the screen, which is what a book seen from
+  // directly above would do — and these desks are not seen from above.
+  const { DeskBook } = loadTs('src/renderer/src/scene/study/DeskBook.tsx');
+  const open = mount(DeskBook, { state: 'open', box: { left: 0, top: 0, width: 40, height: 14 } });
+  const sheets = deep(open.tree, (n) => n.type === 'style')
+    .map((n) => String(n.props.children)).join('\n');
+  const turn = /@keyframes\s+cth-desk-book-turn\s*\{([^}]*\}[^}]*)*?\}\s*\n/.exec(sheets);
+  assert.ok(turn, 'the turn is defined');
+  assert.match(turn[0], /translateY\(-/, 'the leaf rises as it goes over');
+});
+
+test('a book takes off from the place the desk was drawing it', () => {
+  // Two pieces of code work out where a desk book is: the place setting, which
+  // draws it, and the flight, which has to know where it was when it left.
+  // They are separate functions over the same berth and nothing held them
+  // together — so a change to one alone would make books appear out of a patch
+  // of desk beside the volume they had been lying on, with every test green.
+  const { deskBookInHouse } = loadTs(SCENE);
+  const { deskBerths } = loadTs('src/renderer/src/scene/study/roomManifest.ts');
+  for (const berth of deskBerths(plan)) {
+    const room = plan.rooms.find((r) => r.berths.some((b) => b.id === berth.id));
+    const off = deskBookInHouse({ id: 'ann', berthId: berth.id, stackIndex: 0 });
+    assert.ok(off, `${berth.id} has a place to leave from`);
+    // Compared as a SHAPE: the sky is the house's frame and the desk is its
+    // room's, but both letterbox the same panel, so the painted volume has one
+    // shape in either. The clear-desk box the book used to be given does not.
+    const want = (berth.volume.w / berth.volume.h) * (room.natural.w / room.natural.h);
+    assert.ok(Math.abs(off.box.width / off.box.height - want) < 0.01,
+      `${berth.id} takes off as the shape the desk drew: wanted ${want}, `
+      + `got ${off.box.width / off.box.height}`);
+  }
+});

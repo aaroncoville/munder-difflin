@@ -137,3 +137,28 @@ export function deskPile(slot: Box, count: number): Box[] {
     height
   }));
 }
+
+/**
+ * Where the volume in hand lies: on the book the PAINTER already put there.
+ *
+ * Two reading rooms have an open book drawn on the desk, and a book of ours
+ * drawn beside it is two books on one desk — the very doubling the painting was
+ * supposed to save us from drawing. So the desk book takes that book's place
+ * instead: it is registered on the painted volume and covers it, the way the
+ * shelf wall floats a volume you can press over the one the painting shelved.
+ * The painting keeps the piece of itself it drew there as the backdrop, and
+ * what moves and what answers a click is ours.
+ *
+ * It also settles how the page turn READS. A painted volume's box is the room's
+ * own perspective already worked out — wide and shallow, foreshortened the way
+ * a book lying on an angled desk is — so a book registered on it is drawn at
+ * that angle for nothing. A book given a box of its own is drawn as if the desk
+ * were seen from straight above, and the page then flips in a plane the room
+ * does not have.
+ *
+ * Where the painter left the desk bare there is nothing to register on, and the
+ * book lies in the clear desk beside the card as it always did.
+ */
+export function bookFloat(volume: Box | null, beside: Box): Box {
+  return volume ?? beside;
+}

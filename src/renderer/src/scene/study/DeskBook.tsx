@@ -155,6 +155,15 @@ const LEAF_CLASS = 'cth-desk-book-leaf';
 /**
  * One page lifting off the right-hand side and falling over to the left.
  *
+ * It RISES as it goes, and that is not decoration. A book on one of these desks
+ * is seen from in front and a little above — its painted volume is wide and
+ * shallow, foreshortened the way a book lying on an angled desk is — so a page
+ * standing up off it comes towards the viewer and reads higher on the panel.
+ * Rotation on its own is a page spinning in the plane of the screen, which is
+ * what you would see looking down on the desk from directly overhead, and these
+ * desks are not drawn from there. The rise peaks at the upright and returns as
+ * the page falls, because a page is highest when it is standing.
+ *
  * It fades out as it passes the upright, which is what lets a single leaf loop
  * forever and still read as a fresh page every time: without the fade the same
  * sheet would visibly snap back across the gutter on every repeat.
@@ -165,9 +174,10 @@ const LEAF_CLASS = 'cth-desk-book-leaf';
  */
 const TURN_SHEET = `
 @keyframes cth-desk-book-turn {
-  0%, 10% { transform: rotateY(0deg); opacity: 1; }
-  55% { opacity: 0.92; }
-  70%, 100% { transform: rotateY(-168deg); opacity: 0; }
+  0%, 10% { transform: translateY(0) rotateY(0deg); opacity: 1; }
+  40% { transform: translateY(-18%) rotateY(-84deg); }
+  55% { transform: translateY(-14%) rotateY(-120deg); opacity: 0.92; }
+  70%, 100% { transform: translateY(0) rotateY(-168deg); opacity: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
   .${LEAF_CLASS} { animation: none; transform: none; opacity: 1; }
@@ -193,8 +203,12 @@ export function DeskBook({
     pointerEvents: title || opens ? 'auto' : 'none',
     cursor: opens ? 'pointer' : 'default',
     // The leaf turns about the gutter, so the box it turns in needs depth or
-    // the page reads as a shutter closing rather than as paper.
+    // the page reads as a shutter closing rather than as paper. The eye is in
+    // front of the desk and above it, so the vanishing point sits below the
+    // book on the panel rather than in the middle of it — the same place the
+    // room's own perspective puts it.
     perspective: box.width,
+    perspectiveOrigin: '50% 140%',
     transition: 'left var(--cth-dur-slow) var(--cth-ease-glide), top var(--cth-dur-slow) var(--cth-ease-glide)'
   };
   const cover: CSSProperties = {
