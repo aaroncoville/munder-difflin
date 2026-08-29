@@ -61,6 +61,20 @@ export interface Berth extends Rect {
    * of the portrait rather than under it.
    */
   volume?: Rect;
+  /**
+   * The patch of painting a page turn is drawn over, and the clip that draws it.
+   *
+   * A desk whose painted book turns its pages does it with a short film of that
+   * corner of the room, not with shapes of ours — see `BookTurn`. The rectangle
+   * is bigger than the volume and is NOT derived from it: it was chosen per
+   * berth to hold the book with room to move while keeping the room's candle
+   * out of frame, because a generated flame in the film would burn beside the
+   * one the ambiance layer already draws. That makes it read data, like the
+   * volume, rather than arithmetic.
+   *
+   * Only berths whose painting put a book on the desk have one.
+   */
+  turn?: Rect & { clip: string };
 }
 
 /**
@@ -177,6 +191,19 @@ function validateBerth(raw: unknown, roomId: string, what: string): Berth {
     );
   }
   if (o.volume !== undefined) out.volume = validateRect(o.volume, `${what}.volume`, roomId);
+  if (o.turn !== undefined) {
+    const rect = validateRect(o.turn, `${what}.turn`, roomId);
+    const clip = asRecord(o.turn, `${what}.turn`).clip;
+    if (typeof clip !== 'string' || !clip) {
+      throw new Error(`room manifest: ${what}.turn needs a clip to play`);
+    }
+    // A turn over a desk the painter left bare has no book to turn the pages
+    // of: it would be a film of somebody else's furniture laid on empty wood.
+    if (out.volume === undefined) {
+      throw new Error(`room manifest: ${what} has a turn but no volume to turn`);
+    }
+    out.turn = { ...rect, clip };
+  }
   return out;
 }
 
