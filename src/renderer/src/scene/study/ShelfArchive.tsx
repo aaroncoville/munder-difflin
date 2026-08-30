@@ -58,6 +58,14 @@
  */
 import { bookSlot, type ArchivedThing, type Box } from './shelfBooks';
 import { spineMark, spineType, SPINE_FACES } from './BaizeStacks';
+// The hover ring the wall had first, now shared with every other surface books
+// stand on — see `pulledBooks`. Re-exported because this is where the house has
+// always reached for it.
+import {
+  NOTHING_PULLED, bookIsPulled, pullHands, pullRing, PULL_Z, type PulledBooks
+} from './pulledBooks';
+
+export { NOTHING_PULLED, pullBook, bookIsPulled, type PulledBooks } from './pulledBooks';
 
 /**
  * How each kind of finished thing is taken out of the painting.
@@ -81,37 +89,6 @@ export const BOOK_SHADE: Record<ArchivedThing['kind'], string> = {
   commission: 'brightness(0.34) saturate(1.7)',
   assistant: 'brightness(0.34) saturate(0.18)'
 };
-
-/**
- * Which book the pointer is on, and which one the keyboard is on.
- *
- * Two, because they are independent: either can be on a book the other is not,
- * and both can be on the same one.
- */
-export interface PulledBooks { hover: string | null; focus: string | null }
-
-/** Nothing in either hand. */
-export const NOTHING_PULLED: PulledBooks = { hover: null, focus: null };
-
-/**
- * A hand arriving at a book, or coming off one.
- *
- * Letting go only ever clears the book that hand was actually on. Without that
- * guard the pointer crossing from one spine to the next — which fires the leave
- * of the old and the enter of the new, in an order nothing here controls —
- * would clear whichever book had just been entered.
- */
-export function pullBook(
-  now: PulledBooks, id: string, by: keyof PulledBooks, on: boolean
-): PulledBooks {
-  if (on) return { ...now, [by]: id };
-  return now[by] === id ? { ...now, [by]: null } : now;
-}
-
-/** Forward if ANY hand is on it. */
-export function bookIsPulled(now: PulledBooks, id: string): boolean {
-  return now.hover === id || now.focus === id;
-}
 
 /**
  * How the number is set on a standing book, and how long a label it needs.
@@ -164,8 +141,6 @@ export function ShelfArchive({
         const opens = book.kind === 'commission' && typeof onOpen === 'function';
         const hands = pulled ?? NOTHING_PULLED;
         const held = opens && bookIsPulled(hands, book.id);
-        const look = (by: keyof PulledBooks, on: boolean): void =>
-          onPull?.(pullBook(hands, book.id, by, on));
         return (
           <div
             key={`${book.kind}:${book.id}`}
@@ -192,14 +167,11 @@ export function ShelfArchive({
                   event.stopPropagation();
                   onOpen?.(book.id);
                 },
-                onMouseEnter: () => look('hover', true),
-                onMouseLeave: () => look('hover', false),
                 // The keyboard reaches a mark exactly as the pointer does — it
                 // is a tab stop — and would otherwise land on one nobody can
                 // see they are on. Tracked apart from the pointer, so letting
                 // go of one hand does not put back a book the other holds.
-                onFocus: () => look('focus', true),
-                onBlur: () => look('focus', false)
+                ...pullHands(book.id, hands, onPull)
               }
               : {})}
             style={{
@@ -210,12 +182,8 @@ export function ShelfArchive({
               height: box.height,
               // Above the volumes either side, so the ring is not overdrawn by
               // whichever mark happens to come after this one.
-              zIndex: held ? 1 : 0,
-              // Outside the border box on purpose: an inset ring would be drawn
-              // under the layer of painting the mark carries.
-              boxShadow: held
-                ? `0 0 0 ${Math.max(1, box.width * 0.14)}px var(--cth-gilt)`
-                : 'none',
+              zIndex: held ? PULL_Z : 0,
+              boxShadow: held ? pullRing(box) : 'none',
               cursor: opens ? 'pointer' : 'default',
               pointerEvents: opens ? 'auto' : 'none'
             }}
