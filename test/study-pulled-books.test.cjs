@@ -110,6 +110,9 @@ const settle = () => new Promise((r) => setImmediate(r));
 const views = [];
 test.after(() => { for (const v of views) for (const c of v.cleanups ?? []) c?.(); });
 
+/** Every commission the house was asked to open, in order. */
+const opened = [];
+
 const card = (id, status, assignee = 'ann') =>
   ({ id, title: `card ${id}`, status, assignee, dependsOn: [], humanQA: [] });
 
@@ -126,8 +129,10 @@ async function house(tasks) {
     id: 'ann', name: 'ANN', character: 'jim', accent: 'sky', description: 'a reader',
     project: 'p', tmuxTarget: '', cwd: '/tmp', status: 'working', action: '', progress: 0
   });
+  opened.length = 0;
   useStore.setState({
-    requestCommandCenterTab: () => {}, select: () => {}, openTaskDetail: () => {}
+    requestCommandCenterTab: () => {}, select: () => {},
+    openTaskDetail: (id) => { opened.push(id); }
   });
   const { StudyScene } = loadTs(SCENE);
   const view = mount(StudyScene, {});
@@ -137,29 +142,54 @@ async function house(tasks) {
   return view;
 }
 
-/** Every book-shaped surface the house draws, by the mark each one carries. */
+/**
+ * Every book-shaped surface the house draws, by the mark each one carries.
+ *
+ * All FOUR. The shelf wall belongs here as much as the rest: it is the surface
+ * the ring came from, it draws from the same one house-wide state, and a claim
+ * about "one ring in the house" that quietly enumerates three of four surfaces
+ * is a claim about three of four surfaces.
+ */
 const surfaces = (view) => ({
   felt: deep(view.tree, (n) => n.props?.['data-spine-on'] === 'felt'),
   desk: deep(view.tree, (n) => n.props?.['data-spine-on'] === 'desk'),
-  open: deep(view.tree, (n) => n.props?.['data-book-state'] === 'open')
+  open: deep(view.tree, (n) => n.props?.['data-book-state'] === 'open'),
+  shelf: deep(view.tree, (n) => n.props?.['data-shelf-book'] !== undefined)
 });
+/**
+ * The commission a rendered book stands for, however that surface marks it.
+ *
+ * Every surface but one prints the id on the element. The open book prints its
+ * TITLE (as its accessible name) and nothing else, so its id is not readable
+ * from the tree — see `IN_HAND`.
+ */
+const bookId = (node, kind) => (kind === 'shelf'
+  ? node.props['data-shelf-book']
+  : node.props['data-spine-book']);
+const press = (node) => node.props.onClick({ stopPropagation: () => {} });
 const ringed = (node) => String(node?.props?.style?.boxShadow ?? '').includes('--cth-gilt');
 const allBooks = (view) => {
   const s = surfaces(view);
-  return [...s.felt, ...s.desk, ...s.open];
+  return [...s.felt, ...s.desk, ...s.open, ...s.shelf];
 };
 
 /**
- * The four assignments that put a book on each surface at once: one in hand
- * (the open book), two more held by the same assistant (the desk pile), and one
- * nobody has picked up (the felt).
+ * The assignments that put a book on every surface at once: one in hand (the
+ * open book), two more held by the same assistant (the desk pile), one nobody
+ * has picked up (the felt), and one finished (the shelf wall).
+ *
+ * The finished one is not decoration. Without it the wall is empty, and every
+ * assertion about the house as a whole silently excludes the surface the ring
+ * came from.
  */
 const aHouseful = () => [
   card('T-1', 'doing'), card('T-2', 'todo'), card('T-3', 'blocked'),
-  card('T-4', 'todo', '')
+  card('T-4', 'todo', ''), card('T-5', 'done')
 ];
+/** The commission `aHouseful` puts in the reader's hands — the open book. */
+const IN_HAND = 'T-1';
 
-for (const kind of ['felt', 'desk', 'open']) {
+for (const kind of ['felt', 'desk', 'open', 'shelf']) {
   test(`a book on the ${kind} wears the ring when a hand arrives, and only that book`, async () => {
     const view = await house(aHouseful());
     const before = surfaces(view)[kind];
@@ -210,14 +240,69 @@ test('the ring on the open book is drawn over the film turning its pages', async
     `the ring is at z ${book.props.style.zIndex}, under the film at z ${filmZ}`);
 });
 
-test('the ring does not take the pointer away from anything', async () => {
-  // Visual only. A held book that started swallowing presses — or stopped
-  // answering them — would be a behaviour change wearing an affordance's
-  // clothes.
+test('one ring in the house, across all four surfaces', async () => {
+  // The claim the single shared state buys, and it only means anything if the
+  // enumeration covers every surface: a wall keeping its own hover state would
+  // leave a shelf ring lit while a desk book was ringed too, and a check that
+  // never looked at the wall would call that one ring.
   const view = await house(aHouseful());
-  const before = allBooks(view).map((n) => [n.props.style.pointerEvents, typeof n.props.onClick]);
+  const kinds = ['felt', 'desk', 'open', 'shelf'];
+  const drawn = kinds.flatMap((k) => surfaces(view)[k].map((n) => bookId(n, k)));
+  assert.equal(drawn.length, new Set(drawn).size,
+    `two books in the house answer to the same id (${drawn.join(', ')}) — one state `
+    + 'cannot tell them apart, so one hand would ring both');
+
+  for (const kind of kinds) {
+    const here = surfaces(view)[kind];
+    assert.ok(here.length > 0, `the fixture drew no book on the ${kind}`);
+    here[0].props.onMouseEnter();
+    view.render();
+    const lit = allBooks(view).filter(ringed);
+    assert.equal(lit.length, 1,
+      `${lit.length} books are ringed at once with a hand on the ${kind}`);
+    assert.ok(surfaces(view)[kind].some(ringed), `the ring is not on the ${kind} it was put on`);
+  }
+});
+
+test('pressing a book still opens that book, held or not', async () => {
+  // Not "it has an onClick" — it always had one, and a handler swapped for a
+  // no-op, or for one that opens a different commission, passes that check. The
+  // ring is a visual affordance, so what has to be unchanged is which
+  // commission each surface actually opens.
+  const view = await house(aHouseful());
+  for (const kind of ['felt', 'desk', 'open', 'shelf']) {
+    const book = surfaces(view)[kind][0];
+    // The open book does not carry its id, so it is checked against the
+    // assignment the fixture made. That still catches the fault this test is
+    // for: a book wired to the wrong commission opens something that is not
+    // the one in hand.
+    const id = kind === 'open' ? IN_HAND : bookId(book, kind);
+
+    opened.length = 0;
+    press(book);
+    assert.deepEqual(opened, [id], `pressing a ${kind} book opened ${opened} instead of ${id}`);
+
+    book.props.onMouseEnter();
+    view.render();
+    const held = surfaces(view)[kind][0];
+    assert.ok(ringed(held), `the ${kind} book is not held for the second press`);
+    opened.length = 0;
+    press(held);
+    assert.deepEqual(opened, [id],
+      `once ringed, pressing a ${kind} book opened ${opened} instead of ${id}`);
+
+    held.props.onMouseLeave();
+    view.render();
+  }
+});
+
+test('the ring takes the pointer from nothing', async () => {
+  // The layer question, beside the behaviour one above: a held book must not
+  // become unpressable, or stop letting the room underneath be pressed.
+  const view = await house(aHouseful());
+  const before = allBooks(view).map((n) => n.props.style.pointerEvents);
   surfaces(view).felt[0].props.onMouseEnter();
   view.render();
-  const after = allBooks(view).map((n) => [n.props.style.pointerEvents, typeof n.props.onClick]);
-  assert.deepEqual(after, before, 'holding a book changed what can be pressed');
+  assert.deepEqual(allBooks(view).map((n) => n.props.style.pointerEvents), before,
+    'holding a book changed what can take the pointer');
 });
