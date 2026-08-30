@@ -87,3 +87,137 @@ test('a surface that tracks no hands is given no handlers', () => {
   assert.deepEqual(hands.sort(), ['onBlur', 'onFocus', 'onMouseEnter', 'onMouseLeave'],
     'the keyboard does not reach the ring on the same terms as the pointer');
 });
+
+/* ---- through the house: every surface books stand on ---------------------- */
+
+const { mount } = require('./render-hooks.cjs');
+const { useStore } = loadTs('src/renderer/src/store/store.ts');
+const SCENE = 'src/renderer/src/scene/study/StudyScene.tsx';
+const { BookTurn } = loadTs('src/renderer/src/scene/study/BookTurn.tsx');
+
+const deep = (n, pred, out = []) => {
+  if (!n || typeof n !== 'object') return out;
+  if (Array.isArray(n)) { for (const k of n) deep(k, pred, out); return out; }
+  if (pred(n)) out.push(n);
+  if (n.props?.children !== undefined) deep(n.props.children, pred, out);
+  if (typeof n.type === 'function') {
+    let r; try { r = n.type(n.props); } catch { return out; }
+    deep(r, pred, out);
+  }
+  return out;
+};
+const settle = () => new Promise((r) => setImmediate(r));
+const views = [];
+test.after(() => { for (const v of views) for (const c of v.cleanups ?? []) c?.(); });
+
+const card = (id, status, assignee = 'ann') =>
+  ({ id, title: `card ${id}`, status, assignee, dependsOn: [], humanQA: [] });
+
+async function house(tasks) {
+  global.window = {
+    localStorage: { getItem: () => 'occult', setItem: () => {}, removeItem: () => {} },
+    close: () => {},
+    matchMedia: () => ({ matches: false, addEventListener: () => {}, removeEventListener: () => {} }),
+    cth: { hiveTasks: async () => ({ tasks }), requestQuit: async () => {} }
+  };
+  global.document = { documentElement: { dataset: {} } };
+  useStore.setState({ agents: [], archivedAgents: [], restorableAgents: [] });
+  useStore.getState().addAgent({
+    id: 'ann', name: 'ANN', character: 'jim', accent: 'sky', description: 'a reader',
+    project: 'p', tmuxTarget: '', cwd: '/tmp', status: 'working', action: '', progress: 0
+  });
+  useStore.setState({
+    requestCommandCenterTab: () => {}, select: () => {}, openTaskDetail: () => {}
+  });
+  const { StudyScene } = loadTs(SCENE);
+  const view = mount(StudyScene, {});
+  views.push(view);
+  await settle();
+  view.render();
+  return view;
+}
+
+/** Every book-shaped surface the house draws, by the mark each one carries. */
+const surfaces = (view) => ({
+  felt: deep(view.tree, (n) => n.props?.['data-spine-on'] === 'felt'),
+  desk: deep(view.tree, (n) => n.props?.['data-spine-on'] === 'desk'),
+  open: deep(view.tree, (n) => n.props?.['data-book-state'] === 'open')
+});
+const ringed = (node) => String(node?.props?.style?.boxShadow ?? '').includes('--cth-gilt');
+const allBooks = (view) => {
+  const s = surfaces(view);
+  return [...s.felt, ...s.desk, ...s.open];
+};
+
+/**
+ * The four assignments that put a book on each surface at once: one in hand
+ * (the open book), two more held by the same assistant (the desk pile), and one
+ * nobody has picked up (the felt).
+ */
+const aHouseful = () => [
+  card('T-1', 'doing'), card('T-2', 'todo'), card('T-3', 'blocked'),
+  card('T-4', 'todo', '')
+];
+
+for (const kind of ['felt', 'desk', 'open']) {
+  test(`a book on the ${kind} wears the ring when a hand arrives, and only that book`, async () => {
+    const view = await house(aHouseful());
+    const before = surfaces(view)[kind];
+    assert.ok(before.length > 0, `the house drew no book on the ${kind} to check`);
+    assert.ok(!before.some(ringed), `a ${kind} book was ringed before anything touched it`);
+
+    // Through the house: the handler the element itself carries, which is what
+    // a pointer would reach. Constructing the state by hand would prove that
+    // the ring CAN be drawn, which was never in doubt — the question is whether
+    // this surface is wired to the hands at all.
+    before[0].props.onMouseEnter();
+    view.render();
+
+    const after = surfaces(view)[kind];
+    assert.ok(ringed(after[0]), `a hand on a ${kind} book drew no ring`);
+    assert.equal(allBooks(view).filter(ringed).length, 1,
+      'more than one book in the house is ringed at once');
+
+    after[0].props.onMouseLeave();
+    view.render();
+    assert.ok(!surfaces(view)[kind].some(ringed), `the ring stayed after the hand left the ${kind}`);
+  });
+
+  test(`a book on the ${kind} is reached by the keyboard on the same terms`, async () => {
+    const view = await house(aHouseful());
+    const book = surfaces(view)[kind][0];
+    assert.equal(book.props.tabIndex, 0, `a ${kind} book is not a tab stop`);
+    assert.equal(typeof book.props.onFocus, 'function', `focus does not reach the ${kind} ring`);
+    book.props.onFocus();
+    view.render();
+    assert.ok(ringed(surfaces(view)[kind][0]), `tabbing to a ${kind} book drew no ring`);
+  });
+}
+
+test('the ring on the open book is drawn over the film turning its pages', async () => {
+  // The page-turn film draws OVER the reader's card, and the open book is drawn
+  // after it with no layer of its own. A ring left in place would sit under the
+  // very thing that makes the book worth pointing at.
+  const view = await house(aHouseful());
+  const film = deep(view.tree, (n) => n.type === BookTurn)[0];
+  assert.ok(film, 'no film is drawn to be layered against');
+  surfaces(view).open[0].props.onMouseEnter();
+  view.render();
+  const book = surfaces(view).open[0];
+  assert.ok(ringed(book), 'the open book drew no ring');
+  const filmZ = mount(BookTurn, film.props).tree.props.style.zIndex;
+  assert.ok(book.props.style.zIndex > filmZ,
+    `the ring is at z ${book.props.style.zIndex}, under the film at z ${filmZ}`);
+});
+
+test('the ring does not take the pointer away from anything', async () => {
+  // Visual only. A held book that started swallowing presses — or stopped
+  // answering them — would be a behaviour change wearing an affordance's
+  // clothes.
+  const view = await house(aHouseful());
+  const before = allBooks(view).map((n) => [n.props.style.pointerEvents, typeof n.props.onClick]);
+  surfaces(view).felt[0].props.onMouseEnter();
+  view.render();
+  const after = allBooks(view).map((n) => [n.props.style.pointerEvents, typeof n.props.onClick]);
+  assert.deepEqual(after, before, 'holding a book changed what can be pressed');
+});

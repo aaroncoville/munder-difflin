@@ -34,6 +34,7 @@
  */
 import { waitsOnHuman, type HiveTask } from '@/components/TasksKanban';
 import { SpineBook } from './SpineBook';
+import type { PulledBooks } from './pulledBooks';
 
 export interface Box { left: number; top: number; width: number; height: number }
 
@@ -321,9 +322,15 @@ export interface BaizeStacksProps {
   tasks: readonly HiveTask[];
   baize: Box;
   onOpen: (id: string) => void;
+  /** Passed straight through to the spines — the felt holds no hover state of
+   *  its own, because the house holds ONE for every surface books stand on. */
+  pulled?: PulledBooks;
+  onPull?: (next: PulledBooks) => void;
 }
 
-export function BaizeStacks({ tasks, baize, onOpen }: BaizeStacksProps): JSX.Element {
+export function BaizeStacks({
+  tasks, baize, onOpen, pulled, onPull
+}: BaizeStacksProps): JSX.Element {
   return (
     <>
       {stackBaize(tasks, baize).map(({ task, box }) => (
@@ -336,6 +343,8 @@ export function BaizeStacks({ tasks, baize, onOpen }: BaizeStacksProps): JSX.Ele
           box={box}
           surface="felt"
           onOpen={onOpen}
+          {...(pulled ? { pulled } : {})}
+          {...(onPull ? { onPull } : {})}
         />
       ))}
     </>

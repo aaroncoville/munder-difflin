@@ -51,7 +51,8 @@ import {
 import { AgentCard, CARD_ASPECT } from './AgentCard';
 import { AmbianceLayer, useReducedMotion } from './AmbianceLayer';
 import { BaizeStacks, feltSpine, spineMark, stackBaize } from './BaizeStacks';
-import { ShelfArchive, NOTHING_PULLED, type PulledBooks } from './ShelfArchive';
+import { ShelfArchive } from './ShelfArchive';
+import { NOTHING_PULLED, type PulledBooks } from './pulledBooks';
 import { DeskBook, type BookBindingName } from './DeskBook';
 import { FlyingBooks, type FlightPath } from './FlyingBooks';
 import { flightsFor, houseSlot, seenStatuses, type Flight, type LaidStorey, type Seen }
@@ -622,7 +623,7 @@ export const LOOKED_AT_Z = STACK_DEEPEST + 1;
 /** One assistant's place setting: card, book, and what they are saying. */
 function DeskPlace({
   agent, desk, volume, spine, lights, turn, still, binding, raised, onLook, onSelect,
-  onOpenTask
+  onOpenTask, pulled, onPull
 }: {
   agent: SceneAgent;
   desk: Box;
@@ -645,6 +646,10 @@ function DeskPlace({
   onSelect: () => void;
   /** Opens the commission the book on this desk stands for. */
   onOpenTask: (id: string) => void;
+  /** Which book each hand is on. One state for the whole house — see
+   *  `pulledBooks` — so a ring cannot be drawn on two books at once. */
+  pulled: PulledBooks;
+  onPull: (next: PulledBooks) => void;
 }): JSX.Element {
   const { card, book: beside, scroll } = deskLayout(desk, volume);
   const book = bookFloat(volume, beside);
@@ -740,6 +745,8 @@ function DeskPlace({
           box={slot}
           surface="desk"
           onOpen={onOpenTask}
+          pulled={pulled}
+          onPull={onPull}
         />
       )).reverse()}
       {/* And the one being read, open on the book the painting drew, turning
@@ -755,6 +762,8 @@ function DeskPlace({
             taskId={inHand.id}
             onOpen={onOpenTask}
             box={book}
+            pulled={pulled}
+            onPull={onPull}
             {...(turn ? { painted: true } : {})}
           />
         )
@@ -983,6 +992,8 @@ export function StudyScene(): JSX.Element {
           tasks={scene.felt}
           baize={berthToBox(berth, view)}
           onOpen={openTaskDetail}
+          pulled={pulledBooks}
+          onPull={setPulledBooks}
         />
       );
     }
@@ -1032,6 +1043,8 @@ export function StudyScene(): JSX.Element {
               setLookingAt((was) => (looking ? agent.id : was === agent.id ? null : was))}
             onSelect={() => select(agent.id)}
             onOpenTask={openTaskDetail}
+            pulled={pulledBooks}
+            onPull={setPulledBooks}
           />
         ));
     });

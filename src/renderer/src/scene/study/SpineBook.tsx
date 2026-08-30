@@ -18,6 +18,9 @@
  */
 import { PETITION_EDGE, SPINE_FACES, spineMark, spineType, type Box } from './BaizeStacks';
 import type { HiveTask } from '@/components/TasksKanban';
+import {
+  NOTHING_PULLED, bookIsPulled, pullHands, pullRing, PULL_Z, type PulledBooks
+} from './pulledBooks';
 
 export interface SpineBookProps {
   id: string;
@@ -37,10 +40,14 @@ export interface SpineBookProps {
    */
   surface: 'felt' | 'desk';
   onOpen: (id: string) => void;
+  /** Which book each hand is on, and how to say a hand has moved — see
+   *  `pulledBooks`. Omitted where a spine is drawn as scenery. */
+  pulled?: PulledBooks;
+  onPull?: (next: PulledBooks) => void;
 }
 
 export function SpineBook({
-  id, title, status, petition, box, surface, onOpen
+  id, title, status, petition, box, surface, onOpen, pulled, onPull
 }: SpineBookProps): JSX.Element {
   const face = SPINE_FACES[status];
   const n = spineMark({ id });
@@ -48,6 +55,8 @@ export function SpineBook({
   // Stopping the event is what keeps the surface underneath — a room that opens
   // the board, a place setting that selects an assistant — from firing as well.
   const open = (stop: () => void): void => { stop(); onOpen(id); };
+  const hands = pulled ?? NOTHING_PULLED;
+  const held = bookIsPulled(hands, id);
   return (
     <div
       data-spine-book={id}
@@ -64,12 +73,17 @@ export function SpineBook({
         e.preventDefault();
         open(() => e.stopPropagation());
       }}
+      {...pullHands(id, hands, onPull)}
       style={{
         position: 'absolute',
         left: box.left,
         top: box.top,
         width: box.width,
         height: box.height,
+        // Forward while a hand is on it: books overlap on both surfaces this is
+        // drawn on — the felt leans them, a desk pile stacks them — so a ring
+        // drawn in place would be overpainted by the next book along.
+        ...(held ? { zIndex: PULL_Z } : {}),
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -91,9 +105,13 @@ export function SpineBook({
         // The head band at the spine's near end, and a hairline all round so
         // one book has an edge against the next. Proportional, for the same
         // reason the type is.
+        // The head band and the hairline are INSET, so the ring — which is
+        // outset — is another layer rather than a replacement: a held book keeps
+        // its own edges and gains one.
         boxShadow: `inset ${Math.max(2, box.width * 0.06)}px 0 0 `
           + `${petition ? PETITION_EDGE : face.edge}, `
           + `inset 0 0 0 ${Math.max(1, box.height * 0.06)}px var(--cth-ink-300)`
+          + (held ? `, ${pullRing(box)}` : '')
       }}
     >
       <div

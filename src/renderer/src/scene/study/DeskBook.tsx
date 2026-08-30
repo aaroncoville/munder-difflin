@@ -28,6 +28,9 @@
  */
 import type { CSSProperties } from 'react';
 import { PETITION_EDGE, type Box } from './BaizeStacks';
+import {
+  NOTHING_PULLED, bookIsPulled, pullHands, pullRing, PULL_Z, type PulledBooks
+} from './pulledBooks';
 
 export type BookState = 'closed' | 'open' | 'sealed';
 
@@ -147,6 +150,11 @@ export interface DeskBookProps {
    * nothing in the house would say the question is yours to answer.
    */
   petition?: boolean;
+  /** Which book each hand is on, and how to say a hand has moved — see
+   *  `pulledBooks`. Omitted where a book is drawn as scenery, such as one in
+   *  flight between surfaces. */
+  pulled?: PulledBooks;
+  onPull?: (next: PulledBooks) => void;
 }
 
 /** The leaf mid-turn, and the rule that stops it. Scoped by class so the sheet
@@ -192,12 +200,16 @@ const TURN_SHEET = `
 `;
 
 export function DeskBook({
-  state, title, box, binding, taskId, onOpen, petition, painted: byTheRoom
+  state, title, box, binding, taskId, onOpen, petition, painted: byTheRoom, pulled, onPull
 }: DeskBookProps): JSX.Element {
   const bound: BookBinding = BOOK_BINDINGS[binding ?? DEFAULT_BINDING];
   const opens = Boolean(taskId) && typeof onOpen === 'function';
   /** Whether the room's own art is drawing this book rather than these shapes. */
   const painted = state === 'open' && byTheRoom === true;
+  const hands = pulled ?? NOTHING_PULLED;
+  // Only a book that opens wears the ring. One drawn as scenery would be
+  // advertising a press it does not answer.
+  const held = opens && taskId != null && bookIsPulled(hands, taskId);
   const root: CSSProperties = {
     position: 'absolute',
     left: box.left,
@@ -218,6 +230,11 @@ export function DeskBook({
     // room's own perspective puts it.
     perspective: box.width,
     perspectiveOrigin: '50% 140%',
+    // The ring, and the layer that keeps it visible. The page-turn film for
+    // this desk draws OVER the reader's card at z 1, and the open book it
+    // belongs to is drawn after it with no layer of its own — so a ring left
+    // in place would sit under the very thing it is pointing at.
+    ...(held ? { zIndex: PULL_Z, boxShadow: pullRing(box) } : {}),
     transition: 'left var(--cth-dur-slow) var(--cth-ease-glide), top var(--cth-dur-slow) var(--cth-ease-glide)'
   };
   const cover: CSSProperties = {
@@ -263,7 +280,8 @@ export function DeskBook({
             event.preventDefault();
             event.stopPropagation();
             onOpen?.(taskId as string);
-          }
+          },
+          ...pullHands(taskId as string, hands, onPull)
         }
         : {})}
       style={root}
