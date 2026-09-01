@@ -22,9 +22,17 @@ const homeFor = (id) =>
 /** Rooted at /tmp, not os.tmpdir(): macOS spells the latter
  *  /var/folders/xx/<30-char-hash>/T/, which is itself too long to host an alias
  *  whose socket has to fit in sun_path — the trap this module was written for. */
+const made = [];
 function tempRoot() {
-  return fs.mkdtempSync('/tmp/cshort-');
+  const dir = fs.mkdtempSync('/tmp/cshort-');
+  made.push(dir);
+  return dir;
 }
+// These roots are deliberately outside os.tmpdir(), which nothing else sweeps,
+// so the suite takes its own litter with it.
+process.on('exit', () => {
+  for (const dir of made) fs.rmSync(dir, { recursive: true, force: true });
+});
 
 test('every agent gets a bindable control socket, not only the ones that reach remote control', () => {
   // Ids measured overflowing on a live machine: 109, 112 and 113 bytes of
