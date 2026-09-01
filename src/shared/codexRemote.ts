@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readlinkSync, symlinkSync } from 'node:fs';
+import { lstatSync, mkdirSync, readlinkSync, symlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 export const CODEX_REMOTE_SOCKET_RELATIVE =
@@ -66,12 +66,42 @@ export function ensureCodexShortHome(
   // readiness timeout rather than as the length problem it is.
   if (!codexRemoteSocketFits(alias)) return null;
   mkdirSync(dirname(alias), { recursive: true });
-  if (existsSync(alias)) {
-    const st = lstatSync(alias);
-    const points = st.isSymbolicLink()
+  // lstat, not existsSync: existsSync follows the link, so an alias left behind
+  // pointing at a home that has since been removed reads as absent — and the
+  // symlink below then throws EEXIST. Which, before this, surfaced as a Codex
+  // agent silently launching with the long home it could not bind.
+  const present = lstatSync(alias, { throwIfNoEntry: false });
+  if (present) {
+    const points = present.isSymbolicLink()
       && resolve(dirname(alias), readlinkSync(alias)) === resolve(realHome);
     return points ? alias : null;
   }
   symlinkSync(realHome, alias, 'dir');
   return alias;
+}
+
+/** The environment a Codex agent should actually be launched with.
+ *
+ *  Codex derives its app-server control socket from $CODEX_HOME, and macOS caps
+ *  that path at sun_path bytes. A hive agent home
+ *  (`…/hive/agents/<id>/.codex`) overflows it, so the daemon cannot start. An
+ *  interactive agent survives that — the launcher falls back to a local TUI —
+ *  but a headless worker has no TUI to fall back to and simply exits.
+ *
+ *  So the short home is not a feature of remote control; it is a precondition of
+ *  a Codex agent booting at all, and every Codex spawn goes through here.
+ *
+ *  Returns the env unchanged when there is no Codex home to shorten (which is
+ *  every other provider) or when no usable short home can be had — in that case
+ *  the caller keeps a working home and can say why. */
+export function shortCodexHomeEnv<T extends Record<string, string | undefined>>(
+  env: T,
+  agentId: string,
+  tempRoot: string = CODEX_REMOTE_ALIAS_ROOT
+): { env: T; shortened: boolean } {
+  const realHome = env.CODEX_HOME;
+  if (!realHome) return { env, shortened: false };
+  const alias = ensureCodexShortHome(realHome, agentId, tempRoot);
+  if (!alias) return { env, shortened: false };
+  return { env: { ...env, CODEX_HOME: alias }, shortened: true };
 }

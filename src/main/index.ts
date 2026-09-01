@@ -90,7 +90,8 @@ import { loadHero } from './hero';
 import {
   CODEX_REMOTE_SOCKET_RELATIVE,
   codexRemoteEndpoint,
-  ensureCodexShortHome,
+  codexRemoteSocketFits,
+  shortCodexHomeEnv,
   withCodexRemoteArgs
 } from '../shared/codexRemote';
 
@@ -162,21 +163,19 @@ async function enableCodexRemoteForSpawn(
   agentId: string
 ): Promise<boolean> {
   if (process.platform === 'win32') return false;
-  const realHome = opts.env?.CODEX_HOME;
-  if (!realHome) return false;
+  const alias = opts.env?.CODEX_HOME;
+  if (!alias) return false;
   try {
-    const alias = ensureCodexShortHome(realHome, agentId);
-    if (!alias) {
-      console.warn('[codex-remote] no usable short home; starting local TUI:', realHome);
+    // shortenCodexHomeForSpawn has already put a bindable home here. Check it
+    // anyway: if it could not, the daemon would start and die on bind, and this
+    // names the real reason instead of a readiness timeout.
+    if (!codexRemoteSocketFits(alias)) {
+      console.warn('[codex-remote] socket path exceeds sun_path; starting local TUI:', alias);
       return false;
     }
 
     const socket = join(alias, CODEX_REMOTE_SOCKET_RELATIVE);
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      ...(opts.env ?? {}),
-      CODEX_HOME: alias
-    };
+    const env: NodeJS.ProcessEnv = { ...process.env, ...(opts.env ?? {}) };
     // shellEnv's resolver mirrors PtyManager's (which is private + returns
     // {path, found}); the daemon just needs the best executable path.
     const executable = resolveCliCommand(opts.command);
@@ -202,7 +201,6 @@ async function enableCodexRemoteForSpawn(
       console.warn('[codex-remote] daemon returned without a control socket; starting local TUI');
       return false;
     }
-    opts.env = { ...(opts.env ?? {}), CODEX_HOME: alias };
     opts.args = withCodexRemoteArgs(opts.args ?? [], codexRemoteEndpoint(alias));
     return true;
   } catch (e) {
@@ -2918,6 +2916,14 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // the TUI to it so the thread is visible in ChatGPT mobile. Best-effort: an
   // unavailable/older Codex install still gets a normal local terminal.
   if (provider === 'codex' && opts.hive?.id) {
+    // Before anything optional: Codex derives its app-server control socket from
+    // CODEX_HOME, and an agent home overflows the platform's sun_path limit. An
+    // interactive agent survives that by falling back to a local TUI; a headless
+    // worker has no TUI and exits. So the short home is a precondition of
+    // booting, not a feature of remote control.
+    const shortened = shortCodexHomeEnv(opts.env ?? {}, opts.hive.id);
+    if (shortened.shortened) opts.env = shortened.env;
+    else console.warn('[codex] no bindable short home; the daemon may fail to start:', opts.env?.CODEX_HOME);
     await enableCodexRemoteForSpawn(opts, opts.hive.id);
   }
   const res = ptyManager.spawn(opts, owner);
