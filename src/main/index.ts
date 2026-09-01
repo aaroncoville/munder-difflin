@@ -2,8 +2,7 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, pow
 import { spawn } from 'node:child_process';
 import {
   rmSync, existsSync, readFileSync, readdirSync, statSync, cpSync, writeFileSync,
-  unlinkSync, mkdirSync, renameSync, createWriteStream, copyFileSync, lstatSync,
-  readlinkSync, symlinkSync
+  unlinkSync, mkdirSync, renameSync, createWriteStream, copyFileSync
 } from 'node:fs';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { join, resolve, sep, basename, dirname, isAbsolute } from 'node:path';
@@ -90,9 +89,8 @@ import { listLocalSkills, loadCatalog, installSkill, uninstallSkill, type LocalS
 import { loadHero } from './hero';
 import {
   CODEX_REMOTE_SOCKET_RELATIVE,
-  codexRemoteAliasPath,
   codexRemoteEndpoint,
-  codexRemoteSocketFits,
+  ensureCodexShortHome,
   withCodexRemoteArgs
 } from '../shared/codexRemote';
 
@@ -167,24 +165,10 @@ async function enableCodexRemoteForSpawn(
   const realHome = opts.env?.CODEX_HOME;
   if (!realHome) return false;
   try {
-    const alias = codexRemoteAliasPath(realHome, agentId);
-    // Bail before touching the filesystem if even the short alias would exceed
-    // sun_path — the daemon would start and then die on bind, and the warning
-    // below names the real reason instead of a generic readiness timeout.
-    if (!codexRemoteSocketFits(alias)) {
-      console.warn('[codex-remote] socket path exceeds sun_path; starting local TUI:', alias);
+    const alias = ensureCodexShortHome(realHome, agentId);
+    if (!alias) {
+      console.warn('[codex-remote] no usable short home; starting local TUI:', realHome);
       return false;
-    }
-    const aliasRoot = dirname(alias);
-    mkdirSync(aliasRoot, { recursive: true });
-    if (existsSync(alias)) {
-      const st = lstatSync(alias);
-      if (!st.isSymbolicLink() || resolve(dirname(alias), readlinkSync(alias)) !== resolve(realHome)) {
-        console.warn('[codex-remote] short home alias is occupied; starting local TUI:', alias);
-        return false;
-      }
-    } else {
-      symlinkSync(realHome, alias, 'dir');
     }
 
     const socket = join(alias, CODEX_REMOTE_SOCKET_RELATIVE);

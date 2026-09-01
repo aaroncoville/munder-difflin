@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { join } from 'node:path';
+import { existsSync, lstatSync, mkdirSync, readlinkSync, symlinkSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 
 export const CODEX_REMOTE_SOCKET_RELATIVE =
   'app-server-control/app-server-control.sock';
@@ -46,4 +47,31 @@ export function codexRemoteEndpoint(shortHome: string): string {
 export function withCodexRemoteArgs(args: string[], endpoint: string): string[] {
   if (args.includes('--remote')) return args;
   return ['--remote', endpoint, ...args];
+}
+
+/** Establish the short home for one agent and return it, or null if it cannot be
+ *  had. Idempotent: an alias already pointing at [realHome] is reused.
+ *
+ *  Split out from the caller because the socket length decision and the symlink
+ *  are the whole of what makes a Codex agent bootable, and they are needed by
+ *  more than the remote-control path that first introduced them. */
+export function ensureCodexShortHome(
+  realHome: string,
+  agentId: string,
+  tempRoot: string = CODEX_REMOTE_ALIAS_ROOT
+): string | null {
+  const alias = codexRemoteAliasPath(realHome, agentId, tempRoot);
+  // Decide before touching the filesystem: a home that cannot host the socket is
+  // worse than no alias, because the failure would surface at bind time as a
+  // readiness timeout rather than as the length problem it is.
+  if (!codexRemoteSocketFits(alias)) return null;
+  mkdirSync(dirname(alias), { recursive: true });
+  if (existsSync(alias)) {
+    const st = lstatSync(alias);
+    const points = st.isSymbolicLink()
+      && resolve(dirname(alias), readlinkSync(alias)) === resolve(realHome);
+    return points ? alias : null;
+  }
+  symlinkSync(realHome, alias, 'dir');
+  return alias;
 }
