@@ -91,7 +91,7 @@ import {
   shortCodexHomeEnv,
   withCodexRemoteArgs
 } from '../shared/codexRemote';
-import { setUpCodexRemote } from './codexRemoteSetup';
+import { CODEX_SPAWN_LOG_KIND, setUpCodexRemote } from './codexRemoteSetup';
 
 const isDev = !!process.env.ELECTRON_RENDERER_URL;
 
@@ -171,7 +171,10 @@ async function enableCodexRemoteForSpawn(
     { home: alias, executable, agentId },
     {
       run: (args) => runCodexDaemonCommand(executable, args, env),
-      socketExists: (path) => existsSync(path)
+      socketExists: (path) => existsSync(path),
+      // The hive log is the one place off this machine's terminal that both the
+      // orchestrator and a later reader can see.
+      trace: (event) => hive.appendLog(event)
     }
   );
   if (!result.enabled || !result.endpoint) {
@@ -2895,7 +2898,17 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     // booting, not a feature of remote control.
     const shortened = shortCodexHomeEnv(opts.env ?? {}, opts.hive.id);
     if (shortened.shortened) opts.env = shortened.env;
-    else console.warn('[codex] no bindable short home; the daemon may fail to start:', opts.env?.CODEX_HOME);
+    else {
+      console.warn('[codex] no bindable short home; the daemon may fail to start:', opts.env?.CODEX_HOME);
+      hive.appendLog({
+        kind: CODEX_SPAWN_LOG_KIND,
+        agentId: opts.hive.id,
+        stage: 'short-home',
+        ok: false,
+        home: opts.env?.CODEX_HOME ?? '',
+        detail: 'no bindable short home could be established'
+      });
+    }
     await enableCodexRemoteForSpawn(opts, opts.hive.id);
   }
   const res = ptyManager.spawn(opts, owner);
