@@ -29,6 +29,7 @@ import { spawnSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
 import type { AgentUsageSample } from './usage';
 import { COMMAND_GROUPS } from '../shared/claudeCommands';
+import { ensureCodexShortHome } from '../shared/codexRemote';
 import {
   isClaudeProvider,
   isHiveAwareProvider,
@@ -1982,7 +1983,20 @@ export class HiveManager {
   private installCodexHooks(dir: string, cwd: string, agentId: string): string {
     const home = join(dir, '.codex');
     try {
-      mkdirSync(home, { recursive: true });
+      // Establish the home BEFORE anything is written into it. Codex derives its
+      // app-server control socket from $CODEX_HOME and canonicalizes the path
+      // first, and an agent directory is far past the platform's 104-byte limit
+      // — so a home created here as a plain directory can never host one, and
+      // the daemon fails on every start. ensureCodexShortHome puts the real
+      // directory somewhere short and leaves this .codex as the link onto it, so
+      // everything below (and everything that reads the agent folder) is
+      // unchanged.
+      //
+      // Null means this agent keeps a plain directory: it already had a real one
+      // — which is left alone, because it holds live sessions — or no short root
+      // was available. That agent still runs; it just has no remote control, the
+      // same as before any of this existed.
+      if (!ensureCodexShortHome(home, agentId)) mkdirSync(home, { recursive: true });
       const userHome = join(homedir(), '.codex');
       // Symlink the user's login so the isolated home authenticates as them.
       // (config.toml is NOT symlinked — we write our own below, seeded from theirs,

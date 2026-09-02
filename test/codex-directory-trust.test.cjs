@@ -3,12 +3,11 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
-const { codexRemoteAliasPath } = loadTs('src/shared/codexRemote.ts');
+const { CODEX_REMOTE_SOCKET_RELATIVE, CODEX_REMOTE_SOCKET_MAX } = loadTs('src/shared/codexRemote.ts');
 
 /** A per-agent CODEX_HOME starts life as a virgin config dir, so Codex asks
  *  "do you trust this directory?" on the first turn and a headless agent sits
@@ -23,8 +22,13 @@ function trustTable(cwd) {
  *  installCodexHooks seeds the generated config from the user's, so the test has
  *  to own that file to say anything about what survives. */
 function sandbox(t, userConfig) {
-  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'md-codex-trust-')));
-  const fakeHome = path.join(home, 'user-home');
+  // Rooted at /tmp with short names, not os.tmpdir(): the agent's Codex home is
+  // placed under this fake $HOME, and macOS resolves os.tmpdir() through
+  // /private/var/folders/xx/<30-char-hash>/T/ — which leaves no room for a
+  // control socket inside 104 bytes, so the whole point of the test would be
+  // fixture length rather than behaviour.
+  const home = fs.realpathSync(fs.mkdtempSync('/tmp/mdct-'));
+  const fakeHome = path.join(home, 'h');
   fs.mkdirSync(path.join(fakeHome, '.codex'), { recursive: true });
   if (userConfig !== undefined) {
     fs.writeFileSync(path.join(fakeHome, '.codex', 'config.toml'), userConfig, 'utf8');
@@ -79,19 +83,22 @@ test('the user\'s own codex settings survive the trust entry', async (t) => {
   assert.ok(config.includes(trustTable(repo)), `no trust entry for ${repo} in:\n${config}`);
 });
 
-test('the short home alias used for remote control sees the trust entry', async (t) => {
+test('the home the daemon actually binds in carries the trust entry', async (t) => {
   const home = sandbox(t);
   const repo = path.join(home, 'repo');
   fs.mkdirSync(repo, { recursive: true });
 
   const { codexHome } = await prepCodexAgent(home, 'codex-trust-4', repo);
-  // Remote control runs the CLI against a short symlinked spelling of the same
-  // home (macOS caps a Unix socket path at 104 bytes). Built here under the test
-  // root rather than the production CODEX_REMOTE_ALIAS_ROOT so the test owns it.
-  const alias = codexRemoteAliasPath(codexHome, 'codex-trust-4', path.join(home, 'alias'));
-  fs.mkdirSync(path.dirname(alias), { recursive: true });
-  fs.symlinkSync(codexHome, alias, 'dir');
+  // Codex canonicalizes $CODEX_HOME before doing anything with it, so the
+  // directory that has to hold the trust entry is the one .codex RESOLVES to —
+  // and it has to be short enough to host a control socket, or the daemon never
+  // starts to read the entry at all. (The sandbox points $HOME at the test root,
+  // so this lands under it and not in the real one.)
+  const resolved = fs.realpathSync(codexHome);
+  const socket = path.join(resolved, CODEX_REMOTE_SOCKET_RELATIVE);
+  assert.ok(socket.length < CODEX_REMOTE_SOCKET_MAX,
+    `the daemon could not bind here: ${socket.length} bytes at ${socket}`);
 
-  const config = fs.readFileSync(path.join(alias, 'config.toml'), 'utf8');
+  const config = fs.readFileSync(path.join(resolved, 'config.toml'), 'utf8');
   assert.ok(config.includes(trustTable(repo)), `no trust entry for ${repo} in:\n${config}`);
 });

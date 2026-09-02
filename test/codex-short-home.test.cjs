@@ -9,7 +9,7 @@ const loadTs = require('./load-ts.cjs');
 const {
   shortCodexHomeEnv,
   ensureCodexShortHome,
-  codexRemoteAliasPath,
+  codexShortHomePath,
   codexRemoteSocketFits,
   CODEX_REMOTE_SOCKET_RELATIVE,
   CODEX_REMOTE_SOCKET_MAX
@@ -43,104 +43,6 @@ function shortRealHome(prefix) {
   made.push(dir);
   return dir;
 }
-
-test('an agent home the daemon cannot bind is refused, not aliased around', () => {
-  // Ids measured overflowing on a live machine: 109, 112 and 113 bytes of
-  // socket path against a 104-byte limit.
-  //
-  // This test used to assert the OPPOSITE — that each of these was handed a
-  // short home — and it passed, because it measured the length of the alias
-  // STRING. Codex canonicalizes $CODEX_HOME before deriving the control socket,
-  // so the alias is measured at its target and that guarantee never existed:
-  // the daemon went on failing on the long path, ten seconds later and for a
-  // reason nothing recorded. Verified against codex-cli 0.149.1.
-  //
-  // A symlink cannot shorten a home for a process that resolves it. Refusing
-  // one is not a regression from aliasing it; aliasing it never worked.
-  const root = tempRoot();
-  for (const id of ['rose-mtcz0zuv', 'worker-de-design', 'jannings-mtdmhwz0']) {
-    const real = homeFor(id);
-    const long = path.join(real, CODEX_REMOTE_SOCKET_RELATIVE);
-    assert.ok(
-      long.length >= CODEX_REMOTE_SOCKET_MAX,
-      `fixture must reproduce the overflow, got ${long.length} bytes for ${id}`
-    );
-
-    // The default root is a length question and needs no filesystem — and must
-    // not write into the root a running app is using.
-    const byDefault = path.join(codexRemoteAliasPath(real, id), CODEX_REMOTE_SOCKET_RELATIVE);
-    assert.ok(byDefault.length < CODEX_REMOTE_SOCKET_MAX,
-      `the alias LOOKS short — ${byDefault.length} bytes — which is why this was believed`);
-
-    const { env, shortened } = shortCodexHomeEnv({ CODEX_HOME: real }, id, root);
-
-    assert.equal(shortened, false, `${id}: an unbindable home must not be reported as shortened`);
-    assert.equal(env.CODEX_HOME, real, 'the caller keeps a working home and can say why');
-  }
-});
-
-test('the short home is a symlink onto the real one, so the agent stays browsable', () => {
-  const root = tempRoot();
-  const real = shortRealHome('creal-');
-
-  const alias = ensureCodexShortHome(real, 'agent-1', root);
-
-  assert.ok(alias, 'a short home should have been established');
-  assert.ok(fs.lstatSync(alias).isSymbolicLink(), 'the short home must be a link, not a copy');
-  assert.equal(fs.realpathSync(alias), fs.realpathSync(real));
-  // Anything Codex writes through the alias lands in the agent's own directory,
-  // which is the whole reason it is a link rather than a separate home.
-  fs.writeFileSync(path.join(alias, 'sessions.json'), '{}');
-  assert.ok(fs.existsSync(path.join(real, 'sessions.json')));
-});
-
-test('establishing the short home twice reuses it rather than failing', () => {
-  const root = tempRoot();
-  const real = shortRealHome('creal-');
-
-  assert.equal(ensureCodexShortHome(real, 'agent-1', root), ensureCodexShortHome(real, 'agent-1', root));
-});
-
-test('an agent whose home has been removed is still spawnable', () => {
-  // Not hypothetical: on the machine this was written on, three of six live
-  // aliases pointed at agent homes that no longer existed — including two of the
-  // headless workers that died. A reset removes the directory and leaves the
-  // link behind.
-  //
-  // existsSync FOLLOWS the link, so it reports a dangling alias as absent; the
-  // symlink call then threw EEXIST, and the Codex spawn fell back to the long
-  // home it cannot bind. The link is asked about itself instead.
-  const root = tempRoot();
-  const real = shortRealHome('creal-');
-  const alias = ensureCodexShortHome(real, 'agent-1', root);
-  fs.rmSync(real, { recursive: true });
-  assert.equal(fs.existsSync(alias), false, 'the fixture must leave the alias dangling');
-
-  assert.equal(
-    ensureCodexShortHome(real, 'agent-1', root), alias,
-    'the alias still names this agent’s home, so it is reused rather than thrown over'
-  );
-
-  // And it is a working home again the moment the agent dir comes back.
-  fs.mkdirSync(real);
-  assert.equal(fs.realpathSync(alias), fs.realpathSync(real));
-});
-
-test('a home already taken by something else is refused, not overwritten', () => {
-  const root = tempRoot();
-  const real = shortRealHome('creal-');
-  const squatter = shortRealHome('cother-');
-
-  const alias = ensureCodexShortHome(real, 'agent-1', root);
-  fs.unlinkSync(alias);
-  fs.symlinkSync(squatter, alias, 'dir');
-
-  assert.equal(
-    ensureCodexShortHome(real, 'agent-1', root), null,
-    'someone else’s home must never be adopted or replaced'
-  );
-  assert.equal(fs.realpathSync(alias), fs.realpathSync(squatter), 'and must be left alone');
-});
 
 test('a spawn with no Codex home of its own is handed back untouched', () => {
   // Every non-Codex provider. Claude spawns carry no CODEX_HOME, so this is the
@@ -194,20 +96,6 @@ test('a home is only offered when the path Codex RESOLVES it to is bindable', ()
   }
 });
 
-test('a home that already binds is still offered', () => {
-  // The other half: refusing everything would satisfy the test above and help
-  // nobody.
-  const root = tempRoot();
-  const real = fs.mkdtempSync('/tmp/creal-');
-  made.push(real);
-
-  const home = ensureCodexShortHome(real, 'agent-1', root);
-
-  assert.ok(home, 'a home that can host its own socket must still be usable');
-  const bound = path.join(fs.realpathSync(home), CODEX_REMOTE_SOCKET_RELATIVE);
-  assert.ok(bound.length < CODEX_REMOTE_SOCKET_MAX);
-});
-
 test('the fit test follows the link, because the daemon does', () => {
   const root = tempRoot();
   const real = longRealHome(root);
@@ -218,4 +106,121 @@ test('the fit test follows the link, because the daemon does', () => {
     'the fixture must be a link that LOOKS short');
   assert.equal(codexRemoteSocketFits(alias), false,
     'a link that looks short but resolves long must not be reported as bindable');
+});
+
+// ── The home a new agent actually gets ──────────────────────────────────────
+// Codex resolves $CODEX_HOME, so the SHORT path has to be the real directory and
+// the agent's own path the link — the other way round shortens nothing.
+
+/** The agent-dir path a fresh Codex agent would be given, not yet created. */
+function freshAgentHome(root) {
+  const dir = path.join(root, 'HarnessAgents', 'hive', 'agents', 'worker-de-design2', '.codex');
+  fs.mkdirSync(path.dirname(dir), { recursive: true });
+  const own = path.join(fs.realpathSync(path.dirname(dir)), '.codex', CODEX_REMOTE_SOCKET_RELATIVE);
+  assert.ok(own.length >= CODEX_REMOTE_SOCKET_MAX,
+    `fixture must reproduce the overflow, got ${own.length} bytes`);
+  return dir;
+}
+
+test('the homes measured overflowing on a live machine all fit once relocated', () => {
+  // 109, 112 and 113 bytes of socket path against a 104-byte limit. Kept as pure
+  // arithmetic on the default root: naming real agent ids is the point, and this
+  // must never touch the hive a running app is using.
+  for (const id of ['rose-mtcz0zuv', 'worker-de-design', 'jannings-mtdmhwz0']) {
+    const inAgentDir = path.join(homeFor(id), CODEX_REMOTE_SOCKET_RELATIVE);
+    assert.ok(inAgentDir.length >= CODEX_REMOTE_SOCKET_MAX,
+      `fixture must reproduce the overflow, got ${inAgentDir.length} bytes for ${id}`);
+
+    const relocated = path.join(codexShortHomePath(homeFor(id), id), CODEX_REMOTE_SOCKET_RELATIVE);
+    assert.ok(relocated.length < CODEX_REMOTE_SOCKET_MAX,
+      `${id} still overflows after relocation: ${relocated.length} bytes`);
+  }
+});
+
+test('an agent whose home directory has been removed is still spawnable', () => {
+  // Not hypothetical: on the machine this was written on, live links pointed at
+  // homes that no longer existed — including two of the headless workers that
+  // died. A reset removes the directory and leaves the link behind.
+  //
+  // existsSync FOLLOWS the link, so it reports that as absent and the symlink
+  // call then throws EEXIST, which used to end in a Codex agent silently
+  // launching with the long home it cannot bind. The link is asked about itself.
+  const root = tempRoot();
+  const agentHome = freshAgentHome(root);
+  const short = path.join(root, 'short');
+
+  const home = ensureCodexShortHome(agentHome, 'worker-de-design2', short);
+  fs.rmSync(home, { recursive: true });
+  assert.equal(fs.existsSync(agentHome), false, 'the fixture must leave the link dangling');
+
+  assert.equal(ensureCodexShortHome(agentHome, 'worker-de-design2', short), home,
+    'the link still names this agent’s home, so it is restored rather than thrown over');
+  assert.ok(fs.existsSync(home), 'and the directory is there to be written into again');
+});
+
+test('a .codex pointing somewhere else is refused, not overwritten', () => {
+  const root = tempRoot();
+  const agentHome = freshAgentHome(root);
+  const elsewhere = shortRealHome('cother-');
+  fs.mkdirSync(path.dirname(agentHome), { recursive: true });
+  fs.symlinkSync(elsewhere, agentHome, 'dir');
+
+  assert.equal(ensureCodexShortHome(agentHome, 'worker-de-design2', path.join(root, 'short')), null,
+    'someone else’s home must never be adopted or replaced');
+  assert.equal(fs.realpathSync(agentHome), fs.realpathSync(elsewhere), 'and must be left alone');
+});
+
+test('a Codex home that does not exist yet is created somewhere its daemon can bind', () => {
+  const root = tempRoot();
+  const agentHome = freshAgentHome(root);
+
+  const home = ensureCodexShortHome(agentHome, 'worker-de-design2', path.join(root, 'short'));
+
+  assert.ok(home, 'a fresh agent must get a home, not a refusal');
+  const bound = path.join(fs.realpathSync(home), CODEX_REMOTE_SOCKET_RELATIVE);
+  assert.ok(bound.length < CODEX_REMOTE_SOCKET_MAX,
+    `the daemon must be able to bind here: ${bound.length} bytes at ${bound}`);
+});
+
+test('the agent keeps a .codex of its own, pointing at that home', () => {
+  // Everything that reads the agent directory — the hooks config, auth.json, the
+  // person looking — still finds .codex where it has always been. It is the link
+  // now, which is the only arrangement Codex cannot resolve away.
+  const root = tempRoot();
+  const agentHome = freshAgentHome(root);
+
+  const home = ensureCodexShortHome(agentHome, 'worker-de-design2', path.join(root, 'short'));
+
+  assert.ok(fs.lstatSync(agentHome).isSymbolicLink(), 'the agent path must be the link');
+  assert.equal(fs.realpathSync(agentHome), fs.realpathSync(home));
+  fs.writeFileSync(path.join(agentHome, 'config.toml'), 'x = 1');
+  assert.equal(fs.readFileSync(path.join(home, 'config.toml'), 'utf8'), 'x = 1');
+});
+
+test('an agent that already has a real .codex is left exactly as it was', () => {
+  // The migration boundary. Seven live agents hold real .codex directories with
+  // sessions, history and auth links; moving one out from under a running agent
+  // is a deliberate maintenance action, never a spawn-time side effect.
+  const root = tempRoot();
+  const agentHome = freshAgentHome(root);
+  fs.mkdirSync(agentHome, { recursive: true });
+  fs.writeFileSync(path.join(agentHome, 'history.jsonl'), 'kept');
+
+  assert.equal(ensureCodexShortHome(agentHome, 'worker-de-design2', path.join(root, 'short')), null,
+    'an existing home cannot be bound, and must be reported so rather than moved');
+  assert.equal(fs.lstatSync(agentHome).isDirectory(), true, 'still a real directory');
+  assert.equal(fs.readFileSync(path.join(agentHome, 'history.jsonl'), 'utf8'), 'kept');
+});
+
+test('a second spawn reuses the home the first one made', () => {
+  const root = tempRoot();
+  const agentHome = freshAgentHome(root);
+  const short = path.join(root, 'short');
+
+  const first = ensureCodexShortHome(agentHome, 'worker-de-design2', short);
+  fs.writeFileSync(path.join(first, 'auth.json'), '{}');
+  const again = ensureCodexShortHome(agentHome, 'worker-de-design2', short);
+
+  assert.equal(again, first, 'a respawn must not strand the session the last one wrote');
+  assert.ok(fs.existsSync(path.join(agentHome, 'auth.json')));
 });
