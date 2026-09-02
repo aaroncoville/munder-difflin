@@ -14,7 +14,7 @@ import { pickSoloLine, pickExchange, type BreakSpot } from './cafeteriaLines';
 import { colors } from '@/design/tokens';
 import { loadTheme, resolveThemeMap, themeTilesetUrls } from './themeLoader';
 import {
-  installContextLossRecovery, planInitFailure, DEFAULT_MAX_INIT_RETRIES
+  installContextLossRecovery, planInitFailure, shouldRunTicker, DEFAULT_MAX_INIT_RETRIES
 } from './glRecovery';
 import type { Tile, Facing, ErrandKind, ErrandSpot } from './themeRegistry';
 
@@ -174,6 +174,10 @@ export function OfficeFloor() {
   // whole scene is torn down and rebuilt through the existing mount path rather
   // than through a second, parallel recovery routine.
   const [glGeneration, setGlGeneration] = useState(0);
+  // Set the instant the context is lost, cleared when a rebuild gets one back.
+  // A ref rather than state: the cover/uncover effect below reads it from an
+  // event handler and must not draw one more frame waiting for a re-render.
+  const contextLostRef = useRef(false);
   // Retries spent on an init that could not GET a context (see glRecovery.ts).
   // A ref, not state: the budget has to survive the rebuilds it schedules, which
   // re-run the effect below and would reset anything scoped to it.
@@ -222,7 +226,9 @@ export function OfficeFloor() {
     pausedRef.current = paused;
     const ticker = appRef.current?.ticker;
     if (!ticker) return; // app.init() hasn't created it yet — init() applies it
-    if (paused) ticker.stop(); else ticker.start();
+    // Uncovering the floor is not a reason to draw into a context that is gone.
+    if (shouldRunTicker({ paused, contextLost: contextLostRef.current })) ticker.start();
+    else ticker.stop();
   }, [paused]);
 
   useEffect(() => {
@@ -269,6 +275,14 @@ export function OfficeFloor() {
       // reports nothing when that happens: the floor just goes blank forever.
       // Rebuild instead. See glRecovery.ts.
       (app as any).__glRecovery = installContextLossRecovery(app.canvas, {
+        // Stop the ticker before the browser can bill us for another frame.
+        // Guarded on mountId like the rest: a torn-down scene's canvas must not
+        // reach in and stop a ticker that now belongs to its replacement.
+        onSuspend: () => {
+          if (mountIdRef.current !== mountId) return;
+          contextLostRef.current = true;
+          try { app.ticker?.stop(); } catch { /* app already destroyed */ }
+        },
         onRebuild: () => { if (mountIdRef.current === mountId) setGlGeneration((n) => n + 1); },
         onGiveUp: () => {
           if (mountIdRef.current !== mountId) return;
@@ -1705,6 +1719,9 @@ export function OfficeFloor() {
       app.ticker.add(onTick);
       // init() is async: the floor may already be behind a fullscreen terminal by
       // the time we get here, and app.init() starts the ticker itself.
+      // Reaching this point means init() returned a context, so whatever loss
+      // brought us here is over.
+      contextLostRef.current = false;
       if (pausedRef.current) app.ticker.stop();
 
       const resize = new ResizeObserver((entries) => {

@@ -28,6 +28,14 @@ export interface GlRecoveryOptions {
   delayMs?: number;
   /** Rebuild the scene (in OfficeFloor: bump the effect's generation dep). */
   onRebuild: () => void;
+  /** Stop drawing, NOW — called synchronously on every loss, before the rebuild
+   *  is even scheduled. A render loop left running against a lost context does
+   *  not fail quietly: Chromium answers one error per GL call
+   *  (`GL_INVALID_OPERATION: Invalid mailbox`,
+   *  `SharedImageManager::ProduceGLTexturePassthrough: non-existent mailbox`),
+   *  so the 1500ms debounce below is 1500ms of log spam, and once the retry
+   *  budget is spent nothing would ever have stopped it. */
+  onSuspend?: () => void;
   /** Called once, when the retry budget is spent — the caller should say
    *  something visible rather than leaving a silently blank canvas. */
   onGiveUp?: () => void;
@@ -58,6 +66,9 @@ export function installContextLossRecovery(
     // canvas is dead for good. This one line is the difference between a
     // recoverable scene and a permanently blank one.
     e.preventDefault();
+    // Before anything else, and on EVERY loss including one we will not act on:
+    // there is no context to draw into, so nothing should be drawing.
+    opts.onSuspend?.();
     if (!live) return;
     if (rebuilds >= max) {
       log(`[OfficeFloor] WebGL context lost again after ${max} rebuilds — too many live contexts on this floor; giving up until restart`);
@@ -154,4 +165,18 @@ export function planInitFailure(
   // Same delay as a rebuild: a GPU process takes a moment to come back, and
   // asking again immediately just gets the same null.
   return { action: 'retry', delayMs: opts.delayMs ?? DEFAULT_REBUILD_DELAY_MS, attempt: attemptsUsed + 1 };
+}
+
+/** Whether the floor's render loop should be running.
+ *
+ *  The floor already stops its ticker while something covers it — a fullscreen
+ *  terminal, the editor, a hidden window — and starts it again when that clears.
+ *  That switch is independent of context loss, so on its own it would restart
+ *  the loop over a dead context the moment the floor was uncovered, undoing the
+ *  suspend above and bringing the error spam back.
+ *
+ *  Kept here, next to the loss policy, and exported so the component asks this
+ *  question rather than re-deriving it from two booleans at the call site. */
+export function shouldRunTicker(state: { paused: boolean; contextLost: boolean }): boolean {
+  return !state.paused && !state.contextLost;
 }

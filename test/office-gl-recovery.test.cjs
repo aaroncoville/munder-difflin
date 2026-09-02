@@ -209,3 +209,85 @@ test('recovery survives repeated losses across rebuilds, one budget per install'
   lose(canvas2); clock.runAll();
   assert.equal(rebuilds, 2);
 });
+
+/* ── Drawing into a context that is gone ──────────────────────────────────────
+ *
+ * Cancelling the loss and rebuilding 1500ms later leaves a gap, and the render
+ * loop went on running across it: every frame issued GL calls against a context
+ * the GPU process no longer backs, which Chromium answers one error per call —
+ *
+ *   GL_INVALID_OPERATION: Invalid mailbox / texture is not a shared image
+ *   SharedImageManager::ProduceGLTexturePassthrough: non-existent mailbox
+ *
+ * The gap is unbounded once the retry budget is spent: the recovery stops
+ * rebuilding but nothing ever stopped the loop, so a floor that has given up
+ * spams for as long as the app is open. Observed on v0.4.6 as an apparent hang,
+ * with two hours of that logging behind it.
+ */
+
+const { shouldRunTicker } = load('src/renderer/src/scene/office/glRecovery.ts');
+
+test('the render loop is halted the moment the context is lost, not when the rebuild lands', () => {
+  const canvas = fakeCanvas();
+  const clock = fakeClock();
+  const calls = [];
+  installContextLossRecovery(canvas, {
+    onRebuild: () => calls.push('rebuild'),
+    onSuspend: () => calls.push('suspend'),
+    schedule: clock.schedule, log: () => {}
+  });
+
+  lose(canvas);
+  assert.deepEqual(calls, ['suspend'],
+    'drawing must stop synchronously — the debounce is 1500ms of GL calls otherwise');
+  clock.runAll();
+  assert.deepEqual(calls, ['suspend', 'rebuild']);
+});
+
+test('giving up still halts the loop — that is the unbounded case', () => {
+  const canvas = fakeCanvas();
+  const clock = fakeClock();
+  let suspends = 0, gaveUp = false;
+  installContextLossRecovery(canvas, {
+    onRebuild: () => {}, onSuspend: () => suspends++,
+    onGiveUp: () => { gaveUp = true; },
+    maxRebuilds: 1, schedule: clock.schedule, log: () => {}
+  });
+
+  lose(canvas); clock.runAll();   // first loss: rebuilds
+  lose(canvas);                   // second: budget spent, recovery stands down
+  assert.equal(gaveUp, true, 'the fixture must reach the give-up branch');
+
+  // THE case. Once the budget is spent the recovery stops acting on losses, and
+  // it is precisely then that nothing else will ever stop the loop — so a loss
+  // arriving after we have given up still has to halt drawing. Asserting only
+  // the count above passes just as well when the suspend sits behind the
+  // stood-down guard, which is the bug.
+  lose(canvas);
+  assert.equal(suspends, 3, 'a floor that has given up must still stop drawing');
+});
+
+test('every loss halts the loop, not just the first', () => {
+  const canvas = fakeCanvas();
+  const clock = fakeClock();
+  let suspends = 0;
+  installContextLossRecovery(canvas, {
+    onRebuild: () => {}, onSuspend: () => suspends++, schedule: clock.schedule, log: () => {}
+  });
+
+  lose(canvas); clock.runAll();
+  lose(canvas); clock.runAll();
+  assert.equal(suspends, 2);
+});
+
+test('a floor whose context is dead does not resume when it is uncovered', () => {
+  // The floor also stops its ticker while a fullscreen terminal or the editor
+  // covers it, and starts it again when they close. That switch runs on its own
+  // and knew nothing about a lost context, so leaving focus mode would restart
+  // the loop over a dead context and the spam would come back.
+  assert.equal(shouldRunTicker({ paused: false, contextLost: false }), true);
+  assert.equal(shouldRunTicker({ paused: true, contextLost: false }), false);
+  assert.equal(shouldRunTicker({ paused: false, contextLost: true }), false,
+    'uncovering the floor must not restart drawing into a context that is gone');
+  assert.equal(shouldRunTicker({ paused: true, contextLost: true }), false);
+});
