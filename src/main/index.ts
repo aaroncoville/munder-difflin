@@ -92,6 +92,7 @@ import {
   withCodexRemoteArgs
 } from '../shared/codexRemote';
 import { CODEX_SPAWN_LOG_KIND, setUpCodexRemote } from './codexRemoteSetup';
+import { workerExitEvent } from './workerExitLog';
 
 const isDev = !!process.env.ELECTRON_RENDERER_URL;
 
@@ -327,6 +328,7 @@ interface WorkerRec {
   slack?: { channel: string; thread_ts: string };
   baseBranch: string;     // the branch its worktree was cut from (for ahead-of-base)
   spawnedAt: number;      // epoch ms
+  command?: string;       // effective command LINE, so an early death can name it
   releasing?: boolean;    // kill issued; awaiting teardownPty (skip re-processing)
   /** Per-worker TOTAL-token cap from the spawn-request (overrides the config
    *  default). 0/undefined = no per-request cap. P4 plumbing — unlimited today. */
@@ -401,6 +403,18 @@ function teardownPty(id: string): void {
   // (workers card via the hive:agentSpawned broadcast in processSpawnRequest).
   // pty id == worker id == agent id for workers.
   const wasWorker = liveWorkers.has(id);
+  // A worker whose process quit without being asked to leaves nothing but the
+  // same archive line a worker that FINISHED leaves, so the log cannot tell a
+  // completed worker from one that died on its launch arguments. Record the
+  // command line before the cleanup below drops the record.
+  const exited = liveWorkers.get(id);
+  if (exited) {
+    const event = workerExitEvent(exited, Date.now());
+    if (event) {
+      console.warn(`[worker] ${id} exited on its own after ${event.uptimeMs}ms: ${event.command ?? 'unknown command'}`);
+      try { hive.appendLog(event); } catch { /* a log that cannot be written must not break teardown */ }
+    }
+  }
   // 0) Revoke this id's broker capability (if any). Idempotent + harmless for a
   //    non-worker PTY; ensures a dead worker's token can never reach an integration.
   try { integrationBroker.revoke(id); } catch { /* best-effort */ }
@@ -4714,7 +4728,7 @@ async function processSpawnRequest(filePath: string): Promise<void> {
   // tokenCap is optional plumbing (default unlimited) — only a positive finite cap is kept.
   const tokenCap = typeof raw.tokenCap === 'number' && Number.isFinite(raw.tokenCap) && raw.tokenCap > 0
     ? raw.tokenCap : undefined;
-  liveWorkers.set(workerId, { workerId, reqId, name: meta.name, slack, baseBranch, spawnedAt: Date.now(), tokenCap });
+  liveWorkers.set(workerId, { workerId, reqId, name: meta.name, slack, baseBranch, spawnedAt: Date.now(), command: launch.command, tokenCap });
 
   // Dispatch the objective via the standard inbox path (zero new transport),
   // reusing the autonomous-request preamble so the worker gets the exact Slack
