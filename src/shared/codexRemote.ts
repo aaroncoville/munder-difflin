@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { lstatSync, mkdirSync, readlinkSync, symlinkSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { lstatSync, mkdirSync, readlinkSync, realpathSync, symlinkSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 
 export const CODEX_REMOTE_SOCKET_RELATIVE =
   'app-server-control/app-server-control.sock';
@@ -34,9 +34,40 @@ export function codexRemoteAliasPath(
   return join(tempRoot, digest);
 }
 
+/** The path Codex will actually bind, which is not always the one it is handed.
+ *
+ *  Codex canonicalizes $CODEX_HOME before deriving the control socket, so the
+ *  length that matters is the RESOLVED one. Two consequences, both measured
+ *  against codex-cli 0.149.1:
+ *
+ *   - A symlink shortens nothing. Handed a 63-byte alias onto a 120-byte agent
+ *     home, the daemon reported `path must be shorter than SUN_LEN` for the home
+ *     behind it.
+ *   - On macOS even a genuinely short home grows: /tmp is itself a link to
+ *     /private/tmp, so every path under it costs eight bytes nobody counted.
+ *
+ *  A home that does not exist yet cannot be resolved, so resolve the deepest
+ *  ancestor that does and re-attach the rest — the ancestors are where the
+ *  symlinks live. */
+export function resolvedCodexHome(home: string): string {
+  let head = resolve(home);
+  const tail: string[] = [];
+  for (;;) {
+    try {
+      return tail.length ? join(realpathSync(head), ...tail) : realpathSync(head);
+    } catch {
+      const parent = dirname(head);
+      if (parent === head) return resolve(home); // nothing on this path exists
+      tail.unshift(basename(head));
+      head = parent;
+    }
+  }
+}
+
 /** Whether a candidate home yields a control socket the platform can bind. */
 export function codexRemoteSocketFits(shortHome: string): boolean {
-  return join(shortHome, CODEX_REMOTE_SOCKET_RELATIVE).length < CODEX_REMOTE_SOCKET_MAX;
+  return join(resolvedCodexHome(shortHome), CODEX_REMOTE_SOCKET_RELATIVE).length
+    < CODEX_REMOTE_SOCKET_MAX;
 }
 
 export function codexRemoteEndpoint(shortHome: string): string {
@@ -61,10 +92,16 @@ export function ensureCodexShortHome(
   tempRoot: string = CODEX_REMOTE_ALIAS_ROOT
 ): string | null {
   const alias = codexRemoteAliasPath(realHome, agentId, tempRoot);
-  // Decide before touching the filesystem: a home that cannot host the socket is
-  // worse than no alias, because the failure would surface at bind time as a
-  // readiness timeout rather than as the length problem it is.
+  // Decide on the home the daemon will RESOLVE the alias to, which is the real
+  // one — not on how short the alias is spelled. Measuring the alias was the
+  // whole defect: it always looked short, so a home that could never bind was
+  // offered anyway, and the failure surfaced ten seconds later as a readiness
+  // timeout instead of as the length problem it is.
+  //
+  // Which means an alias cannot rescue an overlong home at all: it is the same
+  // path by the time Codex measures it. Say so rather than pretend.
   if (!codexRemoteSocketFits(alias)) return null;
+  if (!codexRemoteSocketFits(realHome)) return null;
   mkdirSync(dirname(alias), { recursive: true });
   // lstat, not existsSync: existsSync follows the link, so an alias left behind
   // pointing at a home that has since been removed reads as absent — and the
