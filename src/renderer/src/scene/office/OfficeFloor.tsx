@@ -16,6 +16,7 @@ import { loadTheme, resolveThemeMap, themeTilesetUrls } from './themeLoader';
 import {
   installContextLossRecovery, planInitFailure, shouldRunTicker, DEFAULT_MAX_INIT_RETRIES
 } from './glRecovery';
+import { planFloorRelease } from './floorRelease';
 import type { Tile, Facing, ErrandKind, ErrandSpot } from './themeRegistry';
 
 // The map, tileset atlases, desk-claim order, errand spots, coffee-economy
@@ -198,6 +199,15 @@ export function OfficeFloor() {
   // whole scene graph stay alive, so coming back out of fullscreen is instant
   // rather than a full theme reload.
   //
+  // That holds for a glance away, and stops holding for an afternoon. A stopped
+  // context still pins its canvas backing store and its textures' GPU shared
+  // images, and Chromium purges those under memory pressure — which leaves the
+  // canvas referencing mailboxes that no longer exist. So the resources are also
+  // released once the floor has been covered for FLOOR_RELEASE_DELAY_MS, and the
+  // scene is rebuilt on the way back (see floorRelease.ts and `released` below).
+  // Below that delay nothing here changes: toggling in and out of a fullscreen
+  // terminal is as instant as it ever was.
+  //
   // A paused floor resumes where it left off. Two things make that true, and it is
   // worth being precise because the obvious claim — "nothing here reads wall-clock
   // time" — is FALSE: Date.now() is read for the aura/coffee timers and for the
@@ -219,6 +229,22 @@ export function OfficeFloor() {
     return () => document.removeEventListener('visibilitychange', onVis);
   }, []);
   const paused = !!fullscreenAgentId || ideOpen || docHidden;
+  // Whether the scene has been torn down because it stayed covered. Deliberately
+  // state and not a ref: it is a dependency of the mount effect below, so
+  // flipping it is what performs the teardown and the later rebuild, through the
+  // one mount path rather than a second parallel one.
+  const [released, setReleased] = useState(false);
+  useEffect(() => {
+    const plan = planFloorRelease({ covered: paused, released });
+    if (plan.action === 'release-after') {
+      const timer = setTimeout(() => setReleased(true), plan.delayMs);
+      // Uncovering before it fires cancels it here, which is why a quick toggle
+      // never releases anything.
+      return () => clearTimeout(timer);
+    }
+    if (plan.action === 'restore') setReleased(false);
+    return;
+  }, [paused, released]);
   // Read inside init(), which finishes asynchronously and would otherwise start a
   // ticker the effect below had already been asked to stop.
   const pausedRef = useRef(paused);
@@ -234,6 +260,10 @@ export function OfficeFloor() {
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+    // Released: this effect's own cleanup has already destroyed the app and
+    // emptied the host. Build nothing until the floor is uncovered, which clears
+    // the flag and re-runs this from the top.
+    if (released) return;
     while (host.firstChild) host.removeChild(host.firstChild);
 
     const mountId = ++mountIdRef.current;
@@ -1786,7 +1816,7 @@ export function OfficeFloor() {
       appRef.current = null;
       while (host.firstChild) host.removeChild(host.firstChild);
     };
-  }, [officeTheme, glGeneration, i18n.language]);
+  }, [officeTheme, glGeneration, i18n.language, released]);
 
   return (
     <div
