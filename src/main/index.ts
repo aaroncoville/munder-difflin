@@ -88,12 +88,10 @@ import { toolCatalog, type ToolStatus } from '../shared/toolCatalog';
 import { listLocalSkills, loadCatalog, installSkill, uninstallSkill, type LocalSkill } from './skills';
 import { loadHero } from './hero';
 import {
-  CODEX_REMOTE_SOCKET_RELATIVE,
-  codexRemoteEndpoint,
-  codexRemoteSocketFits,
   shortCodexHomeEnv,
   withCodexRemoteArgs
 } from '../shared/codexRemote';
+import { setUpCodexRemote } from './codexRemoteSetup';
 
 const isDev = !!process.env.ELECTRON_RENDERER_URL;
 
@@ -165,49 +163,23 @@ async function enableCodexRemoteForSpawn(
   if (process.platform === 'win32') return false;
   const alias = opts.env?.CODEX_HOME;
   if (!alias) return false;
-  try {
-    // shortenCodexHomeForSpawn has already put a bindable home here. Check it
-    // anyway: if it could not, the daemon would start and die on bind, and this
-    // names the real reason instead of a readiness timeout.
-    if (!codexRemoteSocketFits(alias)) {
-      console.warn('[codex-remote] socket path exceeds sun_path; starting local TUI:', alias);
-      return false;
+  const env: NodeJS.ProcessEnv = { ...process.env, ...(opts.env ?? {}) };
+  // shellEnv's resolver mirrors PtyManager's (which is private + returns
+  // {path, found}); the daemon just needs the best executable path.
+  const executable = resolveCliCommand(opts.command);
+  const result = await setUpCodexRemote(
+    { home: alias, executable, agentId },
+    {
+      run: (args) => runCodexDaemonCommand(executable, args, env),
+      socketExists: (path) => existsSync(path)
     }
-
-    const socket = join(alias, CODEX_REMOTE_SOCKET_RELATIVE);
-    const env: NodeJS.ProcessEnv = { ...process.env, ...(opts.env ?? {}) };
-    // shellEnv's resolver mirrors PtyManager's (which is private + returns
-    // {path, found}); the daemon just needs the best executable path.
-    const executable = resolveCliCommand(opts.command);
-    const started = await runCodexDaemonCommand(
-      executable,
-      ['app-server', 'daemon', 'start'],
-      env
-    );
-    if (!started.ok) {
-      console.warn('[codex-remote] daemon start failed; starting local TUI:', started.error);
-      return false;
-    }
-    const enabled = await runCodexDaemonCommand(
-      executable,
-      ['app-server', 'daemon', 'enable-remote-control'],
-      env
-    );
-    if (!enabled.ok) {
-      console.warn('[codex-remote] enable failed; starting local TUI:', enabled.error);
-      return false;
-    }
-    if (!existsSync(socket)) {
-      console.warn('[codex-remote] daemon returned without a control socket; starting local TUI');
-      return false;
-    }
-    opts.args = withCodexRemoteArgs(opts.args ?? [], codexRemoteEndpoint(alias));
-    return true;
-  } catch (e) {
-    console.warn('[codex-remote] setup failed; starting local TUI:',
-      e instanceof Error ? e.message : e);
+  );
+  if (!result.enabled || !result.endpoint) {
+    console.warn(`[codex-remote] ${result.stage}: ${result.detail}; starting local TUI`);
     return false;
   }
+  opts.args = withCodexRemoteArgs(opts.args ?? [], result.endpoint);
+  return true;
 }
 /** Live PTY id → its hive agent id, recorded at spawn. The pty:kill handler only
  *  gets the PTY id, so this lets a closed tab archive the right registry agent. */
