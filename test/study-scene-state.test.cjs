@@ -367,18 +367,22 @@ test('an assistant who left the House is not on the wall', async () => {
  * the one commission most worth having marked.
  */
 test('a commission is dated by the last thing that happened on it', async () => {
+  const now = Date.now();
+  const raised = new Date(now - 200 * 86_400_000).toISOString();
+  const asked = new Date(now - 2 * 86_400_000).toISOString();
+  const answered = new Date(now - 86_400_000).toISOString();
   const state = await project({
     agents: [agent('w-1')],
     tasks: [task({
       id: 'T-1', status: 'done', title: 'the long folio',
-      createdAt: '2026-01-01T00:00:00.000Z',
-      humanQA: [{ q: 'which key?', askedAt: '2026-08-20T00:00:00.000Z',
-        a: 'the staging one', answeredAt: '2026-08-21T00:00:00.000Z' }]
+      createdAt: raised,
+      humanQA: [{ q: 'which key?', askedAt: asked,
+        a: 'the staging one', answeredAt: answered }]
     })]
   });
   assert.deepEqual(state.archive.map((a) => a.id), ['T-1'],
     'work begun long ago and finished today fell out of the window');
-  assert.equal(state.archive[0].at, Date.parse('2026-08-21T00:00:00.000Z'));
+  assert.equal(state.archive[0].at, Date.parse(answered));
 });
 
 /**
