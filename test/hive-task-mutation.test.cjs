@@ -88,6 +88,7 @@ test('patch refuses an unknown card without rewriting the ledger', (t) => {
 test('renderer task actions never send a whole stale ledger back to main', () => {
   const preload = sourceAssert.activeSource('src/preload/index.ts');
   const main = sourceAssert.activeSource('src/main/index.ts');
+  const realtimeActions = sourceAssert.activeSource('src/main/realtimeActions.ts');
   const sources = [
     'src/renderer/src/components/AskMeTab.tsx',
     'src/renderer/src/components/TaskDetailOverlay.tsx',
@@ -103,6 +104,11 @@ test('renderer task actions never send a whole stale ledger back to main', () =>
     'the renderer bridge must not expose the unsafe whole-ledger write primitive');
   assert.doesNotMatch(main, /ipcMain\.handle\('hive:writeTasks'/,
     'main must not accept whole-ledger writes from a stale renderer');
+  assert.doesNotMatch(realtimeActions, /hiveWriteTasks\s*\(/,
+    'voice actions must use atomic task mutations rather than overwrite tasks.json');
+  assert.match(realtimeActions, /hiveAddTask\s*\(/);
+  assert.match(realtimeActions, /hivePatchTask\s*\(/);
+  assert.match(realtimeActions, /hiveDeleteTask\s*\(/);
   assert.match(sources[0], /hivePatchTask\s*\(/);
   assert.match(sources[1], /hivePatchTask\s*\(/);
   assert.match(sources[2], /hiveDeleteTask\s*\(/);
