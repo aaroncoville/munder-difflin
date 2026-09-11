@@ -185,3 +185,21 @@ export class ReadingCache<T> {
     return value;
   }
 }
+
+/** The Codex readings attached to a stalled-wake log line: how long since the
+ *  session last recorded anything, how long since Codex last ran its own
+ *  catch-up summary turn, and whether that turn fell inside the last watchdog
+ *  beat. A reading that could not be taken stays null. */
+export function codexStallFacts(
+  rolloutAt: number | null,
+  catchupAt: number | null,
+  now: number,
+  beatMs: number
+): { rolloutAgeMs: number | null; catchupAgoMs: number | null; catchupInLastBeat: boolean } {
+  const catchupAgoMs = catchupAt === null ? null : now - catchupAt;
+  return {
+    rolloutAgeMs: rolloutAt === null ? null : now - rolloutAt,
+    catchupAgoMs,
+    catchupInLastBeat: catchupAgoMs !== null && catchupAgoMs >= 0 && catchupAgoMs < beatMs
+  };
+}

@@ -67,14 +67,16 @@ import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, IN
 import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
 import { ControlRegistry } from './control';
-import { WorkerWakeWatchdog, type WorkerWakeFacts } from './workerWake';
+import { WorkerWakeWatchdog, WakeSkipLog, type WorkerWakeFacts } from './workerWake';
 import {
   CODEX_ACTIVITY_TTL_MS,
   CodexHomes,
   ReadingCache,
   codexAgentActiveAt,
+  codexStallFacts,
   fleetLastActiveAt
 } from './codexActivity';
+import { lastCatchupAt } from './codexCatchupLog';
 import { inboxNudgeText } from '../shared/hiveNudge';
 import { resolveGodName } from '../shared/godIdentity';
 import { fetchHireManifest, readHireManifestFiles } from './hire';
@@ -270,6 +272,9 @@ function standingGoalFromRoster(agentId: string): string | null {
 // background window can't leave a worker parked on an unread inbox forever).
 // HookServer feeds it the hook stream so a permission/HITL prompt blocks nudges.
 const workerWake = new WorkerWakeWatchdog();
+// Rate-limited record, in the hive log, of why the watchdog is NOT waking a
+// worker that has undelivered mail (see WakeSkipLog).
+const wakeSkipLog = new WakeSkipLog();
 // HookServer needs BOTH: Oscar's control registry (HITL pause/gate/steer/halt via
 // hook returns) AND Jim's breaker (feed recordToolUse on each PostToolUse).
 const hookServer = new HookServer(
@@ -5239,7 +5244,30 @@ function runWorkerWakeBeat(): void {
       halted: snap.halted
     });
   }
-  for (const agentId of workerWake.decide(facts, now)) {
+  const verdicts = workerWake.decideWithReasons(facts, now);
+  // Say why a worker with undelivered mail is not being woken. Rate-limited, so
+  // a healthy floor writes nothing. A Codex line also carries when its session
+  // last recorded anything and when Codex last ran its own catch-up summary.
+  const root = hive.root();
+  for (const line of wakeSkipLog.observe(verdicts, now)) {
+    const isCodex = line.state !== 'resolved' && reg.agents[line.agentId]?.provider === 'codex';
+    // Read from the home the worker really runs in, which a resume can change.
+    const nominalHome = isCodex && root ? join(root, 'agents', line.agentId, '.codex') : null;
+    const codexHome = nominalHome ? codexHomes.homeOf(line.agentId, nominalHome) : null;
+    hive.appendLog(codexHome
+      ? {
+        ...line,
+        codex: codexStallFacts(
+          codexAgentActiveAt(line.agentId, codexHomes, nominalHome, now),
+          lastCatchupAt(codexHome, now),
+          now,
+          WORKER_WAKE_POLL_MS
+        )
+      }
+      : line);
+  }
+  for (const { agentId, nudge } of verdicts) {
+    if (!nudge) continue;
     const ptyId = ptyForAgent(agentId);
     if (!ptyId) continue;
     // Re-read at delivery time, not from the facts snapshot: the agent may have
