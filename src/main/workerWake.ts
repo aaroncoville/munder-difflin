@@ -204,7 +204,7 @@ export const WAKE_SKIP_RELOG_MS = 10 * 60_000;
 /** Ids named per line; `pending` still counts all of them. */
 export const WAKE_SKIP_MAX_IDS = 10;
 
-/** One hive-log line: a stall, or the end of one. */
+/** One hive-log line: a stall, a failed attempt to end one, or its end. */
 export type WakeSkipEntry =
   | {
     kind: 'worker-wake-skip';
@@ -219,7 +219,23 @@ export type WakeSkipEntry =
   | {
     kind: 'worker-wake-skip';
     agentId: string;
+    /** A nudge was typed, but its submission did not reach the terminal. */
+    state: 'nudge-failed';
+    stalledMs: number;
+  }
+  | {
+    kind: 'worker-wake-skip';
+    agentId: string;
+    /** The worker's terminal closed, or its record was archived, with mail left. */
+    state: 'terminal-lost';
+    stalledMs: number;
+  }
+  | {
+    kind: 'worker-wake-skip';
+    agentId: string;
     state: 'resolved';
+    /** `nudged`: a nudge's submission reached the terminal. `drained`: the
+     *  worker's inbox emptied while its terminal was still open. */
     via: 'nudged' | 'drained';
     stalledMs: number;
   };
@@ -231,10 +247,19 @@ export type WakeSkipEntry =
  * mail for hours left no record of which guard was holding it. Writing every
  * verdict would add a line per worker every beat, forever. Instead a stall is
  * written once undelivered mail has waited WAKE_SKIP_DWELL_MS; again at once if
- * the holding guard or the undelivered mail changes; again every
- * WAKE_SKIP_RELOG_MS while it persists; and once more, as `resolved`, when the
- * mail is delivered or drained. Mail the worker was already woken for is not a
- * stall of the wake path, however long its turn runs, and is never written.
+ * the holding guard or the undelivered mail changes; and again every
+ * WAKE_SKIP_RELOG_MS while it persists. Mail the worker was already woken for
+ * is not a stall of the wake path, however long its turn runs, and is never
+ * written.
+ *
+ * A stall ends only on something observed. Deciding to nudge is not
+ * delivering: typing the nudge can fail, and the caller can skip it. So a
+ * stall is resolved when the caller reports that a nudge's submission reached
+ * the terminal (recordDelivery), or when a beat finds the worker's terminal
+ * still open but no mail left for it. A worker that drops out of the beat
+ * altogether lost its terminal or its record, and that is written as such,
+ * never as a drain. If the wall clock is stepped back past a stall's own
+ * times, its timing restarts from there instead of going negative.
  *
  * Pure — returns the lines; the caller writes them.
  */
@@ -243,28 +268,18 @@ export class WakeSkipLog {
    *  and when it was last written (0 = not yet). */
   private stalls = new Map<string, { since: number; key: string; loggedAt: number }>();
 
-  observe(verdicts: readonly WakeVerdict[], now = Date.now()): WakeSkipEntry[] {
+  /** The lines this beat's verdicts call for. `live` is every worker whose
+   *  terminal is open this beat, whether or not it has a verdict. */
+  observe(verdicts: readonly WakeVerdict[], now: number, live: ReadonlySet<string>): WakeSkipEntry[] {
     const out: WakeSkipEntry[] = [];
     const seen = new Set<string>();
     for (const v of verdicts) {
       seen.add(v.agentId);
       const stall = this.stalls.get(v.agentId);
-      if (v.nudge || !v.reason || v.newIds.length === 0) {
-        // Delivered, or nothing left to deliver: any stall is over.
-        if (stall) {
-          if (stall.loggedAt > 0) {
-            out.push({
-              kind: 'worker-wake-skip',
-              agentId: v.agentId,
-              state: 'resolved',
-              via: v.nudge ? 'nudged' : 'drained',
-              stalledMs: now - stall.since
-            });
-          }
-          this.stalls.delete(v.agentId);
-        }
-        continue;
-      }
+      if (stall) this.rewind(stall, now);
+      // A nudge decided on, or mail already announced: nothing new to write.
+      // Any stall stays open until its outcome is observed.
+      if (v.nudge || !v.reason || v.newIds.length === 0) continue;
       const key = `${v.reason}|${v.newIds.join(',')}`;
       const current = stall ?? { since: now, key, loggedAt: 0 };
       const due = now - current.since >= WAKE_SKIP_DWELL_MS
@@ -285,15 +300,43 @@ export class WakeSkipLog {
       current.key = key;
       this.stalls.set(v.agentId, current);
     }
-    // A worker that was stalled and has no verdict now has drained its inbox,
-    // or lost its terminal.
+    // A stalled worker with no verdict either has no mail left (its terminal is
+    // still open) or is gone.
     for (const [agentId, stall] of this.stalls) {
       if (seen.has(agentId)) continue;
+      this.rewind(stall, now);
       if (stall.loggedAt > 0) {
-        out.push({ kind: 'worker-wake-skip', agentId, state: 'resolved', via: 'drained', stalledMs: now - stall.since });
+        out.push(live.has(agentId)
+          ? { kind: 'worker-wake-skip', agentId, state: 'resolved', via: 'drained', stalledMs: now - stall.since }
+          : { kind: 'worker-wake-skip', agentId, state: 'terminal-lost', stalledMs: now - stall.since });
       }
       this.stalls.delete(agentId);
     }
     return out;
+  }
+
+  /** The outcome of a nudge the watchdog decided on: whether its submission
+   *  reached the terminal. Only a submitted nudge ends a stall; a failed one is
+   *  written, and the stall stays open. */
+  recordDelivery(agentId: string, submitted: boolean, now: number): WakeSkipEntry[] {
+    const stall = this.stalls.get(agentId);
+    if (!stall) return [];
+    this.rewind(stall, now);
+    if (submitted) {
+      this.stalls.delete(agentId);
+      return stall.loggedAt > 0
+        ? [{ kind: 'worker-wake-skip', agentId, state: 'resolved', via: 'nudged', stalledMs: now - stall.since }]
+        : [];
+    }
+    stall.loggedAt = now;
+    return [{ kind: 'worker-wake-skip', agentId, state: 'nudge-failed', stalledMs: now - stall.since }];
+  }
+
+  /** A wall clock stepped back past the stall's own times restarts its timing
+   *  from now, rather than report a negative duration or stay silent until the
+   *  old clock comes round again. */
+  private rewind(stall: { since: number; loggedAt: number }, now: number): void {
+    if (now < stall.since) stall.since = now;
+    if (now < stall.loggedAt) stall.loggedAt = now;
   }
 }

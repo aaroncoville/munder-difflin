@@ -72,11 +72,13 @@ import {
   CODEX_ACTIVITY_TTL_MS,
   CodexHomes,
   ReadingCache,
+  STALL_ENRICH_BUDGET_MS,
   codexAgentActiveAt,
-  codexStallFacts,
+  enrichStallLines,
   fleetLastActiveAt
 } from './codexActivity';
 import { lastCatchupAt } from './codexCatchupLog';
+import { openCodexLogDb } from './codexLogDb';
 import { inboxNudgeText } from '../shared/hiveNudge';
 import { resolveGodName } from '../shared/godIdentity';
 import { fetchHireManifest, readHireManifestFiles } from './hire';
@@ -205,6 +207,8 @@ const codexHomes = new CodexHomes();
 /** Walking a long Codex history is a synchronous directory scan, so the fleet
  *  snapshot reads each one at most once per CODEX_ACTIVITY_TTL_MS. */
 const codexActivityCache = new ReadingCache<number | null>(CODEX_ACTIVITY_TTL_MS);
+/** The same bound for Codex's catch-up readings on stalled-wake lines. */
+const codexCatchupCache = new ReadingCache<number | null>(CODEX_ACTIVITY_TTL_MS);
 /** PTY id → the spawn it should auto restart-and-continue into once a first-time
  *  CLI install finishes. The missing-CLI short-circuit runs the engine's installer
  *  in this PTY; when it exits cleanly the exit handler re-runs the SAME spawn (with
@@ -5197,19 +5201,27 @@ let workerWakeTimer: ReturnType<typeof setInterval> | null = null;
 
 /** Type the renderer's guarded nudge into one worker's PTY — text first, Enter a
  *  tick later (the exact submitToPty pattern: a single-chunk write would land the
- *  "\r" inside the input box and never submit). Best-effort + never throws. */
-function nudgeWorker(ptyId: string, ids: string[] = []): void {
+ *  "\r" inside the input box and never submit). Best-effort + never throws;
+ *  `onOutcome` hears whether the submission reached the terminal. */
+function nudgeWorker(ptyId: string, ids: string[] = [], onOutcome?: (submitted: boolean) => void): void {
   // Same text the renderer queues (#187's inboxNudgeText), so the two wake paths
   // produce byte-identical nudges: the queue's one-pending rule recognises either
   // via isInboxNudge, and a watchdog nudge names its ids so the agent can still
   // tell "I filed this last turn" from "woken for nothing".
   const wrote = ptyManager.write(ptyId, inboxNudgeText(ids));
-  if (!wrote.ok) { console.warn(`[worker-wake] write failed for ${ptyId}: ${wrote.error}`); return; }
+  if (!wrote.ok) {
+    console.warn(`[worker-wake] write failed for ${ptyId}: ${wrote.error}`);
+    onOutcome?.(false);
+    return;
+  }
   setTimeout(() => {
+    let ok = false;
     try {
       const submitted = ptyManager.write(ptyId, '\r');
+      ok = submitted.ok;
       if (!submitted.ok) console.warn(`[worker-wake] submit failed for ${ptyId}: ${submitted.error}`);
     } catch (e) { console.error('[worker-wake] submit threw:', e); }
+    onOutcome?.(ok);
   }, 140);
 }
 
@@ -5245,27 +5257,11 @@ function runWorkerWakeBeat(): void {
     });
   }
   const verdicts = workerWake.decideWithReasons(facts, now);
-  // Say why a worker with undelivered mail is not being woken. Rate-limited, so
-  // a healthy floor writes nothing. A Codex line also carries when its session
-  // last recorded anything and when Codex last ran its own catch-up summary.
-  const root = hive.root();
-  for (const line of wakeSkipLog.observe(verdicts, now)) {
-    const isCodex = line.state !== 'resolved' && reg.agents[line.agentId]?.provider === 'codex';
-    // Read from the home the worker really runs in, which a resume can change.
-    const nominalHome = isCodex && root ? join(root, 'agents', line.agentId, '.codex') : null;
-    const codexHome = nominalHome ? codexHomes.homeOf(line.agentId, nominalHome) : null;
-    hive.appendLog(codexHome
-      ? {
-        ...line,
-        codex: codexStallFacts(
-          codexAgentActiveAt(line.agentId, codexHomes, nominalHome, now),
-          lastCatchupAt(codexHome, now),
-          now,
-          WORKER_WAKE_POLL_MS
-        )
-      }
-      : line);
-  }
+  // Every worker whose terminal is open this beat. A worker with a stall on
+  // record but no verdict either has no mail left or is gone; only this set
+  // tells the two apart.
+  const live = new Set(facts.map((f) => f.agentId));
+  // Wake first: nothing below may delay a nudge.
   for (const { agentId, nudge } of verdicts) {
     if (!nudge) continue;
     const ptyId = ptyForAgent(agentId);
@@ -5276,8 +5272,29 @@ function runWorkerWakeBeat(): void {
     const ids = hive.inbox(agentId).map((m) => m.id).filter(Boolean);
     if (!ids.length) { console.log(`[worker-wake] ${agentId} drained before delivery, skipping`); continue; }
     console.log(`[worker-wake] nudging ${agentId} on ${ptyId} (${ids.length} pending)`);
-    nudgeWorker(ptyId, ids);
+    nudgeWorker(ptyId, ids, (submitted) => {
+      for (const line of wakeSkipLog.recordDelivery(agentId, submitted, Date.now())) hive.appendLog(line);
+    });
   }
+  // Then say why a worker with undelivered mail is not being woken. Rate-limited,
+  // so a healthy floor writes nothing. A Codex line also carries when its own
+  // sessions last recorded anything and when Codex last ran its catch-up
+  // summary, read from the home it actually runs in and within a per-beat budget.
+  const root = hive.root();
+  const nominalHome = (agentId: string): string | null => (root ? join(root, 'agents', agentId, '.codex') : null);
+  const started = performance.now();
+  const lines = enrichStallLines(
+    wakeSkipLog.observe(verdicts, now, live),
+    (agentId) => (reg.agents[agentId]?.provider === 'codex' ? codexHomes.homeOf(agentId, nominalHome(agentId)) : null),
+    {
+      rolloutAt: (agentId) => codexAgentActiveAt(agentId, codexHomes, nominalHome(agentId), now, codexActivityCache),
+      catchupAt: (home) => codexCatchupCache.read(home, now, () => lastCatchupAt(home, now, openCodexLogDb))
+    },
+    now,
+    WORKER_WAKE_POLL_MS,
+    { elapsed: () => performance.now() - started, limitMs: STALL_ENRICH_BUDGET_MS }
+  );
+  for (const line of lines) hive.appendLog(line);
 }
 
 /** (Re)arm the always-on beats (decoupled from the optional heartbeat): the live

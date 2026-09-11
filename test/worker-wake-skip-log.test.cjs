@@ -151,19 +151,31 @@ function skip(reason, overrides = {}) {
 function nudged(overrides = {}) {
   return { agentId: 'alice', nudge: true, quietMs: 20_000, inboxIds: ['m1'], newIds: ['m1'], ...overrides };
 }
+/** Workers whose terminal is still open this beat. */
+const LIVE = new Set(['alice', 'bob']);
+const NONE = new Set();
+
+/** A stall that has been written once, for tests about how it ends. */
+function writtenStall() {
+  const log = new WakeSkipLog();
+  log.observe([skip('not-quiet')], 0, LIVE);
+  assert.equal(log.observe([skip('not-quiet')], WAKE_SKIP_DWELL_MS, LIVE).length, 1);
+  return log;
+}
 
 test('mail delivered within the dwell leaves no trace', () => {
   const log = new WakeSkipLog();
-  assert.deepEqual(log.observe([skip('not-quiet')], 0), []);
-  assert.deepEqual(log.observe([skip('not-quiet')], WAKE_SKIP_DWELL_MS - 1), []);
-  assert.deepEqual(log.observe([nudged()], WAKE_SKIP_DWELL_MS - 1), []);
+  assert.deepEqual(log.observe([skip('not-quiet')], 0, LIVE), []);
+  assert.deepEqual(log.observe([skip('not-quiet')], WAKE_SKIP_DWELL_MS - 1, LIVE), []);
+  assert.deepEqual(log.observe([nudged()], WAKE_SKIP_DWELL_MS - 1, LIVE), []);
+  assert.deepEqual(log.recordDelivery('alice', true, WAKE_SKIP_DWELL_MS), []);
 });
 
 test('a stall is written once it has lasted the dwell, not on every beat', () => {
   const log = new WakeSkipLog();
   const lines = [];
   for (let t = 0; t <= WAKE_SKIP_DWELL_MS + 5 * BEAT; t += BEAT) {
-    lines.push(...log.observe([skip('not-quiet')], t));
+    lines.push(...log.observe([skip('not-quiet')], t, LIVE));
   }
   assert.equal(lines.length, 1);
   assert.equal(lines[0].state, 'not-quiet');
@@ -172,9 +184,9 @@ test('a stall is written once it has lasted the dwell, not on every beat', () =>
 
 test('the stall line carries the gate, the silence and the undelivered mail', () => {
   const log = new WakeSkipLog();
-  log.observe([skip('not-quiet', { quietMs: 3_100, inboxIds: ['m0', 'm1'], newIds: ['m1'] })], 0);
+  log.observe([skip('not-quiet', { quietMs: 3_100, inboxIds: ['m0', 'm1'], newIds: ['m1'] })], 0, LIVE);
   const [line] = log.observe(
-    [skip('not-quiet', { quietMs: 2_900, inboxIds: ['m0', 'm1'], newIds: ['m1'] })], WAKE_SKIP_DWELL_MS
+    [skip('not-quiet', { quietMs: 2_900, inboxIds: ['m0', 'm1'], newIds: ['m1'] })], WAKE_SKIP_DWELL_MS, LIVE
   );
   assert.deepEqual(line, {
     kind: 'worker-wake-skip',
@@ -192,7 +204,7 @@ test('a stall that persists is written again every relog interval, with fresh re
   const log = new WakeSkipLog();
   const lines = [];
   for (let t = 0; t <= WAKE_SKIP_DWELL_MS + 2 * WAKE_SKIP_RELOG_MS; t += BEAT) {
-    lines.push(...log.observe([skip('not-quiet', { quietMs: t % 12_000 })], t));
+    lines.push(...log.observe([skip('not-quiet', { quietMs: t % 12_000 })], t, LIVE));
   }
   assert.equal(lines.length, 3);
   assert.deepEqual(lines.map((l) => l.stalledMs),
@@ -200,41 +212,73 @@ test('a stall that persists is written again every relog interval, with fresh re
 });
 
 test('once written, a change of gate or new undelivered mail is written at once', () => {
-  const log = new WakeSkipLog();
-  log.observe([skip('not-quiet')], 0);
-  assert.equal(log.observe([skip('not-quiet')], WAKE_SKIP_DWELL_MS).length, 1);
-  const changed = log.observe([skip('cooldown')], WAKE_SKIP_DWELL_MS + BEAT);
+  const log = writtenStall();
+  const changed = log.observe([skip('cooldown')], WAKE_SKIP_DWELL_MS + BEAT, LIVE);
   assert.equal(changed.length, 1);
   assert.equal(changed[0].state, 'cooldown');
-  const more = log.observe([skip('cooldown', { inboxIds: ['m1', 'm2'], newIds: ['m1', 'm2'] })], WAKE_SKIP_DWELL_MS + 2 * BEAT);
+  const more = log.observe([skip('cooldown', { inboxIds: ['m1', 'm2'], newIds: ['m1', 'm2'] })], WAKE_SKIP_DWELL_MS + 2 * BEAT, LIVE);
   assert.equal(more.length, 1);
   assert.deepEqual(more[0].newIds, ['m1', 'm2']);
   // The stall is still dated from its first beat, not from the latest change.
   assert.equal(more[0].stalledMs, WAKE_SKIP_DWELL_MS + 2 * BEAT);
 });
 
-test('the end of a written stall is written once, naming how it ended', () => {
-  const log = new WakeSkipLog();
-  log.observe([skip('not-quiet')], 0);
-  log.observe([skip('not-quiet')], WAKE_SKIP_DWELL_MS);
-  assert.deepEqual(log.observe([nudged()], WAKE_SKIP_DWELL_MS + BEAT), [{
+test('a written stall is resolved only once the nudge has actually been submitted', () => {
+  const log = writtenStall();
+  // Deciding to nudge is not delivering: the terminal write can still fail.
+  assert.deepEqual(log.observe([nudged()], WAKE_SKIP_DWELL_MS + BEAT, LIVE), []);
+  assert.deepEqual(log.recordDelivery('alice', true, WAKE_SKIP_DWELL_MS + BEAT + 140), [{
     kind: 'worker-wake-skip',
     agentId: 'alice',
     state: 'resolved',
     via: 'nudged',
-    stalledMs: WAKE_SKIP_DWELL_MS + BEAT
+    stalledMs: WAKE_SKIP_DWELL_MS + BEAT + 140
   }]);
-  assert.deepEqual(log.observe([nudged()], WAKE_SKIP_DWELL_MS + 2 * BEAT), []);
+  assert.deepEqual(log.recordDelivery('alice', true, WAKE_SKIP_DWELL_MS + 2 * BEAT), []);
+});
+
+test('a nudge that fails to reach the terminal is written, and the stall stays open', () => {
+  const log = writtenStall();
+  log.observe([nudged()], WAKE_SKIP_DWELL_MS + BEAT, LIVE);
+  assert.deepEqual(log.recordDelivery('alice', false, WAKE_SKIP_DWELL_MS + BEAT + 140), [{
+    kind: 'worker-wake-skip',
+    agentId: 'alice',
+    state: 'nudge-failed',
+    stalledMs: WAKE_SKIP_DWELL_MS + BEAT + 140
+  }]);
+  // Still open: a later, successful submission resolves it.
+  const [line] = log.recordDelivery('alice', true, WAKE_SKIP_DWELL_MS + 3 * BEAT);
+  assert.equal(line.state, 'resolved');
+  assert.equal(line.via, 'nudged');
+});
+
+test('a nudge decided but never acknowledged does not resolve the stall', () => {
+  const log = writtenStall();
+  log.observe([nudged()], WAKE_SKIP_DWELL_MS + BEAT, LIVE);
+  // The watchdog now counts the mail as announced, so it has nothing new to say…
+  assert.deepEqual(log.observe([skip('already-announced', { newIds: [] })], WAKE_SKIP_DWELL_MS + 2 * BEAT, LIVE), []);
+  // …but the stall is only closed by something observed: here, the inbox emptying.
+  const [line] = log.observe([], WAKE_SKIP_DWELL_MS + 3 * BEAT, LIVE);
+  assert.equal(line.state, 'resolved');
+  assert.equal(line.via, 'drained');
 });
 
 test('a written stall that ends because the inbox drained says so', () => {
-  const log = new WakeSkipLog();
-  log.observe([skip('not-quiet')], 0);
-  log.observe([skip('not-quiet')], WAKE_SKIP_DWELL_MS);
-  const lines = log.observe([], WAKE_SKIP_DWELL_MS + BEAT);
+  const log = writtenStall();
+  const lines = log.observe([], WAKE_SKIP_DWELL_MS + BEAT, LIVE);
   assert.equal(lines.length, 1);
   assert.equal(lines[0].state, 'resolved');
   assert.equal(lines[0].via, 'drained');
+});
+
+test('a written stall whose terminal is gone is not reported as drained', () => {
+  const log = writtenStall();
+  assert.deepEqual(log.observe([], WAKE_SKIP_DWELL_MS + BEAT, NONE), [{
+    kind: 'worker-wake-skip',
+    agentId: 'alice',
+    state: 'terminal-lost',
+    stalledMs: WAKE_SKIP_DWELL_MS + BEAT
+  }]);
 });
 
 test('mail already announced is never reported as a stall', () => {
@@ -242,24 +286,46 @@ test('mail already announced is never reported as a stall', () => {
   // the wake path, however long the turn runs.
   const log = new WakeSkipLog();
   for (let t = 0; t <= 2 * WAKE_SKIP_DWELL_MS; t += BEAT) {
-    assert.deepEqual(log.observe([skip('not-quiet', { newIds: [] })], t), []);
+    assert.deepEqual(log.observe([skip('not-quiet', { newIds: [] })], t, LIVE), []);
   }
 });
 
 test('each worker is tracked on its own', () => {
   const log = new WakeSkipLog();
-  log.observe([skip('not-quiet'), skip('not-quiet', { agentId: 'bob' })], 0);
-  const lines = log.observe([skip('not-quiet'), nudged({ agentId: 'bob' })], WAKE_SKIP_DWELL_MS);
+  log.observe([skip('not-quiet'), skip('not-quiet', { agentId: 'bob' })], 0, LIVE);
+  const lines = log.observe([skip('not-quiet'), nudged({ agentId: 'bob' })], WAKE_SKIP_DWELL_MS, LIVE);
   assert.deepEqual(lines.map((l) => [l.agentId, l.state]), [['alice', 'not-quiet']]);
 });
 
 test('a long backlog is counted in full but named only in part', () => {
   const ids = Array.from({ length: WAKE_SKIP_MAX_IDS + 15 }, (_, i) => `m${i}`);
   const log = new WakeSkipLog();
-  log.observe([skip('not-quiet', { inboxIds: ids, newIds: ids })], 0);
-  const [line] = log.observe([skip('not-quiet', { inboxIds: ids, newIds: ids })], WAKE_SKIP_DWELL_MS);
+  log.observe([skip('not-quiet', { inboxIds: ids, newIds: ids })], 0, LIVE);
+  const [line] = log.observe([skip('not-quiet', { inboxIds: ids, newIds: ids })], WAKE_SKIP_DWELL_MS, LIVE);
   assert.equal(line.pending, ids.length);
   assert.equal(line.newIds.length, WAKE_SKIP_MAX_IDS);
+});
+
+test('a wall clock stepped backwards never yields a negative duration', () => {
+  // Reviewer's probe: stall from 1,000,000, written at 1,300,000, then the
+  // clock is set back to 900,000 before the worker disappears.
+  const log = new WakeSkipLog();
+  log.observe([skip('not-quiet')], 1_000_000, LIVE);
+  assert.equal(log.observe([skip('not-quiet')], 1_300_000, LIVE).length, 1);
+  const [line] = log.observe([], 900_000, NONE);
+  assert.equal(line.state, 'terminal-lost');
+  assert.ok(line.stalledMs >= 0, `stalledMs ${line.stalledMs}`);
+});
+
+test('a rollback does not silence a stall until the old clock catches up', () => {
+  const log = new WakeSkipLog();
+  log.observe([skip('not-quiet')], 1_000_000, LIVE);
+  assert.equal(log.observe([skip('not-quiet')], 1_300_000, LIVE).length, 1);
+  // Set back a whole relog interval: the stall must be written again one
+  // interval after the rollback, not one interval after the old clock.
+  const back = 1_300_000 - WAKE_SKIP_RELOG_MS;
+  assert.deepEqual(log.observe([skip('not-quiet')], back, LIVE), []);
+  assert.equal(log.observe([skip('not-quiet')], back + WAKE_SKIP_RELOG_MS, LIVE).length, 1);
 });
 
 // ─── Codex facts on a stall line ─────────────────────────────────────────────
@@ -277,12 +343,36 @@ test('Codex facts date the last rollout and the last catch-up summary', () => {
 
 // ─── Wiring ──────────────────────────────────────────────────────────────────
 
-test('the wake beat writes what the skip log produces, with Codex facts attached', () => {
+test('the wake beat nudges first, then writes what the skip log produces', () => {
   // Comments are blanked, so a call that has been commented out cannot pass.
   const src = sourceAssert.activeSource('src/main/index.ts');
   const body = sourceAssert.boundedSlice(src, 'function runWorkerWakeBeat(): void {', 'function armAlwaysOnBeats(): void {');
   assert.match(body, /workerWake\.decideWithReasons\(facts, now\)/);
-  assert.match(body, /wakeSkipLog\.observe\(verdicts, now\)/);
+  assert.match(body, /const live = new Set\(facts\.map\(\(f\) => f\.agentId\)\)/);
+  assert.match(body, /wakeSkipLog\.observe\(verdicts, now, live\)/);
+  assert.match(body, /nudgeWorker\(ptyId, ids, \(submitted\) =>/);
+  assert.match(body, /wakeSkipLog\.recordDelivery\(agentId, submitted, Date\.now\(\)\)/);
+  assert.match(body, /enrichStallLines\(/);
   assert.match(body, /hive\.appendLog\(/);
-  assert.match(body, /codexStallFacts\(/);
+  // No diagnostic read may run before a nudge is typed.
+  assert.ok(body.indexOf('nudgeWorker(ptyId, ids') < body.indexOf('enrichStallLines('),
+    'every nudge is submitted before any stall line is enriched');
+});
+
+test('the nudge reports whether its submission reached the terminal', () => {
+  const src = sourceAssert.activeSource('src/main/index.ts');
+  const body = sourceAssert.boundedSlice(src, 'function nudgeWorker(', 'function runWorkerWakeBeat(): void {');
+  assert.match(body, /onOutcome\?\.\(false\)/);
+  assert.match(body, /onOutcome\?\.\(ok\)/);
+});
+
+test('the stall readings resolve the worker\'s home through the one shared record', () => {
+  // The resolver itself is tested behaviourally with every reader; this pins
+  // that the beat hands those readers the shared record, within the budget.
+  const src = sourceAssert.activeSource('src/main/index.ts');
+  const body = sourceAssert.boundedSlice(src, 'function runWorkerWakeBeat(): void {', 'function armAlwaysOnBeats(): void {');
+  assert.match(body, /codexHomes\.homeOf\(agentId, nominalHome\(agentId\)\)/);
+  assert.match(body, /codexAgentActiveAt\(agentId, codexHomes, nominalHome\(agentId\), now, codexActivityCache\)/);
+  assert.match(body, /lastCatchupAt\(home, now, openCodexLogDb\)/);
+  assert.match(body, /limitMs: STALL_ENRICH_BUDGET_MS/);
 });

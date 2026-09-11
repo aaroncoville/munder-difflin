@@ -203,3 +203,49 @@ export function codexStallFacts(
     catchupInLastBeat: catchupAgoMs !== null && catchupAgoMs >= 0 && catchupAgoMs < beatMs
   };
 }
+
+/** Readings for a stalled-wake line. Either may throw, which reads as unknown. */
+export interface StallReaders {
+  rolloutAt(agentId: string): number | null;
+  catchupAt(home: string): number | null;
+}
+
+/** How long one beat may spend annotating its stall lines. The readings are
+ *  synchronous, on the main process; once this is spent the rest are skipped. */
+export const STALL_ENRICH_BUDGET_MS = 20;
+
+/**
+ * Attach Codex readings to the stall lines about to be written: how long ago
+ * the worker's own sessions last recorded anything, and when Codex last ran its
+ * own catch-up summary. Only stall lines (they carry `quietMs`) of workers that
+ * `codexHomeOf` finds a home for are read; the end of a stall, or a worker that
+ * does not run Codex, is written as it is. Once the budget is spent, remaining
+ * lines say the reading was skipped instead of taking it.
+ */
+export function enrichStallLines<L extends { agentId: string }>(
+  lines: readonly L[],
+  codexHomeOf: (agentId: string) => string | null,
+  read: StallReaders,
+  now: number,
+  beatMs: number,
+  budget: { elapsed(): number; limitMs: number }
+): Array<L & { codex?: ReturnType<typeof codexStallFacts> | { skipped: 'budget' } }> {
+  const attempt = (fn: () => number | null): number | null => {
+    try { return fn(); } catch { return null; }
+  };
+  return lines.map((line) => {
+    if (!('quietMs' in line)) return line;
+    const home = codexHomeOf(line.agentId);
+    if (!home) return line;
+    if (budget.elapsed() >= budget.limitMs) return { ...line, codex: { skipped: 'budget' as const } };
+    return {
+      ...line,
+      codex: codexStallFacts(
+        attempt(() => read.rolloutAt(line.agentId)),
+        attempt(() => read.catchupAt(home)),
+        now,
+        beatMs
+      )
+    };
+  });
+}

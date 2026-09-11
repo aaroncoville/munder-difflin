@@ -26,8 +26,10 @@ const {
   fleetLastActiveAt,
   codexAgentActiveAt,
   CodexHomes,
-  ReadingCache
+  ReadingCache,
+  enrichStallLines
 } = loadTs('src/main/codexActivity.ts');
+const { lastCatchupAt } = loadTs('src/main/codexCatchupLog.ts');
 
 const REPO = path.resolve(__dirname, '..');
 
@@ -380,3 +382,96 @@ test('the spawn path records where a resumed Codex worker really runs', () => {
   assert.match(snapshot, /codexHomes\.noteSession\(id, a\.sessionId\)/);
   assert.match(snapshot, /codexActivityCache/);
 });
+
+// ─── One resolver for every reader ───────────────────────────────────────────
+
+test('one resolver: a resumed worker is read from its effective home by every reader', (t) => {
+  const root = tempHome(t);
+  const ownerHome = path.join(root, 'agents/original/.codex');
+  const nominal = path.join(root, 'agents/resumed/.codex');
+  rollout(ownerHome, S1, 4_000_000);
+  const homes = spawned(['resumed', ownerHome, S1]); // what the spawn path records after the resume
+
+  // The resolver itself, and the fleet snapshot's reader.
+  assert.equal(homes.homeOf('resumed', nominal), ownerHome);
+  assert.equal(codexAgentActiveAt('resumed', homes, nominal, NOW), 4_000_000 * 1000);
+  // The stall line's two readers: session age, and Codex's catch-up summary.
+  const opened = [];
+  const open = (file) => {
+    opened.push(file);
+    return { prepare: () => ({ get: () => ({ ts: 4_100_000 }) }), close() {} };
+  };
+  const [line] = enrichStallLines(
+    [{ kind: 'worker-wake-skip', agentId: 'resumed', state: 'not-quiet', quietMs: 3_000 }],
+    (id) => homes.homeOf(id, nominal),
+    {
+      rolloutAt: (id) => codexAgentActiveAt(id, homes, nominal, NOW),
+      catchupAt: (home) => lastCatchupAt(home, NOW, open)
+    },
+    NOW,
+    15_000,
+    { elapsed: () => 0, limitMs: 20 }
+  );
+  assert.deepEqual(opened, [path.join(ownerHome, 'logs_2.sqlite')]);
+  assert.deepEqual(line.codex, {
+    rolloutAgeMs: NOW - 4_000_000 * 1000,
+    catchupAgoMs: NOW - 4_100_000 * 1000,
+    catchupInLastBeat: false
+  });
+});
+
+// ─── Stall enrichment: bounded, and only for stall lines ─────────────────────
+
+const stallLine = (agentId) => ({ kind: 'worker-wake-skip', agentId, state: 'not-quiet', quietMs: 3_000 });
+
+test('only stall lines are enriched, and only for workers that run Codex', () => {
+  const read = { rolloutAt: () => 1_000, catchupAt: () => 2_000 };
+  const lines = enrichStallLines(
+    [
+      stallLine('codex-worker'),
+      { kind: 'worker-wake-skip', agentId: 'codex-worker', state: 'resolved', via: 'nudged', stalledMs: 1 },
+      stallLine('claude-worker')
+    ],
+    (id) => (id === 'codex-worker' ? '/h/codex' : null),
+    read,
+    10_000,
+    15_000,
+    { elapsed: () => 0, limitMs: 20 }
+  );
+  assert.ok(lines[0].codex);
+  assert.equal(lines[1].codex, undefined);
+  assert.equal(lines[2].codex, undefined);
+});
+
+test('once the budget is spent, remaining lines are flagged instead of read', () => {
+  let spent = 0;
+  const calls = [];
+  const read = {
+    rolloutAt: (id) => { calls.push(id); spent += 30; return 1_000; },
+    catchupAt: () => 2_000
+  };
+  const lines = enrichStallLines(
+    [stallLine('a'), stallLine('b'), stallLine('c')],
+    () => '/h',
+    read,
+    10_000,
+    15_000,
+    { elapsed: () => spent, limitMs: 20 }
+  );
+  assert.deepEqual(calls, ['a']);
+  assert.deepEqual(lines[1].codex, { skipped: 'budget' });
+  assert.deepEqual(lines[2].codex, { skipped: 'budget' });
+});
+
+test('a reader that throws leaves the line written, with the reading unknown', () => {
+  const [line] = enrichStallLines(
+    [stallLine('a')],
+    () => '/h',
+    { rolloutAt: () => { throw new Error('EACCES'); }, catchupAt: () => { throw new Error('locked'); } },
+    10_000,
+    15_000,
+    { elapsed: () => 0, limitMs: 20 }
+  );
+  assert.deepEqual(line.codex, { rolloutAgeMs: null, catchupAgoMs: null, catchupInLastBeat: false });
+});
+
