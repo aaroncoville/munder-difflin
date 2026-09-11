@@ -26,6 +26,10 @@ const ROLLOUT_SESSION = /-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a
 export interface RolloutFilter {
   only?: ReadonlySet<string>;
   exclude?: ReadonlySet<string>;
+  /** With `exclude`: the sessions known to be this worker's. A home that holds
+   *  any excluded (another worker's) rollout is shared, and there only these
+   *  count — a session nobody is known to own is nobody's activity. */
+  mine?: ReadonlySet<string>;
 }
 
 function counts(name: string, filter: RolloutFilter): boolean {
@@ -67,6 +71,43 @@ export function newestRolloutAt(
   tree: 'sessions' | 'archived_sessions' = 'sessions'
 ): number | null {
   return newestRolloutIn(join(codexHome, tree), 1, filter);
+}
+
+/** Every rollout file under `dir`, with its session id (lower case) and mtime —
+ *  the same bounded, never-throwing walk as newestRolloutIn. */
+function eachRollout(dir: string, depth: number, visit: (session: string | undefined, at: number) => void): void {
+  let entries: string[];
+  try { entries = readdirSync(dir); } catch { return; }
+  for (const name of entries) {
+    try {
+      const st = statSync(join(dir, name));
+      if (st.isDirectory()) { if (depth < MAX_DEPTH) eachRollout(join(dir, name), depth + 1, visit); }
+      else if (ROLLOUT_FILE.test(name)) visit(ROLLOUT_SESSION.exec(name)?.[1]?.toLowerCase(), st.mtimeMs);
+    } catch { /* removed mid-walk — not activity */ }
+  }
+}
+
+/** The newest rollout under a Codex home that is this worker's: live sessions
+ *  first, archived history only when no live rollout counts. With `mine`, a home
+ *  holding any other worker's rollout (in either tree) is shared, and only the
+ *  worker's known sessions count there — so a session no hook named, or one the
+ *  bounded history forgot across a restart, is never credited to the owner. */
+export function newestOwnedRolloutAt(codexHome: string, filter: RolloutFilter): number | null {
+  if (filter.only) {
+    return newestRolloutAt(codexHome, filter) ?? newestRolloutAt(codexHome, filter, 'archived_sessions');
+  }
+  const newest: Record<'sessions' | 'archived_sessions', number | null> = { sessions: null, archived_sessions: null };
+  const mine: Record<'sessions' | 'archived_sessions', number | null> = { sessions: null, archived_sessions: null };
+  let shared = false;
+  for (const tree of ['sessions', 'archived_sessions'] as const) {
+    eachRollout(join(codexHome, tree), 1, (session, at) => {
+      if (session && filter.exclude?.has(session)) { shared = true; return; }
+      if (newest[tree] === null || at > newest[tree]!) newest[tree] = at;
+      if (session && filter.mine?.has(session) && (mine[tree] === null || at > mine[tree]!)) mine[tree] = at;
+    });
+  }
+  const pick = shared && filter.mine ? mine : newest;
+  return pick.sessions ?? pick.archived_sessions;
 }
 
 /** When an agent was last active, for the fleet snapshot: its telemetry sample
@@ -126,22 +167,25 @@ export class CodexHomes {
   }
 
   /** Which of its home's rollouts are this worker's. A worker that a resume put
-   *  in another agent's home reads only the sessions it owns there; anyone else
-   *  reads everything except the sessions other workers own. A session nobody
-   *  has reported stays with the home's own worker. */
+   *  in another agent's home reads only the sessions it owns there. Anyone else
+   *  reads everything except the sessions other workers own — unless its home
+   *  holds another worker's rollout: then the home is shared and only the
+   *  sessions this worker is known to own count (see newestOwnedRolloutAt). */
   filterFor(agentId: string): RolloutFilter {
     const mine = new Set<string>();
     const others = new Set<string>();
     for (const [session, owner] of this.owners) (owner === agentId ? mine : others).add(session);
-    return this.homes.get(agentId)?.redirected ? { only: mine } : { exclude: others };
+    return this.homes.get(agentId)?.redirected ? { only: mine } : { exclude: others, mine };
   }
 }
 
 /** How many distinct Codex sessions to remember per agent. The fleet snapshot
  *  learns ownership from this list, so it must retain every session reported
- *  between two snapshots. A worker reports nowhere near this many in one 8 s
- *  tick, and CodexHomes keeps ownership once learned, so a bound this size can
- *  never lose a transition. */
+ *  between two snapshots — a worker reports nowhere near this many in one 8 s
+ *  tick. Across an app restart only these survive, so a long-lived worker's
+ *  oldest sessions become unknown. That is safe: a shared home never credits an
+ *  unknown session to anyone (newestOwnedRolloutAt), and the oldest sessions
+ *  never decide a latest reading while a newer one is known. */
 export const SESSION_HISTORY_CAP = 50;
 
 /** Append a newly reported session id to an agent's durable session list —
@@ -176,11 +220,10 @@ export function codexAgentActiveAt(
   const home = homes.homeOf(agentId, nominalHome);
   if (!home) return null;
   const filter = homes.filterFor(agentId);
-  const read = (): number | null =>
-    newestRolloutAt(home, filter) ?? newestRolloutAt(home, filter, 'archived_sessions');
+  const read = (): number | null => newestOwnedRolloutAt(home, filter);
   const sessions = filter.only
     ? `only:${[...filter.only].sort().join(',')}`
-    : `exclude:${[...(filter.exclude ?? [])].sort().join(',')}`;
+    : `exclude:${[...(filter.exclude ?? [])].sort().join(',')}|mine:${[...(filter.mine ?? [])].sort().join(',')}`;
   const at = cache ? cache.read(`${home}\n${sessions}`, now, read) : read();
   return at === null ? null : Math.min(at, now);
 }

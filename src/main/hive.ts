@@ -1139,7 +1139,8 @@ export class HiveManager {
       agent.sessionId = sessionId;
       // Record the transition (not just the latest id) so the fleet snapshot can
       // attribute a session that changed twice between two ticks — see appendSession.
-      agent.sessionIds = appendSession(agent.sessionIds, sessionId);
+      // Codex only: the fleet snapshot reads it for Codex workers alone.
+      if (agent.provider === 'codex') agent.sessionIds = appendSession(agent.sessionIds, sessionId);
       agent.lastSeen = Date.now();
       this.atomicWriteJson(join(root, 'registry.json'), reg);
       this.appendLog({ kind: 'session', agentId, sessionId });

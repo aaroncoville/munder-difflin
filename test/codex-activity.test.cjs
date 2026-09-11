@@ -29,7 +29,8 @@ const {
   ReadingCache,
   enrichStallLines,
   appendSession,
-  SESSION_HISTORY_CAP
+  SESSION_HISTORY_CAP,
+  newestOwnedRolloutAt
 } = loadTs('src/main/codexActivity.ts');
 const { lastCatchupAt } = loadTs('src/main/codexCatchupLog.ts');
 
@@ -151,6 +152,7 @@ test('a resume hands the resumed session to the worker that resumed it', (t) => 
   homes.noteSession('original', S1); // the original agent ran it first
   homes.recordSpawn('original', ownerHome);
   homes.recordSpawn('resumed', ownerHome, S1);
+  homes.noteSession('original', S2); // the owner's own, reported by its hooks
 
   assert.equal(codexAgentActiveAt('resumed', homes, null, NOW), 4_000_000 * 1000);
   assert.equal(codexAgentActiveAt('original', homes, ownerHome, NOW), 3_000_000 * 1000);
@@ -162,6 +164,7 @@ test('a later report cannot take an owned session away from its worker', (t) => 
   rollout(ownerHome, S2, 3_000_000, 'sessions', '2026/09/10');
   const homes = spawned(['original', ownerHome], ['resumed', ownerHome, S1]);
   homes.noteSession('original', S1); // e.g. a stale registry value
+  homes.noteSession('original', S2); // the owner's own, reported by its hooks
 
   assert.equal(codexAgentActiveAt('resumed', homes, null, NOW), 4_000_000 * 1000);
   assert.equal(codexAgentActiveAt('original', homes, ownerHome, NOW), 3_000_000 * 1000);
@@ -193,6 +196,7 @@ test('the owner of a shared home does not claim sessions others resumed into it'
   rollout(ownerHome, S2, 3_000_000);                           // the owner's own
   rollout(ownerHome, S1, 4_000_000, 'sessions', '2026/09/10'); // resumed by someone else, newer
   const homes = spawned(['original', ownerHome], ['resumed', ownerHome, S1]);
+  homes.noteSession('original', S2); // the owner's hooks reported its own session
 
   assert.equal(codexAgentActiveAt('original', homes, ownerHome, NOW), 3_000_000 * 1000);
 });
@@ -206,21 +210,32 @@ test('a new session a redirected worker reports is its own, and never the owner\
   rollout(ownerHome, S3, 4_000_000, 'sessions', '2026/09/10'); // the worker's new session
   const homes = spawned(['original', ownerHome], ['resumed', ownerHome, S1]);
   homes.noteSession('resumed', S3);
+  homes.noteSession('original', S2);
 
   assert.equal(codexAgentActiveAt('resumed', homes, null, NOW), 4_000_000 * 1000);
   assert.equal(codexAgentActiveAt('original', homes, ownerHome, NOW), 2_000_000 * 1000);
 });
 
-test('without a reported session id, a new session in a shared home stays with its owner', (t) => {
-  // The documented limit: a session nobody has reported cannot be told from the
-  // owner's own, so it is the owner's until the worker's hooks say otherwise.
+test('in a shared home, a session nobody is known to own is nobody\'s activity', (t) => {
+  // A session no hook named — or one the bounded history has since forgotten —
+  // cannot be told from the owner's own, so it is never presented as the owner's.
   const ownerHome = tempHome(t);
-  rollout(ownerHome, S1, 3_000_000);
-  rollout(ownerHome, S3, 4_000_000, 'sessions', '2026/09/10');
+  rollout(ownerHome, S1, 3_000_000);                           // resumed by the worker
+  rollout(ownerHome, S2, 2_000_000, 'sessions', '2026/09/09'); // the owner's own
+  rollout(ownerHome, S3, 4_000_000, 'sessions', '2026/09/10'); // nobody reported it
   const homes = spawned(['original', ownerHome], ['resumed', ownerHome, S1]);
 
   assert.equal(codexAgentActiveAt('resumed', homes, null, NOW), 3_000_000 * 1000);
-  assert.equal(codexAgentActiveAt('original', homes, ownerHome, NOW), 4_000_000 * 1000);
+  assert.equal(codexAgentActiveAt('original', homes, ownerHome, NOW), null);
+  homes.noteSession('original', S2); // once its hooks name its own session, that counts — S3 still does not
+  assert.equal(codexAgentActiveAt('original', homes, ownerHome, NOW), 2_000_000 * 1000);
+});
+
+test('in a home no other worker has written to, an unreported session is still its worker\'s', (t) => {
+  const home = tempHome(t);
+  rollout(home, S3, 2_000_000);
+  const homes = spawned(['solo', home], ['elsewhere', '/h/other', S1]); // S1 is owned, but not in this home
+  assert.equal(codexAgentActiveAt('solo', homes, home, NOW), 2_000_000 * 1000);
 });
 
 test('a worker with no record reads the home named after it', (t) => {
@@ -588,6 +603,7 @@ test('the session record captures the transition at the hook boundary, on the re
   const record = sa.boundedSlice(src, 'recordSession(agentId: string, sessionId: string): void {', 'lastSession(agentId: string)');
   assert.match(record, /agent\.sessionId = sessionId;/);
   assert.match(record, /agent\.sessionIds = appendSession\(agent\.sessionIds, sessionId\)/);
+  assert.match(record, /if \(agent\.provider === 'codex'\) agent\.sessionIds = appendSession/);
 });
 
 
@@ -610,5 +626,52 @@ test('a slow reader is not followed by another: the budget is enforced between r
   );
   assert.equal(catchupCalls, 0, 'the catch-up reader must be skipped once the first reader spent the budget');
   assert.deepEqual(line.codex, { skipped: 'budget' });
+});
+
+test('after a restart, a long-lived worker\'s forgotten sessions are not credited to the shared home\'s owner', (t) => {
+  // Jannings delta 3: a redirected worker runs more sessions than the bounded
+  // history keeps. Before a restart the in-memory owners still know them all;
+  // after it, only the retained ids come back, and the oldest become unknown.
+  const root = tempHome(t);
+  const ownerHome = path.join(root, 'agents/original/.codex');
+  const nowS = Math.floor(Date.now() / 1000);
+  rollout(ownerHome, S2, nowS - 3_600, 'sessions', '2026/09/01'); // the owner's own, an hour ago
+  rollout(ownerHome, S1, nowS - 3_500, 'sessions', '2026/09/01'); // the session the worker resumed
+  const later = Array.from({ length: SESSION_HISTORY_CAP + 5 }, (_, i) =>
+    `01a0a000-0000-7000-b000-${String(i).padStart(12, '0')}`);
+  // every later session is newer than the owner's own, the last one ten seconds ago
+  later.forEach((sid, i) => rollout(ownerHome, sid, nowS - (later.length - i) * 10, 'sessions', '2026/09/10'));
+  let ids;
+  for (const sid of [S1, ...later]) ids = appendSession(ids, sid);
+  assert.equal(ids.length, SESSION_HISTORY_CAP);
+  assert.ok(!ids.includes(S1) && !ids.includes(later[0]), 'the fixture really evicts the oldest sessions');
+
+  const registry = {
+    original: { name: 'Original', provider: 'codex', sessionId: S2 },
+    resumed: { name: 'Resumed', provider: 'codex', sessionId: later.at(-1), sessionIds: ids }
+  };
+  // Before the restart: lifetime ownership is still in memory.
+  const live = spawned(['original', ownerHome], ['resumed', ownerHome, S1]);
+  for (const sid of [S1, ...later]) live.noteSession('resumed', sid);
+  const before = runFleetSnapshot({ root, homes: live, registry, usage: [] });
+  assert.ok(Math.abs(before.original.lastActiveSecAgo - 3_600) <= 2, `owner before restart: ${before.original.lastActiveSecAgo}`);
+
+  // After the restart: fresh owners, the registry as persisted, and restore
+  // resuming the worker's latest session in the owner's home.
+  const restarted = spawned(['original', ownerHome], ['resumed', ownerHome, later.at(-1)]);
+  const after = runFleetSnapshot({ root, homes: restarted, registry: JSON.parse(JSON.stringify(registry)), usage: [] });
+  assert.ok(Math.abs(after.original.lastActiveSecAgo - 3_600) <= 2,
+    `owner falsely credited a forgotten session after restart: ${after.original.lastActiveSecAgo}`);
+  assert.ok(Math.abs(after.resumed.lastActiveSecAgo - 10) <= 2, `resumed worker after restart: ${after.resumed.lastActiveSecAgo}`);
+});
+
+test('a reader told which sessions are others\' never counts their rollouts', (t) => {
+  // The exported contract on its own: excluded sessions never count, whether or
+  // not the caller also says which are its own.
+  const home = tempHome(t);
+  rollout(home, S1, 4_000_000);                           // another worker's, newer
+  rollout(home, S3, 2_000_000, 'sessions', '2026/09/10'); // nobody's known
+  assert.equal(newestOwnedRolloutAt(home, { exclude: new Set([S1]) }), 2_000_000 * 1000);
+  assert.equal(newestOwnedRolloutAt(home, { exclude: new Set([S1]), mine: new Set() }), null);
 });
 
