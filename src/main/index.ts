@@ -5204,8 +5204,8 @@ function bootstrapHiveServices(): void {
  *  own nudge cooldown so a throttled window is caught within ~15s of a stall. */
 const WORKER_WAKE_POLL_MS = 15_000;
 /** Gap between typing a nudge and the Enter that submits it (the submitToPty
- *  pattern). Named so the beat can defer its diagnostic enrichment past it —
- *  synchronous stall-line I/O must never sit between a nudge's text and Enter. */
+ *  pattern). Also how often waiting stall-line enrichment re-checks for nudges
+ *  still awaiting their Enter (scheduleStallEnrichment). */
 const NUDGE_SUBMIT_DELAY_MS = 140;
 let workerWakeTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -5224,6 +5224,7 @@ function nudgeWorker(ptyId: string, ids: string[] = [], onOutcome?: (submitted: 
     onOutcome?.(false);
     return;
   }
+  pendingSubmits += 1;
   setTimeout(() => {
     let ok = false;
     try {
@@ -5231,8 +5232,40 @@ function nudgeWorker(ptyId: string, ids: string[] = [], onOutcome?: (submitted: 
       ok = submitted.ok;
       if (!submitted.ok) console.warn(`[worker-wake] submit failed for ${ptyId}: ${submitted.error}`);
     } catch (e) { console.error('[worker-wake] submit threw:', e); }
+    finally { pendingSubmits -= 1; }
     onOutcome?.(ok);
   }, NUDGE_SUBMIT_DELAY_MS);
+}
+
+/** Watchdog nudges whose text is typed but whose Enter has not fired yet. */
+let pendingSubmits = 0;
+/** Stall-line enrichment still to run, oldest beat first. */
+const pendingEnrichment: Array<() => void> = [];
+let enrichmentWaiting = false;
+
+/** Run a beat's stall-line enrichment, but never while a watchdog nudge is
+ *  waiting for its Enter — this beat's or an earlier one's. Its synchronous
+ *  diagnostic reads would otherwise sit between that nudge's text and its
+ *  Enter, and rearming the beats runs one at once, so one beat's enrichment and
+ *  the next beat's nudge can overlap. Waiting runs keep their beat order, so the
+ *  skip log is never handed an older beat's facts after a newer one's; a run
+ *  that fails neither escapes the timer nor strands the ones behind it. */
+function scheduleStallEnrichment(run: () => void): void {
+  pendingEnrichment.push(run);
+  if (!enrichmentWaiting) drainStallEnrichment();
+}
+
+function drainStallEnrichment(): void {
+  if (pendingSubmits > 0) {
+    enrichmentWaiting = true;
+    setTimeout(drainStallEnrichment, NUDGE_SUBMIT_DELAY_MS);
+    return;
+  }
+  enrichmentWaiting = false;
+  while (pendingEnrichment.length) {
+    const run = pendingEnrichment.shift()!;
+    try { run(); } catch (e) { console.error('[worker-wake] stall enrichment failed:', e); }
+  }
 }
 
 /** Main-process inbox-wake beat (issue #151, fix A): the renderer's idle nudge
@@ -5292,11 +5325,11 @@ function runWorkerWakeBeat(): void {
   // summary, read from the home it actually runs in and within a per-beat budget.
   const root = hive.root();
   const nominalHome = (agentId: string): string | null => (root ? join(root, 'agents', agentId, '.codex') : null);
-  // Defer enrichment until AFTER the pending Enter submissions have fired
-  // (nudgeWorker schedules each Enter NUDGE_SUBMIT_DELAY_MS out, before this): a
-  // slow, uncached diagnostic reader must never sit between a nudge's text and
-  // its Enter. The per-reader budget then bounds the enrichment work itself.
-  setTimeout(() => {
+  // Only once no watchdog nudge — this beat's or any other's — still awaits its
+  // Enter, so a slow, uncached reader never sits between a nudge's text and its
+  // Enter (scheduleStallEnrichment). The per-reader budget is cooperative: once
+  // it is spent no further reader starts; a reader already running is not preempted.
+  scheduleStallEnrichment(() => {
     const started = performance.now();
     const lines = enrichStallLines(
       wakeSkipLog.observe(verdicts, now, live),
@@ -5310,7 +5343,7 @@ function runWorkerWakeBeat(): void {
       { elapsed: () => performance.now() - started, limitMs: STALL_ENRICH_BUDGET_MS }
     );
     for (const line of lines) hive.appendLog(line);
-  }, NUDGE_SUBMIT_DELAY_MS);
+  });
 }
 
 /** (Re)arm the always-on beats (decoupled from the optional heartbeat): the live

@@ -549,7 +549,7 @@ test('on the 8 s snapshot cadence, a 30 s reading is refreshed at 32 s', () => {
 });
 
 
-// ─── delta 2: every reported session is captured, not just the latest ─────────
+// ─── Every reported session is captured, not just the latest ─────────────────
 
 test('appendSession keeps every reported session, most-recent last, deduped and capped', () => {
   assert.deepEqual(appendSession(undefined, 'a'), ['a']);
@@ -608,7 +608,7 @@ test('the session record captures the transition at the hook boundary, on the re
 
 
 test('a slow reader is not followed by another: the budget is enforced between readers, not just before the line', () => {
-  // Tryphon delta 2: a first reader that overruns the budget must not let the
+  // A first reader that overruns the budget must not let the
   // catch-up reader start on top of it. Simulate the overrun by advancing the
   // budget clock inside the first reader.
   let catchupCalls = 0;
@@ -629,7 +629,7 @@ test('a slow reader is not followed by another: the budget is enforced between r
 });
 
 test('after a restart, a long-lived worker\'s forgotten sessions are not credited to the shared home\'s owner', (t) => {
-  // Jannings delta 3: a redirected worker runs more sessions than the bounded
+  // A redirected worker runs more sessions than the bounded
   // history keeps. Before a restart the in-memory owners still know them all;
   // after it, only the retained ids come back, and the oldest become unknown.
   const root = tempHome(t);
