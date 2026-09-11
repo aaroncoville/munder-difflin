@@ -590,3 +590,25 @@ test('the session record captures the transition at the hook boundary, on the re
   assert.match(record, /agent\.sessionIds = appendSession\(agent\.sessionIds, sessionId\)/);
 });
 
+
+test('a slow reader is not followed by another: the budget is enforced between readers, not just before the line', () => {
+  // Tryphon delta 2: a first reader that overruns the budget must not let the
+  // catch-up reader start on top of it. Simulate the overrun by advancing the
+  // budget clock inside the first reader.
+  let catchupCalls = 0;
+  let elapsed = 0;
+  const [line] = enrichStallLines(
+    [{ agentId: 'slow', quietMs: 1_000 }],
+    () => '/home/slow',
+    {
+      rolloutAt: () => { elapsed = 220; return 5; }, // blows the 20 ms budget mid-read
+      catchupAt: () => { catchupCalls += 1; return 7; }
+    },
+    NOW,
+    15_000,
+    { elapsed: () => elapsed, limitMs: 20 }
+  );
+  assert.equal(catchupCalls, 0, 'the catch-up reader must be skipped once the first reader spent the budget');
+  assert.deepEqual(line.codex, { skipped: 'budget' });
+});
+

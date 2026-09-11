@@ -357,6 +357,11 @@ test('the wake beat nudges first, then writes what the skip log produces', () =>
   // No diagnostic read may run before a nudge is typed.
   assert.ok(body.indexOf('nudgeWorker(ptyId, ids') < body.indexOf('enrichStallLines('),
     'every nudge is submitted before any stall line is enriched');
+  // Enrichment is DEFERRED onto a timer keyed to the same submit delay, so the
+  // pending Enter (scheduled first, during the nudge loop) fires before any
+  // synchronous diagnostic read runs — a slow reader cannot postpone a submit.
+  assert.match(body, /setTimeout\(\(\) => \{[\s\S]*?enrichStallLines\(/);
+  assert.match(body, /\}, NUDGE_SUBMIT_DELAY_MS\);/);
 });
 
 test('the nudge reports whether its submission reached the terminal', () => {
@@ -364,6 +369,7 @@ test('the nudge reports whether its submission reached the terminal', () => {
   const body = sourceAssert.boundedSlice(src, 'function nudgeWorker(', 'function runWorkerWakeBeat(): void {');
   assert.match(body, /onOutcome\?\.\(false\)/);
   assert.match(body, /onOutcome\?\.\(ok\)/);
+  assert.match(body, /\}, NUDGE_SUBMIT_DELAY_MS\);/);
 });
 
 test('the stall readings resolve the worker\'s home through the one shared record', () => {

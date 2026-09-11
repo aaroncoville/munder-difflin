@@ -5203,6 +5203,10 @@ function bootstrapHiveServices(): void {
 /** Cadence of the worker inbox-wake watchdog (#151). Well under the renderer's
  *  own nudge cooldown so a throttled window is caught within ~15s of a stall. */
 const WORKER_WAKE_POLL_MS = 15_000;
+/** Gap between typing a nudge and the Enter that submits it (the submitToPty
+ *  pattern). Named so the beat can defer its diagnostic enrichment past it —
+ *  synchronous stall-line I/O must never sit between a nudge's text and Enter. */
+const NUDGE_SUBMIT_DELAY_MS = 140;
 let workerWakeTimer: ReturnType<typeof setInterval> | null = null;
 
 /** Type the renderer's guarded nudge into one worker's PTY — text first, Enter a
@@ -5228,7 +5232,7 @@ function nudgeWorker(ptyId: string, ids: string[] = [], onOutcome?: (submitted: 
       if (!submitted.ok) console.warn(`[worker-wake] submit failed for ${ptyId}: ${submitted.error}`);
     } catch (e) { console.error('[worker-wake] submit threw:', e); }
     onOutcome?.(ok);
-  }, 140);
+  }, NUDGE_SUBMIT_DELAY_MS);
 }
 
 /** Main-process inbox-wake beat (issue #151, fix A): the renderer's idle nudge
@@ -5288,19 +5292,25 @@ function runWorkerWakeBeat(): void {
   // summary, read from the home it actually runs in and within a per-beat budget.
   const root = hive.root();
   const nominalHome = (agentId: string): string | null => (root ? join(root, 'agents', agentId, '.codex') : null);
-  const started = performance.now();
-  const lines = enrichStallLines(
-    wakeSkipLog.observe(verdicts, now, live),
-    (agentId) => (reg.agents[agentId]?.provider === 'codex' ? codexHomes.homeOf(agentId, nominalHome(agentId)) : null),
-    {
-      rolloutAt: (agentId) => codexAgentActiveAt(agentId, codexHomes, nominalHome(agentId), now, codexActivityCache),
-      catchupAt: (home) => codexCatchupCache.read(home, now, () => lastCatchupAt(home, now, openCodexLogDb))
-    },
-    now,
-    WORKER_WAKE_POLL_MS,
-    { elapsed: () => performance.now() - started, limitMs: STALL_ENRICH_BUDGET_MS }
-  );
-  for (const line of lines) hive.appendLog(line);
+  // Defer enrichment until AFTER the pending Enter submissions have fired
+  // (nudgeWorker schedules each Enter NUDGE_SUBMIT_DELAY_MS out, before this): a
+  // slow, uncached diagnostic reader must never sit between a nudge's text and
+  // its Enter. The per-reader budget then bounds the enrichment work itself.
+  setTimeout(() => {
+    const started = performance.now();
+    const lines = enrichStallLines(
+      wakeSkipLog.observe(verdicts, now, live),
+      (agentId) => (reg.agents[agentId]?.provider === 'codex' ? codexHomes.homeOf(agentId, nominalHome(agentId)) : null),
+      {
+        rolloutAt: (agentId) => codexAgentActiveAt(agentId, codexHomes, nominalHome(agentId), now, codexActivityCache),
+        catchupAt: (home) => codexCatchupCache.read(home, now, () => lastCatchupAt(home, now, openCodexLogDb))
+      },
+      now,
+      WORKER_WAKE_POLL_MS,
+      { elapsed: () => performance.now() - started, limitMs: STALL_ENRICH_BUDGET_MS }
+    );
+    for (const line of lines) hive.appendLog(line);
+  }, NUDGE_SUBMIT_DELAY_MS);
 }
 
 /** (Re)arm the always-on beats (decoupled from the optional heartbeat): the live

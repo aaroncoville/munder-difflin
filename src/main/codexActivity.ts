@@ -256,19 +256,17 @@ export function enrichStallLines<L extends { agentId: string }>(
   const attempt = (fn: () => number | null): number | null => {
     try { return fn(); } catch { return null; }
   };
+  const exhausted = (): boolean => budget.elapsed() >= budget.limitMs;
   return lines.map((line) => {
     if (!('quietMs' in line)) return line;
     const home = codexHomeOf(line.agentId);
     if (!home) return line;
-    if (budget.elapsed() >= budget.limitMs) return { ...line, codex: { skipped: 'budget' as const } };
-    return {
-      ...line,
-      codex: codexStallFacts(
-        attempt(() => read.rolloutAt(line.agentId)),
-        attempt(() => read.catchupAt(home)),
-        now,
-        beatMs
-      )
-    };
+    // The budget is checked before EACH reader, not just before the line: one
+    // slow reader must not let the next start and run unbounded on top of it.
+    if (exhausted()) return { ...line, codex: { skipped: 'budget' as const } };
+    const rolloutAt = attempt(() => read.rolloutAt(line.agentId));
+    if (exhausted()) return { ...line, codex: { skipped: 'budget' as const } };
+    const catchupAt = attempt(() => read.catchupAt(home));
+    return { ...line, codex: codexStallFacts(rolloutAt, catchupAt, now, beatMs) };
   });
 }
