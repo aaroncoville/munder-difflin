@@ -68,7 +68,13 @@ import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, type WorkerWakeFacts } from './workerWake';
-import { fleetLastActiveAt } from './codexActivity';
+import {
+  CODEX_ACTIVITY_TTL_MS,
+  ReadingCache,
+  codexAgentActiveAt,
+  fleetLastActiveAt,
+  type CodexSessionRecord
+} from './codexActivity';
 import { inboxNudgeText } from '../shared/hiveNudge';
 import { resolveGodName } from '../shared/godIdentity';
 import { fetchHireManifest, readHireManifestFiles } from './hire';
@@ -190,6 +196,14 @@ async function enableCodexRemoteForSpawn(
 /** Live PTY id → its hive agent id, recorded at spawn. The pty:kill handler only
  *  gets the PTY id, so this lets a closed tab archive the right registry agent. */
 const ptyToAgent = new Map<string, string>();
+/** Hive agent id → the CODEX_HOME its Codex process was spawned with, and the
+ *  session it resumed there when that home belongs to another agent. Resume
+ *  can point a worker at another agent's home, so the id alone does not say
+ *  where its rollouts are. Read by the fleet snapshot. */
+const codexSessionOf = new Map<string, CodexSessionRecord>();
+/** Walking a long Codex history is a synchronous directory scan, so the fleet
+ *  snapshot reads each one at most once per CODEX_ACTIVITY_TTL_MS. */
+const codexActivityCache = new ReadingCache<number | null>(CODEX_ACTIVITY_TTL_MS);
 /** PTY id → the spawn it should auto restart-and-continue into once a first-time
  *  CLI install finishes. The missing-CLI short-circuit runs the engine's installer
  *  in this PTY; when it exits cleanly the exit handler re-runs the SAME spawn (with
@@ -1265,12 +1279,15 @@ function writeFleetSnapshot(): void {
         const lifetime = costTotals.usdFor(id);
         const sessionUsd = u ? Number(u.usd.toFixed(4)) : 0;
         // Codex reports no telemetry, so without a fallback it read as never
-        // active; its own session rollouts carry the same information.
-        const activeAt = fleetLastActiveAt(
-          a.provider,
-          u?.ts,
-          hiveRoot ? join(hiveRoot, 'agents', id, '.codex') : null
-        );
+        // active; its own session rollouts carry the same information — read
+        // from the home it actually runs in, which a resume can change.
+        const activeAt = fleetLastActiveAt(a.provider, u?.ts, () => codexAgentActiveAt(
+          id,
+          codexSessionOf,
+          hiveRoot ? join(hiveRoot, 'agents', id, '.codex') : null,
+          now,
+          codexActivityCache
+        ));
         return {
           id,
           name: a.name,
@@ -2775,6 +2792,9 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // Set when `--resume` was actually attached (explicit id or restore-on-restart),
   // so the renderer can skip re-orienting a god/assistant that resumed its thread.
   let didResume = false;
+  // Set when a Codex resume points this worker at ANOTHER agent's home: the
+  // session it runs there, so its activity is not confused with that agent's.
+  let codexResumedSession: string | undefined;
   // Claude-only — these are Claude Code flags; other CLIs carry their own flags
   // in the command string the renderer already built.
   if (opts.hive && claudeProvider) {
@@ -2877,7 +2897,10 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
         console.warn(`[resume] codex session "${sid}" not found in any agent CODEX_HOME - starting fresh`);
         if (typedSid) resumeNotFound = true;
       } else {
-        if (ownerHome !== myHome) opts.env = { ...(opts.env ?? {}), CODEX_HOME: ownerHome };
+        if (ownerHome !== myHome) {
+          opts.env = { ...(opts.env ?? {}), CODEX_HOME: ownerHome };
+          codexResumedSession = sid;
+        }
         const args = opts.args ?? [];
         // Positional order matters: `codex resume [OPTIONS] [SESSION_ID] [PROMPT]`.
         // The hive identity prompt rides in `args` as a POSITIONAL (codex has no
@@ -2900,6 +2923,16 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // live terminal means active — ensureAgent above already cleared `archived`.
   if (opts.hive?.id) {
     ptyToAgent.set(opts.id, opts.hive.id);
+    // Where this worker's Codex rollouts will be written, now that any resume
+    // has settled its CODEX_HOME.
+    const codexHome = opts.env?.CODEX_HOME;
+    if (codexHome) {
+      codexSessionOf.set(opts.hive.id, codexResumedSession
+        ? { home: codexHome, session: codexResumedSession }
+        : { home: codexHome });
+    } else {
+      codexSessionOf.delete(opts.hive.id);
+    }
     // Worker inbox-wake watchdog (#151): boot grace starts at spawn so the
     // initial orientation prompt is never mistaken for an idle agent.
     workerWake.noteSpawn(opts.id);
