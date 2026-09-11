@@ -63,6 +63,7 @@ function spawned(...entries) {
 const S1 = '01a08414-c11e-7900-a709-b6cf3703a742';
 const S2 = '01a08415-902d-78a1-90f3-0c67c41be971';
 const S3 = '01a08b71-da88-7e03-8e91-2d7813925ebb';
+const S4 = '01a08dba-f793-73b1-8f74-a580786b04c0';
 
 const NOW = 5_000_000 * 1000;
 const neverReadDisk = () => { throw new Error('must not read disk'); };
@@ -473,5 +474,57 @@ test('a reader that throws leaves the line written, with the reading unknown', (
     { elapsed: () => 0, limitMs: 20 }
   );
   assert.deepEqual(line.codex, { rolloutAgeMs: null, catchupAgoMs: null, catchupInLastBeat: false });
+});
+
+// ─── Both directions in a shared home, and the real refresh cadence ──────────
+
+test('in a shared home, each side\'s new session is its own', (t) => {
+  // After the redirect either side can start a new session in the shared home:
+  // the redirected worker starts S3, the owner starts S4, and each one's hooks
+  // report its own. The owner also has S2, which nobody reported and which is
+  // newer than S3: only the redirected worker's own-sessions filter keeps it
+  // out of that worker's reading.
+  const ownerHome = tempHome(t);
+  rollout(ownerHome, S1, 1_000_000);                           // resumed long ago
+  rollout(ownerHome, S3, 2_000_000, 'sessions', '2026/09/10'); // the redirected worker's new session
+  rollout(ownerHome, S2, 2_500_000, 'sessions', '2026/09/10'); // the owner's, never reported
+  rollout(ownerHome, S4, 3_000_000, 'sessions', '2026/09/11'); // the owner's new session, newest
+  const homes = spawned(['original', ownerHome], ['resumed', ownerHome, S1]);
+  homes.noteSession('resumed', S3);
+  homes.noteSession('original', S4);
+
+  assert.equal(codexAgentActiveAt('resumed', homes, null, NOW), 2_000_000 * 1000);
+  assert.equal(codexAgentActiveAt('original', homes, ownerHome, NOW), 3_000_000 * 1000);
+});
+
+test('the fleet snapshot credits each side of a shared home with its own new session', (t) => {
+  const { root, ownerHome, homes } = sharedHomeFixture(t);
+  const nowS = Math.floor(Date.now() / 1000);
+  rollout(ownerHome, S1, nowS - 900);                             // resumed, now quiet
+  rollout(ownerHome, S3, nowS - 300, 'sessions', '2026/09/10');   // the redirected worker's new session
+  rollout(ownerHome, S2, nowS - 200, 'sessions', '2026/09/09');   // the owner's, never reported, newer than S3
+  rollout(ownerHome, S4, nowS - 60, 'sessions', '2026/09/11');    // the owner's new session
+
+  const agents = runFleetSnapshot({
+    root,
+    homes,
+    registry: {
+      original: { name: 'Original', provider: 'codex', sessionId: S4 },
+      resumed: { name: 'Resumed', provider: 'codex', sessionId: S3 }
+    },
+    usage: []
+  });
+
+  assert.ok(Math.abs(agents.resumed.lastActiveSecAgo - 300) <= 2, `resumed worker: ${agents.resumed.lastActiveSecAgo}`);
+  assert.ok(Math.abs(agents.original.lastActiveSecAgo - 60) <= 2, `owner: ${agents.original.lastActiveSecAgo}`);
+});
+
+test('on the 8 s snapshot cadence, a 30 s reading is refreshed at 32 s', () => {
+  // The snapshot runs every 8 s, so a 30 s ttl is next honoured by the tick at
+  // 32 s: that, not 30 s, is how late a resumed session's growth can show.
+  const cache = new ReadingCache(30_000);
+  const walkedAt = [];
+  for (let t = 0; t <= 64_000; t += 8_000) cache.read('home', t, () => { walkedAt.push(t); return t; });
+  assert.deepEqual(walkedAt, [0, 32_000, 64_000]);
 });
 
