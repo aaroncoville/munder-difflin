@@ -68,6 +68,7 @@ import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, type WorkerWakeFacts } from './workerWake';
+import { fleetLastActiveAt } from './codexActivity';
 import { inboxNudgeText } from '../shared/hiveNudge';
 import { resolveGodName } from '../shared/godIdentity';
 import { fetchHireManifest, readHireManifestFiles } from './hire';
@@ -1263,6 +1264,13 @@ function writeFleetSnapshot(): void {
         // fall back to the session figure rather than publishing a cold $0.
         const lifetime = costTotals.usdFor(id);
         const sessionUsd = u ? Number(u.usd.toFixed(4)) : 0;
+        // Codex reports no telemetry, so without a fallback it read as never
+        // active; its own session rollouts carry the same information.
+        const activeAt = fleetLastActiveAt(
+          a.provider,
+          u?.ts,
+          hiveRoot ? join(hiveRoot, 'agents', id, '.codex') : null
+        );
         return {
           id,
           name: a.name,
@@ -1274,7 +1282,7 @@ function writeFleetSnapshot(): void {
           usd: lifetime === null ? sessionUsd : Number(lifetime.toFixed(4)),
           sessionUsd,
           lastTool: spans.length ? spans[spans.length - 1].tool : null,
-          lastActiveSecAgo: u ? Math.round((now - u.ts) / 1000) : null,
+          lastActiveSecAgo: activeAt === null ? null : Math.round((now - activeAt) / 1000),
           inboxBacklog: hive.inboxBacklog(id),
           onHold: !!a.onHold
         };
