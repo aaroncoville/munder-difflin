@@ -70,10 +70,10 @@ import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, type WorkerWakeFacts } from './workerWake';
 import {
   CODEX_ACTIVITY_TTL_MS,
+  CodexHomes,
   ReadingCache,
   codexAgentActiveAt,
-  fleetLastActiveAt,
-  type CodexSessionRecord
+  fleetLastActiveAt
 } from './codexActivity';
 import { inboxNudgeText } from '../shared/hiveNudge';
 import { resolveGodName } from '../shared/godIdentity';
@@ -196,11 +196,10 @@ async function enableCodexRemoteForSpawn(
 /** Live PTY id → its hive agent id, recorded at spawn. The pty:kill handler only
  *  gets the PTY id, so this lets a closed tab archive the right registry agent. */
 const ptyToAgent = new Map<string, string>();
-/** Hive agent id → the CODEX_HOME its Codex process was spawned with, and the
- *  session it resumed there when that home belongs to another agent. Resume
- *  can point a worker at another agent's home, so the id alone does not say
- *  where its rollouts are. Read by the fleet snapshot. */
-const codexSessionOf = new Map<string, CodexSessionRecord>();
+/** Where each Codex worker runs and which sessions are whose. A resume can
+ *  point a worker at another agent's home, so the id alone does not say where
+ *  its rollouts are. Written at spawn, read by the fleet snapshot. */
+const codexHomes = new CodexHomes();
 /** Walking a long Codex history is a synchronous directory scan, so the fleet
  *  snapshot reads each one at most once per CODEX_ACTIVITY_TTL_MS. */
 const codexActivityCache = new ReadingCache<number | null>(CODEX_ACTIVITY_TTL_MS);
@@ -1268,6 +1267,12 @@ function writeFleetSnapshot(): void {
     // Async + incremental; returns immediately and never throws into the timer.
     const hiveRoot = hive.root();
     if (hiveRoot) void costTotals.refresh(join(hiveRoot, 'cost-ledger.jsonl'));
+    // Learn every Codex session the hooks have reported before reading anyone's
+    // activity: in a shared home, whose a session is decides both the worker's
+    // reading and the home owner's.
+    for (const [id, a] of Object.entries(reg.agents)) {
+      if (a.provider === 'codex') codexHomes.noteSession(id, a.sessionId);
+    }
     const agents = Object.entries(reg.agents)
       .filter(([, a]) => !a.archived)
       .map(([id, a]) => {
@@ -1283,7 +1288,7 @@ function writeFleetSnapshot(): void {
         // from the home it actually runs in, which a resume can change.
         const activeAt = fleetLastActiveAt(a.provider, u?.ts, () => codexAgentActiveAt(
           id,
-          codexSessionOf,
+          codexHomes,
           hiveRoot ? join(hiveRoot, 'agents', id, '.codex') : null,
           now,
           codexActivityCache
@@ -2925,14 +2930,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     ptyToAgent.set(opts.id, opts.hive.id);
     // Where this worker's Codex rollouts will be written, now that any resume
     // has settled its CODEX_HOME.
-    const codexHome = opts.env?.CODEX_HOME;
-    if (codexHome) {
-      codexSessionOf.set(opts.hive.id, codexResumedSession
-        ? { home: codexHome, session: codexResumedSession }
-        : { home: codexHome });
-    } else {
-      codexSessionOf.delete(opts.hive.id);
-    }
+    codexHomes.recordSpawn(opts.hive.id, opts.env?.CODEX_HOME, codexResumedSession);
     // Worker inbox-wake watchdog (#151): boot grace starts at spawn so the
     // initial orientation prompt is never mistaken for an idle agent.
     workerWake.noteSpawn(opts.id);

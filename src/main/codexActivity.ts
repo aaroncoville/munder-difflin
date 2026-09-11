@@ -21,16 +21,17 @@ const ROLLOUT_FILE = /^rollout-.*\.jsonl$/;
 /** The session a rollout belongs to: Codex ends every rollout name with its id. */
 const ROLLOUT_SESSION = /-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
 
-/** Which rollouts count: one session's only, or all but some sessions'. */
+/** Which rollouts count, by session id (lower case): only some sessions', or
+ *  all but some sessions'. */
 export interface RolloutFilter {
-  only?: string;
+  only?: ReadonlySet<string>;
   exclude?: ReadonlySet<string>;
 }
 
 function counts(name: string, filter: RolloutFilter): boolean {
   if (!ROLLOUT_FILE.test(name)) return false;
   const session = ROLLOUT_SESSION.exec(name)?.[1]?.toLowerCase();
-  if (filter.only) return session === filter.only.toLowerCase();
+  if (filter.only) return session !== undefined && filter.only.has(session);
   return !(session && filter.exclude?.has(session));
 }
 
@@ -81,49 +82,83 @@ export function fleetLastActiveAt(
   return provider === 'codex' ? codexActiveAt() : null;
 }
 
-/** Where a Codex worker actually runs: the CODEX_HOME it was spawned with and,
- *  when it resumed a session that another agent's home owns, that session. */
-export interface CodexSessionRecord {
-  home: string;
-  session?: string;
+/**
+ * Where each Codex worker runs, and which sessions are whose.
+ *
+ * A worker's CODEX_HOME is the one named after it unless a resume pointed it
+ * at the home that owns the resumed session; that home is then shared, and its
+ * rollouts have to be told apart by session. A worker owns the session it
+ * resumed, and every session its hooks report after that — a `/new` in the
+ * running process starts one. Ownership is kept rather than replaced, so a
+ * worker's earlier sessions are never handed to anyone else.
+ *
+ * The one place that answers "which home, which rollouts" for a Codex worker.
+ */
+export class CodexHomes {
+  /** agentId → the home its Codex process was spawned with, and whether a
+   *  resume put it there. */
+  private homes = new Map<string, { home: string; redirected: boolean }>();
+  /** session id (lower case) → the agent that owns it. */
+  private owners = new Map<string, string>();
+
+  /** Record a worker's home at spawn, once any resume has settled CODEX_HOME.
+   *  A resume hands the resumed session to this worker, whoever ran it before. */
+  recordSpawn(agentId: string, codexHome: string | undefined, resumedSession?: string): void {
+    if (!codexHome) {
+      this.homes.delete(agentId);
+      return;
+    }
+    this.homes.set(agentId, { home: codexHome, redirected: !!resumedSession });
+    if (resumedSession) this.owners.set(resumedSession.toLowerCase(), agentId);
+  }
+
+  /** A session the worker is known to run: its hooks reported it. A session
+   *  that already has an owner keeps it, so a stale report cannot take it back. */
+  noteSession(agentId: string, sessionId: string | null | undefined): void {
+    if (!sessionId) return;
+    const id = sessionId.toLowerCase();
+    if (!this.owners.has(id)) this.owners.set(id, agentId);
+  }
+
+  /** The CODEX_HOME the worker actually runs in, else the one named after it. */
+  homeOf(agentId: string, nominalHome: string | null): string | null {
+    return this.homes.get(agentId)?.home ?? nominalHome;
+  }
+
+  /** Which of its home's rollouts are this worker's. A worker that a resume put
+   *  in another agent's home reads only the sessions it owns there; anyone else
+   *  reads everything except the sessions other workers own. A session nobody
+   *  has reported stays with the home's own worker. */
+  filterFor(agentId: string): RolloutFilter {
+    const mine = new Set<string>();
+    const others = new Set<string>();
+    for (const [session, owner] of this.owners) (owner === agentId ? mine : others).add(session);
+    return this.homes.get(agentId)?.redirected ? { only: mine } : { exclude: others };
+  }
 }
 
 /**
- * A Codex worker's last activity, from the rollouts that are its own.
- *
- * Resuming a session that another agent's home owns points the worker's
- * CODEX_HOME at that home, so its rollouts are not under the home named after
- * it. And a home can then be shared: the worker that was redirected into it
- * reads only the session it resumed there, while everyone else using the home
- * reads everything except the sessions others were redirected into.
- *
- * With no live rollout, archived history is the last activity. A future mtime
- * (a copied or restored file, a skewed clock) reads as now, never as a negative
- * age. With a cache, a history is walked at most once per its ttl.
+ * A Codex worker's last activity, from the rollouts that are its own (see
+ * CodexHomes). With no live rollout, archived history is the last activity. A
+ * future mtime (a copied or restored file, a skewed clock) reads as now, never
+ * as a negative age. With a cache, a history is walked at most once per its ttl.
  */
 export function codexAgentActiveAt(
   agentId: string,
-  records: ReadonlyMap<string, CodexSessionRecord>,
+  homes: CodexHomes,
   nominalHome: string | null,
   now: number,
   cache?: ReadingCache<number | null>
 ): number | null {
-  const own = records.get(agentId);
-  const home = own?.home ?? nominalHome;
+  const home = homes.homeOf(agentId, nominalHome);
   if (!home) return null;
-  const filter: RolloutFilter = own?.session
-    ? { only: own.session }
-    : {
-      exclude: new Set(
-        [...records]
-          .filter(([id, r]) => id !== agentId && r.home === home && r.session)
-          .map(([, r]) => (r.session as string).toLowerCase())
-      )
-    };
+  const filter = homes.filterFor(agentId);
   const read = (): number | null =>
     newestRolloutAt(home, filter) ?? newestRolloutAt(home, filter, 'archived_sessions');
-  const key = [home, filter.only ?? '', [...(filter.exclude ?? [])].sort().join(',')].join('\n');
-  const at = cache ? cache.read(key, now, read) : read();
+  const sessions = filter.only
+    ? `only:${[...filter.only].sort().join(',')}`
+    : `exclude:${[...(filter.exclude ?? [])].sort().join(',')}`;
+  const at = cache ? cache.read(`${home}\n${sessions}`, now, read) : read();
   return at === null ? null : Math.min(at, now);
 }
 
@@ -131,7 +166,8 @@ export function codexAgentActiveAt(
  *  a one-rollout home, 23.9 ms for three years of daily
  *  sessions (2,190 rollouts in 1,095 day folders) — synchronous, on the main
  *  process, and the snapshot runs every 8 s. A resumed session's growing file
- *  is still seen, at most this late. */
+ *  is still seen: on the first snapshot at or after this long, so about every
+ *  32 s at the 8 s cadence, and later if the event loop is busy. */
 export const CODEX_ACTIVITY_TTL_MS = 30_000;
 
 /** Remembers each key's reading for ttlMs, so a timer that asks every few

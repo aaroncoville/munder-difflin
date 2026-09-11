@@ -10,7 +10,8 @@
  * rollout file, appended on each turn, tool call and token count. Its
  * modification time is the Codex equivalent of the last telemetry sample —
  * provided it is read from the home the worker actually runs in, and only for
- * the sessions that are the worker's own.
+ * the sessions that are the worker's own. A resume can share one home between
+ * workers, and a running worker can start new sessions in it.
  */
 
 const test = require('node:test');
@@ -24,6 +25,7 @@ const {
   newestRolloutAt,
   fleetLastActiveAt,
   codexAgentActiveAt,
+  CodexHomes,
   ReadingCache
 } = loadTs('src/main/codexActivity.ts');
 
@@ -49,10 +51,18 @@ function rollout(home, session, seconds, tree = 'sessions', day = '2026/09/08') 
   return file;
 }
 
+/** Homes recorded the way the spawn path records them: [agentId, home, resumedSession?]. */
+function spawned(...entries) {
+  const homes = new CodexHomes();
+  for (const [agentId, home, resumed] of entries) homes.recordSpawn(agentId, home, resumed);
+  return homes;
+}
+
 const S1 = '01a08414-c11e-7900-a709-b6cf3703a742';
 const S2 = '01a08415-902d-78a1-90f3-0c67c41be971';
 const S3 = '01a08b71-da88-7e03-8e91-2d7813925ebb';
 
+const NOW = 5_000_000 * 1000;
 const neverReadDisk = () => { throw new Error('must not read disk'); };
 
 // ─── newestRolloutAt ─────────────────────────────────────────────────────────
@@ -110,9 +120,47 @@ test('an agent of another provider is never given activity from disk', () => {
   assert.equal(fleetLastActiveAt(undefined, undefined, neverReadDisk), null);
 });
 
-// ─── codexAgentActiveAt: the home a worker actually runs in ──────────────────
+// ─── CodexHomes: where a worker runs, and which sessions are whose ───────────
 
-const NOW = 5_000_000 * 1000;
+test('a worker is read from the home it was spawned into, else the one named after it', () => {
+  const homes = spawned(['resumed', '/h/owner', S1], ['fresh', '/h/fresh']);
+  assert.equal(homes.homeOf('resumed', '/h/resumed'), '/h/owner');
+  assert.equal(homes.homeOf('fresh', '/h/fresh-nominal'), '/h/fresh');
+  assert.equal(homes.homeOf('unknown', '/h/unknown'), '/h/unknown');
+  assert.equal(homes.homeOf('unknown', null), null);
+});
+
+test('the spawn record forgets a worker that no longer runs Codex', () => {
+  const homes = spawned(['x', '/h/x']);
+  homes.recordSpawn('x', undefined);
+  assert.equal(homes.homeOf('x', '/h/nominal'), '/h/nominal');
+});
+
+test('a resume hands the resumed session to the worker that resumed it', (t) => {
+  const ownerHome = tempHome(t);
+  rollout(ownerHome, S1, 4_000_000);
+  rollout(ownerHome, S2, 3_000_000, 'sessions', '2026/09/10');
+  const homes = new CodexHomes();
+  homes.noteSession('original', S1); // the original agent ran it first
+  homes.recordSpawn('original', ownerHome);
+  homes.recordSpawn('resumed', ownerHome, S1);
+
+  assert.equal(codexAgentActiveAt('resumed', homes, null, NOW), 4_000_000 * 1000);
+  assert.equal(codexAgentActiveAt('original', homes, ownerHome, NOW), 3_000_000 * 1000);
+});
+
+test('a later report cannot take an owned session away from its worker', (t) => {
+  const ownerHome = tempHome(t);
+  rollout(ownerHome, S1, 4_000_000);
+  rollout(ownerHome, S2, 3_000_000, 'sessions', '2026/09/10');
+  const homes = spawned(['original', ownerHome], ['resumed', ownerHome, S1]);
+  homes.noteSession('original', S1); // e.g. a stale registry value
+
+  assert.equal(codexAgentActiveAt('resumed', homes, null, NOW), 4_000_000 * 1000);
+  assert.equal(codexAgentActiveAt('original', homes, ownerHome, NOW), 3_000_000 * 1000);
+});
+
+// ─── codexAgentActiveAt: the home a worker actually runs in ──────────────────
 
 test('a worker resumed into another agent\'s home reads that home, not its own', (t) => {
   // Resuming a session that another agent's home owns points the worker's
@@ -121,53 +169,74 @@ test('a worker resumed into another agent\'s home reads that home, not its own',
   const ownerHome = path.join(root, 'agents/original/.codex');
   const ownHome = path.join(root, 'agents/resumed/.codex');
   rollout(ownerHome, S1, 4_000_000);
-  const records = new Map([['resumed', { home: ownerHome, session: S1 }]]);
 
-  assert.equal(codexAgentActiveAt('resumed', records, ownHome, NOW), 4_000_000 * 1000);
+  assert.equal(codexAgentActiveAt('resumed', spawned(['resumed', ownerHome, S1]), ownHome, NOW), 4_000_000 * 1000);
 });
 
-test('a worker resumed into a shared home reads only its own session there', (t) => {
+test('a worker resumed into a shared home reads only its own sessions there', (t) => {
   const ownerHome = tempHome(t);
-  rollout(ownerHome, S1, 3_000_000);                    // the session it resumed
+  rollout(ownerHome, S1, 3_000_000);                           // the session it resumed
   rollout(ownerHome, S2, 4_000_000, 'sessions', '2026/09/10'); // the owner's own, newer
-  const records = new Map([['resumed', { home: ownerHome, session: S1 }]]);
 
-  assert.equal(codexAgentActiveAt('resumed', records, null, NOW), 3_000_000 * 1000);
+  assert.equal(codexAgentActiveAt('resumed', spawned(['resumed', ownerHome, S1]), null, NOW), 3_000_000 * 1000);
 });
 
 test('the owner of a shared home does not claim sessions others resumed into it', (t) => {
   const ownerHome = tempHome(t);
-  rollout(ownerHome, S2, 3_000_000);                    // the owner's own
+  rollout(ownerHome, S2, 3_000_000);                           // the owner's own
   rollout(ownerHome, S1, 4_000_000, 'sessions', '2026/09/10'); // resumed by someone else, newer
-  const records = new Map([
-    ['original', { home: ownerHome }],
-    ['resumed', { home: ownerHome, session: S1 }]
-  ]);
+  const homes = spawned(['original', ownerHome], ['resumed', ownerHome, S1]);
 
-  assert.equal(codexAgentActiveAt('original', records, ownerHome, NOW), 3_000_000 * 1000);
+  assert.equal(codexAgentActiveAt('original', homes, ownerHome, NOW), 3_000_000 * 1000);
+});
+
+test('a new session a redirected worker reports is its own, and never the owner\'s', (t) => {
+  // The redirected worker starts a new session (`/new`) in the running, shared
+  // home. Its hooks report the new session id; from then on it is the worker's.
+  const ownerHome = tempHome(t);
+  rollout(ownerHome, S1, 3_000_000);                           // resumed earlier, now quiet
+  rollout(ownerHome, S2, 2_000_000, 'sessions', '2026/09/09'); // the owner's own
+  rollout(ownerHome, S3, 4_000_000, 'sessions', '2026/09/10'); // the worker's new session
+  const homes = spawned(['original', ownerHome], ['resumed', ownerHome, S1]);
+  homes.noteSession('resumed', S3);
+
+  assert.equal(codexAgentActiveAt('resumed', homes, null, NOW), 4_000_000 * 1000);
+  assert.equal(codexAgentActiveAt('original', homes, ownerHome, NOW), 2_000_000 * 1000);
+});
+
+test('without a reported session id, a new session in a shared home stays with its owner', (t) => {
+  // The documented limit: a session nobody has reported cannot be told from the
+  // owner's own, so it is the owner's until the worker's hooks say otherwise.
+  const ownerHome = tempHome(t);
+  rollout(ownerHome, S1, 3_000_000);
+  rollout(ownerHome, S3, 4_000_000, 'sessions', '2026/09/10');
+  const homes = spawned(['original', ownerHome], ['resumed', ownerHome, S1]);
+
+  assert.equal(codexAgentActiveAt('resumed', homes, null, NOW), 3_000_000 * 1000);
+  assert.equal(codexAgentActiveAt('original', homes, ownerHome, NOW), 4_000_000 * 1000);
 });
 
 test('a worker with no record reads the home named after it', (t) => {
   const home = tempHome(t);
   rollout(home, S3, 2_000_000);
-  assert.equal(codexAgentActiveAt('fresh', new Map(), home, NOW), 2_000_000 * 1000);
-  assert.equal(codexAgentActiveAt('fresh', new Map(), null, NOW), null);
+  assert.equal(codexAgentActiveAt('fresh', new CodexHomes(), home, NOW), 2_000_000 * 1000);
+  assert.equal(codexAgentActiveAt('fresh', new CodexHomes(), null, NOW), null);
 });
 
 test('with no live rollout, archived history is the last activity', (t) => {
   const home = tempHome(t);
   rollout(home, S1, 2_000_000, 'archived_sessions');
-  assert.equal(codexAgentActiveAt('agent', new Map(), home, NOW), 2_000_000 * 1000);
+  assert.equal(codexAgentActiveAt('agent', new CodexHomes(), home, NOW), 2_000_000 * 1000);
 
   // …but only as a fallback: a live rollout, even an older one, is the answer.
   rollout(home, S2, 1_000_000);
-  assert.equal(codexAgentActiveAt('agent', new Map(), home, NOW), 1_000_000 * 1000);
+  assert.equal(codexAgentActiveAt('agent', new CodexHomes(), home, NOW), 1_000_000 * 1000);
 });
 
 test('a rollout stamped in the future reads as now, never as a negative age', (t) => {
   const home = tempHome(t);
   rollout(home, S1, 9_000_000); // copied, restored, or written under a skewed clock
-  assert.equal(codexAgentActiveAt('agent', new Map(), home, NOW), NOW);
+  assert.equal(codexAgentActiveAt('agent', new CodexHomes(), home, NOW), NOW);
 });
 
 // ─── ReadingCache: a history is walked at most once per ttl ──────────────────
@@ -188,17 +257,29 @@ test('a cached history still notices a resumed file being written, after the ttl
   const home = tempHome(t);
   const file = rollout(home, S1, 2_000_000);
   const cache = new ReadingCache(30_000);
-  assert.equal(codexAgentActiveAt('agent', new Map(), home, NOW, cache), 2_000_000 * 1000);
+  const homes = new CodexHomes();
+  assert.equal(codexAgentActiveAt('agent', homes, home, NOW, cache), 2_000_000 * 1000);
   fs.utimesSync(file, 3_000_000, 3_000_000);
-  assert.equal(codexAgentActiveAt('agent', new Map(), home, NOW + 1_000, cache), 2_000_000 * 1000);
-  assert.equal(codexAgentActiveAt('agent', new Map(), home, NOW + 30_000, cache), 3_000_000 * 1000);
+  assert.equal(codexAgentActiveAt('agent', homes, home, NOW + 1_000, cache), 2_000_000 * 1000);
+  assert.equal(codexAgentActiveAt('agent', homes, home, NOW + 30_000, cache), 3_000_000 * 1000);
+});
+
+test('a cached reading is not reused once the worker\'s sessions change', (t) => {
+  const ownerHome = tempHome(t);
+  rollout(ownerHome, S1, 3_000_000);
+  rollout(ownerHome, S3, 4_000_000, 'sessions', '2026/09/10');
+  const cache = new ReadingCache(30_000);
+  const homes = spawned(['original', ownerHome], ['resumed', ownerHome, S1]);
+  assert.equal(codexAgentActiveAt('resumed', homes, null, NOW, cache), 3_000_000 * 1000);
+  homes.noteSession('resumed', S3);
+  assert.equal(codexAgentActiveAt('resumed', homes, null, NOW + 1_000, cache), 4_000_000 * 1000);
 });
 
 // ─── The fleet snapshot itself ───────────────────────────────────────────────
 
 /** Run the real writeFleetSnapshot from index.ts against stubbed surroundings.
  *  Every name it needs is passed in, so a new dependency fails loudly here. */
-function runFleetSnapshot({ root, registry, usage, records }) {
+function runFleetSnapshot({ root, registry, usage, homes }) {
   const source = fs.readFileSync(path.join(REPO, 'src/main/index.ts'), 'utf8');
   const start = source.indexOf('function writeFleetSnapshot(): void {');
   const end = source.indexOf('/** Arm the heartbeat', start);
@@ -218,43 +299,70 @@ function runFleetSnapshot({ root, registry, usage, records }) {
   // eslint-disable-next-line no-new-func
   new Function(
     'hive', 'telemetry', 'costTotals', 'breaker', 'join',
-    'fleetLastActiveAt', 'codexAgentActiveAt', 'codexSessionOf', 'codexActivityCache',
+    'fleetLastActiveAt', 'codexAgentActiveAt', 'codexHomes', 'codexActivityCache',
     `${body}\nwriteFleetSnapshot();`
   )(
     hive, telemetry, costTotals, breaker, path.join,
-    fleetLastActiveAt, codexAgentActiveAt, records, ReadingCache ? new ReadingCache(30_000) : undefined
+    fleetLastActiveAt, codexAgentActiveAt, homes, new ReadingCache(30_000)
   );
   assert.ok(written, 'writeFleetSnapshot wrote a snapshot');
   return Object.fromEntries(written.agents.map((a) => [a.id, a]));
 }
 
-test('the fleet snapshot dates a resumed worker from the home it actually runs in', (t) => {
+function sharedHomeFixture(t) {
   const root = tempHome(t);
   const ownerHome = path.join(root, 'agents/original/.codex');
+  const homes = spawned(['original', ownerHome], ['resumed', ownerHome, S1]);
+  return { root, ownerHome, homes };
+}
+
+test('the fleet snapshot dates a resumed worker from the home it actually runs in', (t) => {
+  const { root, ownerHome, homes } = sharedHomeFixture(t);
   const nowS = Math.floor(Date.now() / 1000);
-  rollout(ownerHome, S1, nowS);                               // the resumed worker's session, live now
-  rollout(ownerHome, S2, nowS - 600, 'sessions', '2026/09/10'); // the owner's own, ten minutes ago
+  rollout(ownerHome, S1, nowS);                                  // the resumed worker's session, live now
+  rollout(ownerHome, S2, nowS - 1_200, 'sessions', '2026/09/10'); // the owner's own, twenty minutes ago
 
   const agents = runFleetSnapshot({
     root,
+    homes,
     registry: {
-      original: { name: 'Original', provider: 'codex' },
-      resumed: { name: 'Resumed', provider: 'codex' },
+      original: { name: 'Original', provider: 'codex', sessionId: S2 },
+      resumed: { name: 'Resumed', provider: 'codex', sessionId: S1 },
       claude: { name: 'Claude', provider: 'claude' }
     },
-    usage: [{ agentId: 'claude', ts: Date.now() - 5_000, input: 1, output: 1, cacheRead: 0, cacheCreation: 0, usd: 0 }],
-    records: new Map([
-      ['original', { home: ownerHome }],
-      ['resumed', { home: ownerHome, session: S1 }]
-    ])
+    usage: [{ agentId: 'claude', ts: Date.now() - 5_000, input: 1, output: 1, cacheRead: 0, cacheCreation: 0, usd: 0 }]
   });
 
   assert.ok(agents.resumed.lastActiveSecAgo !== null && agents.resumed.lastActiveSecAgo <= 2,
     `resumed worker: ${agents.resumed.lastActiveSecAgo}`);
-  assert.ok(Math.abs(agents.original.lastActiveSecAgo - 600) <= 2,
-    `owner: ${agents.original.lastActiveSecAgo}`);
-  assert.ok(Math.abs(agents.claude.lastActiveSecAgo - 5) <= 1,
-    `claude: ${agents.claude.lastActiveSecAgo}`);
+  assert.ok(Math.abs(agents.original.lastActiveSecAgo - 1_200) <= 2, `owner: ${agents.original.lastActiveSecAgo}`);
+  assert.ok(Math.abs(agents.claude.lastActiveSecAgo - 5) <= 1, `claude: ${agents.claude.lastActiveSecAgo}`);
+});
+
+test('the fleet snapshot follows a redirected worker into a new session, and keeps it from the owner', (t) => {
+  // The redirected worker, still running in the shared home, starts S3. Its
+  // hooks record S3 as its session in the registry; S1 is now ten minutes old.
+  const { root, ownerHome, homes } = sharedHomeFixture(t);
+  const nowS = Math.floor(Date.now() / 1000);
+  rollout(ownerHome, S1, nowS - 600);
+  rollout(ownerHome, S2, nowS - 1_200, 'sessions', '2026/09/09');
+  rollout(ownerHome, S3, nowS, 'sessions', '2026/09/10');
+
+  const agents = runFleetSnapshot({
+    root,
+    homes,
+    registry: {
+      // The owner is listed first: every session must be known before any
+      // worker's activity is read, or the owner would briefly claim S3.
+      original: { name: 'Original', provider: 'codex', sessionId: S2 },
+      resumed: { name: 'Resumed', provider: 'codex', sessionId: S3 }
+    },
+    usage: []
+  });
+
+  assert.ok(agents.resumed.lastActiveSecAgo !== null && agents.resumed.lastActiveSecAgo <= 2,
+    `resumed worker: ${agents.resumed.lastActiveSecAgo}`);
+  assert.ok(Math.abs(agents.original.lastActiveSecAgo - 1_200) <= 2, `owner: ${agents.original.lastActiveSecAgo}`);
 });
 
 test('the spawn path records where a resumed Codex worker really runs', () => {
@@ -267,9 +375,8 @@ test('the spawn path records where a resumed Codex worker really runs', () => {
   assert.match(redirect, /CODEX_HOME: ownerHome/);
   assert.match(redirect, /codexResumedSession = sid;/);
   const record = sa.boundedSlice(src, 'ptyToAgent.set(opts.id, opts.hive.id);', 'workerWake.noteSpawn(opts.id);');
-  assert.match(record, /const codexHome = opts\.env\?\.CODEX_HOME;/);
-  assert.match(record,
-    /codexSessionOf\.set\(opts\.hive\.id, codexResumedSession\s*\?\s*\{ home: codexHome, session: codexResumedSession \}\s*:\s*\{ home: codexHome \}\)/);
+  assert.match(record, /codexHomes\.recordSpawn\(opts\.hive\.id, opts\.env\?\.CODEX_HOME, codexResumedSession\)/);
   const snapshot = sa.boundedSlice(src, 'function writeFleetSnapshot(): void {', 'hive.writeFleetSnapshot({ ts: now, agents });');
+  assert.match(snapshot, /codexHomes\.noteSession\(id, a\.sessionId\)/);
   assert.match(snapshot, /codexActivityCache/);
 });
