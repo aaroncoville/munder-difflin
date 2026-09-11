@@ -45,6 +45,7 @@ import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde } from './fs';
 import { codexTrustEntry } from '../shared/codexTrust';
 import { resolveGodName } from '../shared/godIdentity';
+import { appendSession } from './codexActivity';
 
 /** The subset of HarnessConfig the hive consumes for the default-MCP merge.
  *  Kept as a local shape so hive.ts never imports the foundation-owned config
@@ -163,6 +164,12 @@ export interface RegistryAgent extends AgentMeta {
    *  resume after a crash/restart) AND the cost accounting/dedup key on every
    *  AgentUsageSample / cost-ledger row. */
   sessionId?: string;
+  /** Every distinct Codex session id this agent has reported, most-recent last
+   *  (see appendSession). The fleet snapshot learns session ownership from the
+   *  whole list, not just `sessionId`, so a session that changed twice between
+   *  two snapshots is still attributed to the worker that ran it rather than the
+   *  shared home's owner. */
+  sessionIds?: string[];
   /** Whether `cwd` is actually usable for a (re)spawn — i.e. an ABSOLUTE path
    *  that exists as a directory. Computed + persisted at spawn so the roster
    *  reliably exposes each worker's environment validity. A non-absolute fragment
@@ -1130,6 +1137,9 @@ export class HiveManager {
       const agent = reg.agents[agentId];
       if (!agent || agent.sessionId === sessionId) return; // unknown agent or unchanged → no write
       agent.sessionId = sessionId;
+      // Record the transition (not just the latest id) so the fleet snapshot can
+      // attribute a session that changed twice between two ticks — see appendSession.
+      agent.sessionIds = appendSession(agent.sessionIds, sessionId);
       agent.lastSeen = Date.now();
       this.atomicWriteJson(join(root, 'registry.json'), reg);
       this.appendLog({ kind: 'session', agentId, sessionId });

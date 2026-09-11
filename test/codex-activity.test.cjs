@@ -27,7 +27,9 @@ const {
   codexAgentActiveAt,
   CodexHomes,
   ReadingCache,
-  enrichStallLines
+  enrichStallLines,
+  appendSession,
+  SESSION_HISTORY_CAP
 } = loadTs('src/main/codexActivity.ts');
 const { lastCatchupAt } = loadTs('src/main/codexCatchupLog.ts');
 
@@ -64,6 +66,8 @@ const S1 = '01a08414-c11e-7900-a709-b6cf3703a742';
 const S2 = '01a08415-902d-78a1-90f3-0c67c41be971';
 const S3 = '01a08b71-da88-7e03-8e91-2d7813925ebb';
 const S4 = '01a08dba-f793-73b1-8f74-a580786b04c0';
+const S5 = '01a09000-aaaa-7000-b000-000000000005';
+const S6 = '01a09000-bbbb-7000-b000-000000000006';
 
 const NOW = 5_000_000 * 1000;
 const neverReadDisk = () => { throw new Error('must not read disk'); };
@@ -380,7 +384,8 @@ test('the spawn path records where a resumed Codex worker really runs', () => {
   const record = sa.boundedSlice(src, 'ptyToAgent.set(opts.id, opts.hive.id);', 'workerWake.noteSpawn(opts.id);');
   assert.match(record, /codexHomes\.recordSpawn\(opts\.hive\.id, opts\.env\?\.CODEX_HOME, codexResumedSession\)/);
   const snapshot = sa.boundedSlice(src, 'function writeFleetSnapshot(): void {', 'hive.writeFleetSnapshot({ ts: now, agents });');
-  assert.match(snapshot, /codexHomes\.noteSession\(id, a\.sessionId\)/);
+  assert.match(snapshot, /a\.sessionIds \?\? \(a\.sessionId/);
+  assert.match(snapshot, /codexHomes\.noteSession\(id, sid\)/);
   assert.match(snapshot, /codexActivityCache/);
 });
 
@@ -526,5 +531,62 @@ test('on the 8 s snapshot cadence, a 30 s reading is refreshed at 32 s', () => {
   const walkedAt = [];
   for (let t = 0; t <= 64_000; t += 8_000) cache.read('home', t, () => { walkedAt.push(t); return t; });
   assert.deepEqual(walkedAt, [0, 32_000, 64_000]);
+});
+
+
+// ─── delta 2: every reported session is captured, not just the latest ─────────
+
+test('appendSession keeps every reported session, most-recent last, deduped and capped', () => {
+  assert.deepEqual(appendSession(undefined, 'a'), ['a']);
+  assert.deepEqual(appendSession(['a'], 'b'), ['a', 'b']);
+  // a repeat is not lost or duplicated — it moves to most-recent last
+  assert.deepEqual(appendSession(['a', 'b'], 'a'), ['b', 'a']);
+  // bounded: only the last `cap` are kept, newest included
+  const many = appendSession(Array.from({ length: SESSION_HISTORY_CAP }, (_, i) => `s${i}`), 'new', SESSION_HISTORY_CAP);
+  assert.equal(many.length, SESSION_HISTORY_CAP);
+  assert.equal(many[many.length - 1], 'new');
+  assert.equal(many[0], 's1'); // s0 fell off the front
+});
+
+test('the snapshot notes a session that changed twice between two ticks, so the owner is not credited it', (t) => {
+  // A redirected worker resumed S1 in the owner's home, then ran /new twice
+  // (S5, then S6) before a single fleet snapshot. Its hooks recorded both, so
+  // the registry carries the whole list, not just the latest id. S5 is newer
+  // than the owner's own S2, so sampling only the latest (S6) would leave S5
+  // unowned and credit the owner with it — the delta-2 bug.
+  const { root, ownerHome, homes } = sharedHomeFixture(t);
+  const nowS = Math.floor(Date.now() / 1000);
+  rollout(ownerHome, S1, nowS - 1_800, 'sessions', '2026/09/08'); // worker's resumed session, oldest
+  rollout(ownerHome, S2, nowS - 1_200, 'sessions', '2026/09/09'); // the OWNER's own session
+  rollout(ownerHome, S5, nowS - 300,  'sessions', '2026/09/10');  // worker's first /new — newer than the owner's
+  rollout(ownerHome, S6, nowS - 1,    'sessions', '2026/09/10');  // worker's second /new — live
+
+  const agents = runFleetSnapshot({
+    root,
+    homes,
+    registry: {
+      original: { name: 'Original', provider: 'codex', sessionId: S2 },
+      resumed: { name: 'Resumed', provider: 'codex', sessionId: S6, sessionIds: [S5, S6] }
+    },
+    usage: []
+  });
+
+  // The owner keeps only its own ~1200 s reading — NOT the missed S5 at ~300 s.
+  assert.ok(Math.abs(agents.original.lastActiveSecAgo - 1_200) <= 2,
+    `owner falsely credited a missed session: ${agents.original.lastActiveSecAgo}`);
+  // The redirected worker owns S1/S5/S6, so it reads its live S6 (~1 s).
+  assert.ok(agents.resumed.lastActiveSecAgo !== null && agents.resumed.lastActiveSecAgo <= 2,
+    `resumed worker: ${agents.resumed.lastActiveSecAgo}`);
+});
+
+test('the session record captures the transition at the hook boundary, on the reporting agent', () => {
+  // The capture half runs inside Hive.recordSession, which needs Electron/native
+  // deps to load, so it is pinned structurally (comments blanked): each reported
+  // session is appended to THAT agent's own list, not merely overwritten.
+  const sa = require('./source-assert.cjs');
+  const src = sa.activeSource('src/main/hive.ts');
+  const record = sa.boundedSlice(src, 'recordSession(agentId: string, sessionId: string): void {', 'lastSession(agentId: string)');
+  assert.match(record, /agent\.sessionId = sessionId;/);
+  assert.match(record, /agent\.sessionIds = appendSession\(agent\.sessionIds, sessionId\)/);
 });
 

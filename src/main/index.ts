@@ -1280,7 +1280,13 @@ function writeFleetSnapshot(): void {
     // activity: in a shared home, whose a session is decides both the worker's
     // reading and the home owner's.
     for (const [id, a] of Object.entries(reg.agents)) {
-      if (a.provider === 'codex') codexHomes.noteSession(id, a.sessionId);
+      if (a.provider !== 'codex') continue;
+      // Note EVERY session the agent has reported, not just its latest id: a
+      // redirected worker that reported S5 then S6 between two ticks would
+      // otherwise leave S5 unowned, and the shared home's owner would be
+      // credited with it. The list is idempotent to note (owners are kept).
+      const seen = a.sessionIds ?? (a.sessionId ? [a.sessionId] : []);
+      for (const sid of seen) codexHomes.noteSession(id, sid);
     }
     const agents = Object.entries(reg.agents)
       .filter(([, a]) => !a.archived)

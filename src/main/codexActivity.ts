@@ -137,6 +137,29 @@ export class CodexHomes {
   }
 }
 
+/** How many distinct Codex sessions to remember per agent. The fleet snapshot
+ *  learns ownership from this list, so it must retain every session reported
+ *  between two snapshots. A worker reports nowhere near this many in one 8 s
+ *  tick, and CodexHomes keeps ownership once learned, so a bound this size can
+ *  never lose a transition. */
+export const SESSION_HISTORY_CAP = 50;
+
+/** Append a newly reported session id to an agent's durable session list —
+ *  most-recent last, no duplicates, capped to the last SESSION_HISTORY_CAP.
+ *  Recording EVERY reported session (not just the latest) is what lets the fleet
+ *  snapshot attribute a session that changed twice between two ticks: sampling
+ *  only the latest id at snapshot time credited the missed intermediate session
+ *  to the home owner instead of the worker that ran it. */
+export function appendSession(
+  list: readonly string[] | undefined,
+  sessionId: string,
+  cap = SESSION_HISTORY_CAP
+): string[] {
+  const next = (list ?? []).filter((s) => s !== sessionId);
+  next.push(sessionId);
+  return next.length > cap ? next.slice(next.length - cap) : next;
+}
+
 /**
  * A Codex worker's last activity, from the rollouts that are its own (see
  * CodexHomes). With no live rollout, archived history is the last activity. A
