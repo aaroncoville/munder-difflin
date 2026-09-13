@@ -32,6 +32,9 @@ const SPAWN_ACCENTS = ['coral', 'mint', 'sky', 'lemon', 'lilac', 'peach'] as con
 const GOD_PTY = `pty-${GOD_ID}`;
 
 const REMOTE_CONTROL_SETTLE_MS = 1500;
+// Aaron 2026-09-12: don't auto-enable remote control at startup — he turns it on
+// manually when he actually wants phone approvals. Flip back to true to restore.
+const REMOTE_CONTROL_ON_STARTUP = false;
 // Provider-agnostic PTY-quiescence idle fallback (#2e). A non-Claude bridge that
 // fires a 'working' event but never its turn-end signal (Stop / session.idle /
 // agent_end) would pin the agent 'working' forever → the idle-only inbox-wake nudge
@@ -454,7 +457,9 @@ export function useHive(config: HarnessConfig | null): void {
       bootGraceUntil.current[GOD_ID] = Date.now() + BOOT_GRACE_MS;
       void (async () => {
         try {
-          const remoteCommand = remoteControlCommandForProvider(godProvider, godName);
+          const remoteCommand = REMOTE_CONTROL_ON_STARTUP
+            ? remoteControlCommandForProvider(godProvider, godName)
+            : null;
           if (remoteCommand) {
             // settleMs pauses the chain ~1.5s after /remote-control before the
             // orientation prompt (fresh spawns only) is submitted next.
