@@ -17,6 +17,7 @@ import {
 /** Where the setup got to. Exactly one is reported per attempt. */
 export type CodexRemoteStage =
   | 'socket-fit'     // the home cannot host a bindable control socket
+  | 'hook-trust'     // persisted hook trust could not be established
   | 'daemon-start'   // `daemon start` failed or timed out
   | 'enable-remote'  // `daemon enable-remote-control` failed or timed out
   | 'socket-check'   // both commands reported success, but no socket appeared
@@ -55,6 +56,8 @@ export type CodexSpawnEvent = {
 };
 
 export interface CodexRemoteSetupIo {
+  /** Persist and verify generated hook trust before starting the remote server. */
+  prepareHookTrust(): Promise<boolean>;
   /** Run one `codex app-server daemon …` invocation to completion. */
   run(args: string[]): Promise<{ ok: boolean; error?: string }>;
   /** Whether the control socket is present on disk. */
@@ -101,6 +104,9 @@ export async function setUpCodexRemote(
     // real reason instead of a readiness timeout.
     if (!codexRemoteSocketFits(ctx.home)) {
       return report({ enabled: false, stage: 'socket-fit', detail: `socket path exceeds sun_path: ${ctx.home}` });
+    }
+    if (!await io.prepareHookTrust()) {
+      return report({ enabled: false, stage: 'hook-trust', detail: 'hook trust preparation failed; using local TUI bypass' });
     }
     const started = await io.run(['app-server', 'daemon', 'start']);
     if (!started.ok) {

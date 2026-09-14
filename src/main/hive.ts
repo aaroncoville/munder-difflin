@@ -859,11 +859,13 @@ export class HiveManager {
             else if (desc.shim === 'codex') {
               env.CODEX_HOME = this.installCodexHooks(dir, meta.cwd, meta.id);
               // Codex refuses to run hooks from a config dir without persisted
-              // "hook trust" (normally an interactive gate). Our hooks.json is
+              // "hook trust" (normally an interactive gate). Our hook config is
               // hive-authored inside an isolated CODEX_HOME, so we bypass that gate
               // for this automated spawn — the flag's documented use ("automation
               // that already vets hook sources"). Without it the hooks silently
-              // never fire. Must precede the positional prompt.
+              // never fire. Remote startup also persists exact generated hook hashes
+              // (codexHookTrust.ts); this flag keeps the local fallback unattended.
+              // Must precede the positional prompt.
               preArgs.push('--dangerously-bypass-hook-trust');
               // Auto mode keeps codex's OS sandbox (`-a never -s workspace-write`,
               // agentProvider.ts). workspace-write only covers cwd, so the agent

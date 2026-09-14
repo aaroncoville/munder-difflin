@@ -13,6 +13,7 @@ const SOCKET = `${HOME}/app-server-control/app-server-control.sock`;
  *  has to spell out the one it is breaking. */
 function io(over = {}) {
   return {
+    prepareHookTrust: async () => true,
     run: async () => ({ ok: true }),
     socketExists: () => true,
     ...over
@@ -127,4 +128,25 @@ test('a sink that throws cannot take the spawn down with it', async () => {
   const r = await setUpCodexRemote(ctx(), deps);
   assert.equal(r.enabled, true, 'a failed log write must not be reported as a failed setup');
   assert.equal(r.stage, 'enabled');
+});
+
+
+test('hook trust failure keeps the worker local and never starts a daemon', async () => {
+  const ran = [];
+  const [seen, deps] = tracingIo({ prepareHookTrust: async () => false,
+    run: async args => { ran.push(args); return { ok: true }; } });
+  const result = await setUpCodexRemote(ctx(), deps);
+  assert.equal(result.enabled, false);
+  assert.equal(result.stage, 'hook-trust');
+  assert.deepEqual(ran, []);
+  assert.equal(seen[0].stage, 'hook-trust');
+});
+
+test('persisted hook trust completes before either daemon command', async () => {
+  const calls = [];
+  await setUpCodexRemote(ctx(), io({
+    prepareHookTrust: async () => { calls.push('trust'); return true; },
+    run: async args => { calls.push(args.at(-1)); return { ok: true }; }
+  }));
+  assert.deepEqual(calls, ['trust', 'start', 'enable-remote-control']);
 });

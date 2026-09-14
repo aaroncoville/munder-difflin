@@ -1,3 +1,4 @@
+import { seedCodexHookTrust } from './codexHookTrust';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
 import { spawn } from 'node:child_process';
 import {
@@ -183,6 +184,7 @@ async function enableCodexRemoteForSpawn(
   const result = await setUpCodexRemote(
     { home: alias, executable, agentId },
     {
+      prepareHookTrust: () => seedCodexHookTrust({ home: alias, cwd: opts.cwd, executable, env }),
       run: (args) => runCodexDaemonCommand(executable, args, env),
       socketExists: (path) => existsSync(path),
       // The hive log is the one place off this machine's terminal that both the
