@@ -63,6 +63,16 @@ test('new families have inert base defaults', () => {
   assert.match(base, /--cth-radius-badge:\s*0px/);
 });
 
+test('the terminal surface is inert outside the candlelit theme', () => {
+  // The terminal moved onto its own ground so ONE theme could put it somewhere
+  // its cards are not. Everywhere else it has to resolve to exactly the surface
+  // the panel painted before, or a token added for the occult theme has quietly
+  // restyled the light and dark terminals — which is the same class of breakage
+  // the dark-block pin above exists to catch, arriving through a new name.
+  assert.match(base, /--cth-terminal-ground:\s*var\(--cth-paper-100\)/);
+  assert.match(base, /--cth-terminal-ink:\s*var\(--cth-ink-900\)/);
+});
+
 const DARK_BLOCK = `--cth-cream-50: #17171B;
 --cth-cream-100: #1D1D22;
 --cth-cream-200: #26262C;
@@ -98,9 +108,15 @@ const DARK_BLOCK = `--cth-cream-50: #17171B;
 --cth-status-typing: #CBA24A;
 --cth-shadow-hard: 4px 4px 0 rgba(0, 0, 0, 0.45);`;
 
-/** normalize() of the base :root, on the commit this theme was branched from. */
-const BASE_ROOT_SHA256 = '7e199f07fc1afda1b3c68fd9fd2ab7c351a2746e6d736ee4f0ee8a23f49cf63c';
-const BASE_ROOT_DECLARATIONS = 81;
+/** normalize() of the base :root.
+ *
+ * Re-pinned once since the theme branched, for the only edit this pin permits:
+ * two APPENDED declarations, --cth-terminal-ground and --cth-terminal-ink, both
+ * resolving to the surface and the ink the terminal already used. Light and dark
+ * therefore render byte-identically, which is the contract the pin protects — it
+ * is not a licence to re-pin around a value that MOVED. */
+const BASE_ROOT_SHA256 = '16060b34aacd94427eb02575f8505cf8db6c57c849374ba4518191f799a03d2d';
+const BASE_ROOT_DECLARATIONS = 83;
 
 test('the dark block is untouched by the occult work, declaration for declaration', () => {
   // The regression contract: light and dark must render byte-identically. The

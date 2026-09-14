@@ -21,16 +21,38 @@
   --cth-cream-100: #1C1828;
   --cth-cream-200: #171322;
   --cth-cream-300: #120F1B;
-  --cth-paper-100: #312717;   /* cards, inputs, terminals — the lightest ground.
-                                 Warm on purpose, and the one surface in this ramp
-                                 that is: it is what the terminal and the editor
-                                 sit on, and a blue-violet ground there measured
-                                 1.11:1 against the dark theme's terminal — a
-                                 difference no eye resolves, so switching theme
-                                 appeared to do nothing at all. Parchment under
-                                 candlelight instead. Held at 3.05:1 under
-                                 ink-300, so borders still clear the 3.0 floor. */
+  --cth-paper-100: #312717;   /* cards and inputs — the lightest ground. Warm on
+                                 purpose, and the one surface in this ramp that
+                                 is: parchment under candlelight, against the
+                                 night the rooms are built from. Held at 3.05:1
+                                 under ink-300, so borders still clear the 3.0
+                                 floor. */
   --cth-paper-200: #251E12;
+
+  /* The terminal and the editor, on the NIGHT register instead — the same
+     ink-blue the frame and its title bar are cut from, one step lighter so the
+     panel still reads as raised out of the app ground rather than a hole in it.
+     Parchment was the wrong surface here: a full-height terminal is the largest
+     single field of colour on screen, and a coffee-brown one sitting inside an
+     indigo frame reads as two applications rather than two panels.
+
+     Three measured constraints fix this hex inside a narrow window:
+       · 1.19:1 from the dark theme's terminal ground (#1A1A1F), so switching
+         theme visibly changes the terminal — the failure this ramp has hit
+         before, when a cloned surface landed 1.11:1 away and nothing appeared
+         to happen;
+       · 3.04:1 under ink-300, the border token, which the whole theme holds
+         above 3.0 on every surface it can appear on;
+       · 11.7:1 under the terminal's own ink below.
+     Lighter breaks the border floor, darker stops reading as a change from
+     dark. Move it and re-measure all three. */
+  --cth-terminal-ground: #2B2444;
+  --cth-terminal-ink:    #EDE6D2;  /* 11.7:1 — parchment, warm against the night
+                                      so the eye separates it from the cool
+                                      secondary ink the terminal sets at 6.1:1
+                                      by HUE as well as by weight. Two shades of
+                                      the same tan is what made the old pair
+                                      hard to tell apart. */
 
   /* Ink → parchment ramp */
   --cth-ink-900: #EAE0C8;   /* 11.5-12.0:1 — primary text, aged paper */
