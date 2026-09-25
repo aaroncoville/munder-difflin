@@ -729,18 +729,17 @@ test('an assistant named for a portrait wears that portrait', async () => {
   assert.equal(card.props.portraitSrc, want, 'the card was dealt a face instead');
 });
 
-test('the orchestrator wears the face reserved for it', async () => {
+test('the orchestrator wears the Sixth History mark', async () => {
   // portraitFor reserves one portrait for the god, but it can only apply that
   // rule if the scene tells it which card is the god's. Nothing else in the
   // projection distinguishes that card, so a projection that drops the flag
   // leaves the orchestrator dealt a worker's face and nothing complains.
-  const { portraitNamed, GOD_PORTRAIT } = loadTs('src/renderer/src/scene/study/portraits.ts');
   const { view } = await inhabit({ agents: [person('god-1', { isGod: true }), person('w-1')] });
   const cards = all(view.tree, (n) => n.type === AgentCard);
   const god = cards.find((c) => c.props.name === 'GOD-1');
   assert.ok(god, 'the god has a card');
-  assert.equal(god.props.portraitSrc, portraitNamed(GOD_PORTRAIT),
-    'the orchestrator was dealt a face instead of wearing its own');
+  assert.match(god.props.portraitSrc, /sixth-history\/logo\.png$/,
+    'the orchestrator does not wear the House mark');
 });
 
 test('the only unexpandable wrappers are the ones that drive an element', () => {

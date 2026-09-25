@@ -21,16 +21,8 @@
   --cth-cream-100: #1C1828;
   --cth-cream-200: #171322;
   --cth-cream-300: #120F1B;
-  --cth-paper-100: #312717;   /* cards, inputs, terminals — the lightest ground.
-                                 Warm on purpose, and the one surface in this ramp
-                                 that is: it is what the terminal and the editor
-                                 sit on, and a blue-violet ground there measured
-                                 1.11:1 against the dark theme's terminal — a
-                                 difference no eye resolves, so switching theme
-                                 appeared to do nothing at all. Parchment under
-                                 candlelight instead. Held at 3.05:1 under
-                                 ink-300, so borders still clear the 3.0 floor. */
-  --cth-paper-200: #251E12;
+  --cth-paper-100: #352531;   /* raised aubergine: cards, inputs, terminal */
+  --cth-paper-200: #211923;   /* recessed ink: gutters and quiet panels */
 
   /* Ink → parchment ramp */
   --cth-ink-900: #EAE0C8;   /* 11.5-12.0:1 — primary text, aged paper */
@@ -180,4 +172,23 @@
 :root[data-cth-theme='occult'] ::selection {
   background: var(--cth-gilt-soft);
   color: var(--cth-ink-900);
+}
+
+/* Focus mode is the app's long-session CLI workspace. Give it one calm ink
+   plane, a clearly separated roster, and a gilt rule instead of stacking tan
+   panels around the terminal. These selectors are theme-gated: upstream light
+   and dark remain byte-for-byte in their existing presentation. */
+:root[data-cth-theme='occult'] .cth-focus-shell {
+  background: var(--cth-cream-300) !important;
+}
+:root[data-cth-theme='occult'] .cth-focus-titlebar {
+  background: var(--cth-cream-200) !important;
+  border-bottom-color: var(--cth-gilt-soft) !important;
+}
+:root[data-cth-theme='occult'] .cth-focus-roster {
+  background: var(--cth-cream-200) !important;
+  border-right-color: var(--cth-gilt-soft) !important;
+}
+:root[data-cth-theme='occult'] .cth-focus-workspace {
+  background: var(--cth-cream-300);
 }

@@ -29,6 +29,7 @@
  * directory is emptied.
  */
 import { PORTRAIT_FILES, PORTRAIT_NAMES } from './portraits.index';
+import sixthHistoryLogo from '@/assets/sixth-history/logo.png';
 
 export { PORTRAIT_FILES, PORTRAIT_NAMES };
 
@@ -109,7 +110,7 @@ export function portraitLabel(name: string): string {
 export function portraitFor(
   agent: { id: string; name: string; role?: string; isGod?: boolean }
 ): string | undefined {
-  if (agent.isGod) return portraitNamed(GOD_PORTRAIT) ?? assignPortrait(agent.id, DEALABLE);
+  if (agent.isGod) return sixthHistoryLogo;
   // Searched against the dealable pack, not the whole one: an assistant named
   // for the reserved face falls through to the hash like any other stranger.
   return portraitNamed(agent.name, DEALABLE_NAMES, DEALABLE)
