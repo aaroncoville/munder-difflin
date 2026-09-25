@@ -285,7 +285,7 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
   // mis-click waiting to happen. Exiting fullscreen is likewise already covered
   // twice over (Esc, and the terminal toolbar's own fullscreen toggle).
   return (
-    <div style={{
+    <div className="cth-focus-shell" style={{
       position: 'fixed', inset: 0,
       background: 'var(--cth-cream-100)',
       zIndex: 250,
@@ -295,7 +295,7 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
     }}>
       {/* Title bar drag region (so the user can still move the window) */}
       <div
-        className="cth-titlebar-drag"
+        className="cth-titlebar-drag cth-focus-titlebar"
         style={{
           position: 'absolute', top: 0, left: 0, right: 0, height: 36,
           background: 'linear-gradient(180deg, var(--cth-cream-100) 0%, var(--cth-cream-200) 100%)',
@@ -308,7 +308,7 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
         <span style={{
           fontFamily: 'var(--cth-font-display)', fontSize: 12, lineHeight: '20px',
           color: 'var(--cth-ink-900)'
-        }}>MUNDER DIFFLIN · FOCUS MODE</span>
+        }}>SIXTH HISTORY · FOCUS MODE</span>
         {/* Same top-right controls as the main title bar — fullscreen covers
             it, so theme / exit-fullscreen / IDE must live here too. */}
         <div className="cth-titlebar-nodrag" style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -409,7 +409,7 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
             on doing that work for a rail nobody can see. Remounting is cheap; the
             terminals live in the pool and are untouched by this. */}
         {!rosterCollapsed && (
-        <aside style={{
+        <aside className="cth-focus-roster" style={{
           width: SIDEBAR_WIDTH, flexShrink: 0,
           display: 'flex', flexDirection: 'column',
           background: 'var(--cth-cream-200)',
@@ -560,7 +560,7 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
         </aside>
         )}
 
-        <div style={{
+        <div className="cth-focus-workspace" style={{
           flex: 1, minWidth: 0, minHeight: 0,
           display: 'flex', flexDirection: 'column',
           padding: 12, gap: 10

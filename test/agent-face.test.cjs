@@ -64,11 +64,12 @@ test('under the painted theme an assistant named for a face wears it', () => {
     'the strip deals a face instead of using the one the name asks for');
 });
 
-test('the orchestrator wears the face reserved for it', () => {
+test('the orchestrator wears the Sixth History mark', () => {
   const AgentFace = underTheme('occult');
   const { GOD_PORTRAIT, portraitNamed } = loadTs('src/renderer/src/scene/study/portraits.ts');
   const { img } = face(AgentFace, { id: 'god-1', name: 'Michael', isGod: true });
-  assert.equal(img.props.src, portraitNamed(GOD_PORTRAIT));
+  assert.match(img.props.src, /sixth-history\/logo\.png$/);
+  assert.equal(img.props.style.objectFit, 'contain', 'the square House mark is cropped like a portrait');
 });
 
 test('an assistant named nothing in the pack still gets a face, and keeps it', () => {
