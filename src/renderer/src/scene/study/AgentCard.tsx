@@ -49,6 +49,8 @@ export interface AgentCardProps {
   status: CardStatus;
   /** Absent → monogram fallback. */
   portraitSrc?: string;
+  /** Preserve the complete square House mark instead of cropping it like 5:6 portrait art. */
+  houseMark?: boolean;
   box: Box;
   onClick?: () => void;
   /**
@@ -77,7 +79,7 @@ export function monogramFor(name: string): string {
 }
 
 export function AgentCard({
-  name, role, status, portraitSrc, box, onClick, onLook
+  name, role, status, portraitSrc, houseMark = false, box, onClick, onLook
 }: AgentCardProps): JSX.Element {
   const interactive = typeof onClick === 'function';
   const root: CSSProperties = {
@@ -169,7 +171,12 @@ export function AgentCard({
             alt=""
             aria-hidden
             draggable={false}
-            style={{ width: '100%', height: '100%', objectFit: 'cover', userSelect: 'none' }}
+            style={{
+              width: '100%',
+              height: '100%',
+              objectFit: houseMark ? 'contain' : 'cover',
+              userSelect: 'none'
+            }}
           />
         ) : (
           <div

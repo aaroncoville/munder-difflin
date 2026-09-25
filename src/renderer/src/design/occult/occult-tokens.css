@@ -27,8 +27,8 @@
   /* Ink → parchment ramp */
   --cth-ink-900: #EAE0C8;   /* 11.5-12.0:1 — primary text, aged paper */
   --cth-ink-700: #C9BEA4;   /*  8.1:1      — secondary text */
-  --cth-ink-500: #988F7C;   /*  4.7:1      — tertiary / hints */
-  --cth-ink-300: #776D8F;   /*  3.2-3.9:1  — BORDERS. must stay >= 3.0 */
+  --cth-ink-500: #99907D;   /*  4.55:1     — tertiary / hints */
+  --cth-ink-300: #786E90;   /*  3.04:1     — BORDERS. must stay >= 3.0 */
   --cth-ink-100: #3A3450;   /*  1.5:1      — dividers, meant to recede */
 
   /* Accents — the same six hue slots, dropped into an occult register. Held to

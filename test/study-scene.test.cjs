@@ -740,6 +740,7 @@ test('the orchestrator wears the Sixth History mark', async () => {
   assert.ok(god, 'the god has a card');
   assert.match(god.props.portraitSrc, /sixth-history\/logo\.png$/,
     'the orchestrator does not wear the House mark');
+  assert.equal(god.props.houseMark, true, 'the square House mark is cropped like portrait art');
 });
 
 test('the only unexpandable wrappers are the ones that drive an element', () => {

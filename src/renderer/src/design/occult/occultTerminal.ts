@@ -53,7 +53,7 @@ export const occultTerminalTheme: XtermTheme = {
   magenta:      '#9B6A93',   // between lilac and coral, so the two stay apart
   cyan:         '#3E7C7B',   // = --cth-sky, a muted teal
   white:        '#C9BEA4',   // = --cth-ink-700 — parchment, one step under the ink
-  brightBlack:  '#776D8F',   // = --cth-ink-300; the borders colour, so dim text
+  brightBlack:  '#786E90',   // = --cth-ink-300; the borders colour, so dim text
                              //   sits at the same weight as a rule beside it
   brightRed:    '#CE7069',
   brightGreen:  '#83A077',
@@ -80,7 +80,7 @@ export const occultMonacoTheme = {
   inherit: true,
   rules: [
     { token: '', foreground: 'EAE0C8', background: '352531' },
-    { token: 'comment', foreground: '776D8F', fontStyle: 'italic' },
+    { token: 'comment', foreground: '786E90', fontStyle: 'italic' },
     { token: 'keyword', foreground: '9C8CC6' },
     { token: 'string', foreground: '83A077' },
     { token: 'number', foreground: 'CE7069' },

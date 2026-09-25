@@ -69,6 +69,7 @@ test('the orchestrator wears the Sixth History mark', () => {
   const { GOD_PORTRAIT, portraitNamed } = loadTs('src/renderer/src/scene/study/portraits.ts');
   const { img } = face(AgentFace, { id: 'god-1', name: 'Michael', isGod: true });
   assert.match(img.props.src, /sixth-history\/logo\.png$/);
+  assert.equal(img.props.style.objectFit, 'contain', 'the square House mark is cropped like a portrait');
 });
 
 test('an assistant named nothing in the pack still gets a face, and keeps it', () => {
