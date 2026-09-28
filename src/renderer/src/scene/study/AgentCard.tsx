@@ -14,6 +14,7 @@
  */
 import type { CSSProperties, KeyboardEvent } from 'react';
 import type { Box } from './StudyScene';
+import sixthHistoryLogo from '@/assets/sixth-history/logo.png';
 
 /** The four states a card shows. Deliberately coarser than the store's status
  *  vocabulary: at desk-card size the distinction that reads is "at work / at
@@ -82,6 +83,10 @@ export function AgentCard({
   name, role, status, portraitSrc, houseMark = false, box, onClick, onLook
 }: AgentCardProps): JSX.Element {
   const interactive = typeof onClick === 'function';
+  // A House card owns its mark. Do not trust a cached or caller-selected
+  // portrait here: this is the final render seam and therefore the only place
+  // that can guarantee the orchestrator never falls back to the old face.
+  const imageSrc = houseMark ? sixthHistoryLogo : portraitSrc;
   const root: CSSProperties = {
     position: 'absolute',
     left: box.left,
@@ -165,9 +170,9 @@ export function AgentCard({
           borderRadius: 'var(--cth-radius-control)'
         }}
       >
-        {portraitSrc ? (
+        {imageSrc ? (
           <img
-            src={portraitSrc}
+            src={imageSrc}
             alt=""
             aria-hidden
             draggable={false}
