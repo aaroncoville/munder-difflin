@@ -197,10 +197,14 @@ test('the page-turn clips stay inside the bundle budget', () => {
   // Video is the only thing in this repository that can grow by a megabyte
   // without anybody noticing, because a clip is regenerated rather than edited
   // and nothing about the diff says how big it is. The bound is a house rule,
-  // not a technical limit: 700,000 bytes for the whole set.
+  // not a technical limit: 87,500 bytes a desk, which is the 700,000 the set of
+  // eight was first held to. It is per desk because the house gains desks, and
+  // a fixed total would make the next one a choice between the budget and the
+  // film; what it must still catch is a clip regenerated longer or larger.
   const clips = fs.readdirSync(ASSETS).filter((f) => /^book-turn-.*\.mp4$/.test(f));
   assert.ok(clips.length > 0, 'no clips to weigh');
   const total = clips.reduce((n, f) => n + fs.statSync(path.join(ASSETS, f)).size, 0);
-  assert.ok(total <= 700000,
-    `the page turns weigh ${total} bytes across ${clips.length} clips, over the 700,000 bound`);
+  const bound = clips.length * 87500;
+  assert.ok(total <= bound,
+    `the page turns weigh ${total} bytes across ${clips.length} clips, over the ${bound} bound`);
 });
