@@ -5,6 +5,7 @@ const { mount, text } = require('./render-hooks.cjs');
 const loadTs = require('./load-ts.cjs');
 
 const { AgentCard } = loadTs('src/renderer/src/scene/study/AgentCard.tsx');
+const { GOD_PORTRAIT, portraitNamed } = loadTs('src/renderer/src/scene/study/portraits.ts');
 
 const find = (n, pred) => {
   if (!n || typeof n !== 'object') return undefined;
@@ -52,13 +53,15 @@ test('a portrait replaces the monogram', () => {
   assert.equal(find(inst.tree, (n) => n.props?.children === 'P'), undefined, 'no monogram beside it');
 });
 
-test('the House mark overrides any stale orchestrator portrait', () => {
+test('the Librarian card keeps its portrait instead of the square House mark', () => {
   const inst = mount(AgentCard, {
-    name: 'The Librarian', status: 'idle', box, portraitSrc: '/p/old-mark.png', houseMark: true
+    name: 'The Librarian', status: 'idle', box,
+    portraitSrc: '/assets/sixth-history/logo.png', houseMark: true
   });
   const img = find(inst.tree, (n) => n.type === 'img');
-  assert.match(img.props.src, /sixth-history\/logo\.png$/);
-  assert.equal(img.props.style.objectFit, 'contain');
+  assert.equal(img.props.src, portraitNamed(GOD_PORTRAIT));
+  assert.doesNotMatch(img.props.src, /sixth-history\/logo\.png$/);
+  assert.equal(img.props.style.objectFit, 'cover');
 });
 
 test('an unnamed agent still gets a monogram rather than an empty frame', () => {

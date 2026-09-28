@@ -14,7 +14,7 @@
  */
 import type { CSSProperties, KeyboardEvent } from 'react';
 import type { Box } from './StudyScene';
-import sixthHistoryLogo from '@/assets/sixth-history/logo.png';
+import { GOD_PORTRAIT, portraitNamed } from './portraits';
 
 /** The four states a card shows. Deliberately coarser than the store's status
  *  vocabulary: at desk-card size the distinction that reads is "at work / at
@@ -50,7 +50,7 @@ export interface AgentCardProps {
   status: CardStatus;
   /** Absent → monogram fallback. */
   portraitSrc?: string;
-  /** Preserve the complete square House mark instead of cropping it like 5:6 portrait art. */
+  /** This is the House's own Librarian card, which keeps its reserved portrait. */
   houseMark?: boolean;
   box: Box;
   onClick?: () => void;
@@ -83,10 +83,10 @@ export function AgentCard({
   name, role, status, portraitSrc, houseMark = false, box, onClick, onLook
 }: AgentCardProps): JSX.Element {
   const interactive = typeof onClick === 'function';
-  // A House card owns its mark. Do not trust a cached or caller-selected
-  // portrait here: this is the final render seam and therefore the only place
-  // that can guarantee the orchestrator never falls back to the old face.
-  const imageSrc = houseMark ? sixthHistoryLogo : portraitSrc;
+  // Compact orchestrator avatars wear the House mark, but the rectangular
+  // Librarian card is portrait art. Resolve its reserved face at this final
+  // seam so a caller's square mark cannot be cropped into the frame.
+  const imageSrc = houseMark ? portraitNamed(GOD_PORTRAIT) : portraitSrc;
   const root: CSSProperties = {
     position: 'absolute',
     left: box.left,
@@ -179,7 +179,7 @@ export function AgentCard({
             style={{
               width: '100%',
               height: '100%',
-              objectFit: houseMark ? 'contain' : 'cover',
+              objectFit: 'cover',
               userSelect: 'none'
             }}
           />
