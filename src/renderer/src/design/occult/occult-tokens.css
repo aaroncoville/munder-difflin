@@ -192,3 +192,22 @@
 :root[data-cth-theme='occult'] .cth-focus-workspace {
   background: var(--cth-cream-300);
 }
+
+/* The Librarian and CLI are instruments inside the House, not sheets of
+   simulated paper. Keep their full component trees on the same night ramp as
+   the Study and Focus workspace; parchment remains a text colour only. The
+   local token override is deliberate: other cards retain their normal
+   elevation, while every nested command-center control that asks for a paper
+   surface receives ink instead. */
+:root[data-cth-theme='occult'] .cth-librarian-panel {
+  --cth-cream-50: var(--cth-cream-200);
+  --cth-cream-100: var(--cth-cream-300);
+  --cth-cream-200: #0F0C17;
+  --cth-paper-100: var(--cth-cream-300);
+  --cth-paper-200: #0F0C17;
+  background: var(--cth-cream-300) !important;
+}
+:root[data-cth-theme='occult'] .cth-cli-surface {
+  --cth-paper-100: var(--cth-cream-300);
+  background: var(--cth-cream-300) !important;
+}

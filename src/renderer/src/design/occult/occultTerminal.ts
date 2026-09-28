@@ -1,8 +1,8 @@
 /**
  * The Study's terminal and editor, lit by the same candle as everything else.
  *
- * Two palettes, one register. The register is the occult theme's: a warm
- * ink-blue ground, aged-parchment ink, and candleflame gold where the light and
+ * Two palettes, one register. The register is the occult theme's: the Study's
+ * deepest night ground, aged-parchment ink, and candleflame gold where the light and
  * dark palettes reach for a cool blue. Nothing here fluoresces — a colour that
  * glows on a night ground reads as a different medium from the painted rooms
  * around it, which is exactly the seam the theme exists to remove.
@@ -36,14 +36,14 @@ export interface XtermTheme {
 }
 
 export const occultTerminalTheme: XtermTheme = {
-  background: '#352531',        // = --cth-paper-100, raised aubergine
+  background: '#120F1B',        // = --cth-cream-300, the Study's deepest night
   foreground: '#EAE0C8',        // = --cth-ink-900, aged paper
   cursor: '#C9A227',            // = --cth-gilt — a candleflame, not a block of light
-  cursorAccent: '#352531',
+  cursorAccent: '#120F1B',
   selectionBackground: '#453A1E',  // = --cth-lemon-light, gilt held down low
   selectionForeground: '#EAE0C8',
 
-  black:        '#211923',   // = --cth-paper-200 — one step under the ground,
+  black:        '#0F0C17',   // one step under the ground,
                              //   so a program painting an ANSI-black cell dims
                              //   the parchment rather than punching a cold hole in it
   red:          '#B0524E',   // = --cth-coral — Grail crimson
@@ -79,7 +79,7 @@ export const occultMonacoTheme = {
   base: 'vs-dark' as const,
   inherit: true,
   rules: [
-    { token: '', foreground: 'EAE0C8', background: '352531' },
+    { token: '', foreground: 'EAE0C8', background: '120F1B' },
     { token: 'comment', foreground: '786E90', fontStyle: 'italic' },
     { token: 'keyword', foreground: '9C8CC6' },
     { token: 'string', foreground: '83A077' },
@@ -90,15 +90,15 @@ export const occultMonacoTheme = {
     { token: 'delimiter', foreground: 'C9BEA4' }
   ],
   colors: {
-    'editor.background': '#352531',
+    'editor.background': '#120F1B',
     'editor.foreground': '#EAE0C8',
     'editorLineNumber.foreground': '#6B5A2E',        // = --cth-gilt-soft
     'editorLineNumber.activeForeground': '#C9A227',  // = --cth-gilt
     'editor.selectionBackground': '#453A1E',
     'editor.lineHighlightBackground': '#3B301D',
     'editorCursor.foreground': '#C9A227',
-    'editorGutter.background': '#211923',             // = --cth-paper-200
-    'editorWidget.background': '#211923',
+    'editorGutter.background': '#0F0C17',
+    'editorWidget.background': '#0F0C17',
     'editorIndentGuide.background1': '#4A3D26',
     'diffEditor.insertedTextBackground': '#5F7E5A33',
     'diffEditor.removedTextBackground': '#B0524E33',
