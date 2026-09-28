@@ -132,7 +132,7 @@ test('every matte is cut against its own desk’s painting, at its own patch of 
   const byId = new Map(mattes(view).map((f) => [f.props.id, f]));
   const berths = studyRoom.rooms.flatMap((r) => r.berths.map((b) => ({ room: r, berth: b })));
   const filmed = berths.filter(({ berth }) => berth.turn);
-  assert.equal(filmed.length, 8, `${filmed.length} berths have a film, not 8`);
+  assert.equal(filmed.length, 9, `${filmed.length} berths have a film, not 9`);
 
   for (const { room, berth } of filmed) {
     const f = byId.get(matteId(berth.id));

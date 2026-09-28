@@ -119,6 +119,17 @@ berths:
     seed: 108
     prediction: y0aw0q4dm5rmw0d09gbbwypbfc
 
+  god:
+    panel: src/renderer/src/scene/study/assets/room-god-study.png
+    clip: src/renderer/src/scene/study/assets/book-turn-god.mp4
+    # 384x216 rather than 288x162: the keeper's book is 300px across, wider than
+    # the reading rooms' crop, so the window is the same 16:9 at a larger size.
+    crop: { x: 586, y: 340, w: 384, h: 216 }   # panel pixels of a 1568x672 panel
+    book_within_crop: { x: 43, y: 76, w: 300, h: 59 }
+    nearest_flame_clearance: no candle in this room
+    seed: 7
+    prediction: zskkxpaf49rmw0d0wsqrvar8e0
+
 # What the clips are NOT, measured rather than assumed:
 #
 #   - Not byte-identical to the panel. Frame 0 differs from the crop it was made

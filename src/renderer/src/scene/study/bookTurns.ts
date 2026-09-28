@@ -22,6 +22,7 @@ import berth5 from './assets/book-turn-berth-5.mp4';
 import berth6 from './assets/book-turn-berth-6.mp4';
 import berth7 from './assets/book-turn-berth-7.mp4';
 import berth8 from './assets/book-turn-berth-8.mp4';
+import god from './assets/book-turn-god.mp4';
 
 export const TURN_SRC: Record<string, string> = {
   './book-turn-berth-1.mp4': berth1,
@@ -31,5 +32,6 @@ export const TURN_SRC: Record<string, string> = {
   './book-turn-berth-5.mp4': berth5,
   './book-turn-berth-6.mp4': berth6,
   './book-turn-berth-7.mp4': berth7,
-  './book-turn-berth-8.mp4': berth8
+  './book-turn-berth-8.mp4': berth8,
+  './book-turn-god.mp4': god
 };
