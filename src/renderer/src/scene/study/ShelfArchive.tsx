@@ -42,7 +42,7 @@
  * is worse than a mark that does not claim to be one — and a concluded
  * commission has one, so for those marks the rule is the other way round.
  *
- * At the size the house is drawn a mark is a few pixels across and gives no
+ * A mark is a run of painted books like any other on the wall and gives no
  * sign whatever that it can be pressed, so being looked at has to say so. It
  * says so with a ring drawn OUTSIDE the volume and a raise above the volumes
  * either side of it — never by moving the mark, because the mark's alignment
@@ -107,11 +107,23 @@ export const BOOK_SHADE: Record<ArchivedThing['kind'], string> = {
  */
 export function shelfLabel(
   box: Box, n: number | string
-): { fontSize: number; height: number } {
-  const { fontSize } = spineType({ height: box.width }, n);
+): { fontSize: number; height: number; width: number } {
+  const width = Math.min(box.width, box.height * SPINE_THICKNESS);
+  const { fontSize } = spineType({ height: width }, n);
   const run = fontSize * (0.62 * String(n).length + 0.5);
-  return { fontSize, height: Math.min(box.height * 0.5, run) };
+  return { fontSize, height: Math.min(box.height * 0.5, run), width };
 }
+
+/**
+ * How thick one painted spine is, as a share of the shelf it stands on.
+ *
+ * A mark is a whole bay of books, but the number is pasted on ONE of them, the
+ * way a library labels a volume rather than a shelf. Sized from the bay's width
+ * the label would be a plate across a run of spines with a glyph taller than
+ * any book on the wall; the volumes painted there are roughly a quarter as
+ * thick as the shelf is tall, so that is how wide the label is.
+ */
+export const SPINE_THICKNESS = 0.25;
 
 interface ViewBox { x: number; y: number; w: number; h: number }
 
@@ -211,8 +223,8 @@ export function ShelfArchive({
                     // number is pasted — held clear of the ledge the book is
                     // standing on, so the label is not read as the shelf.
                     position: 'absolute',
-                    left: 0,
-                    right: 0,
+                    left: (box.width - label.width) / 2,
+                    width: label.width,
                     bottom: box.height * 0.06,
                     height: label.height,
                     display: 'flex',

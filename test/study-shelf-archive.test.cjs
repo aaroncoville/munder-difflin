@@ -80,22 +80,61 @@ const SHELVES = 'src/renderer/src/scene/study/assets/room-shelves.png';
  */
 const isShelving = ([r, g, b]) => r > b + 30 && r > 62;
 
-test('every volume the wall can mark is a book somebody painted', () => {
+/**
+ * The runs of the panel that are shelving all the way through: the ledges,
+ * which are rows that are shelving across the whole wall, and the posts, which
+ * are columns that are shelving from top to bottom. Found from the paint, so a
+ * mark is checked against the carpentry the painter drew rather than against
+ * where somebody remembered it being.
+ */
+function carpentry(panel) {
+  const runs = (values, min) => {
+    const out = [];
+    let start = -1;
+    values.forEach((v, i) => {
+      if (v && start < 0) start = i;
+      if (!v && start >= 0) { if (i - start >= min) out.push([start, i - 1]); start = -1; }
+    });
+    if (start >= 0 && values.length - start >= min) out.push([start, values.length - 1]);
+    return out;
+  };
+  const rowShelving = [];
+  for (let y = 0; y < panel.height; y++) {
+    let n = 0;
+    let k = 0;
+    for (let x = 0; x < panel.width; x += 2) { n++; if (isShelving(panel.at(x, y))) k++; }
+    rowShelving.push(k / n > 0.8);
+  }
+  const colShelving = [];
+  for (let x = 0; x < panel.width; x++) {
+    let n = 0;
+    let k = 0;
+    for (let y = 0; y < panel.height; y += 2) { n++; if (isShelving(panel.at(x, y))) k++; }
+    colShelving.push(k / n > 0.8);
+  }
+  return { ledges: runs(rowShelving, 8), posts: runs(colShelving, 10) };
+}
+
+test('every volume the wall can mark is books, not a ledge or a post', () => {
   const panel = readPng(at(SHELVES));
   assert.equal(S.SHELF_BOOKS.length, S.ARCHIVE_MAX, 'the wall claims slots it has no books for');
+  const { ledges, posts } = carpentry(panel);
+  assert.ok(ledges.length >= 6 && posts.length >= 6,
+    `found ${ledges.length} ledges and ${posts.length} posts — the probe no longer sees the shelving`);
+  const overlap = (a0, a1, [b0, b1]) => Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
   for (const [i, book] of S.SHELF_BOOKS.entries()) {
-    let shelving = 0;
-    let sampled = 0;
-    for (let y = book.y * panel.height; y < (book.y + book.h) * panel.height; y += 2) {
-      for (let x = book.x * panel.width; x < (book.x + book.w) * panel.width; x += 2) {
-        sampled++;
-        if (isShelving(panel.at(x, y))) shelving++;
-      }
+    const x0 = book.x * panel.width;
+    const x1 = (book.x + book.w) * panel.width;
+    const y0 = book.y * panel.height;
+    const y1 = (book.y + book.h) * panel.height;
+    for (const ledge of ledges) {
+      assert.ok(overlap(y0, y1, ledge) <= 2,
+        `volume ${i} reaches ${overlap(y0, y1, ledge).toFixed(0)}px onto the ledge at y ${ledge[0]}`);
     }
-    assert.ok(sampled > 0, `volume ${i} covers no paint at all`);
-    assert.ok(shelving / sampled < 0.4,
-      `volume ${i} is ${Math.round((shelving / sampled) * 100)}% shelving — `
-      + 'it is standing on a ledge or a post rather than on a spine');
+    for (const post of posts) {
+      assert.ok(overlap(x0, x1, post) <= 2,
+        `volume ${i} reaches ${overlap(x0, x1, post).toFixed(0)}px onto the post at x ${post[0]}`);
+    }
   }
 });
 
@@ -143,6 +182,64 @@ test('a slot past the last volume is still a volume, not NaN geometry', () => {
   const b = S.bookSlot(S.ARCHIVE_MAX + 3, view);
   assert.ok(Number.isFinite(b.left) && Number.isFinite(b.top), 'NaN geometry');
   assert.ok(b.width > 0 && b.height > 0);
+});
+
+/**
+ * The wall fills. It does not pin.
+ *
+ * A mark per single spine, spread a few to a shelf, read as a book lit here and
+ * there however much work had been finished: the rest of the wall could never
+ * change. What a wall of finished work should say is how full it is — so the
+ * marks between them must be able to take in the painted books of the whole
+ * wall, and they must be handed out the way a wall of books fills.
+ */
+const isLamp = ([r, g, b]) => r > 200 && g > 110 && b < 110;
+
+test('between them the marks can darken the whole wall of books', () => {
+  const panel = readPng(at(SHELVES));
+  const inSlot = (x, y) => S.SHELF_BOOKS.some((b) =>
+    x >= b.x * panel.width && x < (b.x + b.w) * panel.width
+    && y >= b.y * panel.height && y < (b.y + b.h) * panel.height);
+  let books = 0;
+  let covered = 0;
+  for (let y = 0; y < panel.height; y += 3) {
+    for (let x = 0; x < panel.width; x += 3) {
+      const px = panel.at(x, y);
+      if (isShelving(px) || isLamp(px)) continue;
+      books++;
+      if (inSlot(x, y)) covered++;
+    }
+  }
+  assert.ok(covered / books >= 0.7,
+    `the marks can reach only ${Math.round((covered / books) * 100)}% of the painted books, `
+    + 'so however much is archived the wall stays mostly as it was painted');
+});
+
+test('no mark darkens a lamp', () => {
+  // The lamps are what light the wall. A lamp shade taken down with the books
+  // beside it reads as the light going out, not as the shelf filling.
+  const panel = readPng(at(SHELVES));
+  // Every pixel, not a sample: the brightest part of a shade is a few dozen
+  // pixels, and a mark clipping one corner of it is exactly the failure.
+  for (const [i, book] of S.SHELF_BOOKS.entries()) {
+    let lamp = 0;
+    for (let y = Math.ceil(book.y * panel.height); y < (book.y + book.h) * panel.height; y++) {
+      for (let x = Math.ceil(book.x * panel.width); x < (book.x + book.w) * panel.width; x++) {
+        if (isLamp(panel.at(x, y))) lamp++;
+      }
+    }
+    assert.equal(lamp, 0, `volume ${i} takes in ${lamp} pixels of lamplight`);
+  }
+});
+
+test('the wall fills the way a wall of books does: top shelf first, left to right', () => {
+  for (let i = 1; i < S.SHELF_BOOKS.length; i++) {
+    const a = S.SHELF_BOOKS[i - 1];
+    const b = S.SHELF_BOOKS[i];
+    const sameShelf = Math.abs(a.y - b.y) < 0.02;
+    assert.ok(sameShelf ? b.x > a.x : b.y > a.y,
+      `volume ${i} is handed out before the one to its left or on the shelf above`);
+  }
 });
 
 // ─── In the scene ───────────────────────────────────────────────────────────
@@ -463,6 +560,28 @@ test('the number fits on every volume the wall can mark', () => {
         `the label is longer than volume ${i} is tall`);
     }
   }
+});
+
+test('the number is pasted on one spine of a bay, not across the whole run', async () => {
+  // A mark is a run of books, and a label as wide as the run is a plate across
+  // several spines with a glyph taller than any book on the wall.
+  const A = loadTs('src/renderer/src/scene/study/ShelfArchive.tsx');
+  const view = { x: 0, y: 0, w: 1568, h: 672 };
+  const rendered = A.ShelfArchive({
+    books: [{ id: 'T-7', label: 'the seventh folio', kind: 'commission', at: null }],
+    panelSrc: 'shelves.png',
+    view
+  });
+  const box = S.bookSlot(0, view);
+  const plate = numberOf(all(rendered, (n) => n.props?.['data-shelf-book'] !== undefined)[0]);
+  assert.ok(plate, 'the mark carries no number');
+  const width = plate.props.style.width;
+  assert.equal(typeof width, 'number', 'the label is as wide as whatever it is laid in');
+  // The widest spine painted on the wall is under a third of its shelf's height.
+  assert.ok(width <= box.height / 3,
+    `the label is ${width.toFixed(0)}px wide on a shelf ${box.height.toFixed(0)}px tall`);
+  assert.ok(plate.props.style.left >= 0 && plate.props.style.left + width <= box.width + 0.01,
+    'the label hangs off the bay');
 });
 
 test('the number is set from the spine, not from a type token', () => {

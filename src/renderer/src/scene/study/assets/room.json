@@ -1,5 +1,5 @@
 {
-  "_comment": "Cross-section of the Study, storey by storey. Each room is a flat panel with its own image; every berth is normalized (0..1) to THAT panel, not to the house. Berths were read off the paintings themselves: a reading berth's bottom edge sits on the painted desk surface, so the card stands at the desk and the book lands on it. A berth's optional `volume` is the open book the PAINTER already put on that desk, read off the panel the same way: the card stands behind it rather than over it, so the painting keeps the piece of itself it drew there. Its optional `turn` is the patch of panel that desk's page turn is filmed over, with the clip that plays there — a wider rectangle than the volume, because a page needs somewhere to rise into, and pushed off-centre by however much it takes to keep that room's candle out of frame; see tools/occult-art/book-turns.yaml for how each was chosen. An anchor is either a room of its own kind or a `prop` standing inside somebody else's room — the parlour holds three, because a storey spent on a single prop is paid for by every card in the house.",
+  "_comment": "Cross-section of the Study, storey by storey. Each room is a flat panel with its own image; every berth is normalized (0..1) to THAT panel, not to the house. Berths were read off the paintings themselves: a reading berth's bottom edge sits on the painted desk surface, so the card stands at the desk and the book lands on it. A berth's optional `volume` is the open book the PAINTER already put on that desk, read off the panel the same way: the card stands behind it rather than over it, so the painting keeps the piece of itself it drew there. Its optional `turn` is the patch of panel that desk's page turn is filmed over, with the clip that plays there — a wider rectangle than the volume, because a page needs somewhere to rise into, and pushed off-centre by however much it takes to keep that room's candle out of frame; see tools/occult-art/book-turns.yaml for how each was chosen. An anchor is either a room of its own kind or a `prop` standing inside somebody else's room — the parlour holds three and the moss reading room holds the almanac, because a storey spent on a single prop is paid for by every card in the house.",
   "bandThickness": 18,
   "rooms": [
     {
@@ -12,12 +12,6 @@
         { "x": 0.710, "y": 0.600 }, { "x": 0.222, "y": 0.865 },
         { "x": 0.505, "y": 0.865 }, { "x": 0.917, "y": 0.870 }
       ]
-    },
-    {
-      "id": "almanac", "kind": "almanac", "image": "./room-almanac.png",
-      "natural": { "w": 1568, "h": 672 }, "row": 0, "col": 1,
-      "berths": [{ "id": "almanac-page", "x": 0.745, "y": 0.490, "w": 0.160, "h": 0.120 }],
-      "lightPoints": [{ "x": 0.735, "y": 0.245 }]
     },
     {
       "id": "desk-1", "kind": "desk", "image": "./room-desk-a.png",
@@ -96,9 +90,41 @@
       ]
     },
     {
+      "id": "desk-5", "kind": "desk", "image": "./room-desk-g.png",
+      "natural": { "w": 1568, "h": 672 }, "row": 0, "col": 1,
+      "berths": [
+        {
+          "id": "berth-9", "x": 0.130, "y": 0.200, "w": 0.300, "h": 0.460,
+          "volume": { "x": 0.2136, "y": 0.6057, "w": 0.1320, "h": 0.0461 },
+          "turn": { "x": 0.1849, "y": 0.5119, "w": 0.1837, "h": 0.2411, "clip": "./book-turn-berth-9.mp4" }
+        },
+        {
+          "id": "berth-10", "x": 0.558, "y": 0.200, "w": 0.300, "h": 0.460,
+          "volume": { "x": 0.6435, "y": 0.6057, "w": 0.1301, "h": 0.0446 },
+          "turn": { "x": 0.6135, "y": 0.5119, "w": 0.1837, "h": 0.2411, "clip": "./book-turn-berth-10.mp4" }
+        }
+      ],
+      "props": [
+        {
+          "_comment": "Triggers are the almanac: the star almanac open on the lectern in the right-hand corner.",
+          "kind": "almanac",
+          "berth": { "id": "almanac-lectern", "x": 0.8131, "y": 0.3795, "w": 0.1193, "h": 0.2083 }
+        }
+      ],
+      "lightPoints": [
+        { "x": 0.165, "y": 0.512 }, { "x": 0.601, "y": 0.518 }, { "x": 0.499, "y": 0.327 }
+      ]
+    },
+    {
       "id": "god-study", "kind": "godStudy", "image": "./room-god-study.png",
       "natural": { "w": 1568, "h": 672 }, "row": 3, "col": 0,
-      "berths": [{ "id": "god", "x": 0.335, "y": 0.185, "w": 0.320, "h": 0.500 }],
+      "berths": [
+        {
+          "id": "god", "x": 0.335, "y": 0.185, "w": 0.320, "h": 0.500,
+          "volume": { "x": 0.4011, "y": 0.6190, "w": 0.1913, "h": 0.0878 },
+          "turn": { "x": 0.3737, "y": 0.5060, "w": 0.2449, "h": 0.3214, "clip": "./book-turn-god.mp4" }
+        }
+      ],
       "lightPoints": [{ "x": 0.325, "y": 0.420 }, { "x": 0.665, "y": 0.420 }]
     },
     {
