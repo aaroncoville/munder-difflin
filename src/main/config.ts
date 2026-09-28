@@ -58,6 +58,16 @@ export interface ScheduledMission {
    *  inbox/outbox mtimes, any PTY output) has moved in this many ms. Default
    *  ~5 min. NOT derived from registry.status (which never transitions in main). */
   quietThresholdMs?: number;
+  /** Heartbeat only. Default true. When the floor is quiet and god's inbox has
+   *  no real (non-scheduler) mail, a beat normally still re-engages god just
+   *  because the floor went quiet. With this on, that re-engage is additionally
+   *  gated on tasks.json having at least one 'doing' card — a quiet floor with
+   *  work still in flight may be a stall worth a look; a quiet floor with
+   *  nothing doing has nothing for god to review, so the beat is a no-op and
+   *  re-arms on the normal (non-back-off) cadence instead of waking god. Set to
+   *  false to restore the original behaviour where any quiet floor re-engages.
+   *  Reversible from config.json without a rebuild. */
+  suppressWhenIdle?: boolean;
 }
 
 /** The built-in hourly ops standup: god reviews who's doing what + whether tasks
@@ -107,7 +117,8 @@ export const HEARTBEAT_MISSION: ScheduledMission = {
     'if the work is genuinely done.',
   enabled: false,
   kind: 'heartbeat',
-  quietThresholdMs: 300_000
+  quietThresholdMs: 300_000,
+  suppressWhenIdle: true
 };
 
 /** The dedicated auto-compact MAINTENANCE schedule (maint-1). DECOUPLED from the
