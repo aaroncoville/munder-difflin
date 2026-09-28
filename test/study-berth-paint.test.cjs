@@ -34,10 +34,12 @@ const manifest = JSON.parse(fs.readFileSync(path.join(ASSETS, 'room.json'), 'utf
  * all four rooms sit between 18 and 43 points of red over green, and the
  * oxblood wall at 90, so the three coarse tests separate them by a wide margin
  * — which is what keeps this from failing over a repaint that only changes the
- * light.
+ * light. Warm also means red over GREEN: a dark moss wall is as dark as a desk
+ * and passes every other rule, and read two thirds of the green room as
+ * furniture.
  */
 const isDeskWood = ([r, g, b]) =>
-  r >= b + 20 && r - g <= 60 && 0.299 * r + 0.587 * g + 0.114 * b <= 100;
+  r > g && r >= b + 20 && r - g <= 60 && 0.299 * r + 0.587 * g + 0.114 * b <= 100;
 
 /**
  * Whether a colour is the cover of the open book painted on a desk.

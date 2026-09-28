@@ -52,6 +52,15 @@ test('a portrait replaces the monogram', () => {
   assert.equal(find(inst.tree, (n) => n.props?.children === 'P'), undefined, 'no monogram beside it');
 });
 
+test('the House mark overrides any stale orchestrator portrait', () => {
+  const inst = mount(AgentCard, {
+    name: 'The Librarian', status: 'idle', box, portraitSrc: '/p/old-mark.png', houseMark: true
+  });
+  const img = find(inst.tree, (n) => n.type === 'img');
+  assert.match(img.props.src, /sixth-history\/logo\.png$/);
+  assert.equal(img.props.style.objectFit, 'contain');
+});
+
 test('an unnamed agent still gets a monogram rather than an empty frame', () => {
   const inst = mount(AgentCard, { name: '   ', status: 'idle', box });
   assert.ok(find(inst.tree, (n) => n.props?.children === '?'), 'fallback monogram');

@@ -126,18 +126,6 @@
   --cth-drop-yellow:    #FFCA54;
   --cth-drop-sky:       #72C2DF;
   --cth-drop-maroon:    #B23A4E;
-
-  /* The terminal and the editor beside it, as a surface a theme can move on its
-     own. Inert here and in dark — both resolve to the surface the terminal panel
-     already sat on, so light and dark render unchanged — and it exists because
-     one theme wants its terminal on a DIFFERENT ground from its cards and
-     inputs, which is a distinction --cth-paper-100 cannot express while every
-     panel in the app shares it. The ink is declared alongside because xterm and
-     Monaco take literal colours and cannot read a custom property: the literals
-     are held against these two tokens by a test, and the token is what the test
-     reads. */
-  --cth-terminal-ground: var(--cth-paper-100);
-  --cth-terminal-ink:    var(--cth-ink-900);
 }
 
 /* ── Dark theme ──────────────────────────────────────────────────────────────

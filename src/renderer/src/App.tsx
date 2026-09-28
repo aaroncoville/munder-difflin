@@ -32,7 +32,7 @@ import { FullscreenTerminal } from '@/components/FullscreenTerminal';
 import { TaskDetailOverlay } from '@/components/TaskDetailOverlay';
 import { IdePanel } from '@/ide/IdePanel';
 import { useHoldOptionToTalk } from '@/freeflow/holdOption';
-import brandLogo from '@brand/logo.png?url';
+import brandLogo from '@/assets/sixth-history/logo.png?url';
 
 // Injected at build time from package.json (see electron.vite.config.ts).
 declare const __APP_VERSION__: string;
@@ -303,8 +303,8 @@ export function App() {
       >
         <img
           src={brandLogo}
-          alt="Munder Difflin"
-          style={{ height: 20, width: 'auto', display: 'block' }}
+          alt="Sixth History"
+          style={{ height: 24, width: 24, display: 'block', objectFit: 'contain' }}
         />
         {/* v0.3.7: the version is no longer inert text — it doubles as the
             update control (check / download / restart to update). */}

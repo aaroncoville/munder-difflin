@@ -132,7 +132,7 @@ test('every matte is cut against its own desk’s painting, at its own patch of 
   const byId = new Map(mattes(view).map((f) => [f.props.id, f]));
   const berths = studyRoom.rooms.flatMap((r) => r.berths.map((b) => ({ room: r, berth: b })));
   const filmed = berths.filter(({ berth }) => berth.turn);
-  assert.equal(filmed.length, 8, `${filmed.length} berths have a film, not 8`);
+  assert.equal(filmed.length, 11, `${filmed.length} berths have a film, not 11`);
 
   for (const { room, berth } of filmed) {
     const f = byId.get(matteId(berth.id));
@@ -243,7 +243,9 @@ test('the card is brought forward by the keyboard as well as the mouse', async (
 test('each reader at a shared desk gets their own page over their own card', async () => {
   // The order and the raise are decided per place setting, so a desk with two
   // readers is where a decision made once for the room would show.
-  const who = Array.from({ length: 9 }, (_, i) => `r${i}`);
+  // One reader more than the house has desks, so at least one desk is shared.
+  const desks = studyRoom.rooms.filter((r) => r.kind === 'desk').flatMap((r) => r.berths).length;
+  const who = Array.from({ length: desks + 1 }, (_, i) => `r${i}`);
   const view = await house(who.map((id, i) => card(`T-${i}`, 'doing', id)), { who });
   const seen = new Map();
   for (const id of who) {

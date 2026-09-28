@@ -259,45 +259,63 @@ test('the film is scenery; the book is still the door', async () => {
   assert.deepEqual(opened, ['T-1'], 'pressing the book did not open its commission');
 });
 
-test('the desk the painter left bare still draws its own book, and it still turns', async () => {
-  // THROUGH THE SCENE, not by mounting a book with the answer already handed to
-  // it. The god's study is the one seat with no painted volume and so no film,
-  // and whether it keeps its drawn turn is decided by two pieces of production
-  // wiring — `turnBox`, which must return null for a berth with no clip, and
-  // the place setting, which must only set `painted` when it got one. A book
-  // mounted by hand exercises neither: it tests that DeskBook can draw a leaf,
-  // which was never in doubt.
+test('the god reads the book painted on his own desk, and its pages turn on film', async () => {
+  // THROUGH THE SCENE. The god's desk was the one seat in the house the painter
+  // left bare, so his commission was the one book still turned by a leaf of
+  // ours on a keyframe — the page turn every other desk had given up — laid
+  // over a desk with nothing painted on it. His panel now has an open book on
+  // the desk, and his seat is filmed like every other.
   const god = studyRoom.rooms.find((r) => r.kind === 'godStudy');
-  assert.ok(god && god.berths[0] && !god.berths[0].volume,
-    'the god now has a painted volume; this test is about the case where none exists');
-  assert.equal(god.berths[0].turn, undefined, 'the god has a film but no book to film');
+  const berth = god && god.berths[0];
+  assert.ok(berth && berth.volume, 'the god’s desk declares no painted book');
+  assert.ok(berth.turn && TURN_SRC[berth.turn.clip], 'the god’s desk has no film of its book');
 
   const view = await house([card('T-1', 'doing')], { isGod: true });
   const place = deep(view.tree, (n) => n.props?.['data-study-place'] === 'ann')[0];
   assert.ok(place, 'the god is not seated in the house at all');
-
-  assert.equal(films(view).length, 0,
-    'a film is playing at the god’s desk, where the painter drew no book to film');
-  const open = deep(place, (n) => n.props?.['data-book-state'] === 'open');
-  assert.equal(open.length, 1, 'the god’s commission is not an open book');
-  assert.equal(leaves(view).length, 1,
-    'the god’s book lost its drawn page turn, so that desk cannot say it is being worked at');
-  // And it is a real book, not an empty frame with a leaf in it: `painted`
-  // strips the boards and the pages, and passing it here would leave the god
-  // with a page turning over bare desk.
-  assert.ok(deep(open[0], (n) => n.props?.['data-book-page'] === 'left').length === 1,
-    'the god’s book has no pages, which is what `painted` does to a book');
+  const playing = films(view);
+  assert.equal(playing.length, 1, 'no film is playing at the god’s desk while he reads');
+  assert.equal(playing[0].props.src, TURN_SRC[berth.turn.clip],
+    'the god’s desk plays some other desk’s film');
+  assert.equal(leaves(view).length, 0,
+    'the god’s book still turns a drawn leaf over the painted one');
 });
 
-test('turnBox refuses a berth with no film, which is what protects the bare desk', () => {
-  // The other half of the same seam, stated directly: the place setting only
-  // sets `painted` when turnBox hands it something.
+test('the god’s declared book is the one painted on his desk', () => {
+  // His binding is a deep red rather than the pink the reading rooms share, so
+  // the reading rooms' cover probe does not apply; the open leaves do. A volume
+  // off the painted book lifts his card for nothing and films bare wood.
+  const readPng = require('./read-png.cjs');
+  const path = require('node:path');
+  const god = studyRoom.rooms.find((r) => r.kind === 'godStudy');
+  const v = god.berths[0].volume;
+  assert.ok(v, 'the god’s desk declares no painted book');
+  const panel = readPng(path.resolve(__dirname, '..', 'src/renderer/src/scene/study/assets',
+    god.image));
+  const isPage = ([r, g, b]) =>
+    0.299 * r + 0.587 * g + 0.114 * b > 185 && Math.max(r, g, b) - Math.min(r, g, b) < 55;
+  let pages = 0;
+  let sampled = 0;
+  for (let y = v.y * panel.height; y < (v.y + v.h / 2) * panel.height; y += 2) {
+    for (let x = v.x * panel.width; x < (v.x + v.w) * panel.width; x += 2) {
+      sampled++;
+      if (isPage(panel.at(x, y))) pages++;
+    }
+  }
+  assert.ok(pages / sampled > 0.4,
+    `only ${Math.round((pages / sampled) * 100)}% of the upper half of the god’s volume is open leaf`);
+});
+
+test('turnBox refuses a berth with no film, which is what protects a bare desk', () => {
+  // The other half of the seam, stated directly: the place setting only sets
+  // `painted` when turnBox hands it something. No desk in the house is bare
+  // today, which is exactly when this is worth keeping.
   const god = studyRoom.rooms.find((r) => r.kind === 'godStudy');
   const view = containFit({ w: god.natural.w, h: god.natural.h }, god.natural);
-  assert.equal(turnBox(god.berths[0], view), null,
-    'the god’s berth was given a film box out of nothing');
+  const { turn, volume, ...bare } = god.berths[0];
+  assert.equal(turnBox(bare, view), null, 'a bare berth was given a film box out of nothing');
   // A berth that names a clip the build does not carry is the same case: draw
   // nothing rather than a black rectangle where the book was.
-  assert.equal(turnBox({ ...god.berths[0], turn: { x: 0, y: 0, w: 0.1, h: 0.1, clip: './nope.mp4' } },
+  assert.equal(turnBox({ ...bare, turn: { x: 0, y: 0, w: 0.1, h: 0.1, clip: './nope.mp4' } },
     view), null, 'a berth naming a clip nobody imported still got a film box');
 });

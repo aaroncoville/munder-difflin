@@ -21,44 +21,14 @@
   --cth-cream-100: #1C1828;
   --cth-cream-200: #171322;
   --cth-cream-300: #120F1B;
-  --cth-paper-100: #312717;   /* cards and inputs — the lightest ground. Warm on
-                                 purpose, and the one surface in this ramp that
-                                 is: parchment under candlelight, against the
-                                 night the rooms are built from. Held at 3.05:1
-                                 under ink-300, so borders still clear the 3.0
-                                 floor. */
-  --cth-paper-200: #251E12;
-
-  /* The terminal and the editor, on the NIGHT register instead — the same
-     ink-blue the frame and its title bar are cut from, one step lighter so the
-     panel still reads as raised out of the app ground rather than a hole in it.
-     Parchment was the wrong surface here: a full-height terminal is the largest
-     single field of colour on screen, and a coffee-brown one sitting inside an
-     indigo frame reads as two applications rather than two panels.
-
-     Three measured constraints fix this hex inside a narrow window:
-       · 1.19:1 from the dark theme's terminal ground (#1A1A1F), so switching
-         theme visibly changes the terminal — the failure this ramp has hit
-         before, when a cloned surface landed 1.11:1 away and nothing appeared
-         to happen;
-       · 3.04:1 under ink-300, the border token, which the whole theme holds
-         above 3.0 on every surface it can appear on;
-       · 11.7:1 under the terminal's own ink below.
-     Lighter breaks the border floor, darker stops reading as a change from
-     dark. Move it and re-measure all three. */
-  --cth-terminal-ground: #2B2444;
-  --cth-terminal-ink:    #EDE6D2;  /* 11.7:1 — parchment, warm against the night
-                                      so the eye separates it from the cool
-                                      secondary ink the terminal sets at 6.1:1
-                                      by HUE as well as by weight. Two shades of
-                                      the same tan is what made the old pair
-                                      hard to tell apart. */
+  --cth-paper-100: #352531;   /* raised aubergine: cards, inputs, terminal */
+  --cth-paper-200: #211923;   /* recessed ink: gutters and quiet panels */
 
   /* Ink → parchment ramp */
   --cth-ink-900: #EAE0C8;   /* 11.5-12.0:1 — primary text, aged paper */
   --cth-ink-700: #C9BEA4;   /*  8.1:1      — secondary text */
-  --cth-ink-500: #988F7C;   /*  4.7:1      — tertiary / hints */
-  --cth-ink-300: #776D8F;   /*  3.2-3.9:1  — BORDERS. must stay >= 3.0 */
+  --cth-ink-500: #99907D;   /*  4.55:1     — tertiary / hints */
+  --cth-ink-300: #786E90;   /*  3.04:1     — BORDERS. must stay >= 3.0 */
   --cth-ink-100: #3A3450;   /*  1.5:1      — dividers, meant to recede */
 
   /* Accents — the same six hue slots, dropped into an occult register. Held to
@@ -202,4 +172,42 @@
 :root[data-cth-theme='occult'] ::selection {
   background: var(--cth-gilt-soft);
   color: var(--cth-ink-900);
+}
+
+/* Focus mode is the app's long-session CLI workspace. Give it one calm ink
+   plane, a clearly separated roster, and a gilt rule instead of stacking tan
+   panels around the terminal. These selectors are theme-gated: upstream light
+   and dark remain byte-for-byte in their existing presentation. */
+:root[data-cth-theme='occult'] .cth-focus-shell {
+  background: var(--cth-cream-300) !important;
+}
+:root[data-cth-theme='occult'] .cth-focus-titlebar {
+  background: var(--cth-cream-200) !important;
+  border-bottom-color: var(--cth-gilt-soft) !important;
+}
+:root[data-cth-theme='occult'] .cth-focus-roster {
+  background: var(--cth-cream-200) !important;
+  border-right-color: var(--cth-gilt-soft) !important;
+}
+:root[data-cth-theme='occult'] .cth-focus-workspace {
+  background: var(--cth-cream-300);
+}
+
+/* The Librarian and CLI are instruments inside the House, not sheets of
+   simulated paper. Keep their full component trees on the same night ramp as
+   the Study and Focus workspace; parchment remains a text colour only. The
+   local token override is deliberate: other cards retain their normal
+   elevation, while every nested command-center control that asks for a paper
+   surface receives ink instead. */
+:root[data-cth-theme='occult'] .cth-librarian-panel {
+  --cth-cream-50: var(--cth-cream-200);
+  --cth-cream-100: var(--cth-cream-300);
+  --cth-cream-200: #0F0C17;
+  --cth-paper-100: var(--cth-cream-300);
+  --cth-paper-200: #0F0C17;
+  background: var(--cth-cream-300) !important;
+}
+:root[data-cth-theme='occult'] .cth-cli-surface {
+  --cth-paper-100: var(--cth-cream-300);
+  background: var(--cth-cream-300) !important;
 }

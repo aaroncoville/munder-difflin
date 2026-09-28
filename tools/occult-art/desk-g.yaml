@@ -1,0 +1,30 @@
+# Reading room G — two desks in a moss-green room under an amber gothic window, a star almanac on a lectern in the corner.
+#
+# The sheet the shipped panel was generated from. Reproduce it with the call in
+# this directory's README.
+#
+# G stands where the observatory was, on the top storey beside the shelves. That
+# room was a whole storey spent on one prop — its only use was a click through
+# to the triggers — so it is a reading room now, and the almanac stands on the
+# lectern in its corner as a prop, the way the parlour holds the petitions and
+# the fire. Moss green because it is the widest gap left in the house's hues:
+# the other reading rooms are tan, teal, crimson and indigo. Like E and F, the
+# reference is a panel that ships in this repository — reading room F — and the
+# digest below is that panel's, byte for byte.
+panel: src/renderer/src/scene/study/assets/room-desk-g.png
+model: black-forest-labs/flux-kontext-pro
+input:
+  prompt: |-
+    Repaint as a clearly DIFFERENT scholars' room with a COMPLETELY different wall color: deep MOSS-GREEN / olive-green plaster walls with dark walnut wainscot and brass fittings. The walls must be YELLOW-GREEN MOSS — absolutely NOT blue, NOT indigo, NOT teal, NOT red, NOT brown. ONE tall round-topped window with warm amber glass in the center of the wall, TWO large dark-wood writing desks — one on each side of the window — set well FORWARD toward the viewer, each with a lit candle, an OPEN BOOK lying flat on the desktop, and clear wall space above it, a small wooden lectern holding an open star almanac with a brass armillary sphere beside it in the right-hand corner, a tall potted fern in the left corner, a faded ochre rug on the floor. Keep the exact illustration style, palette discipline and grain of the input but make it read as a NEW room, not a copy. Render as FLAT 2D storybook game illustration: naive simple shapes, matte flat colors with soft paper-grain texture, thin clean outlines, NO realistic lighting, NO 3D rendering, NO photorealism — the same flat cut-paper look as the input image. Straight-on elevation. No people, no readable text.
+  aspect_ratio: "21:9"
+  output_format: png
+  input_image: "the reference below, supplied inline as a data: URI"
+reference:
+  media_type: image/png
+  file: src/renderer/src/scene/study/assets/room-desk-f.png
+  bytes: 1257000
+  sha256: e9335d1bbe305051a113e71460f12eb6df821a70a802c37fd25654727438502f
+prediction: fnbek4nn0srmy0d0wspr0mtvc8
+output:
+  width: 1568
+  height: 672

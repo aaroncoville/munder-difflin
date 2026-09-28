@@ -35,7 +35,7 @@ const zoomBtnStyle: CSSProperties = {
   fontSize: 12,
   lineHeight: 1,
   color: 'var(--cth-ink-700)',
-  background: 'var(--cth-terminal-ground)',
+  background: 'var(--cth-paper-100)',
   border: '1px solid var(--cth-ink-300)',
   cursor: 'pointer',
   padding: 0
@@ -356,13 +356,8 @@ export function PtyTerminalView({ ptyId, onStreamData, onUserPrompt, onToggleFul
   }, []);
 
   return (
-    <div style={{
-      // The panel is the terminal, so it takes the terminal's own ground rather
-      // than the shared panel surface: one theme puts its terminal on a
-      // different ground from its cards, and this 8px frame and the header row
-      // above the canvas are where that seam would show. Outside that theme the
-      // token resolves to --cth-paper-100, which is what this was.
-      background: 'var(--cth-terminal-ground)',
+    <div className="cth-cli-surface" style={{
+      background: 'var(--cth-paper-100)',
       boxShadow: embedded ? 'none' : 'var(--cth-panel-border-terminal)',
       padding: embedded ? 0 : 8,
       height: '100%',

@@ -150,6 +150,7 @@ export function CommandCenterPanel({ agent, fullscreen = false }: { agent: Agent
 
   return (
     <PixelPanel
+      className="cth-librarian-panel"
       variant="default"
       noPadding
       style={{ display: 'flex', flexDirection: 'column', height: '100%', padding: 0, overflow: 'hidden' }}

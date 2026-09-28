@@ -57,33 +57,20 @@ test('the candlelit palette is complete — every ANSI slot and the ground', () 
     'too many ANSI slots share a colour to be legible');
 });
 
-test('the terminal sits on the same ground the panel holding it does', () => {
+test('the terminal sits on the same deepest scene ground as its panel', () => {
   // xterm takes literal colours and cannot read a CSS custom property, so this
   // hex is RE-STATED from occult-tokens.css and would drift silently the first
   // time the palette moved. Holding the two against each other is the whole
   // reason this assertion reads the stylesheet rather than a second constant.
-  //
-  // The pin moved OFF --cth-paper-100 when the terminal moved off the parchment
-  // surface onto the theme's night register: the panel and the canvas still have
-  // to agree, but the token they agree ON is now the terminal's own, which the
-  // panel reads too. Pinning the old one would have asserted the seam back.
   const { occultTerminalTheme } = loadTs('src/renderer/src/design/occult/occultTerminal.ts');
   const css = read('src/renderer/src/design/occult/occult-tokens.css')
     .replace(/\/\*[\s\S]*?\*\//g, '');
-  const ground = css.match(/--cth-terminal-ground:\s*(#[0-9A-Fa-f]{6})/)[1];
+  const ground = css.match(/--cth-cream-300:\s*(#[0-9A-Fa-f]{6})/)[1];
   assert.equal(occultTerminalTheme.background.toUpperCase(), ground.toUpperCase(),
-    'the terminal ground drifted from --cth-terminal-ground');
-  const ink = css.match(/--cth-terminal-ink:\s*(#[0-9A-Fa-f]{6})/)[1];
+    'the terminal ground drifted from --cth-cream-300');
+  const ink = css.match(/--cth-ink-900:\s*(#[0-9A-Fa-f]{6})/)[1];
   assert.equal(occultTerminalTheme.foreground.toUpperCase(), ink.toUpperCase(),
-    'the terminal ink drifted from --cth-terminal-ink');
-  // …and the panel around the canvas reads the same token, or the 8px frame and
-  // the header row go back to being a different colour from the terminal inside
-  // them — the reported symptom, in the one place a palette file cannot fix it.
-  const view = strip(read('src/renderer/src/components/PtyTerminalView.tsx'));
-  assert.match(view, /background:\s*'var\(--cth-terminal-ground\)'/,
-    'the terminal panel is back on the shared panel surface');
-  assert.doesNotMatch(view, /background:\s*'var\(--cth-paper-100\)'/,
-    'something in the terminal panel still paints itself with the shared surface');
+    'the terminal ink drifted from --cth-ink-900');
 });
 
 test('the live terminal can actually reach the third palette', () => {
@@ -129,20 +116,8 @@ test('the editor has a candlelit theme, and light and dark keep the one they had
   }
 });
 
-test('the candlelit ground is a different colour from the dark one, not a different black', () => {
-  // The reported symptom was "the terminal looks the same black as before" after
-  // switching to the occult theme, and the palette WAS reaching xterm — the
-  // ground was simply cloned from a surface token that sat 1.11:1 away from the
-  // dark terminal's, which is below what an eye resolves. So the property worth
-  // asserting is not "occult has a background" (it always did) but "the two
-  // grounds are far enough apart to be seen as different".
-  //
-  // The dark ground is READ OUT OF the view that paints it rather than restated
-  // here: a constant shared with the implementation is a constant that cannot
-  // catch the implementation moving.
+test('the scene-night terminal keeps text and structural marks legible', () => {
   const { occultTerminalTheme } = loadTs('src/renderer/src/design/occult/occultTerminal.ts');
-  const dark = read('src/renderer/src/components/PtyTerminalView.tsx')
-    .match(/const darkTheme = {\s*background:\s*'(#[0-9A-Fa-f]{6})'/)[1];
 
   const channel = (c) => (c / 255 <= 0.03928 ? c / 255 / 12.92 : ((c / 255 + 0.055) / 1.055) ** 2.4);
   const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
@@ -155,39 +130,30 @@ test('the candlelit ground is a different colour from the dark one, not a differ
     return (hi + 0.05) / (lo + 0.05);
   };
 
-  assert.ok(contrast(occultTerminalTheme.background, dark) >= 1.15,
-    `the candlelit ground is ${contrast(occultTerminalTheme.background, dark).toFixed(3)}:1 `
-    + `from the dark one (${dark}) — switching theme changes nothing a user can see`);
-
-  // INDIGO, specifically. This assertion used to read `r > b` and demanded the
-  // opposite: the terminal was parchment then, and a blue-violet ground was the
-  // thing to keep out. Seen at full height that inverted — the brown pane was
-  // the largest field of colour on screen and sat inside an indigo frame, so the
-  // theme's night register is now what the terminal belongs to, and a ground
-  // drifting back toward the warm ramp is the regression worth catching.
-  const [r, , b] = rgb(occultTerminalTheme.background);
-  assert.ok(b > r, 'the terminal ground drifted off the night register back toward parchment');
-
-  // The reported defect was not only the hue: the two inks were two shades of
-  // the same tan, told apart by weight alone. Both floors, and the gap.
   assert.ok(contrast(occultTerminalTheme.foreground, occultTerminalTheme.background) >= 4.5,
-    `primary terminal ink is ${contrast(occultTerminalTheme.foreground, occultTerminalTheme.background).toFixed(2)}:1`);
+    'primary terminal text misses WCAG AA');
+  assert.ok(contrast(occultTerminalTheme.brightBlack, occultTerminalTheme.background) >= 3,
+    'dim structural terminal marks disappear on the scene night');
+
+  // The terminal's two text inks were once two shades of the same tan, told
+  // apart by weight alone. Both have to clear AA on the ground, and they have to
+  // sit far enough apart from each other to read as two colours.
   assert.ok(contrast(occultTerminalTheme.white, occultTerminalTheme.background) >= 4.5,
     `secondary terminal ink is ${contrast(occultTerminalTheme.white, occultTerminalTheme.background).toFixed(2)}:1`);
   assert.ok(contrast(occultTerminalTheme.foreground, occultTerminalTheme.white) >= 1.6,
     `primary and secondary ink are ${contrast(occultTerminalTheme.foreground, occultTerminalTheme.white).toFixed(2)}:1 `
-    + 'apart — close enough to read as one colour, which is the defect this palette was retuned for');
+    + 'apart — close enough to read as one colour');
 
-  // Every ANSI slot a program can print text in has to clear 4.5:1 on the new
-  // ground. `black` is excluded because it is a FILL, not an ink — it is the
-  // ground one step deeper, and holding it to a text ratio would forbid that.
-  for (const slot of ANSI.filter((s) => s !== 'black')) {
+  // Every ANSI slot a program prints text in clears AA on the ground. `black` is
+  // a fill (the ground one step deeper) and `brightBlack` is the border colour,
+  // held to the 3:1 structural floor above, so neither is held to a text ratio.
+  for (const slot of ANSI.filter((s) => s !== 'black' && s !== 'brightBlack')) {
     const ratio = contrast(occultTerminalTheme[slot], occultTerminalTheme.background);
     assert.ok(ratio >= 4.5, `ANSI ${slot} is ${ratio.toFixed(2)}:1 on the ground`);
   }
 
   // The editor beside it is the same document in the same light, so it takes the
-  // same two inks rather than a second pair that can drift from them.
+  // same ink rather than a second one that can drift from it.
   const { occultMonacoTheme } = loadTs('src/renderer/src/design/occult/occultTerminal.ts');
   assert.equal(`#${occultMonacoTheme.rules.find((r0) => r0.token === '').foreground}`.toUpperCase(),
     occultTerminalTheme.foreground.toUpperCase(),

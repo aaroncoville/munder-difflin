@@ -11,7 +11,6 @@
  * house currently hangs a painting of its own; nothing here requires that, and
  * a house that grew past the paintings it has could hang one twice.
  */
-import almanac from './assets/room-almanac.png';
 import cardTable from './assets/room-card-table.png';
 import deskA from './assets/room-desk-a.png';
 import deskB from './assets/room-desk-b.png';
@@ -19,11 +18,11 @@ import deskC from './assets/room-desk-c.png';
 import deskD from './assets/room-desk-d.png';
 import deskE from './assets/room-desk-e.png';
 import deskF from './assets/room-desk-f.png';
+import deskG from './assets/room-desk-g.png';
 import godStudy from './assets/room-god-study.png';
 import shelves from './assets/room-shelves.png';
 
 export const ROOM_SRC: Record<string, string> = {
-  './room-almanac.png': almanac,
   './room-card-table.png': cardTable,
   './room-desk-a.png': deskA,
   './room-desk-b.png': deskB,
@@ -31,6 +30,7 @@ export const ROOM_SRC: Record<string, string> = {
   './room-desk-d.png': deskD,
   './room-desk-e.png': deskE,
   './room-desk-f.png': deskF,
+  './room-desk-g.png': deskG,
   './room-god-study.png': godStudy,
   './room-shelves.png': shelves
 };

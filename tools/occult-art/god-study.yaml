@@ -1,20 +1,29 @@
-# The god's study — the keeper's desk under the sea windows.
+# The god's study — the keeper's desk under the sea windows, with his book open on it.
 #
 # The sheet the shipped panel was generated from. Reproduce it with the call in
-# this directory's README; the reference image is identified by digest rather
-# than by name because the request carried it inline.
+# this directory's README.
+#
+# This is the second painting of the room. The first put a quill and an inkwell
+# on the desk and nothing to read, so the keeper's seat was the one desk in the
+# house with no painted book: his commission was drawn over bare wood with a
+# page turned by a keyframe, while every reading desk turned its own painted
+# book on film. The reference is therefore not a photograph but that first
+# panel, which shipped in this repository; the digest below is its bytes, so it
+# can be recovered from history and confirmed before a repaint is attempted.
 panel: src/renderer/src/scene/study/assets/room-god-study.png
 model: black-forest-labs/flux-kontext-pro
 input:
   prompt: |-
-    Repaint as the keeper's study: keep the arched openings, sea view and roof beams exactly as flat as the original, one grander dark-wood desk centered with quill and inkwell, tall bookshelf at left, no seagull. Render as FLAT 2D storybook game illustration: naive simple shapes, matte flat colors with soft paper-grain texture, thin clean outlines, NO realistic lighting, NO 3D rendering, NO photorealism, NO depth of field — the same flat cut-paper look as the input image. Straight-on elevation. No people, no readable text.
+    Keep this room EXACTLY as it is — same walls, same arched windows and sea view, same bookcase, same beams, same rug, same desk in the same place and size, same inkstand and quill, same composition and framing. Make ONE change only: add a large OPEN BOOK lying flat on the front centre of the desktop, its two cream pages spread open and facing the viewer, with a deep red binding, sitting between the inkstand and the quill and clearly on the desk surface. Keep the exact flat 2D storybook illustration style, matte flat colours, soft paper grain and thin clean outlines of the input. No people, no readable text.
   aspect_ratio: "21:9"
   output_format: png
   input_image: "the reference below, supplied inline as a data: URI"
 reference:
-  media_type: image/jpeg
-  bytes: 171120
-  sha256: 55bf3480450b0659ff85de24bcbc000bfb39f6b8c30d6bd4c8cf3c2ff9f61331
+  media_type: image/png
+  file: src/renderer/src/scene/study/assets/room-god-study.png (the previous revision)
+  bytes: 1267965
+  sha256: b02ae47709084a1ca88b29236958253dfb74e4d1c57c3b097d6b1d76df8ab9dd
+prediction: rx4rt82cj9rmw0d0wspry1dn8r
 output:
   width: 1568
   height: 672

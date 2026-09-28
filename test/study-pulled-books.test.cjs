@@ -39,25 +39,20 @@ test('the ring never vanishes on a book drawn very small', () => {
   assert.match(P.pullRing({ width: 2, height: 1 }), /^0 0 0 1px /);
 });
 
-test('the shelf wall is drawn exactly as it was', () => {
-  // The generalisation is only a refactor if it changes no shelf mark. Every
-  // slot on the wall is narrower than it is tall, so the smaller side IS the
-  // width the wall always used — asserted here rather than assumed, because it
-  // is a fact about the shelf geometry that a future re-shelving could break.
+test('a mark on the shelf wall is ringed for the shelf, not for the run of books', () => {
+  // The wall's marks are whole bays — a run of books far wider than it is tall
+  // — so a ring taken from the width would be a band a third of a shelf thick
+  // around the one piece of the house the pointer is resting on. Measured from
+  // the smaller side it is the ring a single volume that tall would get.
   const view = { x: 0, y: 0, w: 1568, h: 672 };
   let checked = 0;
   for (let i = 0; i < 200; i++) {
     const box = bookSlot(i, view);
     if (!box || !(box.width > 0)) continue;
     checked++;
-    assert.ok(box.width < box.height,
-      `shelf slot ${i} is ${box.width}×${box.height} — wider than it is tall, so the ring `
-      + 'the wall used to draw and the one it draws now are no longer the same');
-    assert.equal(
-      P.pullRing(box),
-      `0 0 0 ${Math.max(1, box.width * 0.14)}px var(--cth-gilt)`,
-      `shelf slot ${i} would be ringed differently than before`,
-    );
+    const ring = Number(/0 0 0 ([\d.]+)px/.exec(P.pullRing(box))?.[1]);
+    assert.ok(ring > 0 && ring <= box.height * 0.2,
+      `shelf slot ${i} (${box.width.toFixed(0)}×${box.height.toFixed(0)}) is ringed ${ring}px thick`);
   }
   assert.ok(checked >= 100, `only ${checked} shelf slots checked`);
 });
