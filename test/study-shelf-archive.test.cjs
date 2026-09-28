@@ -36,7 +36,7 @@ test('the wall holds what it can hold, and the OLDEST is what falls off', () => 
   const ids = new Set(kept.map((k) => k.id));
   for (let i = 0; i < 5; i++) assert.ok(!ids.has(`c${i}`), `c${i} — the oldest — was kept`);
   assert.ok(ids.has(`c${S.ARCHIVE_MAX + 4}`), 'the newest fell off');
-  assert.ok(S.ARCHIVE_MAX > 0 && S.ARCHIVE_MAX <= 64, 'ARCHIVE_MAX is not a bound');
+  assert.ok(S.ARCHIVE_MAX > 0 && S.ARCHIVE_MAX <= S.SHELF_BOOKS.length, 'ARCHIVE_MAX is not a bound');
   assert.ok(S.ARCHIVE_WINDOW_DAYS > 0, 'ARCHIVE_WINDOW_DAYS is not a window');
 });
 
@@ -167,8 +167,11 @@ test('no two archived things darken the same volume', () => {
   for (const a of boxes) {
     for (const b of boxes) {
       if (a === b) continue;
-      const apart = a.left + a.width <= b.left || b.left + b.width <= a.left
-        || a.top + a.height <= b.top || b.top + b.height <= a.top;
+      // Neighbouring spines share an edge, and an edge is not a volume: the
+      // tolerance is for the sum of two rounded fractions, far under a pixel.
+      const e = 1e-6;
+      const apart = a.left + a.width <= b.left + e || b.left + b.width <= a.left + e
+        || a.top + a.height <= b.top + e || b.top + b.height <= a.top + e;
       assert.ok(apart, 'two archived things were given the same painted volume');
     }
   }
@@ -196,23 +199,63 @@ test('a slot past the last volume is still a volume, not NaN geometry', () => {
 const isLamp = ([r, g, b]) => r > 200 && g > 110 && b < 110;
 
 test('between them the marks can darken the whole wall of books', () => {
+  // Measured along the foot of each shelf, where every painted book stands. A
+  // mark is one spine and stops at that book's own top, so the dark wall above
+  // a short volume is rightly left alone — and a probe of the whole panel would
+  // count that wall as a book the marks had missed.
   const panel = readPng(at(SHELVES));
+  // A ledge reads as more than one run of shelving — its front edge, its
+  // shadowed underside, and the plinth below the last shelf — so a shelf floor
+  // is a ledge with a shelf's height of books standing above it.
+  const floors = carpentry(panel).ledges
+    .filter(([top], i, all) => top - (i === 0 ? 0 : all[i - 1][1]) > 40)
+    .map(([top]) => top);
   const inSlot = (x, y) => S.SHELF_BOOKS.some((b) =>
     x >= b.x * panel.width && x < (b.x + b.w) * panel.width
     && y >= b.y * panel.height && y < (b.y + b.h) * panel.height);
   let books = 0;
   let covered = 0;
-  for (let y = 0; y < panel.height; y += 3) {
-    for (let x = 0; x < panel.width; x += 3) {
-      const px = panel.at(x, y);
-      if (isShelving(px) || isLamp(px)) continue;
-      books++;
-      if (inSlot(x, y)) covered++;
+  for (const top of floors) {
+    for (let y = top - 12; y < top - 4; y += 2) {
+      if (y < 0) continue;
+      for (let x = 0; x < panel.width; x += 2) {
+        const px = panel.at(x, y);
+        if (isShelving(px) || isLamp(px)) continue;
+        books++;
+        if (inSlot(x, y)) covered++;
+      }
     }
   }
-  assert.ok(covered / books >= 0.7,
+  assert.ok(books > 1000, `only ${books} book pixels found at the foot of the shelves`);
+  assert.ok(covered / books >= 0.8,
     `the marks can reach only ${Math.round((covered / books) * 100)}% of the painted books, `
     + 'so however much is archived the wall stays mostly as it was painted');
+});
+
+test('a mark is one standing book, not a run of them', () => {
+  // A bay of several books for one finished commission says "about this much";
+  // a single spine per commission is what lets the wall be counted. A standing
+  // volume is narrower than it is tall, and a run of them on one shelf is not.
+  const panel = readPng(at(SHELVES));
+  for (const [i, book] of S.SHELF_BOOKS.entries()) {
+    const w = book.w * panel.width;
+    const h = book.h * panel.height;
+    assert.ok(w < h * 0.75, `volume ${i} is ${w.toFixed(0)}×${h.toFixed(0)} — a run, not a book`);
+  }
+});
+
+test('one archived commission darkens exactly one spine', () => {
+  const A = loadTs('src/renderer/src/scene/study/ShelfArchive.tsx');
+  const view = { x: 0, y: 0, w: 1568, h: 672 };
+  const one = [{ id: 'T-7', label: 'the seventh folio', kind: 'commission', at: null }];
+  const marks = all(A.ShelfArchive({ books: one, panelSrc: 'shelves.png', view }),
+    (n) => n.props?.['data-shelf-book'] !== undefined);
+  assert.equal(marks.length, 1, `one commission made ${marks.length} marks`);
+  const { left, top, width, height } = marks[0].props.style;
+  const spine = S.SHELF_BOOKS[0];
+  assert.deepEqual([left, top, width, height],
+    [spine.x * view.w, spine.y * view.h, spine.w * view.w, spine.h * view.h],
+    'the mark is not the first painted spine');
 });
 
 test('no mark darkens a lamp', () => {
@@ -236,7 +279,8 @@ test('the wall fills the way a wall of books does: top shelf first, left to righ
   for (let i = 1; i < S.SHELF_BOOKS.length; i++) {
     const a = S.SHELF_BOOKS[i - 1];
     const b = S.SHELF_BOOKS[i];
-    const sameShelf = Math.abs(a.y - b.y) < 0.02;
+    // One shelf's spines stand on one ledge, so they share a foot, not a top.
+    const sameShelf = Math.abs((a.y + a.h) - (b.y + b.h)) < 0.02;
     assert.ok(sameShelf ? b.x > a.x : b.y > a.y,
       `volume ${i} is handed out before the one to its left or on the shelf above`);
   }
@@ -562,9 +606,9 @@ test('the number fits on every volume the wall can mark', () => {
   }
 });
 
-test('the number is pasted on one spine of a bay, not across the whole run', async () => {
-  // A mark is a run of books, and a label as wide as the run is a plate across
-  // several spines with a glyph taller than any book on the wall.
+test('the number is pasted on its spine, never as a plate wider than a book', async () => {
+  // The wall's spines are not one thickness, and a label as wide as a thick
+  // one is a plate with a glyph taller than any book on the wall.
   const A = loadTs('src/renderer/src/scene/study/ShelfArchive.tsx');
   const view = { x: 0, y: 0, w: 1568, h: 672 };
   const rendered = A.ShelfArchive({
@@ -581,7 +625,7 @@ test('the number is pasted on one spine of a bay, not across the whole run', asy
   assert.ok(width <= box.height / 3,
     `the label is ${width.toFixed(0)}px wide on a shelf ${box.height.toFixed(0)}px tall`);
   assert.ok(plate.props.style.left >= 0 && plate.props.style.left + width <= box.width + 0.01,
-    'the label hangs off the bay');
+    'the label hangs off the spine');
 });
 
 test('the number is set from the spine, not from a type token', () => {

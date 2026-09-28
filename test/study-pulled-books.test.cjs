@@ -40,10 +40,10 @@ test('the ring never vanishes on a book drawn very small', () => {
 });
 
 test('a mark on the shelf wall is ringed for the shelf, not for the run of books', () => {
-  // The wall's marks are whole bays — a run of books far wider than it is tall
-  // — so a ring taken from the width would be a band a third of a shelf thick
-  // around the one piece of the house the pointer is resting on. Measured from
-  // the smaller side it is the ring a single volume that tall would get.
+  // A ring taken from the larger side of a mark would be a band a third of a
+  // shelf thick around the one piece of the house the pointer is resting on.
+  // Measured from the smaller side it is the ring a single volume that tall
+  // would get.
   const view = { x: 0, y: 0, w: 1568, h: 672 };
   let checked = 0;
   for (let i = 0; i < 200; i++) {

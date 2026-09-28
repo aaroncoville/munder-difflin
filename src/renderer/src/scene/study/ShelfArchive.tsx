@@ -117,11 +117,10 @@ export function shelfLabel(
 /**
  * How thick one painted spine is, as a share of the shelf it stands on.
  *
- * A mark is a whole bay of books, but the number is pasted on ONE of them, the
- * way a library labels a volume rather than a shelf. Sized from the bay's width
- * the label would be a plate across a run of spines with a glyph taller than
- * any book on the wall; the volumes painted there are roughly a quarter as
- * thick as the shelf is tall, so that is how wide the label is.
+ * A mark is one painted spine, and the label is as wide as that spine — up to
+ * this share of its height. The volumes painted on the wall are roughly a
+ * quarter as thick as they are tall, and the cap keeps the label on the thick
+ * ones from growing into a plate with a glyph taller than any book beside it.
  */
 export const SPINE_THICKNESS = 0.25;
 
