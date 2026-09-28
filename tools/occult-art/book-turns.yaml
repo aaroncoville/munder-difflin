@@ -119,6 +119,22 @@ berths:
     seed: 108
     prediction: y0aw0q4dm5rmw0d09gbbwypbfc
 
+  berth-9:
+    panel: src/renderer/src/scene/study/assets/room-desk-g.png
+    clip: src/renderer/src/scene/study/assets/book-turn-berth-9.mp4
+    crop: { x: 290, y: 344, w: 288, h: 162 }   # panel pixels of a 1568x672 panel
+    book_within_crop: { x: 45, y: 63, w: 207, h: 29 }
+    nearest_flame_clearance: 21px
+    seed: 7
+    prediction: 8cm8jsz2g1rmy0d0wsqs0ns5yw
+  berth-10:
+    panel: src/renderer/src/scene/study/assets/room-desk-g.png
+    clip: src/renderer/src/scene/study/assets/book-turn-berth-10.mp4
+    crop: { x: 962, y: 344, w: 288, h: 162 }   # panel pixels of a 1568x672 panel
+    book_within_crop: { x: 47, y: 63, w: 204, h: 29 }
+    nearest_flame_clearance: 9px
+    seed: 7
+    prediction: 5w1h61ve59rmr0d0wsr8kwr8fr
   god:
     panel: src/renderer/src/scene/study/assets/room-god-study.png
     clip: src/renderer/src/scene/study/assets/book-turn-god.mp4

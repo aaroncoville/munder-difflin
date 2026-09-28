@@ -51,3 +51,72 @@ test('no two rooms in the house are the same painting', () => {
     seen.set(room.image, room.id);
   }
 });
+
+/**
+ * The top of the house works for its keep.
+ *
+ * The upper storey beside the shelves was a whole room spent on one prop — an
+ * observatory whose only use was a click through to the triggers — and it was
+ * the one room on the floor nobody had a reason to look at. It is a reading
+ * room now, with two desks, and the almanac it held is a prop on a lectern in
+ * that room, the way the parlour holds the petitions and the fire.
+ */
+test('the upper storey beside the shelves is a reading room, and the almanac is a prop in it', () => {
+  const beside = studyRoom.rooms.find((r) => r.row === 0 && r.col === 1);
+  assert.ok(beside, 'there is no room beside the shelves');
+  assert.equal(beside.kind, 'desk', `${beside.id} is a ${beside.kind}, not a reading room`);
+  assert.equal(beside.berths.length, 2, `${beside.id} seats ${beside.berths.length}, not two`);
+  assert.ok(beside.props.some((p) => p.kind === 'almanac'),
+    'the almanac is not on the lectern in that room');
+  assert.ok(!studyRoom.rooms.some((r) => r.kind === 'almanac'),
+    'the almanac still takes a room of its own');
+});
+
+/**
+ * Each reading room is its own colour.
+ *
+ * What tells two reading rooms apart from across the house is the colour of
+ * their walls — the furniture in them is deliberately the same. So the wall
+ * colour of every reading room is measured off its panel (the upper third,
+ * above the desks and away from the windows' glass) and no two may share a
+ * hue.
+ */
+const readPng = require('./read-png.cjs');
+const path = require('node:path');
+
+function wallHue(room) {
+  const panel = readPng(path.resolve(__dirname, '..', 'src/renderer/src/scene/study/assets',
+    room.image));
+  const hues = [];
+  for (let y = Math.round(panel.height * 0.08); y < panel.height * 0.4; y += 4) {
+    for (const band of [[0.02, 0.28], [0.72, 0.98]]) {
+      for (let x = band[0] * panel.width; x < band[1] * panel.width; x += 4) {
+        const [r, g, b] = panel.at(Math.round(x), y).map((c) => c / 255);
+        const max = Math.max(r, g, b);
+        const min = Math.min(r, g, b);
+        if (max - min < 0.12) continue; // grey stone, glass, ceiling: not wall colour
+        let h;
+        if (max === r) h = ((g - b) / (max - min) + 6) % 6;
+        else if (max === g) h = (b - r) / (max - min) + 2;
+        else h = (r - g) / (max - min) + 4;
+        hues.push(h * 60);
+      }
+    }
+  }
+  assert.ok(hues.length > 500, `${room.id}: too little coloured wall to measure`);
+  hues.sort((a, b) => a - b);
+  return hues[Math.floor(hues.length / 2)];
+}
+
+test('no two reading rooms are painted the same colour', () => {
+  const rooms = readingRooms().map((room) => ({ id: room.id, hue: wallHue(room) }));
+  for (let i = 0; i < rooms.length; i++) {
+    for (let j = i + 1; j < rooms.length; j++) {
+      const d = Math.abs(rooms[i].hue - rooms[j].hue);
+      const apart = Math.min(d, 360 - d);
+      assert.ok(apart >= 20,
+        `${rooms[i].id} (${rooms[i].hue.toFixed(0)}°) and ${rooms[j].id} `
+        + `(${rooms[j].hue.toFixed(0)}°) are painted nearly the same colour`);
+    }
+  }
+});

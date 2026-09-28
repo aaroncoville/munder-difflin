@@ -239,8 +239,11 @@ test('every room lights its own ambiance, and none of it eats a click', () => {
   }
   // Each room lights ITS OWN painting, not a shared one: a canvas handed the
   // wrong room would flicker candles where that room has none.
+  // Compared in the order the house is DRAWN, storey by storey, which is not
+  // the order the plan is authored in: that order is seating order.
+  const { houseRows } = loadTs('src/renderer/src/scene/study/roomManifest.ts');
   const rooms = slots.map((s) => s.props.children.props.room.id);
-  assert.deepEqual(rooms, studyRoom.rooms.map((r) => r.id));
+  assert.deepEqual(rooms, houseRows(studyRoom).flat().map((r) => r.id));
 });
 
 test('every panel the manifest names is on disk at the size it declares, and imported', () => {

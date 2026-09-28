@@ -84,11 +84,14 @@ test('the book says which binding it wears, so a room can be checked from outsid
 
 // ─── The floor plan decides ─────────────────────────────────────────────────
 
-test('the two right-hand reading rooms each carry a binding of their own', () => {
+test('the two right-hand repaints each carry a binding of their own', () => {
+  // The two panels repainted from the left-hand rooms and hung beside them. The
+  // green room on the top storey is on the right as well, but its books are
+  // painted in the default's own pink and it asks for no binding.
   const desks = rawManifest.rooms.filter((r) => r.kind === 'desk');
-  const right = desks.filter((r) => (r.col ?? 0) > 0);
+  const right = desks.filter((r) => (r.col ?? 0) > 0 && r.binding !== undefined);
   const left = desks.filter((r) => (r.col ?? 0) === 0);
-  assert.ok(right.length === 2 && left.length === 2, 'two reading rooms a side');
+  assert.ok(right.length === 2 && left.length === 2, 'two repaints beside two reading rooms');
 
   const theirs = right.map((r) => r.binding);
   for (const b of theirs) {
