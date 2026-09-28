@@ -57,7 +57,7 @@ test('the candlelit palette is complete — every ANSI slot and the ground', () 
     'too many ANSI slots share a colour to be legible');
 });
 
-test('the terminal sits on the same ground the panel holding it does', () => {
+test('the terminal sits on the same deepest scene ground as its panel', () => {
   // xterm takes literal colours and cannot read a CSS custom property, so this
   // hex is RE-STATED from occult-tokens.css and would drift silently the first
   // time the palette moved. Holding the two against each other is the whole
@@ -65,9 +65,9 @@ test('the terminal sits on the same ground the panel holding it does', () => {
   const { occultTerminalTheme } = loadTs('src/renderer/src/design/occult/occultTerminal.ts');
   const css = read('src/renderer/src/design/occult/occult-tokens.css')
     .replace(/\/\*[\s\S]*?\*\//g, '');
-  const paper = css.match(/--cth-paper-100:\s*(#[0-9A-Fa-f]{6})/)[1];
-  assert.equal(occultTerminalTheme.background.toUpperCase(), paper.toUpperCase(),
-    'the terminal ground drifted from --cth-paper-100');
+  const ground = css.match(/--cth-cream-300:\s*(#[0-9A-Fa-f]{6})/)[1];
+  assert.equal(occultTerminalTheme.background.toUpperCase(), ground.toUpperCase(),
+    'the terminal ground drifted from --cth-cream-300');
   const ink = css.match(/--cth-ink-900:\s*(#[0-9A-Fa-f]{6})/)[1];
   assert.equal(occultTerminalTheme.foreground.toUpperCase(), ink.toUpperCase(),
     'the terminal ink drifted from --cth-ink-900');
@@ -116,20 +116,8 @@ test('the editor has a candlelit theme, and light and dark keep the one they had
   }
 });
 
-test('the candlelit ground is a different colour from the dark one, not a different black', () => {
-  // The reported symptom was "the terminal looks the same black as before" after
-  // switching to the occult theme, and the palette WAS reaching xterm — the
-  // ground was simply cloned from a surface token that sat 1.11:1 away from the
-  // dark terminal's, which is below what an eye resolves. So the property worth
-  // asserting is not "occult has a background" (it always did) but "the two
-  // grounds are far enough apart to be seen as different".
-  //
-  // The dark ground is READ OUT OF the view that paints it rather than restated
-  // here: a constant shared with the implementation is a constant that cannot
-  // catch the implementation moving.
+test('the scene-night terminal keeps text and structural marks legible', () => {
   const { occultTerminalTheme } = loadTs('src/renderer/src/design/occult/occultTerminal.ts');
-  const dark = read('src/renderer/src/components/PtyTerminalView.tsx')
-    .match(/const darkTheme = {\s*background:\s*'(#[0-9A-Fa-f]{6})'/)[1];
 
   const channel = (c) => (c / 255 <= 0.03928 ? c / 255 / 12.92 : ((c / 255 + 0.055) / 1.055) ** 2.4);
   const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
@@ -142,12 +130,8 @@ test('the candlelit ground is a different colour from the dark one, not a differ
     return (hi + 0.05) / (lo + 0.05);
   };
 
-  assert.ok(contrast(occultTerminalTheme.background, dark) >= 1.15,
-    `the candlelit ground is ${contrast(occultTerminalTheme.background, dark).toFixed(3)}:1 `
-    + `from the dark one (${dark}) — switching theme changes nothing a user can see`);
-
-  // Warm, specifically: the brief is candlelight on parchment, and a ground that
-  // is merely a lighter blue-violet reads as the same night surface lit harder.
-  const [r, , b] = rgb(occultTerminalTheme.background);
-  assert.ok(r > b, 'the candlelit ground is cooler than it is warm');
+  assert.ok(contrast(occultTerminalTheme.foreground, occultTerminalTheme.background) >= 4.5,
+    'primary terminal text misses WCAG AA');
+  assert.ok(contrast(occultTerminalTheme.brightBlack, occultTerminalTheme.background) >= 3,
+    'dim structural terminal marks disappear on the scene night');
 });

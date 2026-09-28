@@ -356,7 +356,7 @@ export function PtyTerminalView({ ptyId, onStreamData, onUserPrompt, onToggleFul
   }, []);
 
   return (
-    <div style={{
+    <div className="cth-cli-surface" style={{
       background: 'var(--cth-paper-100)',
       boxShadow: embedded ? 'none' : 'var(--cth-panel-border-terminal)',
       padding: embedded ? 0 : 8,

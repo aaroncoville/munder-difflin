@@ -21,13 +21,17 @@ test('visible application chrome carries the Sixth History identity', () => {
   assert.match(main, /Sixth History — Floor/);
 });
 
-test('the occult palette separates parchment text from ink surfaces without brown terminal panels', () => {
+test('the Librarian and terminal use the scene darks instead of paper surfaces', () => {
   const css = read('src/renderer/src/design/occult/occult-tokens.css');
   const terminal = read('src/renderer/src/design/occult/occultTerminal.ts');
-  assert.match(css, /--cth-paper-100:\s*#352531/);
-  assert.match(css, /--cth-paper-200:\s*#211923/);
-  assert.match(terminal, /background:\s*'#352531'/);
-  assert.match(terminal, /'editor\.background':\s*'#352531'/);
+  const commandCenter = read('src/renderer/src/components/CommandCenterPanel.tsx');
+  const pty = read('src/renderer/src/components/PtyTerminalView.tsx');
+  assert.match(commandCenter, /className="cth-librarian-panel"/);
+  assert.match(pty, /className="cth-cli-surface"/);
+  assert.match(css, /\.cth-librarian-panel[\s\S]*--cth-paper-100:\s*var\(--cth-cream-300\)/);
+  assert.match(css, /\.cth-cli-surface[\s\S]*background:\s*var\(--cth-cream-300\)/);
+  assert.match(terminal, /background:\s*'#120F1B'/);
+  assert.match(terminal, /'editor\.background':\s*'#120F1B'/);
 });
 
 test('the orchestrator uses the Sixth History mark instead of a Michael portrait', () => {
