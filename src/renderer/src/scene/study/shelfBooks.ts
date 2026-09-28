@@ -46,51 +46,88 @@
  * These are the painted books themselves. Aaron: *"the library books being
  * archived don't even line up with the background books on the shelves — I was
  * thinking you'd have the same image but with pieces darker that you could
- * activate in that layer, so the actual background comes alive. These overlay
- * books are doing more harm than good."* He is right, and the reason the old
- * ones could not line up is structural: they were rectangles placed at the
- * room's LIGHT points, which mark the shelf lamps, so a mark landed near a
- * shelf and never on a spine. A drawn book can only ever approximate a painted
- * one.
+ * activate in that layer, so the actual background comes alive."* So nothing is
+ * drawn: archiving darkens the painting inside one of these rectangles, and the
+ * thing that stands out is paint the painter put there.
  *
- * So there is nothing drawn any more. Each entry below is one spine in
- * `room-shelves.png`, read off the painting: six shelf rows, four volumes on
- * each, spread along the row and kept clear of the ladder and the sleeping cat,
- * which are the two things on that wall that are not books. Archiving darkens
- * the painting inside one of these rectangles, so the volume that stands out is
- * a volume the painter put there.
+ * Each rectangle is one BAY of the wall — the run of books standing between two
+ * posts on one shelf, from the ledge up to the shelf above it. It used to be one
+ * spine, four to a shelf and spread along it, and however much work had been
+ * finished the wall read as a book lit here and there: twenty-two spines of the
+ * several hundred painted, and the rest of the wall could never change. Aaron:
+ * *"the whole background of books should be able to be darkened."* A bay is how
+ * much of the wall one finished commission is worth if the whole wall is to
+ * fill, and a filled bay is a thing the eye counts where a single darkened spine
+ * among dark spines is not.
  *
- * The order is the order they are handed out in — along each shelf, top row
- * first, which is how a wall of books fills.
+ * The bays stop short of the three things on the wall that are not books. A
+ * lamp is what lights the wall, and a shade taken down with the books beside it
+ * reads as the light going out; the ladder and the sleeping cat stand in front
+ * of the shelves rather than on them. Where one of those stands in a bay, the
+ * bay is cut at its edge, and a sliver too narrow to be read as books is left
+ * out rather than marked.
  *
- * Read off the painting rather than authored freehand: each rectangle is a
- * column of that panel where the paint is a spine from the shelf above it right
- * down to the ledge, which is why the marks sit flush with the volumes either
- * side of them rather than hovering somewhere near a shelf.
+ * The order is the order they are handed out in — along each shelf, top shelf
+ * first — which is how a wall of books fills, so the archive reads as a level.
+ *
+ * Read off the painting rather than authored freehand: the posts and ledges are
+ * the columns and rows of that panel where the paint is shelving all the way
+ * across, and the lamps are where it is lamplight.
  */
 export const SHELF_BOOKS: readonly { x: number; y: number; w: number; h: number }[] = [
-  { x: 0.0121, y: 0.0342, w: 0.0108, h: 0.1116 },
-  { x: 0.6084, y: 0.0268, w: 0.0179, h: 0.1190 },
-  { x: 0.8176, y: 0.0461, w: 0.0108, h: 0.0997 },
-  { x: 0.1091, y: 0.1964, w: 0.0128, h: 0.1071 },
-  { x: 0.5536, y: 0.1905, w: 0.0166, h: 0.1131 },
-  { x: 0.7902, y: 0.1979, w: 0.0134, h: 0.1057 },
-  { x: 0.9732, y: 0.1830, w: 0.0115, h: 0.1205 },
-  { x: 0.1301, y: 0.3512, w: 0.0166, h: 0.1131 },
-  { x: 0.3661, y: 0.3557, w: 0.0089, h: 0.1086 },
-  { x: 0.5835, y: 0.3408, w: 0.0102, h: 0.1235 },
-  { x: 0.7615, y: 0.3452, w: 0.0217, h: 0.1190 },
-  { x: 0.1091, y: 0.5074, w: 0.0121, h: 0.1146 },
-  { x: 0.3642, y: 0.5060, w: 0.0115, h: 0.1161 },
-  { x: 0.6084, y: 0.4970, w: 0.0198, h: 0.1250 },
-  { x: 0.0765, y: 0.6563, w: 0.0198, h: 0.1280 },
-  { x: 0.3482, y: 0.6652, w: 0.0198, h: 0.1190 },
-  { x: 0.6282, y: 0.6592, w: 0.0102, h: 0.1250 },
-  { x: 0.8176, y: 0.6741, w: 0.0102, h: 0.1101 },
-  { x: 0.1467, y: 0.8289, w: 0.0102, h: 0.1131 },
-  { x: 0.3782, y: 0.8170, w: 0.0121, h: 0.1250 },
-  { x: 0.5810, y: 0.8155, w: 0.0134, h: 0.1265 },
-  { x: 0.9700, y: 0.8363, w: 0.0128, h: 0.1057 }
+  { x: 0.0108, y: 0.0074, w: 0.0867, h: 0.1369 },
+  { x: 0.1084, y: 0.0074, w: 0.0969, h: 0.1369 },
+  { x: 0.2353, y: 0.0074, w: 0.1582, h: 0.1369 },
+  { x: 0.4043, y: 0.0074, w: 0.0874, h: 0.1369 },
+  { x: 0.5096, y: 0.0074, w: 0.0867, h: 0.1369 },
+  { x: 0.6078, y: 0.0074, w: 0.0963, h: 0.1369 },
+  { x: 0.7156, y: 0.0074, w: 0.0893, h: 0.1369 },
+  { x: 0.8170, y: 0.0074, w: 0.0861, h: 0.1369 },
+  { x: 0.9133, y: 0.0074, w: 0.0861, h: 0.1369 },
+  { x: 0.0344, y: 0.1905, w: 0.0631, h: 0.1131 },
+  { x: 0.1084, y: 0.1905, w: 0.0867, h: 0.1131 },
+  { x: 0.2481, y: 0.1905, w: 0.1454, h: 0.1131 },
+  { x: 0.4043, y: 0.1905, w: 0.0746, h: 0.1131 },
+  { x: 0.5287, y: 0.1905, w: 0.0676, h: 0.1131 },
+  { x: 0.6078, y: 0.1905, w: 0.0708, h: 0.1131 },
+  { x: 0.7302, y: 0.1905, w: 0.0746, h: 0.1131 },
+  { x: 0.8170, y: 0.1905, w: 0.0625, h: 0.1131 },
+  { x: 0.9426, y: 0.1905, w: 0.0568, h: 0.1131 },
+  { x: 0.0344, y: 0.3557, w: 0.0631, h: 0.1086 },
+  { x: 0.1084, y: 0.3557, w: 0.0867, h: 0.1086 },
+  { x: 0.2481, y: 0.3557, w: 0.1454, h: 0.1086 },
+  { x: 0.4043, y: 0.3557, w: 0.0746, h: 0.1086 },
+  { x: 0.5287, y: 0.3557, w: 0.0676, h: 0.1086 },
+  { x: 0.6078, y: 0.3557, w: 0.0708, h: 0.1086 },
+  { x: 0.7302, y: 0.3557, w: 0.0746, h: 0.1086 },
+  { x: 0.8170, y: 0.3557, w: 0.0364, h: 0.1086 },
+  { x: 0.9426, y: 0.3557, w: 0.0568, h: 0.1086 },
+  { x: 0.0351, y: 0.5074, w: 0.0625, h: 0.1146 },
+  { x: 0.1084, y: 0.5074, w: 0.0867, h: 0.1146 },
+  { x: 0.2481, y: 0.5074, w: 0.1454, h: 0.1146 },
+  { x: 0.4043, y: 0.5074, w: 0.0727, h: 0.1146 },
+  { x: 0.5319, y: 0.5074, w: 0.0644, h: 0.1146 },
+  { x: 0.6078, y: 0.5074, w: 0.0689, h: 0.1146 },
+  { x: 0.7296, y: 0.5074, w: 0.0753, h: 0.1146 },
+  { x: 0.8170, y: 0.5074, w: 0.0364, h: 0.1146 },
+  { x: 0.9330, y: 0.5074, w: 0.0663, h: 0.1146 },
+  { x: 0.0351, y: 0.6622, w: 0.0625, h: 0.1205 },
+  { x: 0.1084, y: 0.6622, w: 0.0867, h: 0.1205 },
+  { x: 0.2481, y: 0.6622, w: 0.1454, h: 0.1205 },
+  { x: 0.4043, y: 0.6622, w: 0.0727, h: 0.1205 },
+  { x: 0.5319, y: 0.6622, w: 0.0644, h: 0.1205 },
+  { x: 0.6078, y: 0.6622, w: 0.0689, h: 0.1205 },
+  { x: 0.7296, y: 0.6622, w: 0.0753, h: 0.1205 },
+  { x: 0.8170, y: 0.6622, w: 0.0364, h: 0.1205 },
+  { x: 0.9330, y: 0.6622, w: 0.0663, h: 0.1205 },
+  { x: 0.0357, y: 0.8304, w: 0.0619, h: 0.1146 },
+  { x: 0.1084, y: 0.8304, w: 0.0855, h: 0.1146 },
+  { x: 0.2494, y: 0.8304, w: 0.1441, h: 0.1146 },
+  { x: 0.4043, y: 0.8304, w: 0.0714, h: 0.1146 },
+  { x: 0.5319, y: 0.8304, w: 0.0644, h: 0.1146 },
+  { x: 0.6078, y: 0.8304, w: 0.0963, h: 0.1146 },
+  { x: 0.8170, y: 0.8304, w: 0.0364, h: 0.1146 },
+  { x: 0.9343, y: 0.8304, w: 0.0651, h: 0.1146 }
 ];
 
 /** How many books the wall can carry: one per painted volume it can mark. */
