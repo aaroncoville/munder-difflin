@@ -309,7 +309,8 @@ function reflectSettings(): ReflectSettings {
     byteTriggerPct: c.reflectByteTriggerPct ?? 50,
     sectionTrigger: c.reflectSectionTrigger ?? 50,
     recentKeep: c.reflectRecentKeep ?? 12,
-    minBytes: c.reflectMinBytes ?? 16_384
+    minBytes: c.reflectMinBytes ?? 16_384,
+    keepBudgetPct: c.reflectKeepBudgetPct ?? 25
   };
 }
 // Finishes the janitor's missing condense half: bounds each agent's memory.md

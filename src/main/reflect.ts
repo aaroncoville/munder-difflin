@@ -31,8 +31,29 @@ import { runHiddenClaude } from './hiddenClaude';
 const BUDGET_BYTES = 131_072;
 /** Cheap tail-summarizer (DECIDED by god). The verify gate covers quality. */
 const CONDENSE_MODEL = 'claude-haiku-4-5';
-/** Hard cap so a wedged headless run can't stall the reflect loop. */
-const DEFAULT_TIMEOUT_MS = 180_000;
+/** Hard cap so a wedged headless run can't stall the reflect loop, for a small
+ *  eviction payload. Scaled up (see `summarize`) for larger ones — a fixed cap
+ *  was a chunk of the 'hidden session timed out' abort class: a big eviction
+ *  payload genuinely needs longer than a tiny one, not a longer-shot retry. */
+const BASE_TIMEOUT_MS = 180_000;
+/** Ceiling on the scaled timeout — even the largest eviction payload can't
+ *  stall the reflect loop past this. */
+const MAX_TIMEOUT_MS = 420_000;
+/** How much extra time one evicted byte earns the hidden session. */
+const EXTRA_TIMEOUT_MS_PER_EVICT_BYTE = 1.5;
+/** Total attempts for the specific 'no assistant response found in transcript'
+ *  race (the PTY went idle a beat before the transcript file finished its
+ *  flush) — a fresh attempt is cheap and usually clean. A genuine timeout is
+ *  NOT retried this way: replaying the same oversized prompt just doubles the
+ *  cost for the same likely outcome, so it waits for next tick's normal scan
+ *  instead (now with the scaled timeout above). */
+const TRANSCRIPT_RACE_ATTEMPTS = 2;
+/** A file that just failed 'not-smaller' is not re-attempted by the autonomous
+ *  scan until it has grown by this factor past the size it failed at — the
+ *  real driver of the 855-vs-67 condense-abort ratio was retrying the exact
+ *  same file every tick for zero additional shrink. Manual (onlyId) condenses
+ *  bypass this, same as they bypass the size/section trigger. */
+const NOT_SMALLER_BACKOFF_GROWTH = 1.1;
 
 /** The fixed region headings of the bounded memory shape (the stable contract). */
 const PINNED_HEADING = '## 📌 Durable facts (pinned — never condensed)';
@@ -53,7 +74,10 @@ const CONDENSE_SYSTEM = [
   '  Drop routine standup chatter, resolved blockers, and superseded plans.',
   '- "hoist" = any NEW high-importance durable fact found in (B) that belongs in the',
   '  pinned block and is not already in (C). Lines only; may be empty.',
-  '- Output ONLY the JSON object. No prose, no code fence.'
+  '- Never start a line inside "condensed" with "## " (a level-2 heading) — that',
+  '  exact prefix is this file\'s section-boundary marker, so it would corrupt the',
+  '  file structure. Use bold text or a "### " sub-heading instead.',
+  '- Output ONLY the JSON object. No prose before or after it, no code fence.'
 ].join('\n');
 
 export interface ReflectSettings {
@@ -64,11 +88,19 @@ export interface ReflectSettings {
   byteTriggerPct: number;
   /** ...OR when `## ` section count exceeds this (AND bytes > minBytes). */
   sectionTrigger: number;
-  /** Newest K verbatim `## ` sections always kept untouched. */
+  /** Newest K verbatim `## ` sections always kept untouched — an UPPER bound;
+   *  `keepBudgetPct` (below) can shrink it further. */
   recentKeep: number;
   /** Never condense a file smaller than this — both a "don't waste an LLM call"
    *  guard and the byte floor for the section-count trigger. */
   minBytes: number;
+  /** The verbatim "keep" region may not exceed this percent of BUDGET_BYTES,
+   *  even if fewer than `recentKeep` sections are needed to reach it. A fixed
+   *  section COUNT let the verbatim tail dominate the file regardless of size —
+   *  the real driver of the 'not-smaller' abort class: the LLM's summary of a
+   *  handful of evicted sections can never outweigh 12 untouched recent ones.
+   *  Bounding the keep region by bytes guarantees eviction headroom. */
+  keepBudgetPct: number;
 }
 
 /** A `## ` section: its heading line and the body text beneath it. */
@@ -98,6 +130,10 @@ export class MemoryReflector {
   /** True while a reflectNow() pass is in flight — serializes the loop (a slow
    *  LLM pass must not overlap the next interval tick), mirroring MemoryManager. */
   private reflecting = false;
+  /** agentId -> oldBytes at the most recent 'not-smaller' abort. Gates the
+   *  autonomous scan (NOT_SMALLER_BACKOFF_GROWTH) until the file has grown
+   *  past it by a meaningful margin; cleared on a successful condense. */
+  private notSmallerAt = new Map<string, number>();
 
   /**
    * @param getHome      Lazily resolve harnessHome so reflection follows config.
@@ -158,9 +194,16 @@ export class MemoryReflector {
         let text = '';
         try {
           bytes = statSync(mem).size;
-          // A manual single-agent call condenses on demand (skips the trigger);
-          // the autonomous loop honors the threshold.
-          if (!onlyId && !this.shouldCondense(bytes, mem, settings)) continue;
+          // A manual single-agent call condenses on demand (skips the trigger
+          // AND the backoff); the autonomous loop honors both.
+          if (!onlyId) {
+            if (!this.shouldCondense(bytes, mem, settings)) continue;
+            const failedAt = this.notSmallerAt.get(id);
+            if (typeof failedAt === 'number' && bytes < failedAt * NOT_SMALLER_BACKOFF_GROWTH) {
+              results.push({ id, condensed: false, reason: 'not-smaller-backoff', oldBytes: bytes });
+              continue;
+            }
+          }
           text = readFileSync(mem, 'utf8');
         } catch { continue; }
         results.push(await this.condense(home, id, mem, text, settings));
@@ -189,10 +232,10 @@ export class MemoryReflector {
   ): Promise<ReflectResult> {
     const oldBytes = Buffer.byteLength(text, 'utf8');
     const parsed = parseMemory(text);
-    // Split recent into KEEP (newest K, verbatim) and EVICT (older — summarized).
-    const keepCount = Math.max(1, s.recentKeep);
-    const keep = parsed.recent.slice(-keepCount);
-    const evict = parsed.recent.slice(0, Math.max(0, parsed.recent.length - keepCount));
+    // Split recent into KEEP (newest, verbatim) and EVICT (older — summarized),
+    // bounded by BOTH recentKeep and the keep-budget byte cap.
+    const keepBudgetBytes = Math.floor((BUDGET_BYTES * s.keepBudgetPct) / 100);
+    const { keep, evict } = selectKeep(parsed.recent, s.recentKeep, keepBudgetBytes);
     if (evict.length === 0) {
       return { id, condensed: false, reason: 'nothing-to-evict', oldBytes };
     }
@@ -216,6 +259,14 @@ export class MemoryReflector {
       this.logAbort(id, 'summarize-failed', String(e));
       return { id, condensed: false, reason: 'summarize-failed', oldBytes };
     }
+    // Defense-in-depth beyond the prompt contract: a "## " line echoed from the
+    // material being summarized would otherwise be re-parsed as a NEW section
+    // boundary on the next load, corrupting the 3-region structure (the root
+    // cause of the 'recent-count-mismatch' abort class).
+    summary = {
+      condensed: demoteEmbeddedHeadings(summary.condensed),
+      hoist: summary.hoist.map(demoteEmbeddedHeadings)
+    };
 
     // 3) REBUILD into the 3-region shape.
     const oldPinnedLines = pinnedLines(parsed.pinned);
@@ -230,6 +281,7 @@ export class MemoryReflector {
     });
     if (!verdict.ok) {
       this.logAbort(id, verdict.reason, undefined, { oldBytes, newBytes });
+      if (verdict.reason === 'not-smaller') this.notSmallerAt.set(id, oldBytes);
       return { id, condensed: false, reason: verdict.reason, oldBytes, newBytes };
     }
 
@@ -241,6 +293,7 @@ export class MemoryReflector {
       return { id, condensed: false, reason: 'swap-failed', oldBytes, newBytes };
     }
 
+    this.notSmallerAt.delete(id);
     try {
       this.appendLog({
         kind: 'condense', agentId: id, oldBytes, newBytes,
@@ -276,22 +329,43 @@ export class MemoryReflector {
       pinned?.trim() || '(none)'
     ].join('\n');
 
-    const result = await runHiddenClaude(prompt, {
-      model: CONDENSE_MODEL,
-      cwd: home,
-      command: this.getCommand(),
-      // Pure text transform — must never touch the repo or shell out.
-      disallowedTools: ['Edit', 'Write', 'NotebookEdit', 'Bash'],
-      env: this.getMemoryEnv(),
-      timeoutMs: DEFAULT_TIMEOUT_MS,
-    });
+    // Scale the budget with the payload: a fixed 180s cap regardless of how
+    // much text is being summarized was a real chunk of the 'hidden session
+    // timed out' abort class — a large eviction payload legitimately needs
+    // more wall-clock than a small one.
+    const evictBytes = Buffer.byteLength(evictText, 'utf8');
+    const timeoutMs = Math.min(
+      MAX_TIMEOUT_MS,
+      BASE_TIMEOUT_MS + Math.round(evictBytes * EXTRA_TIMEOUT_MS_PER_EVICT_BYTE)
+    );
 
-    if (!result.ok || !result.text) {
-      throw new Error(result.error ?? 'condense: hidden session returned no text');
+    let lastError = 'condense: no attempt made';
+    for (let attempt = 1; attempt <= TRANSCRIPT_RACE_ATTEMPTS; attempt++) {
+      const result = await runHiddenClaude(prompt, {
+        model: CONDENSE_MODEL,
+        cwd: home,
+        command: this.getCommand(),
+        // Pure text transform — must never touch the repo or shell out.
+        disallowedTools: ['Edit', 'Write', 'NotebookEdit', 'Bash'],
+        env: this.getMemoryEnv(),
+        timeoutMs,
+      });
+
+      if (result.ok && result.text) {
+        const parsed = parseSummary(result.text);
+        if (!parsed) throw new Error('condense: response contained no parseable JSON');
+        return parsed;
+      }
+
+      lastError = result.error ?? 'condense: hidden session returned no text';
+      // Retry ONLY the transcript-flush race (PTY went idle a beat before the
+      // transcript file finished writing) — a fresh attempt is cheap and
+      // usually clean. A genuine timeout replays the identical oversized
+      // prompt for no better odds, so it is not retried here; it gets the
+      // scaled timeout above and, if still too slow, the next scan tick.
+      if (!/no assistant response found in transcript/i.test(lastError)) break;
     }
-    const parsed = parseSummary(result.text);
-    if (!parsed) throw new Error('condense: response contained no parseable JSON');
-    return parsed;
+    throw new Error(lastError);
   }
 }
 
@@ -336,6 +410,39 @@ export function parseMemory(text: string): Parsed {
     else recent.push(s);
   }
   return { header, pinned, condensed, recent };
+}
+
+/** Split `recent` into KEEP (newest, verbatim) and EVICT (older — summarized).
+ *  Two constraints both hold: no more than `recentKeepMax` sections, AND their
+ *  combined bytes fit `keepBudgetBytes` — a fixed section COUNT alone let the
+ *  verbatim tail dominate the file regardless of its size (see `keepBudgetPct`
+ *  on ReflectSettings). The single newest section is always kept, even if it
+ *  alone exceeds the budget — evicting everything is never the answer. */
+export function selectKeep(
+  recent: Section[], recentKeepMax: number, keepBudgetBytes: number
+): { keep: Section[]; evict: Section[] } {
+  const bytesOf = (sec: Section) => Buffer.byteLength(`${sec.heading}\n${sec.body}`, 'utf8');
+  let keepCount = Math.max(1, Math.min(recentKeepMax, recent.length));
+  let total = 0;
+  for (let i = recent.length - keepCount; i < recent.length; i++) total += bytesOf(recent[i]);
+  while (keepCount > 1 && total > keepBudgetBytes) {
+    total -= bytesOf(recent[recent.length - keepCount]);
+    keepCount -= 1;
+  }
+  return {
+    keep: recent.slice(recent.length - keepCount),
+    evict: recent.slice(0, recent.length - keepCount)
+  };
+}
+
+/** Demote any line that would otherwise parse as a NEW `## ` section boundary
+ *  once it lands inside a body region (condensed text, hoisted pinned lines).
+ *  A model that echoes a `## ` sub-heading from the material it's summarizing
+ *  would otherwise corrupt the file's 3-region structure the next time it's
+ *  parsed — the root cause of the 'recent-count-mismatch' abort class. Only
+ *  the EXACT two-hash prefix is the file's marker; `### `+ is already safe. */
+export function demoteEmbeddedHeadings(text: string): string {
+  return text.split('\n').map((l) => (/^##(?!#)\s/.test(l) ? `#${l}` : l)).join('\n');
 }
 
 /** Non-empty, trimmed lines of the pinned block (the set we must never lose). */
@@ -401,7 +508,14 @@ export function verify(args: {
 
 /** Pull `{condensed, hoist}` out of `claude -p --output-format json` output.
  *  Two layers: the CLI envelope `{result: "<text>"}`, then the model's strict
- *  JSON (tolerating an accidental ```json fence). Returns null on any failure. */
+ *  JSON. The model layer tries three shapes in order — the whole trimmed text
+ *  as-is, a ```json fence ANYWHERE in the text (not just wrapping the whole
+ *  string), then a balanced `{...}` scan that finds the object even under
+ *  preamble/trailing prose the model added despite the contract. This was the
+ *  single biggest condense-abort class (195 of 855): the old version only
+ *  handled a fence anchored to the start/end of the string, so an "Here is
+ *  the JSON:" preamble or trailing commentary failed outright. Returns null
+ *  only when none of the three shapes yield a usable object. */
 export function parseSummary(stdout: string): { condensed: string; hoist: string[] } | null {
   const raw = stdout.trim();
   if (!raw) return null;
@@ -411,13 +525,58 @@ export function parseSummary(stdout: string): { condensed: string; hoist: string
     if (typeof env.result === 'string') inner = env.result;
     else if (typeof env.text === 'string') inner = env.text;
   } catch { /* not the CLI envelope — treat stdout itself as the model output */ }
-  inner = inner.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
-  try {
-    const obj = JSON.parse(inner) as { condensed?: unknown; hoist?: unknown };
-    if (typeof obj.condensed !== 'string' || !obj.condensed.trim()) return null;
-    const hoist = Array.isArray(obj.hoist) ? obj.hoist.filter((x): x is string => typeof x === 'string') : [];
-    return { condensed: obj.condensed, hoist };
-  } catch { return null; }
+
+  const obj = extractJsonObject(inner);
+  if (!obj || typeof obj.condensed !== 'string' || !obj.condensed.trim()) return null;
+  const hoist = Array.isArray(obj.hoist) ? obj.hoist.filter((x): x is string => typeof x === 'string') : [];
+  return { condensed: obj.condensed, hoist };
+}
+
+/** Find and parse the model's JSON object under three progressively looser
+ *  shapes: the trimmed text verbatim; a ```json (or bare ```) fence anywhere
+ *  in the text; the first balanced `{...}` span. The balanced scan tracks
+ *  brace depth AND quoted-string state, so a `}` inside a JSON string value —
+ *  or trailing prose after the real object — can never end it early or late. */
+function extractJsonObject(text: string): { condensed?: unknown; hoist?: unknown } | null {
+  const trimmed = text.trim();
+  const candidates: string[] = [trimmed];
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced) candidates.push(fenced[1].trim());
+  const balanced = firstBalancedObject(trimmed);
+  if (balanced) candidates.push(balanced);
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as unknown;
+      if (parsed && typeof parsed === 'object') return parsed as { condensed?: unknown; hoist?: unknown };
+    } catch { /* try the next, looser shape */ }
+  }
+  return null;
+}
+
+/** The first top-level `{...}` span in `text`, or null if none balances. */
+function firstBalancedObject(text: string): string | null {
+  const start = text.indexOf('{');
+  if (start === -1) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === '{') depth += 1;
+    else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null;
 }
 
 /** `20260606T110912Z` — matches the janitor's backup-dir stamp format. */
