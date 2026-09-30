@@ -131,6 +131,16 @@ interface AgentBreakerState {
    *  progress clock (#376). A clock, not an exemption: it expires on its own,
    *  and a runaway loop (one prompt, then many tool calls) never refreshes it. */
   lastUserPromptAt: number;
+  /** Is a turn currently running? Set true on UserPromptSubmit, false on
+   *  Stop/SubagentStop. An agent between turns — reported and waiting, an
+   *  empty inbox, nothing dispatched — cannot be looping (no tool calls can
+   *  land without a turn to run them in) and burns no tokens either; any
+   *  Δoutput the no-progress arm sees while this is false is a measurement
+   *  artifact (a stale/re-aggregated usage sample), not the agent generating
+   *  tokens without coordinating. Defaults true: an agent this instance has
+   *  never seen a lifecycle event for keeps the pre-existing behavior rather
+   *  than silently gaining a free pass. */
+  turnActive: boolean;
   /** Consecutive beats the no-progress condition held (debounce counter). */
   noProgressBeats: number;
 }
@@ -160,7 +170,7 @@ export class CircuitBreaker {
       s = {
         level: 'healthy', reason: '', lastSample: null, repeatKey: null, repeatCount: 0,
         errorCount: 0, compactingUntil: 0, lastDistinctToolAt: 0, lastUserPromptAt: 0,
-        noProgressBeats: 0
+        noProgressBeats: 0, turnActive: true
       };
       this.agents.set(agentId, s);
     }
@@ -205,7 +215,18 @@ export class CircuitBreaker {
    *  that arm gains a way to see this work — the loop, error-storm, velocity
    *  and cap arms are unchanged. */
   recordUserPrompt(agentId: string, now = Date.now()): void {
-    this.get(agentId).lastUserPromptAt = now;
+    const s = this.get(agentId);
+    s.lastUserPromptAt = now;
+    s.turnActive = true; // a submitted prompt is exactly a turn starting
+  }
+
+  /** A turn ended (Stop / SubagentStop — the agent finished and is waiting).
+   *  Exempts the no-progress arm until the next UserPromptSubmit: nothing
+   *  can loop or burn tokens between turns, so any Δoutput the arm would
+   *  otherwise see here is not the agent "generating tokens without
+   *  coordinating" — it never generated anything. */
+  recordStop(agentId: string): void {
+    this.get(agentId).turnActive = false;
   }
 
   /** Compaction started (PreCompact hook). Exempt the Δoutput-based trips —
@@ -401,7 +422,12 @@ export class CircuitBreaker {
           && nowMs - input.lastWorkAt < PROGRESS_TOOL_WINDOW_MS;
         // #425: a live human conversation is progress too, on the same window.
         const humanActive = nowMs - s.lastUserPromptAt < PROGRESS_TOOL_WINDOW_MS;
-        if (!input.progressing && !toolActive && !workActive && !humanActive) {
+        // An agent between turns (Stop fired, no UserPromptSubmit since) is
+        // exempt outright — see `turnActive` on AgentBreakerState. Checked
+        // here, not as an early return out of `evaluate`, so the cost/token
+        // caps above (which must still apply to an idle-but-over-budget
+        // agent) are unaffected.
+        if (!input.progressing && !toolActive && !workActive && !humanActive && s.turnActive) {
           s.noProgressBeats += 1;
           if (s.noProgressBeats >= NO_PROGRESS_BEATS) {
             return { tripping: true, reason: 'no-progress: generating tokens without coordinating (stale log/files)' };

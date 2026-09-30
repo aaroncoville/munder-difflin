@@ -437,6 +437,64 @@ test('huge inputs differing early still count as distinct calls', () => {
   assert.equal(d.state.level, 'healthy', `reason: ${d.state.reason}`);
 });
 
+// ── an agent between turns is exempt from the no-progress arm ───────────────
+// Jc got 5 steer pings over ~4 hours after reporting and going idle. The
+// no-progress arm gates on Δoutput > 0, which a genuinely silent agent can
+// only ever produce from a stale/re-aggregated usage sample, not real work —
+// there is no turn running to generate anything. recordStop() (wired from
+// the Stop/SubagentStop hook) marks exactly that window; recordUserPrompt()
+// (already wired from UserPromptSubmit) closes it again once real work
+// starts. Both directions matter: the false positive must go away, and the
+// arm must still catch a genuinely-looping agent mid-turn.
+
+test('an agent between turns (Stop fired, no prompt since) is exempt from no-progress', () => {
+  const b = makeBreaker();
+  beat(b, 'a', sample('a', T0, 0), false, T0);
+  b.recordStop('a');
+  // Two consecutive beats of stale-looking Δoutput with nothing coordinating —
+  // would trip without the fix (mirrors the debounce-satisfying repro above).
+  beat(b, 'a', sample('a', T0 + BEAT, 500), false, T0 + BEAT);
+  const d = beat(b, 'a', sample('a', T0 + 2 * BEAT, 1000), false, T0 + 2 * BEAT);
+  assert.equal(d.state.level, 'healthy', `reason: ${d.state.reason}`);
+});
+
+test('the SAME sequence mid-turn (no Stop) still trips — real stall detection intact', () => {
+  const b = makeBreaker();
+  beat(b, 'a', sample('a', T0, 0), false, T0);
+  beat(b, 'a', sample('a', T0 + BEAT, 500), false, T0 + BEAT);
+  const d = beat(b, 'a', sample('a', T0 + 2 * BEAT, 1000), false, T0 + 2 * BEAT);
+  assert.equal(d.state.level, 'steering');
+  assert.match(d.state.reason, /no-progress/);
+});
+
+test('a new prompt after Stop re-engages the arm for the next turn', () => {
+  const b = makeBreaker();
+  beat(b, 'a', sample('a', T0, 0), false, T0);
+  b.recordStop('a');
+  beat(b, 'a', sample('a', T0 + BEAT, 500), false, T0 + BEAT); // idle beat — exempt, no trip
+  // New turn starts, but old enough that its own 300s human-prompt grace has
+  // already expired by the beats below — isolates turnActive's effect from
+  // the separate human-prompt leg (#376), which would otherwise also exempt.
+  const t2 = T0 + 400_000;
+  b.recordUserPrompt('a', t2 - 310_000);
+  beat(b, 'a', sample('a', t2, 1500), false, t2);                        // count 1 (fresh — turnActive reset it)
+  const d = beat(b, 'a', sample('a', t2 + BEAT, 2500), false, t2 + BEAT); // count 2 → trips
+  assert.equal(d.state.level, 'steering', `reason: ${d.state.reason}`);
+  assert.match(d.state.reason, /no-progress/);
+});
+
+test('Stop does not exempt the loop, error-storm, or cap arms', () => {
+  const b = makeBreaker();
+  b.recordStop('a');
+  for (let i = 0; i < 8; i++) b.recordToolUse('a', 'Bash', { cmd: 'same' });
+  assert.equal(beat(b, 'a', null, true, T0).state.level, 'steering'); // loop still trips
+
+  const b2 = makeBreaker({ errorStormLimit: 3 });
+  b2.recordStop('a');
+  for (let i = 0; i < 3; i++) b2.recordError('a');
+  assert.equal(beat(b2, 'a', null, true, T0).state.level, 'steering'); // error storm still trips
+});
+
 // ── recovery still works ─────────────────────────────────────────────────────
 
 test('a healthy beat de-escalates one level', () => {

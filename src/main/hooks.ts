@@ -256,6 +256,12 @@ export class HookServer {
     }
 
     if ((event === 'Stop' || event === 'SubagentStop') && agentId) {
+      // The agent has no turn running until its next prompt — exempt the
+      // breaker's no-progress arm: an idle, waiting
+      // agent cannot loop (no tool calls land without a turn to run them in)
+      // and burns no tokens, so any Δoutput the arm sees here is stale
+      // usage-sample noise, not real generation.
+      this.breaker?.recordStop(agentId);
       // Respect any upstream Stop hook that already re-entered this boundary.
       if (p.stop_hook_active) { this.emit(agentId, event, p); return {}; }
       // Never turn unread hive mail into a forced continuation at Stop. That old
