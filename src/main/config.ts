@@ -436,6 +436,11 @@ export interface HarnessConfig {
   /** Never condense a file smaller than this; also the section-trigger byte floor.
    *  DECIDED: 16 KB. */
   reflectMinBytes?: number;
+  /** The verbatim "keep" region (newest recent sections, untouched) may not
+   *  exceed this percent of the 128 KB budget, even under reflectRecentKeep's
+   *  section count — bounds the keep region by size so there's always eviction
+   *  headroom for the summarizer to actually shrink the file. DECIDED: 25. */
+  reflectKeepBudgetPct?: number;
 }
 
 const DEFAULTS: HarnessConfig = {
