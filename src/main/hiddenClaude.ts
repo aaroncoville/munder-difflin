@@ -55,6 +55,23 @@ export interface HiddenClaudeResult {
 }
 
 /**
+ * Does the raw PTY output look like the first-run workspace-trust dialog
+ * ("Is this a project you created or one you trust? ... Yes, I trust this
+ * folder")? The TUI positions this text with absolute-column cursor moves
+ * (`\x1b[<n>G`) between words rather than spaces, so a plain substring match
+ * against the raw bytes never fires — CSI sequences are stripped first, then
+ * ALL whitespace, before the compacted text is checked. Exported for the
+ * regression test; not meant for use outside this module. */
+export function looksLikeTrustDialog(rawOutput: string): boolean {
+  const stripped = rawOutput
+    .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b./g, '');
+  const compact = stripped.replace(/\s+/g, '').toLowerCase();
+  return compact.includes('trustthisfolder');
+}
+
+/**
  * Extract the last assistant text block from the transcript JSONL written
  * at or after `spawnedAt`. Reuses projectDir() from transcript.ts.
  */
@@ -150,6 +167,10 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
 
     let settled = false;
     let promptSent = false;
+    // Accumulated for the workspace-trust-dialog check only — capped so a
+    // long-running or chatty boot sequence can't grow this unbounded.
+    let rawOutput = '';
+    const RAW_OUTPUT_CAP = 8192;
     let bootTimer: NodeJS.Timeout | null = null;
     let idleTimer: NodeJS.Timeout | null = null;
     let bootMaxTimer: NodeJS.Timeout;
@@ -177,9 +198,18 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
 
     const captureAndFinish = () => {
       const text = extractLastAssistantText(opts.cwd, spawnedAt);
-      finish(text
-        ? { ok: true, text }
-        : { ok: false, error: 'no assistant response found in transcript' });
+      if (text) { finish({ ok: true, text }); return; }
+      // A cwd the CLI has never been trusted in blocks on the workspace-trust
+      // dialog forever — it renders as ordinary boot output, so the boot-quiet
+      // heuristic reads it as "ready" and sends the prompt into a menu that
+      // doesn't consume pasted text, never producing a transcript. That is a
+      // DIFFERENT failure from a genuine transient no-response race (retrying
+      // hits the identical dialog and fails identically), so it gets its own,
+      // actionable error instead of the generic one.
+      const error = looksLikeTrustDialog(rawOutput)
+        ? 'workspace trust dialog blocked the session (cwd is not a trusted Claude Code directory)'
+        : 'no assistant response found in transcript';
+      finish({ ok: false, error });
     };
 
     const sendPrompt = () => {
@@ -197,7 +227,8 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
       timeoutMs,
     );
 
-    ptyProc.onData(() => {
+    ptyProc.onData((data) => {
+      if (rawOutput.length < RAW_OUTPUT_CAP) rawOutput = (rawOutput + data).slice(0, RAW_OUTPUT_CAP);
       if (!promptSent) {
         // Boot phase: reset quiet timer; send prompt once output goes quiet.
         if (bootTimer) clearTimeout(bootTimer);

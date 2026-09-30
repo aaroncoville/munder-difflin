@@ -210,6 +210,21 @@ test('fix: "no assistant response" succeeds on the retry (race, not a real failu
   assert.equal(calls.length, 2);
 });
 
+test('repro: a workspace-trust-dialog block is NOT retried (identical dialog every attempt)', async () => {
+  const { home, mem } = homeWith('a1', fixture({
+    sections: [section('old one', 300), section('old two', 300), section('newest', 300)]
+  }));
+  const before = fs.readFileSync(mem, 'utf8');
+  const { MemoryReflector, calls } = loadReflectWithStub(() => ({
+    ok: false, error: 'workspace trust dialog blocked the session (cwd is not a trusted Claude Code directory)'
+  }));
+  const reflector = makeReflector({ MemoryReflector }, home, { recentKeep: 1 });
+  const [result] = await reflector.reflectNow('a1');
+  assert.equal(result.condensed, false);
+  assert.equal(calls.length, 1, 'a trust-dialog block is a different failure than the transcript race and is not retried');
+  assert.equal(fs.readFileSync(mem, 'utf8'), before);
+});
+
 test('repro: a genuine timeout is NOT retried (retrying would double the cost for nothing)', async () => {
   const { home, mem } = homeWith('a1', fixture({
     sections: [section('old one', 300), section('old two', 300), section('newest', 300)]
