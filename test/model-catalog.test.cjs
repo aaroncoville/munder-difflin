@@ -57,17 +57,17 @@ const SHIPPED = {
   ],
   opencode: [
     [undefined, "CLI default"],
-    ["anthropic/claude-sonnet-4-5", "Claude Sonnet 4.5 (Anthropic)"],
+    ["anthropic/claude-sonnet-5-5", "Claude Sonnet 5.5 (Anthropic)"],
     ["anthropic/claude-haiku-4-5", "Claude Haiku 4.5 (Anthropic)"],
     ["openai/gpt-5", "GPT-5 (OpenAI)"],
     ["openai/gpt-5-mini", "GPT-5 mini (OpenAI)"],
-    ["openrouter/anthropic/claude-sonnet-4.5", "Claude Sonnet 4.5 (OpenRouter)"],
+    ["openrouter/anthropic/claude-sonnet-5.5", "Claude Sonnet 5.5 (OpenRouter)"],
     ["google/gemini-2.5-pro", "Gemini 2.5 Pro (Google)"],
     ["local/llama3", "Local · OpenAI-compatible (set base-URL)"]
   ],
   crush: [
     [undefined, "Crush default (config)"],
-    ["anthropic/claude-sonnet-4-5", "Claude Sonnet 4.5 (Anthropic)"],
+    ["anthropic/claude-sonnet-5-5", "Claude Sonnet 5.5 (Anthropic)"],
     ["anthropic/claude-opus-4-1", "Claude Opus (Anthropic)"],
     ["openai/gpt-4o", "GPT-4o (OpenAI)"],
     ["openai/o3", "o3 (OpenAI)"],
@@ -77,7 +77,7 @@ const SHIPPED = {
   ],
   pi: [
     [undefined, "default"],
-    ["anthropic/claude-sonnet-4-5", "Claude Sonnet 4.5 (Anthropic)"],
+    ["anthropic/claude-sonnet-5-5", "Claude Sonnet 5.5 (Anthropic)"],
     ["anthropic/claude-opus-4-1", "Claude Opus (Anthropic)"],
     ["openai/gpt-5", "GPT-5 (OpenAI)"],
     ["google/gemini-2.5-pro", "Gemini 2.5 Pro (Google)"],
@@ -87,8 +87,7 @@ const SHIPPED = {
   copilot: [
     [undefined, "default (Claude Sonnet 4.5)"],
     ["auto", "Auto (Copilot picks)"],
-    ["claude-sonnet-4.5", "Claude Sonnet 4.5"],
-    ["claude-sonnet-4", "Claude Sonnet 4"],
+    ["claude-sonnet-5.5", "Claude Sonnet 5.5"],
     ["gpt-5.4", "GPT-5.4"],
     ["gpt-5", "GPT-5"]
   ],
@@ -142,6 +141,24 @@ test('the Claude list still offers the 1M-context assistant model', () => {
   // The catalog carries the id as a literal, so this is now the only thing
   // holding the picker entry and the constant together.
   assert.ok(ids(modelsForProvider('claude')).includes(ASSISTANT_MODEL));
+});
+
+/** Anthropic model ids retired (or, for a CLI preset's own namespacing, whose
+ *  underlying Anthropic model is retired) and due to fail at launch — matched
+ *  as a whole path segment so e.g. "claude-sonnet-4-5" doesn't also flag
+ *  "claude-sonnet-4-5X" or swallow an unrelated id that merely contains the
+ *  substring. claude-sonnet-4-5 deprecated 2026-09-30, retires 2026-11-30. */
+const RETIRED_ID_SEGMENTS = [/(^|\/)claude-sonnet-4[-.]5(\/|$)/, /(^|\/)claude-sonnet-4(\/|$)/];
+
+test('no retired model id is offered by any preset', () => {
+  for (const [provider, models] of Object.entries(catalog.providers)) {
+    for (const model of models) {
+      if (!model.id) continue;
+      for (const pattern of RETIRED_ID_SEGMENTS) {
+        assert.ok(!pattern.test(model.id), `${provider}: "${model.id}" matches a retired id pattern`);
+      }
+    }
+  }
 });
 
 test('the catalog is the schema config.ts expects', () => {
