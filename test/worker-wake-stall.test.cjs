@@ -25,7 +25,8 @@ const {
   WORKER_WAKE_IDLE_MS,
   WORKER_WAKE_STALL_MS,
   WORKER_WAKE_COOLDOWN_MS,
-  WORKER_WAKE_HITL_REARM_MS
+  WORKER_WAKE_HITL_REARM_MS,
+  WORKER_WAKE_TURN_CEILING_MS
 } = loadTs('src/main/workerWake.ts');
 
 const NOW = 10_000_000; // far enough from epoch that "20 minutes ago" stays positive
@@ -189,6 +190,63 @@ test('a turn hook after the mail is activity: the worker is working it, not stal
   c.noteSpawn('pty-stanley', NOW - 20 * 60_000);
   c.noteHook('stanley', 'UserPromptSubmit', undefined, NOW - 3_000);
   assert.equal(c.explain(chatty({ oldestMailAt: mailAt, lastActivityAt: 0 }), NOW), 'mid-turn');
+});
+
+/** Beats every 15 s from `from` for `ms`, the terminal printing before each,
+ *  as a long build does. Returns how many beats nudged the worker. */
+function nudgesDuring(w, facts, from, ms) {
+  let nudges = 0;
+  for (let t = from; t <= from + ms; t += 15_000) {
+    nudges += w.decide([{ ...facts, lastOutputAt: t - 1_000 }], t).length;
+  }
+  return nudges;
+}
+
+test('a worker in the middle of a long build is never typed into, however old its mail', () => {
+  // A tool call opens the turn, the build runs for ten minutes with no hook in
+  // between, and mail lands just after it starts. Nothing proves a turn SINCE
+  // the mail, but the turn is visibly open: typing into it lands keystrokes in
+  // the middle of somebody else's work.
+  const t0 = NOW;
+  const w = new WorkerWakeWatchdog();
+  w.noteSpawn('pty-kevin', t0 - 20 * 60_000);
+  w.noteHook('kevin', 'UserPromptSubmit', undefined, t0 - 30_000);
+  w.noteHook('kevin', 'PreToolUse', undefined, t0);
+  const f = codex({ oldestMailAt: t0 + 10_000 });
+  assert.equal(nudgesDuring(w, f, t0 + 10_000, 10 * 60_000), 0);
+  // The same for one long generation with no tool call at all.
+  const g = new WorkerWakeWatchdog();
+  g.noteSpawn('pty-kevin', t0 - 20 * 60_000);
+  g.noteHook('kevin', 'UserPromptSubmit', undefined, t0);
+  assert.equal(nudgesDuring(g, f, t0 + 10_000, 10 * 60_000), 0);
+});
+
+test('a turn closed by Stop no longer shields the worker from the stall rule', () => {
+  const w = new WorkerWakeWatchdog();
+  w.noteSpawn('pty-kevin', NOW - 20 * 60_000);
+  w.noteHook('kevin', 'PreToolUse', undefined, NOW - 11 * 60_000);
+  w.noteHook('kevin', 'Stop', undefined, NOW - 10 * 60_000 - 1);
+  const f = codex({ oldestMailAt: NOW - 10 * 60_000 });
+  assert.equal(w.explain(f, NOW), null, 'the turn ended before the mail; the worker is stalled on it');
+});
+
+test('a lost boot nudge is still re-sent: no turn was ever opened', () => {
+  const w = new WorkerWakeWatchdog();
+  w.noteSpawn('pty-kevin', NOW - 20 * 60_000);
+  w.noteHook('kevin', 'SessionStart', undefined, NOW - 10 * 60_000 + 1_000);
+  const f = codex({ oldestMailAt: NOW - 10 * 60_000 });
+  assert.equal(nudgesDuring(w, f, NOW, 2 * WORKER_WAKE_COOLDOWN_MS) > 0, true);
+});
+
+test('a turn whose Stop was lost stops shielding the worker after the ceiling', () => {
+  const w = new WorkerWakeWatchdog();
+  w.noteSpawn('pty-kevin', NOW - 60 * 60_000);
+  w.noteHook('kevin', 'PreToolUse', undefined, NOW);
+  const f = codex({ oldestMailAt: NOW + 10_000 });
+  const before = NOW + WORKER_WAKE_TURN_CEILING_MS - 1;
+  assert.equal(w.explain({ ...f, lastOutputAt: before - 1_000 }, before), 'mid-turn');
+  const after = NOW + WORKER_WAKE_TURN_CEILING_MS + 1;
+  assert.equal(w.explain({ ...f, lastOutputAt: after - 1_000 }, after), null, 'a lost Stop held the worker past the ceiling');
 });
 
 test('forget() drops the hook memory: a re-spawned agent starts unobservable again', () => {

@@ -17,7 +17,10 @@
  *
  * Safety mirrors the renderer's guarded queue-drain (useHive.ts dispatch):
  *  - only a GENUINELY idle worker is nudged (no PTY output for IDLE_MS — the
- *    same quiescence the renderer's idle fallback uses), never a mid-turn one,
+ *    same quiescence the renderer's idle fallback uses), never a mid-turn one.
+ *    A STALLED worker (old mail, no turn since it landed) is nudged whatever
+ *    its terminal prints, but never while a turn its hooks opened is still
+ *    open (TURN_CEILING_MS bounds a turn whose Stop was lost),
  *  - never inside the boot sequence (BOOT_GRACE_MS from spawn, mirroring the
  *    renderer's bootGraceUntil),
  *  - delivery paused / agent paused / halted → no nudge (ControlRegistry),
@@ -65,6 +68,13 @@ export const WORKER_WAKE_HITL_REARM_MS = 5 * 60_000;
  *  Codex/Gemini/grok worker would otherwise read as stalled forever and be
  *  nudged every cooldown while working — the repeated nudging #368 removed. */
 export const WORKER_WAKE_STALL_MS = 90_000;
+/** How long an open turn keeps the stall rule off with no further hook. A
+ *  turn is open from the hook that starts one (a prompt, a tool call, a
+ *  subagent) until Stop; while it is open the worker is working, whatever its
+ *  mail's age, and typing into it lands keystrokes in the middle of that work.
+ *  A Stop the harness never heard would hold the worker for good, so past this
+ *  long since the turn's last hook it no longer counts as open. */
+export const WORKER_WAKE_TURN_CEILING_MS = 20 * 60_000;
 /** Minimum age of pending mail before a held worker is reported in the log. */
 export const WORKER_WAKE_REPORT_MS = 60_000;
 
@@ -238,6 +248,9 @@ export class WorkerWakeWatchdog {
   private hookSeenAt = new Map<string, number>();
   /** agentId → timestamp of its last hook event that proves a turn. */
   private lastTurnHookAt = new Map<string, number>();
+  /** agentId → when its open turn last showed a hook; absent when no turn is
+   *  open. See WORKER_WAKE_TURN_CEILING_MS. */
+  private openTurnAt = new Map<string, number>();
   /** agentId → when its hold was last reported, so the beat logs a held worker
    *  once per cooldown instead of every 15 s. */
   private lastHoldReportAt = new Map<string, number>();
@@ -254,6 +267,9 @@ export class WorkerWakeWatchdog {
     if (!agentId) return;
     this.hookSeenAt.set(agentId, at);
     if (isTurnHook(event) && at > (this.lastTurnHookAt.get(agentId) ?? 0)) this.lastTurnHookAt.set(agentId, at);
+    if (event === 'Stop' || event === 'StopFailure') this.openTurnAt.delete(agentId);
+    else if (event === 'UserPromptSubmit' || event === 'PreToolUse' || event === 'SubagentStart') this.openTurnAt.set(agentId, at);
+    else if (isTurnHook(event) && this.openTurnAt.has(agentId)) this.openTurnAt.set(agentId, at);
     if (classifyHook(event, message) === 'needsHuman') this.lastHumanNeedsAt.set(agentId, at);
   }
 
@@ -267,6 +283,8 @@ export class WorkerWakeWatchdog {
    *  sample nor a single hook event, because such an agent cannot show a turn
    *  even when it takes one (see WORKER_WAKE_STALL_MS). */
   private isStalled(f: WorkerWakeFacts, now: number): boolean {
+    const openAt = this.openTurnAt.get(f.agentId);
+    if (openAt !== undefined && now - openAt < WORKER_WAKE_TURN_CEILING_MS) return false;
     const observable = !!f.hasTelemetry || this.hookSeenAt.has(f.agentId);
     if (!observable) return false;
     const lastActivityAt = Math.max(f.lastActivityAt ?? 0, this.turnHookAt(f.agentId));
@@ -280,6 +298,7 @@ export class WorkerWakeWatchdog {
     this.lastHumanNeedsAt.delete(agentId);
     this.hookSeenAt.delete(agentId);
     this.lastTurnHookAt.delete(agentId);
+    this.openTurnAt.delete(agentId);
     this.lastHoldReportAt.delete(agentId);
     if (ptyId) this.spawnedAt.delete(ptyId);
   }
