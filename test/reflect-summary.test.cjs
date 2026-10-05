@@ -75,18 +75,48 @@ test('rejects partial, duplicated, out-of-order, or contaminated frames', () => 
     `${CONDENSED}\nsummary\n${HOIST}\n${HOIST}\n${END}`,
     `${CONDENSED}\nsummary\n${HOIST}\n${END}\n${END}`,
     `${HOIST}\n${CONDENSED}\nsummary\n${END}`,
-    `Here is the summary:\n${frame('summary')}`,
-    `${frame('summary')}\nHope this helps.`,
     `${CONDENSED}\n \n${HOIST}\n${END}`,
     `${CONDENSED}\nsummary\n${HOIST}\nnot a bullet\n${END}`,
     `${CONDENSED}\nsummary\n${HOIST}\n- \n${END}`,
-    `\`\`\`text\n${frame('summary')}`
+    `Here is a frame that never ends:\n${CONDENSED}\nsummary\n${HOIST}\n- fact`
   ];
 
   for (const output of invalid) {
     assert.doesNotThrow(() => parseSummary(output));
     assert.equal(parseSummary(output), null, output);
   }
+});
+
+test('a complete frame is read wherever the model put it', () => {
+  // The frame's own markers say where the answer starts and ends, and each
+  // must appear exactly once, so prose or a fence around a complete frame is
+  // never ambiguous. Rejecting it threw away a good answer and paid for the
+  // same call again on the next scan.
+  const expected = { condensed: 'summary', hoist: ['fact'] };
+  const framed = frame('summary', ['fact']);
+  for (const output of [
+    `Here is the summary:\n${framed}`,
+    `${framed}\nHope this helps.`,
+    `Here is the condensed block:\n\`\`\`text\n${framed}\n\`\`\`\nLet me know if you need more.`,
+    `\`\`\`text\n${framed}`
+  ]) {
+    assert.deepEqual(parseSummary(output), expected, output);
+  }
+});
+
+test('the hoist section tolerates the shapes a model writes a list in', () => {
+  const at = (hoistLines) => parseSummary([CONDENSED, 'summary', HOIST, ...hoistLines, END].join('\n'));
+  assert.deepEqual(at(['(none)']), { condensed: 'summary', hoist: [] });
+  assert.deepEqual(at(['None']), { condensed: 'summary', hoist: [] });
+  assert.deepEqual(at(['- (none)']), { condensed: 'summary', hoist: [] });
+  assert.deepEqual(at(['* one', '\u2022 two', '- three']), { condensed: 'summary', hoist: ['one', 'two', 'three'] });
+  assert.deepEqual(at(['- a fact that runs', '  onto a second line', '- another']),
+    { condensed: 'summary', hoist: ['a fact that runs onto a second line', 'another'] });
+});
+
+test('legacy JSON under a leading fence with prose after it still parses', () => {
+  const output = '```json\n{"condensed":"legacy summary","hoist":["fact"]}\n```\nHope that helps!';
+  assert.deepEqual(parseSummary(output), { condensed: 'legacy summary', hoist: ['fact'] });
 });
 
 test('preserves valid legacy JSON and its existing hoist filtering', () => {

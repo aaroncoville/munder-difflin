@@ -67,6 +67,9 @@ const HOIST_MARKER = '<<<HOIST>>>';
 const END_MARKER = '<<<END>>>';
 const HOIST_BULLET_PREFIX = '- ';
 const SUMMARY_MARKERS = [CONDENSED_MARKER, HOIST_MARKER, END_MARKER] as const;
+/** A hoist bullet as models write one, and the line a model writes for none. */
+const HOIST_BULLET = /^[-*\u2022]\s+/;
+const HOIST_NONE = /^\(?none\)?\.?$/i;
 
 /** Instruction prefix — kept byte-identical across calls (no dates/ids spliced
  *  in) so Claude Code prompt-caches it; the dynamic content goes in the tail. */
@@ -538,12 +541,14 @@ function unwrapCliEnvelope(raw: string): string {
   }
 }
 
-/** Strip a complete outer code fence, but reject an opening fence with no exact
- *  closing line. Looking only at boundary lines preserves fences in the payload. */
-function stripOuterCodeFence(text: string): string | null {
+/** Strip a complete outer code fence; anything else is returned as it came.
+ *  Looking only at boundary lines preserves fences in the payload. */
+function stripOuterCodeFence(text: string): string {
   const lines = text.split('\n');
   if (!/^```[A-Za-z0-9_-]*\s*$/.test(lines[0].trim())) return text;
-  if (lines.length < 2 || lines[lines.length - 1].trim() !== '```') return null;
+  // An opening fence with no closing line is not an outer fence; the text goes
+  // on to the frame or JSON readers, which find their own boundaries in it.
+  if (lines.length < 2 || lines[lines.length - 1].trim() !== '```') return text;
   return lines.slice(1, -1).join('\n').trim();
 }
 
@@ -574,21 +579,33 @@ function parseFramedSummary(text: string): { condensed: string; hoist: string[] 
   const hoistAt = findUniqueMarkerLine(lines, HOIST_MARKER);
   const endAt = findUniqueMarkerLine(lines, END_MARKER);
 
+  // Each marker appears exactly once, so the frame's bounds are unambiguous
+  // wherever it sits; prose or a fence the model put around it is not read.
   if (condensedAt === null || hoistAt === null || endAt === null) return null;
-  if (condensedAt !== 0 || endAt !== lines.length - 1) return null;
   if (!(condensedAt < hoistAt && hoistAt < endAt)) return null;
 
   const condensed = lines.slice(condensedAt + 1, hoistAt).join('\n').trim();
   if (!condensed) return null;
 
+  // The prompt asks for "- " bullets, but a model writes a list its own way: "*"
+  // or "\u2022" bullets, a fact wrapped onto an indented second line, or "(none)"
+  // for an empty section. Anything else is not a hoist list and fails closed.
   const hoist: string[] = [];
   for (const line of lines.slice(hoistAt + 1, endAt)) {
-    const bullet = line.trim();
-    if (!bullet) continue;
-    if (!bullet.startsWith(HOIST_BULLET_PREFIX)) return null;
-    const fact = bullet.slice(HOIST_BULLET_PREFIX.length).trim();
-    if (!fact) return null;
-    hoist.push(fact);
+    const text = line.trim();
+    if (!text) continue;
+    if (hoist.length === 0 && HOIST_NONE.test(text)) continue;
+    const bullet = HOIST_BULLET.exec(text);
+    if (bullet) {
+      const fact = text.slice(bullet[0].length).trim();
+      if (!fact) return null;
+      if (hoist.length === 0 && HOIST_NONE.test(fact)) continue;
+      hoist.push(fact);
+    } else if (hoist.length > 0 && /^\s/.test(line)) {
+      hoist[hoist.length - 1] += ` ${text}`;
+    } else {
+      return null;
+    }
   }
   return { condensed, hoist };
 }
