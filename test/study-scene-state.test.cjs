@@ -358,7 +358,7 @@ test('an assistant who left the House is not on the wall', async () => {
 });
 
 /**
- * How a commission is dated for the wall's fourteen-day window.
+ * How a commission is dated for the wall's archive window.
  *
  * The ledger records when a card was RAISED and nothing about when it was
  * finished, so the closest thing to a conclusion time is the last time anything
@@ -388,7 +388,7 @@ test('a commission is dated by the last thing that happened on it', async () => 
 /**
  * The clock the shelf wall is bounded by, and the two ways it was being lied to.
  *
- * The wall keeps fourteen days of finished work and drops the oldest first, so
+ * The wall keeps ninety days of finished work and drops the oldest first, so
  * every mark on it depends on a date being either real or honestly absent.
  * Neither held:
  *
@@ -400,8 +400,8 @@ test('a commission is dated by the last thing that happened on it', async () => 
  *
  *   - a timestamp from the future — a skewed clock, a hand-typed year — was
  *     read as the newest thing that had happened. One such card sorts above
- *     every real one and stays inside the fourteen-day window until fourteen
- *     days after a date that has not happened yet.
+ *     every real one and stays inside the archive window until a window's length
+ *     after a date that has not happened yet.
  *
  * Both are quiet: the wall still draws, it just draws the wrong volumes.
  */

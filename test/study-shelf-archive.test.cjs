@@ -47,6 +47,19 @@ test('anything older than the window is off the wall', () => {
   assert.deepEqual(kept.map((k) => k.id), ['fresh']);
 });
 
+test('the wall remembers ninety days of finished work', () => {
+  // Written in days rather than read off the constant, so that the test fails
+  // if the window changes. Fourteen days was too short a memory for a wall of
+  // several hundred spines: it only filled if that much work concluded inside
+  // a fortnight, so most of the wall never changed.
+  const kept = S.shelfBooks([
+    thing('ninety-one', NOW - 91 * DAY),
+    thing('eighty-nine', NOW - 89 * DAY),
+    thing('fifteen', NOW - 15 * DAY)
+  ], NOW);
+  assert.deepEqual(kept.map((k) => k.id), ['eighty-nine', 'fifteen']);
+});
+
 test('a thing with no date is bounded by the count and not by the clock', () => {
   // The ledger is a file edited by hand, so a card can reach the wall with no
   // usable date on it at all. Dropping it for want of one would mean finished
