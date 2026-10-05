@@ -51,7 +51,10 @@ const task = (over = {}) => ({
   status: 'todo',
   dependsOn: [],
   priority: 3,
-  createdAt: '2026-08-27T00:00:00.000Z',
+  // Relative to the real clock, because the wall forgets finished work past
+  // its window: a fixed calendar date makes every case that reads this card
+  // start failing on whatever day that date ages out.
+  createdAt: new Date(Date.now() - 60 * 60_000).toISOString(),
   ...over
 });
 
