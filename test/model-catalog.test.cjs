@@ -167,6 +167,21 @@ test('no retired model id is offered by any preset', () => {
   }
 });
 
+test('no preset recommends a retired model id for god', () => {
+  // A preset's recommended orchestrator model is offered when that engine is
+  // picked to run god, outside the picker catalog, so the catalog check above
+  // never saw it.
+  const { AGENT_PROVIDER_PRESETS } = loadTs('src/shared/agentProvider.ts');
+  assert.ok(AGENT_PROVIDER_PRESETS.length >= 10, 'the presets were not loaded');
+  for (const preset of AGENT_PROVIDER_PRESETS) {
+    const id = preset.recommendedOrchestratorModel;
+    if (!id) continue;
+    for (const pattern of RETIRED_ID_SEGMENTS) {
+      assert.ok(!pattern.test(id), `${preset.id}: recommends "${id}", which matches a retired id pattern`);
+    }
+  }
+});
+
 test('the catalog is the schema config.ts expects', () => {
   assert.equal(catalog.version, 1);
   assert.deepEqual(
