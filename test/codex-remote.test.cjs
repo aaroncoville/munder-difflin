@@ -13,7 +13,9 @@ const {
   CODEX_REMOTE_SOCKET_RELATIVE
 } = loadTs('src/shared/codexRemote.ts');
 
-test('every agent gets its own short home, and the same one on every spawn', () => {
+test('every agent gets its own short home, and the same one on every spawn', {
+  skip: process.platform === 'win32' ? 'Codex remote uses Unix sockets and is disabled on Windows' : false
+}, () => {
   const first = codexShortHomePath('/very/long/hive/agent/.codex', 'dev-1', '/tmp');
   const again = codexShortHomePath('/very/long/hive/agent/.codex', 'dev-1', '/tmp');
   const other = codexShortHomePath('/very/long/hive/agent/.codex', 'dev-2', '/tmp');
