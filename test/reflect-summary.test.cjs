@@ -119,6 +119,20 @@ test('legacy JSON under a leading fence with prose after it still parses', () =>
   assert.deepEqual(parseSummary(output), { condensed: 'legacy summary', hoist: ['fact'] });
 });
 
+test('an echo of the prompt\'s format template is not a summary', () => {
+  // The prompt shows the frame with placeholders in it. A model that answers
+  // with that template alone has summarized nothing, and taking it would put
+  // the placeholder in place of the condensed history and pin a junk fact.
+  const echo = [CONDENSED, '<free-form condensed summary>', HOIST, '- <new durable fact, one per line>', END].join('\n');
+  assert.equal(parseSummary(echo), null);
+  assert.equal(parseSummary(`Here is the block:\n${echo}`), null);
+  assert.equal(parseSummary(frame('<free-form condensed summary>')), null, 'a placeholder summary');
+  assert.equal(parseSummary(frame('a real summary', ['<new durable fact, one per line>'])), null, 'a placeholder fact');
+  // Text that merely mentions the placeholder is still a summary.
+  assert.deepEqual(parseSummary(frame('The prompt shows <free-form condensed summary> as its example.')),
+    { condensed: 'The prompt shows <free-form condensed summary> as its example.', hoist: [] });
+});
+
 test('preserves valid legacy JSON and its existing hoist filtering', () => {
   const legacy = { condensed: 'legacy summary', hoist: ['fact', 42, null] };
   const expected = { condensed: 'legacy summary', hoist: ['fact'] };

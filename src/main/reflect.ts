@@ -70,6 +70,10 @@ const SUMMARY_MARKERS = [CONDENSED_MARKER, HOIST_MARKER, END_MARKER] as const;
 /** A hoist bullet as models write one, and the line a model writes for none. */
 const HOIST_BULLET = /^[-*\u2022]\s+/;
 const HOIST_NONE = /^\(?none\)?\.?$/i;
+/** The placeholders the prompt's format template shows. An answer that echoes
+ *  one back as its summary or as a fact has summarized nothing. */
+const CONDENSED_PLACEHOLDER = '<free-form condensed summary>';
+const HOIST_PLACEHOLDER = '<new durable fact, one per line>';
 
 /** Instruction prefix — kept byte-identical across calls (no dates/ids spliced
  *  in) so Claude Code prompt-caches it; the dynamic content goes in the tail. */
@@ -79,9 +83,9 @@ const CONDENSE_SYSTEM = [
   '(C) the PINNED durable-facts block (for context only — do not rewrite it).',
   'Output exactly one block in this format:',
   CONDENSED_MARKER,
-  '<free-form condensed summary>',
+  CONDENSED_PLACEHOLDER,
   HOIST_MARKER,
-  `${HOIST_BULLET_PREFIX}<new durable fact, one per line>`,
+  `${HOIST_BULLET_PREFIX}${HOIST_PLACEHOLDER}`,
   END_MARKER,
   'RULES:',
   '- The condensed section = a single bounded summary of (A)+(B). Re-summarize (A) together',
@@ -585,7 +589,7 @@ function parseFramedSummary(text: string): { condensed: string; hoist: string[] 
   if (!(condensedAt < hoistAt && hoistAt < endAt)) return null;
 
   const condensed = lines.slice(condensedAt + 1, hoistAt).join('\n').trim();
-  if (!condensed) return null;
+  if (!condensed || condensed === CONDENSED_PLACEHOLDER) return null;
 
   // The prompt asks for "- " bullets, but a model writes a list its own way: "*"
   // or "\u2022" bullets, a fact wrapped onto an indented second line, or "(none)"
@@ -607,6 +611,7 @@ function parseFramedSummary(text: string): { condensed: string; hoist: string[] 
       return null;
     }
   }
+  if (hoist.includes(HOIST_PLACEHOLDER)) return null;
   return { condensed, hoist };
 }
 
