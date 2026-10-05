@@ -238,6 +238,30 @@ test('a lost boot nudge is still re-sent: no turn was ever opened', () => {
   assert.equal(nudgesDuring(w, f, NOW, 2 * WORKER_WAKE_COOLDOWN_MS) > 0, true);
 });
 
+test('a CLI that says it is waiting for input has ended its turn, Stop or not', () => {
+  // An interrupted turn sends no Stop, and some engines never send one. The
+  // CLI's own "waiting for your input" notification is the same fact, so the
+  // turn closes there instead of shielding the worker until the ceiling.
+  const w = new WorkerWakeWatchdog();
+  w.noteSpawn('pty-kevin', NOW - 20 * 60_000);
+  w.noteHook('kevin', 'PreToolUse', undefined, NOW - 11 * 60_000);
+  w.noteHook('kevin', 'Notification', 'Codex is waiting for your input', NOW - 10 * 60_000 - 1);
+  const f = codex({ oldestMailAt: NOW - 10 * 60_000 });
+  assert.equal(w.explain(f, NOW), null, 'the idle notification did not close the turn');
+});
+
+test('a permission prompt does not end the turn', () => {
+  // A CLI asking to approve a tool is mid-turn and waiting on the human. The
+  // HITL hold covers the prompt itself; the turn must stay open behind it.
+  const w = new WorkerWakeWatchdog();
+  w.noteSpawn('pty-kevin', NOW - 20 * 60_000);
+  w.noteHook('kevin', 'PreToolUse', undefined, NOW - 11 * 60_000);
+  w.noteHook('kevin', 'Notification', 'Claude needs your permission to use Bash', NOW - 10 * 60_000 - 1);
+  const f = codex({ oldestMailAt: NOW - 10 * 60_000 });
+  const later = NOW + WORKER_WAKE_HITL_REARM_MS;
+  assert.equal(w.explain({ ...f, lastOutputAt: later - 1_000 }, later), 'mid-turn');
+});
+
 test('a turn whose Stop was lost stops shielding the worker after the ceiling', () => {
   const w = new WorkerWakeWatchdog();
   w.noteSpawn('pty-kevin', NOW - 60 * 60_000);

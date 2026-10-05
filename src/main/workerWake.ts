@@ -70,7 +70,8 @@ export const WORKER_WAKE_HITL_REARM_MS = 5 * 60_000;
 export const WORKER_WAKE_STALL_MS = 90_000;
 /** How long an open turn keeps the stall rule off with no further hook. A
  *  turn is open from the hook that starts one (a prompt, a tool call, a
- *  subagent) until Stop; while it is open the worker is working, whatever its
+ *  subagent) until Stop, or until the CLI notifies that it is waiting for
+ *  input; while it is open the worker is working, whatever its
  *  mail's age, and typing into it lands keystrokes in the middle of that work.
  *  A Stop the harness never heard would hold the worker for good, so past this
  *  long since the turn's last hook it no longer counts as open. */
@@ -267,8 +268,11 @@ export class WorkerWakeWatchdog {
     if (!agentId) return;
     this.hookSeenAt.set(agentId, at);
     if (isTurnHook(event) && at > (this.lastTurnHookAt.get(agentId) ?? 0)) this.lastTurnHookAt.set(agentId, at);
-    if (event === 'Stop' || event === 'StopFailure') this.openTurnAt.delete(agentId);
-    else if (event === 'UserPromptSubmit' || event === 'PreToolUse' || event === 'SubagentStart') this.openTurnAt.set(agentId, at);
+    // The CLI saying it waits for input ends the turn as surely as Stop does,
+    // and it is the only end an interrupted turn or a Stop-less engine sends.
+    if (event === 'Stop' || event === 'StopFailure' || classifyHook(event, message) === 'idle') {
+      this.openTurnAt.delete(agentId);
+    } else if (event === 'UserPromptSubmit' || event === 'PreToolUse' || event === 'SubagentStart') this.openTurnAt.set(agentId, at);
     else if (isTurnHook(event) && this.openTurnAt.has(agentId)) this.openTurnAt.set(agentId, at);
     if (classifyHook(event, message) === 'needsHuman') this.lastHumanNeedsAt.set(agentId, at);
   }
