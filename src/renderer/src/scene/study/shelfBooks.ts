@@ -429,8 +429,15 @@ export const SHELF_BOOKS: readonly { x: number; y: number; w: number; h: number 
  */
 export const ARCHIVE_MAX = SHELF_BOOKS.length;
 
-/** How far back the wall remembers, for the things that carry a date. */
-export const ARCHIVE_WINDOW_DAYS = 14;
+/**
+ * How far back the wall remembers, for the things that carry a date.
+ *
+ * Ninety days, because the wall has a spine for every one of several hundred
+ * commissions and a shorter memory leaves most of them unused: at fourteen days
+ * the wall only filled if that much work concluded inside a fortnight. The
+ * count still bounds it, so a busy quarter loses its oldest first.
+ */
+export const ARCHIVE_WINDOW_DAYS = 90;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 

@@ -176,7 +176,7 @@ function deskOf(books: DeskVolume[]):
  * The date is the last thing the ledger records happening on the card, not the
  * date it was raised. Nothing in `tasks.json` records a completion time, and
  * `createdAt` is the wrong stand-in for one: dating by it would drop a
- * long-running commission off the fourteen-day window the moment it finished,
+ * long-running commission off the archive window the moment it finished,
  * which is precisely the commission most worth having marked.
  *
  * Two kinds of date are refused rather than believed, because the ledger is a
@@ -184,7 +184,7 @@ function deskOf(books: DeskVolume[]):
  *
  *   - A stamp LATER than the projection's own clock did not happen. A skewed
  *     machine or a hand-typed year puts one card above every real one and keeps
- *     it inside the fourteen-day window until fourteen days after a date that
+ *     it inside the archive window until a window's length after a date that
  *     has not arrived — displacing recent work the whole time.
  *   - A card with no readable date at all is `null`, and stays `null`. It is
  *     then bounded by the count alone, which is the documented behaviour for
@@ -297,7 +297,7 @@ export function useSceneState(): SceneState {
   }, []);
 
   // `now` is read on each projection rather than held in state: the window is
-  // fourteen days wide, so a clock that only advances when the roster or the
+  // ninety days wide, so a clock that only advances when the roster or the
   // ledger changes is exact enough, and one that ticked would re-render the
   // whole house for nothing.
   return useMemo(
