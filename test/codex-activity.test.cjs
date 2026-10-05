@@ -318,13 +318,14 @@ function runFleetSnapshot({ root, registry, usage, homes }) {
   const telemetry = { snapshot: () => ({ usage, spans: {} }) };
   const costTotals = { refresh: () => {}, usdFor: () => null };
   const breaker = { levelFor: () => 'ok' };
+  const hookServer = { health: () => ({ listening: true }) };
   // eslint-disable-next-line no-new-func
   new Function(
-    'hive', 'telemetry', 'costTotals', 'breaker', 'join',
+    'hive', 'telemetry', 'costTotals', 'breaker', 'hookServer', 'join',
     'fleetLastActiveAt', 'codexAgentActiveAt', 'codexHomes', 'codexActivityCache',
     `${body}\nwriteFleetSnapshot();`
   )(
-    hive, telemetry, costTotals, breaker, path.join,
+    hive, telemetry, costTotals, breaker, hookServer, path.join,
     fleetLastActiveAt, codexAgentActiveAt, homes, new ReadingCache(30_000)
   );
   assert.ok(written, 'writeFleetSnapshot wrote a snapshot');
@@ -398,7 +399,7 @@ test('the spawn path records where a resumed Codex worker really runs', () => {
   assert.match(redirect, /codexResumedSession = sid;/);
   const record = sa.boundedSlice(src, 'ptyToAgent.set(opts.id, opts.hive.id);', 'workerWake.noteSpawn(opts.id);');
   assert.match(record, /codexHomes\.recordSpawn\(opts\.hive\.id, opts\.env\?\.CODEX_HOME, codexResumedSession\)/);
-  const snapshot = sa.boundedSlice(src, 'function writeFleetSnapshot(): void {', 'hive.writeFleetSnapshot({ ts: now, agents });');
+  const snapshot = sa.boundedSlice(src, 'function writeFleetSnapshot(): void {', 'hive.writeFleetSnapshot({ ts: now, agents, hooks: hookServer.health() });');
   assert.match(snapshot, /a\.sessionIds \?\? \(a\.sessionId/);
   assert.match(snapshot, /codexHomes\.noteSession\(id, sid\)/);
   assert.match(snapshot, /codexActivityCache/);

@@ -279,6 +279,22 @@ test('fix: preambled/trailing-prose response now condenses successfully', async 
   assert.equal(calls.length, 1);
 });
 
+test('fix: a framed answer with a preamble and trailing prose condenses successfully', async () => {
+  // The same model habit as the JSON case above, under the framed contract the
+  // prompt now asks for.
+  const { home } = homeWith('a1', fixture({
+    sections: [section('old one', 300), section('old two', 300), section('newest', 300)]
+  }));
+  const { MemoryReflector, calls } = loadReflectWithStub(() => ({
+    ok: true,
+    text: 'Here is the condensed block:\n<<<CONDENSED>>>\ntight summary\n<<<HOIST>>>\n(none)\n<<<END>>>\nHope that helps!'
+  }));
+  const reflector = makeReflector({ MemoryReflector }, home, { recentKeep: 1 });
+  const [result] = await reflector.reflectNow('a1');
+  assert.equal(result.condensed, true, `framed answer was refused: ${result.reason}`);
+  assert.equal(calls.length, 1);
+});
+
 test('repro: an embedded "## " line in the model output causes recent-count-mismatch pre-fix shape; demote fixes it', async () => {
   const { home, mem } = homeWith('a1', fixture({
     sections: [section('old one', 300), section('old two', 300), section('newest', 300)]

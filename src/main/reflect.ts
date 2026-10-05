@@ -60,24 +60,44 @@ const PINNED_HEADING = '## 📌 Durable facts (pinned — never condensed)';
 const CONDENSED_HEADING = '## 🗜 Condensed history';
 const RECENT_HEADING = '## Recent';
 
+0/** Line-oriented output protocol. The prompt and parser share these literals so
+ *  the contract cannot drift without changing both sides together. */
+const CONDENSED_MARKER = '<<<CONDENSED>>>';
+const HOIST_MARKER = '<<<HOIST>>>';
+const END_MARKER = '<<<END>>>';
+const HOIST_BULLET_PREFIX = '- ';
+const SUMMARY_MARKERS = [CONDENSED_MARKER, HOIST_MARKER, END_MARKER] as const;
+/** A hoist bullet as models write one, and the line a model writes for none. */
+const HOIST_BULLET = /^[-*\u2022]\s+/;
+const HOIST_NONE = /^\(?none\)?\.?$/i;
+
 /** Instruction prefix — kept byte-identical across calls (no dates/ids spliced
  *  in) so Claude Code prompt-caches it; the dynamic content goes in the tail. */
 const CONDENSE_SYSTEM = [
   "You are compacting one AI agent's long-term memory file. You will receive:",
   '(A) the current CONDENSED summary, (B) older RECENT sections being evicted,',
   '(C) the PINNED durable-facts block (for context only — do not rewrite it).',
-  'Produce STRICT JSON: {"condensed": "<text>", "hoist": ["<line>", ...]}.',
+  'Output exactly one block in this format:',
+  CONDENSED_MARKER,
+  '<free-form condensed summary>',
+  HOIST_MARKER,
+  `${HOIST_BULLET_PREFIX}<new durable fact, one per line>`,
+  END_MARKER,
   'RULES:',
-  '- "condensed" = a single bounded summary of (A)+(B). Re-summarize (A) together',
+  '- The condensed section = a single bounded summary of (A)+(B). Re-summarize (A) together',
   '  with (B) so the result does not grow unbounded. Target <= 1500 words. Preserve',
   '  every decision, root cause, protocol, file path, commit SHA, and numeric result.',
   '  Drop routine standup chatter, resolved blockers, and superseded plans.',
-  '- "hoist" = any NEW high-importance durable fact found in (B) that belongs in the',
-  '  pinned block and is not already in (C). Lines only; may be empty.',
-  '- Never start a line inside "condensed" with "## " (a level-2 heading) — that',
-  '  exact prefix is this file\'s section-boundary marker, so it would corrupt the',
+  '- Write the condensed section as literal free-form text; do not JSON-encode or escape it.',
+  '- The hoist section = any NEW high-importance durable fact found in (B) that belongs',
+  '  in the pinned block and is not already in (C). Prefix every fact with "- ".',
+  '- Leave the hoist section empty when there are no new durable facts.',
+  `- ${SUMMARY_MARKERS.join(', ')} must each appear exactly once on a line by itself,`,
+  '  in that order. Never copy these marker strings into either section.',
+  '- Never start a line inside the condensed section with "## " (a level-2 heading) —',
+  '  that exact prefix is this file\'s section-boundary marker, so it would corrupt the',
   '  file structure. Use bold text or a "### " sub-heading instead.',
-  '- Output ONLY the JSON object. No prose before or after it, no code fence.'
+  '- Output ONLY the framed block. No surrounding prose or code fence.'
 ].join('\n');
 
 export interface ReflectSettings {
@@ -353,7 +373,7 @@ export class MemoryReflector {
 
       if (result.ok && result.text) {
         const parsed = parseSummary(result.text);
-        if (!parsed) throw new Error('condense: response contained no parseable JSON');
+        if (!parsed) throw new Error('condense: response contained no parseable summary');
         return parsed;
       }
 
@@ -483,7 +503,7 @@ export function verify(args: {
   condensed: string; keep: Section[];
 }): { ok: true } | { ok: false; reason: string } {
   const { rebuilt, newBytes, oldBytes, oldPinnedLines, mergedPinned, condensed, keep } = args;
-  // 6) Valid summary JSON already enforced upstream (parseSummary). Here: structure.
+  // 6) Valid summary structure already enforced upstream (parseSummary). Here: memory shape.
   // 1) Parses back into the 3-region structure.
   const re = parseMemory(rebuilt);
   if (re.pinned === null || re.condensed === null) return { ok: false, reason: 'structure-missing-region' };
@@ -506,27 +526,96 @@ export function verify(args: {
   return { ok: true };
 }
 
-/** Pull `{condensed, hoist}` out of `claude -p --output-format json` output.
- *  Two layers: the CLI envelope `{result: "<text>"}`, then the model's strict
- *  JSON. The model layer tries three shapes in order — the whole trimmed text
- *  as-is, a ```json fence ANYWHERE in the text (not just wrapping the whole
- *  string), then a balanced `{...}` scan that finds the object even under
- *  preamble/trailing prose the model added despite the contract. This was the
- *  single biggest condense-abort class (195 of 855): the old version only
- *  handled a fence anchored to the start/end of the string, so an "Here is
- *  the JSON:" preamble or trailing commentary failed outright. Returns null
- *  only when none of the three shapes yield a usable object. */
-export function parseSummary(stdout: string): { condensed: string; hoist: string[] } | null {
-  const raw = stdout.trim();
-  if (!raw) return null;
-  let inner = raw;
+/** Unwrap the JSON envelope emitted by `claude -p --output-format json`. If the
+ *  text is not a recognized envelope, preserve it as direct model output. */
+function unwrapCliEnvelope(raw: string): string {
   try {
-    const env = JSON.parse(raw) as { result?: unknown; text?: unknown };
-    if (typeof env.result === 'string') inner = env.result;
-    else if (typeof env.text === 'string') inner = env.text;
-  } catch { /* not the CLI envelope — treat stdout itself as the model output */ }
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object') return raw;
+    const env = parsed as { result?: unknown; text?: unknown };
+    if (typeof env.result === 'string') return env.result;
+    if (typeof env.text === 'string') return env.text;
+    return raw;
+  } catch {
+    return raw;
+  }
+}
 
-  const obj = extractJsonObject(inner);
+/** Strip a complete outer code fence; anything else is returned as it came.
+ *  Looking only at boundary lines preserves fences in the payload. */
+function stripOuterCodeFence(text: string): string {
+  const lines = text.split('\n');
+  if (!/^```[A-Za-z0-9_-]*\s*$/.test(lines[0].trim())) return text;
+  // An opening fence with no closing line is not an outer fence; the text goes
+  // on to the frame or JSON readers, which find their own boundaries in it.
+  if (lines.length < 2 || lines[lines.length - 1].trim() !== '```') return text;
+  return lines.slice(1, -1).join('\n').trim();
+}
+
+function isMarkerLine(line: string, marker: string): boolean {
+  return line.trim() === marker;
+}
+
+function hasFramedMarker(text: string): boolean {
+  const lines = text.split('\n');
+  return SUMMARY_MARKERS.some((marker) => lines.some((line) => isMarkerLine(line, marker)));
+}
+
+/** Return the marker's sole line index. Missing and duplicated markers are both
+ *  invalid because either makes the frame boundary ambiguous. */
+function findUniqueMarkerLine(lines: string[], marker: string): number | null {
+  let found = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (!isMarkerLine(lines[i], marker)) continue;
+    if (found !== -1) return null;
+    found = i;
+  }
+  return found === -1 ? null : found;
+}
+
+function parseFramedSummary(text: string): { condensed: string; hoist: string[] } | null {
+  const lines = text.split('\n');
+  const condensedAt = findUniqueMarkerLine(lines, CONDENSED_MARKER);
+  const hoistAt = findUniqueMarkerLine(lines, HOIST_MARKER);
+  const endAt = findUniqueMarkerLine(lines, END_MARKER);
+
+  // Each marker appears exactly once, so the frame's bounds are unambiguous
+  // wherever it sits; prose or a fence the model put around it is not read.
+  if (condensedAt === null || hoistAt === null || endAt === null) return null;
+  if (!(condensedAt < hoistAt && hoistAt < endAt)) return null;
+
+  const condensed = lines.slice(condensedAt + 1, hoistAt).join('\n').trim();
+  if (!condensed) return null;
+
+  // The prompt asks for "- " bullets, but a model writes a list its own way: "*"
+  // or "\u2022" bullets, a fact wrapped onto an indented second line, or "(none)"
+  // for an empty section. Anything else is not a hoist list and fails closed.
+  const hoist: string[] = [];
+  for (const line of lines.slice(hoistAt + 1, endAt)) {
+    const text = line.trim();
+    if (!text) continue;
+    if (hoist.length === 0 && HOIST_NONE.test(text)) continue;
+    const bullet = HOIST_BULLET.exec(text);
+    if (bullet) {
+      const fact = text.slice(bullet[0].length).trim();
+      if (!fact) return null;
+      if (hoist.length === 0 && HOIST_NONE.test(fact)) continue;
+      hoist.push(fact);
+    } else if (hoist.length > 0 && /^\s/.test(line)) {
+      hoist[hoist.length - 1] += ` ${text}`;
+    } else {
+      return null;
+    }
+  }
+  return { condensed, hoist };
+}
+
+/** Preserve the original JSON response contract as a compatibility path for
+ *  in-flight or older model responses that do not contain frame markers. The
+ *  object is found under the same tolerant shapes as before the frame existed,
+ *  because a model answering in JSON also adds a preamble or a fence around it. */
+function parseLegacyJsonSummary(text: string): { condensed: string; hoist: string[] } | null {
+  const obj = extractJsonObject(text);
   if (!obj || typeof obj.condensed !== 'string' || !obj.condensed.trim()) return null;
   const hoist = Array.isArray(obj.hoist) ? obj.hoist.filter((x): x is string => typeof x === 'string') : [];
   return { condensed: obj.condensed, hoist };
@@ -577,6 +666,23 @@ function firstBalancedObject(text: string): string | null {
     }
   }
   return null;
+}
+
+/** Pull `{condensed, hoist}` out of CLI output. New responses use a literal-text
+ *  frame; valid legacy JSON remains accepted. Any partial frame fails closed and
+ *  is never reinterpreted as legacy JSON. */
+export function parseSummary(stdout: string): { condensed: string; hoist: string[] } | null {
+  if (typeof stdout !== 'string') return null;
+  const raw = stdout.trim();
+  if (!raw) return null;
+
+  const unwrapped = unwrapCliEnvelope(raw).replace(/\r\n?/g, '\n').trim();
+  if (!unwrapped) return null;
+  const inner = stripOuterCodeFence(unwrapped);
+  if (!inner) return null;
+
+  if (hasFramedMarker(inner)) return parseFramedSummary(inner);
+  return parseLegacyJsonSummary(inner);
 }
 
 /** `20260606T110912Z` — matches the janitor's backup-dir stamp format. */
