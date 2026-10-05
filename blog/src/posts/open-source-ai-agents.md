@@ -36,7 +36,7 @@ It is a program that calls a language model in a loop and uses tools to finish a
 
 **2. Munder Difflin.** [Munder Difflin](https://harnessmd.com/download) is what we make: a free and open source desktop app (MIT) that runs a team of named AI agents on your own computer. Each agent runs on a CLI engine you already use, such as Claude Code, Codex, Gemini CLI, OpenCode or Cursor, and keeps its own `memory.md`, inbox and outbox. You can put missions on schedules, and a Slack trigger feeds requests to Michael, the orchestrator who hands work out. The limits: agents run only while your computer does, you install and sign in to each CLI yourself, and anonymous usage telemetry is on by default (you can turn it off in Settings). Best for: project work spread over several engines. The [install guide](/blog/how-to-install-and-use-munder-difflin/) covers setup.
 
-**3. Hermes Agent.** [Hermes Agent](https://github.com/NousResearch/hermes-agent) from Nous Research is built around a learning loop: it curates its own memory, writes skills after complex tasks and searches its past sessions. It has a built in cron scheduler, talks over Telegram, Slack, Signal and more, and runs on a laptop, a VPS or serverless backends. Best for: a server agent that improves with use.
+**3. Hermes Agent.** [Hermes Agent](https://github.com/NousResearch/hermes-agent) from Nous Research is built around a learning loop: it curates its own memory, writes skills after complex tasks and searches its past sessions. It has a built in cron scheduler, talks over Telegram, Slack, Signal and more, and runs on a laptop, a VPS or serverless backends. Best for: a server agent that improves with use. Our [Hermes Agent explainer](/blog/what-is-hermes-agent/) covers the install command, the models it takes and what it costs.
 
 **4. NanoClaw.** [NanoClaw](https://github.com/nanocoai/nanoclaw) is a lightweight alternative to OpenClaw that runs each agent in its own Linux container, so isolation comes from the operating system rather than permission checks. Its author writes that they couldn't have slept after giving software they didn't understand full access to their life, which is a fair review of most agents. Best for: reading every line of the thing that touches your accounts.
 
@@ -47,6 +47,8 @@ It is a program that calls a language model in a loop and uses tools to finish a
 **6. Cline.** Cline (Apache 2.0) calls itself the open source coding agent in your IDE, terminal and desktop. Best for: working inside your editor.
 
 **7. Aider.** [Aider](https://github.com/Aider-AI/aider) (Apache 2.0) is AI pair programming in your terminal, with git built into the loop. Its latest release is from August 2025. Best for: a small, proven tool, if slow updates are fine.
+
+One more for the terminal: Pi, Earendil's MIT licensed agent harness, which leaves out plan mode and subagents on purpose. Our [what is Pi agent](/blog/what-is-pi-agent/) explainer covers its 1.0 release.
 
 **8. OpenHands.** OpenHands (MIT), formerly OpenDevin, leads its README with Agent Canvas: a self hosted control center that runs the OpenHands agent, Claude Code, Codex or Gemini on local, Docker, VM or cloud backends. Best for: a shared agent server for a team.
 

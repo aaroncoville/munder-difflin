@@ -15,6 +15,7 @@ const ts = require('typescript');
 const loadTs = require('./load-ts.cjs');
 
 const { enrichStallLines, STALL_ENRICH_BUDGET_MS } = loadTs('src/main/codexActivity.ts');
+const { activityEvidenceAt } = loadTs('src/main/workerWake.ts');
 const REPO = path.resolve(__dirname, '..');
 const SLOW_READ_MS = 120;
 
@@ -54,6 +55,9 @@ function floor({ nudges, failObserve = [] }) {
       appendLog: () => {}
     },
     ptyForAgent: () => 'pty',
+    // No CLI exports telemetry here, so the stall rule sees no turns either way.
+    telemetry: { getAgentUsage: () => null, getSpans: () => [] },
+    activityEvidenceAt,
     control: { snapshot: () => ({}) },
     ptyManager: {
       lastOutputAt: () => 1,

@@ -31,24 +31,18 @@ export function buildWorkerLaunch(opts: {
   /** The app's auto (skip-permissions) setting. */
   autoMode: boolean;
 }): WorkerLaunch {
-  // Which BINARY the request means, in precedence order: the command the request
-  // spells out, else the named provider's own preset binary, else the app-wide
-  // default. That middle rung is the whole point — a request naming a provider
-  // but no command used to fall straight through to the global default and then
-  // get the PROVIDER'S auto flag bolted onto it below, producing a command line
-  // no CLI accepts (`claude -a never -s workspace-write`, which claude answers
-  // with `error: unknown option '-a'` and exits inside 150ms — before the worker
-  // can read its objective, while its spawn request archives as done).
-  // The `custom` provider has no binary of its own, so it keeps the default —
-  // that is what defaultCommandForProvider's fallback is for.
-  const requested = normalizeAgentProvider(opts.requestProvider);
-  const fallbackCommand = opts.defaultCommand ?? 'claude';
-  let command =
+  const requestCommand =
     typeof opts.requestCommand === 'string' && opts.requestCommand.trim()
       ? opts.requestCommand.trim()
-      : requested
-        ? defaultCommandForProvider(requested, fallbackCommand) || fallbackCommand
-        : fallbackCommand;
+      : '';
+  const requestProvider = normalizeAgentProvider(opts.requestProvider);
+  const fallbackCommand = opts.defaultCommand ?? 'claude';
+  // An explicit command may be a wrapper or shim and remains authoritative.
+  // Without one, keep the executable and provider behavior coherent by taking
+  // the provider's canonical command before the configured legacy fallback.
+  let command =
+    requestCommand ||
+    (requestProvider ? defaultCommandForProvider(requestProvider, fallbackCommand) : fallbackCommand);
   // Inherit the app's auto (skip-permissions) mode when the request takes no
   // stance of its own: a headless worker has no human to click through tool
   // prompts, so without the flag it stalls at the first ask until the idle
@@ -58,7 +52,7 @@ export function buildWorkerLaunch(opts: {
   // non-claude worker stalling; review caught it). An explicit stance in the
   // request still wins: the flag's leading token already present as a TOKEN
   // (not substring — copilot's flag starts with `-s`) means the request chose.
-  const provider = inferAgentProvider(command, opts.requestProvider);
+  const provider = inferAgentProvider(command, requestProvider);
   const autoFlag = opts.autoMode ? autoModeFlagForProvider(provider) : '';
   if (autoFlag && !hasAutoModeStance(tokenizeCommand(command), provider)) {
     command += ` ${autoFlag}`;

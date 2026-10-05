@@ -17,7 +17,7 @@ permalink: /topics/index.html
   <div class="post-grid">
     {% for c in collections.categories %}
     <a class="card" href="{{ ('/topics/' + c.slug + '/') | u }}" style="text-decoration:none">
-      {%- if c.slug in ["guides", "orchestration", "memory", "internals", "concepts", "comparisons", "use-cases", "story"] %}
+      {%- if c.slug in ["guides", "orchestration", "memory", "internals", "concepts", "comparisons", "use-cases", "story", "news"] %}
       <span class="thumb t-{{ c.slug }}" aria-hidden="true"><img src="{{ ('/assets/media/topics/' + c.slug + '.png') | u }}" alt="" width="960" height="540" loading="lazy" decoding="async" /></span>
       {%- else %}
       <span class="thumb t-{{ c.slug }}" aria-hidden="true">{{ c.name | upper }}</span>
