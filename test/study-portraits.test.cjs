@@ -95,13 +95,12 @@ test('an assistant named for nothing in the pack still gets a face', () => {
     'the fallback keys on the id, so a rename does not reshuffle the room');
 });
 
-test('the orchestrator wears the Sixth History mark', () => {
-  // Fascination remains reserved from workers, but the branded fork represents
-  // the House itself with its licensed mark instead of a Michael portrait.
+test('the orchestrator wears the reserved Librarian portrait', () => {
+  // Fascination is the Librarian's face across the Study and occult chrome.
   assert.equal(GOD_PORTRAIT, 'fascination');
   assert.ok(portraitNamed(GOD_PORTRAIT), 'the reserved portrait is not in the pack');
-  assert.match(portraitFor({ id: 'god-1', name: 'Michael', isGod: true }),
-    /sixth-history\/logo\.png$/, 'the orchestrator does not wear the House mark');
+  assert.equal(portraitFor({ id: 'god-1', name: 'Michael', isGod: true }),
+    portraitNamed(GOD_PORTRAIT), 'the orchestrator does not wear the Librarian portrait');
   // And it is reserved: a worker cannot be dealt it by the hash.
   const dealt = new Set(Array.from({ length: 400 }, (_, i) =>
     portraitFor({ id: `w-${i}`, name: `nameless-${i}` })));

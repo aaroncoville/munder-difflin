@@ -34,10 +34,10 @@ test('the Librarian and terminal use the scene darks instead of paper surfaces',
   assert.match(terminal, /'editor\.background':\s*'#120F1B'/);
 });
 
-test('the orchestrator uses the Sixth History mark instead of a Michael portrait', () => {
+test('the occult orchestrator uses the reserved Librarian portrait', () => {
   const portraits = read('src/renderer/src/scene/study/portraits.ts');
-  assert.match(portraits, /sixthHistoryLogo/);
-  assert.match(portraits, /if \(agent\.isGod\) return sixthHistoryLogo/);
+  assert.doesNotMatch(portraits, /sixthHistoryLogo/);
+  assert.match(portraits, /if \(agent\.isGod\) return portraitNamed\(GOD_PORTRAIT\)/);
 });
 
 test('packaged icon assets exist for every desktop target', () => {
