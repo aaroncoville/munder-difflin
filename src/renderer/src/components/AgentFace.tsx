@@ -47,7 +47,7 @@ export function AgentFace({ id, name, character, scale = 2, isGod }: AgentFacePr
       style={{
         width: '100%',
         height: '100%',
-        objectFit: isGod ? 'contain' : 'cover',
+        objectFit: 'cover',
         userSelect: 'none'
       }}
     />
