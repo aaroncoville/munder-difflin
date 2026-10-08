@@ -251,6 +251,19 @@ test('timeout budget scales with the eviction payload size', async () => {
   assert.ok(calls[0].opts.timeoutMs > 180_000, 'a large eviction payload must get more than the base budget');
 });
 
+test('the condenser summarizes with Haiku 5.5, a model the app ships in its catalog', async () => {
+  // A slug the CLI does not know fails every condense with a 400, and the janitor
+  // would abort on every pass without ever shrinking a memory file.
+  const { home } = homeWith('a1', fixture({ sections: [section('a', 300), section('b', 300)] }));
+  const { MemoryReflector, calls } = loadReflectWithStub(() => ({ ok: false, error: 'hidden session timed out' }));
+  const reflector = makeReflector({ MemoryReflector }, home, { recentKeep: 1 });
+  await reflector.reflectNow('a1');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].opts.model, 'claude-haiku-5-5');
+  const catalog = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'src/shared/modelCatalog.json'), 'utf8'));
+  assert.ok(catalog.providers.claude.some((m) => m.id === calls[0].opts.model), 'the condenser model is in the catalog');
+});
+
 test('repro: unparseable response aborts cleanly, no wasted retry', async () => {
   const { home, mem } = homeWith('a1', fixture({
     sections: [section('old one', 300), section('old two', 300), section('newest', 300)]
