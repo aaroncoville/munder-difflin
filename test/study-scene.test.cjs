@@ -732,7 +732,7 @@ test('an assistant named for a portrait wears that portrait', async () => {
   assert.equal(card.props.portraitSrc, want, 'the card was dealt a face instead');
 });
 
-test('the orchestrator wears the Sixth History mark', async () => {
+test('the orchestrator wears the reserved Librarian portrait', async () => {
   // portraitFor reserves one portrait for the god, but it can only apply that
   // rule if the scene tells it which card is the god's. Nothing else in the
   // projection distinguishes that card, so a projection that drops the flag
@@ -741,9 +741,10 @@ test('the orchestrator wears the Sixth History mark', async () => {
   const cards = all(view.tree, (n) => n.type === AgentCard);
   const god = cards.find((c) => c.props.name === 'GOD-1');
   assert.ok(god, 'the god has a card');
-  assert.match(god.props.portraitSrc, /sixth-history\/logo\.png$/,
-    'the orchestrator does not wear the House mark');
-  assert.equal(god.props.houseMark, true, 'the square House mark is cropped like portrait art');
+  assert.match(god.props.portraitSrc, /portraits\/fascination\.png$/,
+    'the orchestrator does not wear the Librarian portrait');
+  // The card reads this flag to choose the reserved portrait itself.
+  assert.equal(god.props.houseMark, true, 'the card is not told it is the orchestrator\'s');
 });
 
 test('the only unexpandable wrappers are the ones that drive an element', () => {
