@@ -813,7 +813,7 @@ export function resetConfig(): HarnessConfig {
  *  src/renderer/src/store/config.ts reads. */
 const MODEL_GOD = 'claude-opus-4-8';                  // orchestration — highest capability
 const MODEL_WORKER = 'claude-sonnet-4-6';             // general execution
-const MODEL_HELPER = 'claude-haiku-4-5-20251001';     // narrow, cheap helpers
+const MODEL_HELPER = 'claude-haiku-5-5';              // narrow, cheap helpers
 
 /** Minimal structural shape for tiering — a subset of AgentMeta so config.ts
  *  stays free of a hive.ts import. */

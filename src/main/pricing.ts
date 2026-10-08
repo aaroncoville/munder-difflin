@@ -27,6 +27,8 @@ export interface ModelPrice {
 const OPUS: ModelPrice = { inputPerM: 15, outputPerM: 75, cacheReadPerM: 1.5, cacheWritePerM: 18.75 };
 const SONNET: ModelPrice = { inputPerM: 3, outputPerM: 15, cacheReadPerM: 0.3, cacheWritePerM: 3.75 };
 const HAIKU: ModelPrice = { inputPerM: 0.8, outputPerM: 4, cacheReadPerM: 0.08, cacheWritePerM: 1.0 };
+// Haiku 5.5 lists far below the row above, so it cannot share it.
+const HAIKU_5_5: ModelPrice = { inputPerM: 0.1, outputPerM: 0.5, cacheReadPerM: 0.01, cacheWritePerM: 0.125 };
 
 /** When the model id is unknown, assume Sonnet (the historical default). */
 const DEFAULT_PRICE: ModelPrice = SONNET;
@@ -45,6 +47,7 @@ export function normalizeModel(model: string | undefined | null): string {
 export function priceFor(model: string | undefined | null): ModelPrice {
   const m = normalizeModel(model).toLowerCase();
   if (m.includes('opus')) return OPUS;
+  if (m.includes('haiku-5-5')) return HAIKU_5_5;
   if (m.includes('haiku')) return HAIKU;
   if (m.includes('sonnet')) return SONNET;
   return DEFAULT_PRICE;
