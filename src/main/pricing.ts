@@ -29,6 +29,10 @@ const SONNET: ModelPrice = { inputPerM: 3, outputPerM: 15, cacheReadPerM: 0.3, c
 const HAIKU: ModelPrice = { inputPerM: 0.8, outputPerM: 4, cacheReadPerM: 0.08, cacheWritePerM: 1.0 };
 // Haiku 5.5 lists far below the row above, so it cannot share it.
 const HAIKU_5_5: ModelPrice = { inputPerM: 0.1, outputPerM: 0.5, cacheReadPerM: 0.01, cacheWritePerM: 0.125 };
+// OpenAI list prices for the Codex models, standard tier, prompts up to 272K
+// tokens. Codex reports cached input but no separate cache-write charge.
+const GPT_5_6_SOL: ModelPrice = { inputPerM: 4, outputPerM: 20, cacheReadPerM: 0.4, cacheWritePerM: 0 };
+const GPT_6_1_SOL: ModelPrice = { inputPerM: 2, outputPerM: 10, cacheReadPerM: 0.1, cacheWritePerM: 0 };
 
 /** When the model id is unknown, assume Sonnet (the historical default). */
 const DEFAULT_PRICE: ModelPrice = SONNET;
@@ -50,6 +54,8 @@ export function priceFor(model: string | undefined | null): ModelPrice {
   if (m.includes('haiku-5-5')) return HAIKU_5_5;
   if (m.includes('haiku')) return HAIKU;
   if (m.includes('sonnet')) return SONNET;
+  if (m === 'gpt-5.6-sol') return GPT_5_6_SOL;
+  if (m === 'gpt-6.1-sol') return GPT_6_1_SOL;
   return DEFAULT_PRICE;
 }
 
