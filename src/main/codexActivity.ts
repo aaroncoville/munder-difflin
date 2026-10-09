@@ -313,3 +313,27 @@ export function enrichStallLines<L extends { agentId: string }>(
     return { ...line, codex: codexStallFacts(rolloutAt, catchupAt, now, beatMs) };
   });
 }
+
+/** The rollout file a Codex session writes, under this Codex home's `sessions`
+ *  or, failing that, `archived_sessions`; null when neither holds it. The same
+ *  bounded, never-throwing walk as the activity readers. */
+export function rolloutFileFor(codexHome: string, sessionId: string): string | null {
+  const want = sessionId.toLowerCase();
+  const find = (dir: string, depth: number): string | null => {
+    let entries: string[];
+    try { entries = readdirSync(dir); } catch { return null; }
+    for (const name of entries) {
+      try {
+        const full = join(dir, name);
+        if (statSync(full).isDirectory()) {
+          const hit = depth < MAX_DEPTH ? find(full, depth + 1) : null;
+          if (hit) return hit;
+        } else if (ROLLOUT_FILE.test(name) && ROLLOUT_SESSION.exec(name)?.[1]?.toLowerCase() === want) {
+          return full;
+        }
+      } catch { /* removed mid-walk */ }
+    }
+    return null;
+  };
+  return find(join(codexHome, 'sessions'), 1) ?? find(join(codexHome, 'archived_sessions'), 1);
+}

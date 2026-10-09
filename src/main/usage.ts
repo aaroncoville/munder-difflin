@@ -138,3 +138,69 @@ export class CumulativeSampleGate {
     this.last.delete(agentId);
   }
 }
+
+/**
+ * Whether a provider's ledger rows go through a CumulativeSampleGate. Grok and
+ * Codex samples come from files the CLI keeps, so they always carry a session
+ * id and would otherwise be appended unchanged on every beat. The live-OTel
+ * path is not gated: it only yields a session id while a session is live.
+ */
+export function usesCumulativeGate(provider: string | undefined): boolean {
+  return provider === 'grok' || provider === 'codex';
+}
+
+/**
+ * What a cumulative file sample has added since this app run first saw it.
+ *
+ * A Grok or Codex sample is a session's running total from a file its CLI
+ * keeps, not from this run: a Codex rollout holds every call since the session
+ * began, across every resume. Live telemetry only
+ * counts from the moment the app starts listening, so a per-agent token cap
+ * means "this run" for a Claude agent; tested against a file sample, the same
+ * cap trips on the first beat for any long-lived session, from history alone.
+ * The breaker is fed this difference instead; the ledger keeps the cumulative
+ * row. A new session starts a new baseline, so what a fresh session spends
+ * before its first sample is not counted (one beat at most).
+ */
+export class RunBaseline {
+  private readonly first = new Map<string, AgentUsageSample>();
+
+  sinceFirstSight(sample: AgentUsageSample): AgentUsageSample {
+    let base = this.first.get(sample.agentId);
+    // A smaller total than the baseline is a different file under the session.
+    const shrank = base && (sample.input < base.input || sample.output < base.output);
+    if (!base || base.sessionId !== sample.sessionId || shrank) {
+      base = sample;
+      this.first.set(sample.agentId, base);
+    }
+    const since = (now: number, then: number): number => Math.max(0, now - then);
+    return {
+      ...sample,
+      input: since(sample.input, base.input),
+      output: since(sample.output, base.output),
+      cacheRead: since(sample.cacheRead, base.cacheRead),
+      cacheCreation: since(sample.cacheCreation, base.cacheCreation),
+      usd: since(sample.usd, base.usd)
+    };
+  }
+
+  /** Drop an agent's baseline (archived/despawned): a respawn counts from its own start. */
+  forget(agentId: string): void {
+    this.first.delete(agentId);
+  }
+}
+
+/**
+ * The usage the fleet snapshot shows for an agent: its live telemetry, or, for
+ * a provider costed from a file its CLI keeps, the sample the ledger records.
+ * Every other agent without live telemetry shows nothing, as before; `pull` is
+ * not called for it.
+ */
+export function snapshotUsageFor<T>(
+  provider: string | undefined,
+  live: T | undefined,
+  pull: () => T | null
+): T | undefined {
+  if (live !== undefined || !usesCumulativeGate(provider)) return live;
+  return pull() ?? undefined;
+}

@@ -32,7 +32,7 @@ import { HiveManager, type AgentMeta, type HiveMessage, type HiveTask } from './
 import { HookServer } from './hooks';
 import { CircuitBreaker, type BreakerInput } from './breaker';
 import { shouldReengage, doingTaskCount } from './heartbeatPolicy';
-import { CumulativeSampleGate, type UsageProvider } from './usage';
+import { CumulativeSampleGate, RunBaseline, snapshotUsageFor, usesCumulativeGate, type UsageProvider } from './usage';
 import { MemoryManager } from './memory';
 import { testHindsightConnection } from './hindsightAdapter';
 import { KnowledgeManager } from './knowledge';
@@ -237,7 +237,14 @@ const telemetry = new TelemetryCollector({
   resolveCwd: (agentId) => hive.registry().agents[agentId]?.cwd ?? null,
   // D11: scopes the transcript fallback to this agent's own session instead of
   // summing every transcript in a (routinely shared) cwd.
-  resolveSessionId: (agentId) => hive.lastSession(agentId)
+  resolveSessionId: (agentId) => hive.lastSession(agentId),
+  // A Codex agent's own rollouts carry its token totals (telemetry.ts
+  // `codexFallback`); every other agent has no CODEX_HOME to read.
+  resolveCodexHome: (agentId) => {
+    if (hive.registry().agents[agentId]?.provider !== 'codex') return null;
+    const root = hive.root();
+    return codexHomes.homeOf(agentId, root ? join(root, 'agents', agentId, '.codex') : null);
+  }
 });
 // Usage provider (Seam 1) — the INTEGRATION swap: Oscar's telemetry collector (#7)
 // IS the provider, replacing Lane A's interim StubUsageProvider. Same
@@ -245,12 +252,15 @@ const telemetry = new TelemetryCollector({
 // untouched; telemetry has a transcript fallback built in, so it works before any
 // live OTel arrives.
 const usageProvider: UsageProvider = telemetry;
-// Grok agents are costed from a cumulative file snapshot (telemetry.ts
-// `grokFallback`), so an idle one re-reads identical totals every beat. Their
+// Grok and Codex agents are costed from a cumulative file snapshot (telemetry.ts
+// `grokFallback`, `codexFallback`), so an idle one re-reads identical totals every beat. Their
 // session id is real, so the liveness gate below cannot filter that — this
 // does, by admitting a row only when the numbers move. Claude's live OTel path
 // does not consult it.
 const grokLedgerGate = new CumulativeSampleGate();
+// The same samples hold each session's whole history; the breaker's caps are
+// per app run, as they are for live telemetry. See RunBaseline.
+const breakerBaseline = new RunBaseline();
 // Circuit breaker (Lane A #6.6b) — the REAL policy (replaces Lane C's interim
 // glue). POLICY only; the heartbeat beat feeds it signals (via usageProvider) +
 // enforces its decisions. Config read live so a settings change applies next beat.
@@ -465,6 +475,7 @@ function teardownPty(id: string): void {
     // Same reason, for the Grok ledger gate: a respawned agent's first sample
     // must be admitted rather than matched against the dead one's last row.
     try { grokLedgerGate.forget(agentId); } catch { /* best-effort */ }
+    try { breakerBaseline.forget(agentId); } catch { /* best-effort */ }
     // W1 — kill this agent's proxy-bridge sidecar (qwen), if any, so a dead
     // PTY never leaves an orphan loopback listener. No-op for non-proxy agents.
     try { hive.stopProxyBridge(agentId); } catch (e) { console.error('[hive] stopProxyBridge failed:', e); }
@@ -1228,7 +1239,7 @@ function runBreakerBeat(progressWindowMs: number): void {
       // duplicate-row risk moves from "is there a live session" to "did anything
       // change". Short-circuits before the gate for everyone else, leaving the
       // live-OTel path exactly as it was.
-      const moved = a.provider !== 'grok' || grokLedgerGate.admits(sample);
+      const moved = !usesCumulativeGate(a.provider) || grokLedgerGate.admits(sample);
       if (moved) hive.appendCostLedger(sample); // ledger covers everyone incl. god
     }
     // Second source for the resume key. recordSession() is otherwise reachable
@@ -1251,7 +1262,8 @@ function runBreakerBeat(progressWindowMs: number): void {
     const lastSpanAt = spans.length ? spans[spans.length - 1].ts : 0;
     inputs.push({
       agentId: id,
-      sample,
+      // A file sample counts what this run added, as live telemetry does.
+      sample: sample && usesCumulativeGate(a.provider) ? breakerBaseline.sinceFirstSight(sample) : sample,
       progressing: now - lastCoordinationAt(id) < progressWindowMs || now - lastSpanAt < progressWindowMs,
       // Work, as distinct from coordination. The breaker decides what to do
       // with it; the beat only reports it.
@@ -1311,7 +1323,9 @@ function writeFleetSnapshot(): void {
     const agents = Object.entries(reg.agents)
       .filter(([, a]) => !a.archived)
       .map(([id, a]) => {
-        const u = usageById.get(id);
+        // A Grok or Codex agent exports no telemetry; show the sample its ledger
+        // row is written from, so its tokens and session usd are not zero.
+        const u = snapshotUsageFor(a.provider, usageById.get(id), () => usageProvider.getAgentUsage(id));
         const spans = snap.spans[id] ?? [];
         const tokens = u ? u.input + u.output + u.cacheRead + u.cacheCreation : 0;
         // `usd` is LIFETIME (reset-corrected). Until the first fold completes we

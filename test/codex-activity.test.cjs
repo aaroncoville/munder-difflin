@@ -33,6 +33,7 @@ const {
   newestOwnedRolloutAt
 } = loadTs('src/main/codexActivity.ts');
 const { lastCatchupAt } = loadTs('src/main/codexCatchupLog.ts');
+const { snapshotUsageFor } = loadTs('src/main/usage.ts');
 
 const REPO = path.resolve(__dirname, '..');
 
@@ -301,7 +302,7 @@ test('a cached reading is not reused once the worker\'s sessions change', (t) =>
 
 /** Run the real writeFleetSnapshot from index.ts against stubbed surroundings.
  *  Every name it needs is passed in, so a new dependency fails loudly here. */
-function runFleetSnapshot({ root, registry, usage, homes }) {
+function runFleetSnapshot({ root, registry, usage, homes, pull = () => null }) {
   const source = fs.readFileSync(path.join(REPO, 'src/main/index.ts'), 'utf8');
   const start = source.indexOf('function writeFleetSnapshot(): void {');
   const end = source.indexOf('/** Arm the heartbeat', start);
@@ -316,6 +317,7 @@ function runFleetSnapshot({ root, registry, usage, homes }) {
     writeFleetSnapshot: (s) => { written = s; }
   };
   const telemetry = { snapshot: () => ({ usage, spans: {} }) };
+  const usageProvider = { getAgentUsage: pull };
   const costTotals = { refresh: () => {}, usdFor: () => null };
   const breaker = { levelFor: () => 'ok' };
   const hookServer = { health: () => ({ listening: true }) };
@@ -323,10 +325,12 @@ function runFleetSnapshot({ root, registry, usage, homes }) {
   new Function(
     'hive', 'telemetry', 'costTotals', 'breaker', 'hookServer', 'join',
     'fleetLastActiveAt', 'codexAgentActiveAt', 'codexHomes', 'codexActivityCache',
+    'usageProvider', 'snapshotUsageFor',
     `${body}\nwriteFleetSnapshot();`
   )(
     hive, telemetry, costTotals, breaker, hookServer, path.join,
-    fleetLastActiveAt, codexAgentActiveAt, homes, new ReadingCache(30_000)
+    fleetLastActiveAt, codexAgentActiveAt, homes, new ReadingCache(30_000),
+    usageProvider, snapshotUsageFor
   );
   assert.ok(written, 'writeFleetSnapshot wrote a snapshot');
   return Object.fromEntries(written.agents.map((a) => [a.id, a]));
@@ -360,6 +364,32 @@ test('the fleet snapshot dates a resumed worker from the home it actually runs i
     `resumed worker: ${agents.resumed.lastActiveSecAgo}`);
   assert.ok(Math.abs(agents.original.lastActiveSecAgo - 1_200) <= 2, `owner: ${agents.original.lastActiveSecAgo}`);
   assert.ok(Math.abs(agents.claude.lastActiveSecAgo - 5) <= 1, `claude: ${agents.claude.lastActiveSecAgo}`);
+});
+
+test('the fleet snapshot shows a Codex agent the tokens its rollout records', (t) => {
+  // A Codex agent exports no telemetry, so the live snapshot has nothing for
+  // it; its tokens, session cost and last turn come from the same sample the
+  // cost ledger is written from.
+  const { root, homes } = sharedHomeFixture(t);
+  const at = Date.now() - 90_000;
+  const pulled = { agentId: 'resumed', sessionId: S1, ts: at, input: 200_000, output: 30_000,
+    cacheRead: 1_000_000, cacheCreation: 0, model: 'gpt-5.6-sol', usd: 1.8 };
+  const agents = runFleetSnapshot({
+    root,
+    homes,
+    registry: {
+      resumed: { name: 'Resumed', provider: 'codex', sessionId: S1 },
+      claude: { name: 'Claude', provider: 'claude' }
+    },
+    usage: [],
+    pull: (id) => (id === 'resumed' ? pulled : assert.fail(`read ${id}'s files for the snapshot`))
+  });
+
+  assert.equal(agents.resumed.tokens, 1_230_000);
+  assert.equal(agents.resumed.sessionUsd, 1.8);
+  assert.equal(agents.resumed.usd, 1.8, 'no lifetime fold yet: the session figure');
+  assert.ok(Math.abs(agents.resumed.lastActiveSecAgo - 90) <= 1, `resumed: ${agents.resumed.lastActiveSecAgo}`);
+  assert.equal(agents.claude.tokens, 0);
 });
 
 test('the fleet snapshot follows a redirected worker into a new session, and keeps it from the owner', (t) => {

@@ -142,9 +142,10 @@ export interface WorkerWakeFacts {
    *  sample WITH tokens (activityEvidenceAt) — or 0/undefined when it never has. */
   lastActivityAt?: number;
   /** True when the telemetry collector holds ANY usage sample for the agent
-   *  (even the zero-token one stamped at session start): its CLI exports
-   *  telemetry, so a missing turn there means something. Only Claude Code
-   *  does; for every other engine the hooks are the activity channel. */
+   *  (even the zero-token one stamped at session start), so a missing turn
+   *  there means something. Claude Code exports telemetry; a Codex sample is
+   *  read from its rollout, whose last change is its last turn. For every other
+   *  engine the hooks are the activity channel. */
   hasTelemetry?: boolean;
   /** created_at of the OLDEST undrained inbox message, or 0/undefined when
    *  unknown (the stall rule then stays off — fail closed, as before). */

@@ -32,6 +32,8 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { readAgentUsage } from './transcript';
 import { normalizeModel } from './pricing';
+import { rolloutFileFor } from './codexActivity';
+import { CodexUsageReader } from './codexUsage';
 
 // ─── The locked cross-lane contract (do not change without re-agreeing) ───────
 
@@ -126,6 +128,9 @@ export interface TelemetryCollectorOptions {
    *  cwd (the common case for hive workers) pulls in every other agent's and
    *  every past session's history too. */
   resolveSessionId?: (agentId: string) => string | undefined;
+  /** Resolve the CODEX_HOME a Codex agent runs in; null for any other agent.
+   *  Lets a Codex agent be costed from its own rollout (see codexFallback). */
+  resolveCodexHome?: (agentId: string) => string | null;
 }
 
 export class TelemetryCollector {
@@ -136,6 +141,9 @@ export class TelemetryCollector {
   private readonly emit?: (channel: string, payload: unknown) => void;
   private readonly resolveCwd?: (agentId: string) => string | null;
   private readonly resolveSessionId?: (agentId: string) => string | undefined;
+  private readonly resolveCodexHome?: (agentId: string) => string | null;
+  /** Codex rollouts already read, so each beat reads only what was appended. */
+  private readonly codexUsage = new CodexUsageReader();
 
   /** sessionId → running accumulation. */
   private readonly sessions = new Map<string, SessionAccum>();
@@ -155,6 +163,7 @@ export class TelemetryCollector {
     this.emit = opts.emit;
     this.resolveCwd = opts.resolveCwd;
     this.resolveSessionId = opts.resolveSessionId;
+    this.resolveCodexHome = opts.resolveCodexHome;
   }
 
   /** Bind the loopback OTLP listener. The handler is live the instant this
@@ -195,7 +204,7 @@ export class TelemetryCollector {
     // transcript to fall back TO, and its own file carries a real cost rather
     // than an estimate. Returns null for everyone else, so the Claude path is
     // reached unchanged.
-    return this.grokFallback(agentId) ?? this.transcriptFallback(agentId);
+    return this.grokFallback(agentId) ?? this.codexFallback(agentId) ?? this.transcriptFallback(agentId);
   }
 
   /** Push (additive, OTel-only). Fires the agent's fresh aggregate whenever new
@@ -514,6 +523,40 @@ export class TelemetryCollector {
       // from this source", which is what the next fallback is for.
       return null;
     }
+  }
+
+  /**
+   * A Codex agent's cumulative usage, from its own rollout.
+   *
+   * Same gap as Grok's: no OTel and no Claude transcript, so a Codex agent cost
+   * $0.00 forever while Codex recorded every call. The rollout for the agent's
+   * session sits under its CODEX_HOME, named with the session id that the
+   * agent's hooks report, and its `token_count` events add up to the session's
+   * usage (codexUsage.ts). Codex reports tokens, not dollars, so the cost is the
+   * list-price estimate from pricing.ts, at the latest turn's model.
+   *
+   * Null for every non-Codex agent, which has no CODEX_HOME to resolve. Returns
+   * the real session id so the ledger takes the row; index.ts gates repeats.
+   */
+  private codexFallback(agentId: string): AgentUsageSample | null {
+    const home = this.resolveCodexHome?.(agentId);
+    const sessionId = this.resolveSessionId?.(agentId);
+    if (!home || !sessionId) return null;
+    const file = rolloutFileFor(home, sessionId);
+    const totals = file ? this.codexUsage.read(file) : null;
+    if (!totals) return null;
+    const model = normalizeModel(totals.model);
+    return {
+      agentId,
+      sessionId,
+      ts: totals.ts || Date.now(),
+      input: totals.input,
+      output: totals.output,
+      cacheRead: totals.cachedInput,
+      cacheCreation: totals.cacheWrite,
+      model,
+      usd: totals.usd
+    };
   }
 
   private publishUsage(agentId: string): void {
