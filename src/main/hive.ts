@@ -407,6 +407,13 @@ export class HiveManager {
 
   private routerTimer: NodeJS.Timeout | null = null;
 
+  /** The protocol text each positional-prompt worker was last started with. A
+   *  Codex worker that moves to a new thread is handed it again (codexThread.ts). */
+  private readonly initialPrompts = new Map<string, string>();
+  initialPromptOf(agentId: string): string | undefined {
+    return this.initialPrompts.get(agentId);
+  }
+
   /** The embedded OTLP collector's loopback URL, set by the main process once the
    *  collector is bound (telemetry.ts). null = telemetry off → no OTel env is
    *  injected at spawn (the transcript reconciler remains the cost source). */
@@ -995,7 +1002,10 @@ export class HiveManager {
       // Providers with no declared seed strategy intentionally spawn bare. Inbox-capable
       // non-hive-aware presets are guarded by the provider contract tests.
       if (flag) return { args: [...preArgs, flag, prompt], env, ...deg };
-      if (preset.positionalInitialPrompt) return { args: [...preArgs, prompt], env, ...deg };
+      if (preset.positionalInitialPrompt) {
+        this.initialPrompts.set(meta.id, prompt);
+        return { args: [...preArgs, prompt], env, ...deg };
+      }
       return { args: preArgs, env, ...deg };
     }
 

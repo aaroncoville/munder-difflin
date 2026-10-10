@@ -81,7 +81,8 @@ import {
 } from './codexActivity';
 import { lastCatchupAt } from './codexCatchupLog';
 import { openCodexLogDb } from './codexLogDb';
-import { inboxNudgeText } from '../shared/hiveNudge';
+import { inboxNudgeText, isInboxNudge } from '../shared/hiveNudge';
+import { CodexThreads, newThreadWrites, typeWrites } from './codexThread';
 import { resolveGodName } from '../shared/godIdentity';
 import { fetchHireManifest, readHireManifestFiles } from './hire';
 import { parseHireDeepLink, type HireManifest } from '../shared/hire';
@@ -207,6 +208,14 @@ const ptyToAgent = new Map<string, string>();
  *  point a worker at another agent's home, so the id alone does not say where
  *  its rollouts are. Written at spawn, read by the fleet snapshot. */
 const codexHomes = new CodexHomes();
+/** Each Codex worker's current thread: a new request starts a new one
+ *  (codexThread.ts). Kept beside the worker's Codex home. */
+const codexThreads = new CodexThreads((agentId) => {
+  const root = hive.root();
+  return root ? join(root, 'agents', agentId, '.codex', 'hive-thread.json') : null;
+});
+/** Codex workers being moved to a new thread right now. */
+const openingThreads = new Set<string>();
 /** Walking a long Codex history is a synchronous directory scan, so the fleet
  *  snapshot reads each one at most once per CODEX_ACTIVITY_TTL_MS. */
 const codexActivityCache = new ReadingCache<number | null>(CODEX_ACTIVITY_TTL_MS);
@@ -3004,6 +3013,8 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     // Where this worker's Codex rollouts will be written, now that any resume
     // has settled its CODEX_HOME.
     codexHomes.recordSpawn(opts.hive.id, opts.env?.CODEX_HOME, codexResumedSession);
+    // A new Codex process starts its own thread; a resumed one keeps its record.
+    if (provider === 'codex') codexThreads.spawned(opts.hive.id, didResume);
     // Worker inbox-wake watchdog (#151): boot grace starts at spawn so the
     // initial orientation prompt is never mistaken for an idle agent.
     workerWake.noteSpawn(opts.id);
@@ -3113,6 +3124,10 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
 }
 ipcMain.handle('pty:write', (_evt, id: string, data: string) => {
   if (typeof id !== 'string' || typeof data !== 'string') return { ok: false, error: 'invalid args' };
+  // The renderer's queued inbox nudge: when it should open a new Codex thread,
+  // that is typed instead. The renderer's own Enter, a tick later, either
+  // submits the `/new` or lands on an empty line; neither sends anything.
+  if (isInboxNudge(data) && openNewCodexThread(id)) return { ok: true };
   return ptyManager.write(id, data);
 });
 ipcMain.handle('pty:resize', (_evt, id: string, cols: number, rows: number) => {
@@ -3958,7 +3973,11 @@ const closingTime = new ClosingTimeController(
   // at their next hook boundary instead of waiting for a Stop.
   control
 );
-hive.setRoutedObserver((msg, targets) => closingTime.onRouted(msg, targets));
+hive.setRoutedObserver((msg, targets) => {
+  closingTime.onRouted(msg, targets);
+  const agents = hive.registry().agents;
+  codexThreads.observe(msg, targets, (id) => agents[id]?.provider === 'codex', (id) => !!agents[id]);
+});
 ipcMain.handle('app:startClosingTime', () => closingTime.start());
 ipcMain.handle('app:cancelClosingTime', () => closingTime.cancel());
 
@@ -5307,11 +5326,48 @@ const HOOK_HEALTH_MS = 15_000;
 let workerWakeTimer: ReturnType<typeof setInterval> | null = null;
 let hookHealthTimer: ReturnType<typeof setInterval> | null = null;
 
+/**
+ * Move a Codex worker to a new thread when the mail a nudge is about to announce
+ * opens one (codexThread.ts), and type that instead of the nudge. True when it
+ * did, or when a move is already being typed, which a nudge must not land in.
+ *
+ * The old thread's usage is recorded first: the ledger follows the worker's
+ * current session, so the old one's last turn would otherwise never be read.
+ */
+function openNewCodexThread(ptyId: string, onOutcome?: (submitted: boolean) => void): boolean {
+  const agentId = ptyToAgent.get(ptyId);
+  if (!agentId) return false;
+  const agents = hive.registry().agents;
+  if (agents[agentId]?.provider !== 'codex') return false;
+  if (openingThreads.has(agentId)) { onOutcome?.(true); return true; }
+  const brief = hive.initialPromptOf(agentId);
+  if (!brief) return false;
+  const inbox = hive.inbox(agentId);
+  const opening = codexThreads.due(agentId, inbox, (id) => !!agents[id]);
+  if (!opening.length) return false;
+  const last = usageProvider.getAgentUsage(agentId);
+  if (last?.sessionId && grokLedgerGate.admits(last)) hive.appendCostLedger(last);
+  const ids = inbox.map((m) => m.id).filter(Boolean);
+  openingThreads.add(agentId);
+  // Its Enters are pending submissions too: stall-line reads wait for them.
+  pendingSubmits += 1;
+  console.log(`[worker-wake] ${agentId}: new Codex thread for ${opening.join(', ')}`);
+  typeWrites(newThreadWrites(brief, inboxNudgeText(ids)), (data) => ptyManager.write(ptyId, data).ok, (ok) => {
+    pendingSubmits -= 1;
+    openingThreads.delete(agentId);
+    if (ok) codexThreads.opened(agentId, ids);
+    hive.appendLog({ kind: 'codex-new-thread', agentId, opening, ok });
+    onOutcome?.(ok);
+  });
+  return true;
+}
+
 /** Type the renderer's guarded nudge into one worker's PTY — text first, Enter a
  *  tick later (the exact submitToPty pattern: a single-chunk write would land the
  *  "\r" inside the input box and never submit). Best-effort + never throws;
  *  `onOutcome` hears whether the submission reached the terminal. */
 function nudgeWorker(ptyId: string, ids: string[] = [], onOutcome?: (submitted: boolean) => void): void {
+  if (openNewCodexThread(ptyId, onOutcome)) return;
   // Same text the renderer queues (#187's inboxNudgeText), so the two wake paths
   // produce byte-identical nudges: the queue's one-pending rule recognises either
   // via isInboxNudge, and a watchdog nudge names its ids so the agent can still
