@@ -302,7 +302,7 @@ test('a cached reading is not reused once the worker\'s sessions change', (t) =>
 
 /** Run the real writeFleetSnapshot from index.ts against stubbed surroundings.
  *  Every name it needs is passed in, so a new dependency fails loudly here. */
-function runFleetSnapshot({ root, registry, usage, homes, pull = () => null }) {
+function runFleetSnapshot({ root, registry, usage, homes, pull = () => null, ptyForAgent = () => 'pty' }) {
   const source = fs.readFileSync(path.join(REPO, 'src/main/index.ts'), 'utf8');
   const start = source.indexOf('function writeFleetSnapshot(): void {');
   const end = source.indexOf('/** Arm the heartbeat', start);
@@ -325,12 +325,12 @@ function runFleetSnapshot({ root, registry, usage, homes, pull = () => null }) {
   new Function(
     'hive', 'telemetry', 'costTotals', 'breaker', 'hookServer', 'join',
     'fleetLastActiveAt', 'codexAgentActiveAt', 'codexHomes', 'codexActivityCache',
-    'usageProvider', 'snapshotUsageFor',
+    'usageProvider', 'snapshotUsageFor', 'ptyForAgent',
     `${body}\nwriteFleetSnapshot();`
   )(
     hive, telemetry, costTotals, breaker, hookServer, path.join,
     fleetLastActiveAt, codexAgentActiveAt, homes, new ReadingCache(30_000),
-    usageProvider, snapshotUsageFor
+    usageProvider, snapshotUsageFor, ptyForAgent
   );
   assert.ok(written, 'writeFleetSnapshot wrote a snapshot');
   return Object.fromEntries(written.agents.map((a) => [a.id, a]));
@@ -390,6 +390,21 @@ test('the fleet snapshot shows a Codex agent the tokens its rollout records', (t
   assert.equal(agents.resumed.usd, 1.8, 'no lifetime fold yet: the session figure');
   assert.ok(Math.abs(agents.resumed.lastActiveSecAgo - 90) <= 1, `resumed: ${agents.resumed.lastActiveSecAgo}`);
   assert.equal(agents.claude.tokens, 0);
+});
+
+test('a Codex agent with no terminal is not read for the snapshot', (t) => {
+  // Its record outlives a crashed process until someone archives it; reading
+  // its rollout every snapshot would cost a directory walk for nothing live.
+  const { root, homes } = sharedHomeFixture(t);
+  const agents = runFleetSnapshot({
+    root,
+    homes,
+    registry: { resumed: { name: 'Resumed', provider: 'codex', sessionId: S1 } },
+    usage: [],
+    ptyForAgent: () => undefined,
+    pull: (id) => assert.fail(`read ${id}'s files for the snapshot`)
+  });
+  assert.equal(agents.resumed.tokens, 0);
 });
 
 test('the fleet snapshot follows a redirected worker into a new session, and keeps it from the owner', (t) => {

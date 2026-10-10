@@ -1333,8 +1333,10 @@ function writeFleetSnapshot(): void {
       .filter(([, a]) => !a.archived)
       .map(([id, a]) => {
         // A Grok or Codex agent exports no telemetry; show the sample its ledger
-        // row is written from, so its tokens and session usd are not zero.
-        const u = snapshotUsageFor(a.provider, usageById.get(id), () => usageProvider.getAgentUsage(id));
+        // row is written from, so its tokens and session usd are not zero. Only
+        // for one with a terminal: a dead process's files say nothing live.
+        const u = snapshotUsageFor(a.provider, usageById.get(id),
+          () => (ptyForAgent(id) ? usageProvider.getAgentUsage(id) : null));
         const spans = snap.spans[id] ?? [];
         const tokens = u ? u.input + u.output + u.cacheRead + u.cacheCreation : 0;
         // `usd` is LIFETIME (reset-corrected). Until the first fold completes we
