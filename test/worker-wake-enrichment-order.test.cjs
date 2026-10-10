@@ -55,6 +55,9 @@ function floor({ nudges, failObserve = [] }) {
       appendLog: () => {}
     },
     ptyForAgent: () => 'pty',
+    // No terminal is mapped back to its worker, so a nudge never opens a new
+    // Codex thread here (codex-thread.test.cjs covers that path).
+    ptyToAgent: new Map(),
     // No CLI exports telemetry here, so the stall rule sees no turns either way.
     telemetry: { getAgentUsage: () => null, getSpans: () => [] },
     activityEvidenceAt,

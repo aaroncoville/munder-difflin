@@ -549,7 +549,9 @@ export class TelemetryCollector {
     return {
       agentId,
       sessionId,
-      ts: totals.ts || Date.now(),
+      // Never later than now: a restored or clock-skewed rollout can be dated
+      // ahead, and an agent is not active in the future.
+      ts: Math.min(totals.ts || Date.now(), Date.now()),
       input: totals.input,
       output: totals.output,
       cacheRead: totals.cachedInput,
