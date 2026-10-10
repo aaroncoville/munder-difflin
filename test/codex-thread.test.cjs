@@ -310,6 +310,8 @@ test('the renderer’s nudge for a new request becomes /new, the brief and the n
   assert.equal(writes(f.events).at(-1), '\r');
   // The new thread holds what it was given: a fix round for it stays there.
   assert.deepEqual(f.threads.due(WORKER, [request('fix', { in_reply_to: 'review-2' })], isAgent), []);
+  // The old thread is left behind: a late fix round for its review is new work.
+  assert.deepEqual(f.threads.due(WORKER, [request('late', { in_reply_to: 'report-1' })], isAgent), ['late']);
   // And once the move is settled, the next nudge reaches the terminal as usual.
   const again = inboxNudgeText(['review-2']);
   f.rendererWrite(again);
