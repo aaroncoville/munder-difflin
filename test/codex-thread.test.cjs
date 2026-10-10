@@ -248,21 +248,28 @@ function slice(startMarker, endMarker) {
 }
 
 /** One Codex worker on a floor, with the opener and both nudge paths loaded from index.ts. */
-function floor(t, { provider = 'codex', inbox, brief = 'You are Reviewer.', later } = {}) {
+function floor(t, { provider = 'codex', inbox, brief = 'You are Reviewer.', later, switches = true } = {}) {
   const { threads } = records(t);
   afterOneReview(threads);
   const mail = inbox ?? [request('review-2')];
   for (const m of mail) routeTo(threads, m);
   const events = [];
-  const agents = { god: {}, dev: {}, [WORKER]: { provider } };
+  const agents = { god: {}, dev: {}, [WORKER]: { provider, sessionId: 'old-thread' } };
   const hive = {
     registry: () => ({ godId: 'god', agents }),
     inbox: () => mail,
     initialPromptOf: () => brief,
     appendCostLedger: (s) => events.push(['ledger', s.sessionId]),
-    appendLog: (l) => events.push(['log', l.kind, l.ok, l.opening])
+    appendLog: (l) => events.push(['log', l.kind, l.ok, l.opening, l.switched])
   };
-  const ptyManager = { write: (_id, data) => { events.push(['write', data]); return { ok: true }; } };
+  let last = '';
+  const ptyManager = { write: (_id, data) => {
+    events.push(['write', data]);
+    // Codex reports a new session id once the new thread's first prompt is submitted.
+    if (switches && data === '\r' && last.startsWith('\x1b[200~')) agents[WORKER].sessionId = 'new-thread';
+    last = data;
+    return { ok: true };
+  } };
   const usageProvider = { getAgentUsage: () => ({ agentId: WORKER, sessionId: 'old-thread', input: 10, output: 1 }) };
   const grokLedgerGate = { admits: () => true };
   const typeNow = (writes, write, done) => typeWrites(writes, write, done, later ? (fn) => later.push(fn) : (fn) => fn());
@@ -278,12 +285,12 @@ function floor(t, { provider = 'codex', inbox, brief = 'You are Reviewer.', late
   const api = new Function(
     'ptyToAgent', 'hive', 'openingThreads', 'codexThreads', 'usageProvider', 'grokLedgerGate',
     'inboxNudgeText', 'isInboxNudge', 'typeWrites', 'newThreadWrites', 'ptyManager', 'console', 'ipcMain',
-    'pendingSubmits', 'NUDGE_SUBMIT_DELAY_MS', 'setTimeout',
+    'pendingSubmits', 'NUDGE_SUBMIT_DELAY_MS', 'setTimeout', 'NEW_THREAD_CONFIRM_MS',
     `${body}\nreturn { nudgeWorker, pending: () => pendingSubmits };`
   )(
     new Map([['pty-1', WORKER]]), hive, new Set(), threads, usageProvider, grokLedgerGate,
     inboxNudgeText, isInboxNudge, typeNow, newThreadWrites, ptyManager, quiet, ipcMain,
-    0, 0, (fn) => fn()
+    0, 0, later ? (fn) => later.push(fn) : (fn) => fn(), 0
   );
   return { events, threads, mail, rendererWrite: (data) => handlers['pty:write'](null, 'pty-1', data), ...api };
 }
@@ -297,12 +304,27 @@ test('the renderer’s nudge for a new request becomes /new, the brief and the n
   assert.deepEqual(writes(f.events), newThreadWrites('You are Reviewer.', nudge).map((w) => w.data));
   // The old thread's last usage is recorded before it is left behind.
   assert.deepEqual(f.events[0], ['ledger', 'old-thread']);
-  assert.deepEqual(f.events.at(-1), ['log', 'codex-new-thread', true, ['review-2']]);
+  assert.deepEqual(f.events.at(-1), ['log', 'codex-new-thread', true, ['review-2'], true]);
   // Its Enter, a tick later, is written as usual onto the empty line.
   f.rendererWrite('\r');
   assert.equal(writes(f.events).at(-1), '\r');
   // The new thread holds what it was given: a fix round for it stays there.
   assert.deepEqual(f.threads.due(WORKER, [request('fix', { in_reply_to: 'review-2' })], isAgent), []);
+  // And once the move is settled, the next nudge reaches the terminal as usual.
+  const again = inboxNudgeText(['review-2']);
+  f.rendererWrite(again);
+  assert.equal(writes(f.events).at(-1), again);
+});
+
+test('a /new Codex refused leaves the mail with the thread it went to', (t) => {
+  // Mid-turn, Codex drops the /new and the paste joins the running turn: same session.
+  const f = floor(t, { switches: false });
+  f.rendererWrite(inboxNudgeText(['review-2']));
+  assert.deepEqual(f.events.at(-1), ['log', 'codex-new-thread', true, ['review-2'], false]);
+  // The old thread is still the current one, so its follow-ups continue it...
+  assert.deepEqual(f.threads.due(WORKER, [request('fix-1', { in_reply_to: 'report-1' })], isAgent), []);
+  // ...and the request it was handed belongs to it now.
+  assert.deepEqual(f.threads.due(WORKER, [request('fix-2', { in_reply_to: 'review-2' })], isAgent), []);
 });
 
 test('stall-line reads wait until the new thread is typed', (t) => {

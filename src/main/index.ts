@@ -5325,6 +5325,9 @@ const NUDGE_SUBMIT_DELAY_MS = 140;
 
 /** How often the beat verifies the hook socket is bound AND still ours (#277). */
 const HOOK_HEALTH_MS = 15_000;
+/** How long a new Codex thread's first prompt has to report its session id:
+ *  the hook fires on submit, well under a second even under load. */
+const NEW_THREAD_CONFIRM_MS = 10_000;
 let workerWakeTimer: ReturnType<typeof setInterval> | null = null;
 let hookHealthTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -5354,16 +5357,29 @@ function openNewCodexThread(ptyId: string, onOutcome?: (submitted: boolean) => v
   const last = usageProvider.getAgentUsage(agentId);
   if (last?.sessionId && grokLedgerGate.admits(last)) hive.appendCostLedger(last);
   const ids = inbox.map((m) => m.id).filter(Boolean);
+  const before = agents[agentId]?.sessionId;
   openingThreads.add(agentId);
   // Its Enters are pending submissions too: stall-line reads wait for them.
   pendingSubmits += 1;
   console.log(`[worker-wake] ${agentId}: new Codex thread for ${opening.join(', ')}`);
   typeWrites(newThreadWrites(brief, inboxNudgeText(ids)), (data) => ptyManager.write(ptyId, data).ok, (ok) => {
     pendingSubmits -= 1;
-    openingThreads.delete(agentId);
-    if (ok) codexThreads.opened(agentId, ids);
-    hive.appendLog({ kind: 'codex-new-thread', agentId, opening, ok });
     onOutcome?.(ok);
+    if (!ok) {
+      openingThreads.delete(agentId);
+      hive.appendLog({ kind: 'codex-new-thread', agentId, opening, ok });
+      return;
+    }
+    // Typed is not switched: Codex drops a /new it refuses, and the mail then
+    // joins the thread already running. The new thread's first prompt reports
+    // a new session id through the hooks, so that is what decides.
+    setTimeout(() => {
+      openingThreads.delete(agentId);
+      const switched = !!before && hive.registry().agents[agentId]?.sessionId !== before;
+      if (switched) codexThreads.opened(agentId, ids);
+      else codexThreads.adopt(agentId, inbox, (id) => !!agents[id]);
+      hive.appendLog({ kind: 'codex-new-thread', agentId, opening, ok, switched });
+    }, NEW_THREAD_CONFIRM_MS);
   });
   return true;
 }
