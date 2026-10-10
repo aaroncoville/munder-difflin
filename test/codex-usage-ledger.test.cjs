@@ -97,6 +97,19 @@ test('a Codex agent is costed from its own rollout', () => {
   assert.equal(Number(sample.usd.toFixed(4)), 1.8);
 });
 
+test('a rollout dated in the future is dated now', () => {
+  // A rollout restored from a backup, or written under a clock that ran ahead,
+  // can carry a modification time past now; the agent cannot have been active
+  // in the future, and the fleet would show it a negative "seconds ago".
+  const home = freshHome();
+  const file = writeRollout(home, meta() + context('gpt-5.6-sol') + tokens('2026-10-07T20:05:00.000Z', TOTALS));
+  const ahead = new Date(Date.now() + 3_600_000);
+  fs.utimesSync(file, ahead, ahead);
+  const before = Date.now();
+  const sample = collector(home).getAgentUsage(AGENT);
+  assert.ok(sample.ts >= before && sample.ts <= Date.now(), `dated ${sample.ts - Date.now()} ms from now`);
+});
+
 test('the sample carries the real session id, so the ledger accepts it', () => {
   const home = freshHome();
   writeRollout(home, meta() + context('gpt-5.6-sol') + tokens('2026-10-07T20:05:00.000Z', TOTALS));
