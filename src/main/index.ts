@@ -3978,7 +3978,7 @@ const closingTime = new ClosingTimeController(
 hive.setRoutedObserver((msg, targets) => {
   closingTime.onRouted(msg, targets);
   const agents = hive.registry().agents;
-  codexThreads.observe(msg, targets, (id) => agents[id]?.provider === 'codex', (id) => !!agents[id]);
+  codexThreads.observe(msg, targets, (id) => agents[id]?.provider === 'codex', (id) => !!agents[id], (id) => hive.inbox(id));
 });
 ipcMain.handle('app:startClosingTime', () => closingTime.start());
 ipcMain.handle('app:cancelClosingTime', () => closingTime.cancel());
@@ -5342,11 +5342,15 @@ function openNewCodexThread(ptyId: string, onOutcome?: (submitted: boolean) => v
   const agents = hive.registry().agents;
   if (agents[agentId]?.provider !== 'codex') return false;
   if (openingThreads.has(agentId)) { onOutcome?.(true); return true; }
-  const brief = hive.initialPromptOf(agentId);
-  if (!brief) return false;
   const inbox = hive.inbox(agentId);
   const opening = codexThreads.due(agentId, inbox, (id) => !!agents[id]);
-  if (!opening.length) return false;
+  // A process started before it was given a brief cannot start a new thread.
+  const brief = hive.initialPromptOf(agentId);
+  if (!opening.length || !brief) {
+    // The nudge that follows hands all of it to the current thread.
+    codexThreads.adopt(agentId, inbox, (id) => !!agents[id]);
+    return false;
+  }
   const last = usageProvider.getAgentUsage(agentId);
   if (last?.sessionId && grokLedgerGate.admits(last)) hive.appendCostLedger(last);
   const ids = inbox.map((m) => m.id).filter(Boolean);

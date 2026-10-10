@@ -32,7 +32,7 @@ function records(t) {
 }
 
 const request = (id, extra = {}) => ({ id, from: 'god', act: 'request', ...extra });
-const routeTo = (threads, msg, to = WORKER) => threads.observe(msg, [to], isWorker, isAgent);
+const routeTo = (threads, msg, to = WORKER, inbox = []) => threads.observe(msg, [to], isWorker, isAgent, () => inbox);
 
 /** A worker that has finished one review: the request came in, its report went out. */
 function afterOneReview(threads) {
@@ -118,6 +118,51 @@ test('a new thread starts with what was pending, and its follow-ups stay in it',
   // The first review is not part of the new thread: a late fix round for it is new work there.
   const late = request('fix-1', { in_reply_to: 'report-1' });
   assert.deepEqual(threads.due(WORKER, [late], isAgent), ['fix-1']);
+});
+
+test('a request that arrives while the worker is on another joins the current thread', (t) => {
+  const { threads } = records(t);
+  afterOneReview(threads);
+  routeTo(threads, request('review-2'));
+  // review-3 lands while review-2 is still in the inbox: no new thread can
+  // start, so the worker takes both in the thread it is in.
+  routeTo(threads, request('review-3'), WORKER, [request('review-2')]);
+  routeTo(threads, { id: 'report-3', from: WORKER, act: 'done', in_reply_to: 'review-3' }, 'god');
+  const correction = request('fix-3', { in_reply_to: 'review-3' });
+  assert.deepEqual(threads.due(WORKER, [correction], isAgent), []);
+});
+
+test('a request the worker answers from its current thread belongs to it', (t) => {
+  const { threads } = records(t);
+  afterOneReview(threads);
+  // Handled alongside an inform, with no nudge in between: only the reply shows it.
+  routeTo(threads, request('review-2'));
+  routeTo(threads, { id: 'fyi', from: 'god', act: 'inform' });
+  routeTo(threads, { id: 'report-2', from: WORKER, act: 'done', in_reply_to: 'review-2' }, 'god');
+  const correction = request('fix-2', { in_reply_to: 'review-2' });
+  assert.deepEqual(threads.due(WORKER, [correction], isAgent), []);
+});
+
+test('a new process that answers the mail it found has had its request', (t) => {
+  const { threads } = records(t);
+  threads.spawned(WORKER, false);
+  // review-1 was waiting before the spawn, so nothing routed it in this run.
+  routeTo(threads, { id: 'report-1', from: WORKER, act: 'done', in_reply_to: 'review-1' }, 'god');
+  assert.deepEqual(threads.due(WORKER, [request('review-2')], isAgent), ['review-2'], 'the next request is new work');
+  assert.deepEqual(threads.due(WORKER, [request('fix-1', { in_reply_to: 'review-1' })], isAgent), [], 'a correction to the first is not');
+});
+
+test('mail a nudge hands to the current thread joins it', (t) => {
+  const { threads } = records(t);
+  afterOneReview(threads);
+  routeTo(threads, request('fix-1', { in_reply_to: 'report-1' }));
+  routeTo(threads, request('review-2'));
+  threads.adopt(WORKER, [request('fix-1', { in_reply_to: 'report-1' }), request('review-2')], isAgent);
+  assert.deepEqual(threads.due(WORKER, [request('fix-2', { in_reply_to: 'review-2' })], isAgent), []);
+  // And a new process that is nudged about mail that was waiting has had its request.
+  threads.spawned(WORKER, false);
+  threads.adopt(WORKER, [request('review-3')], isAgent);
+  assert.deepEqual(threads.due(WORKER, [request('review-4')], isAgent), ['review-4']);
 });
 
 test('a fix round after an app restart still finds its thread', (t) => {
@@ -292,6 +337,20 @@ test('a follow-up, or a Claude agent, is nudged exactly as before', (t) => {
   assert.deepEqual(writes(claude.events), [inboxNudgeText(['review-2']), '\r']);
 });
 
+test('a nudge into the current thread records what it hands over', (t) => {
+  const f = floor(t, { inbox: [request('fix-1', { in_reply_to: 'report-1' }), request('review-2')] });
+  f.rendererWrite(inboxNudgeText(['fix-1', 'review-2']));
+  assert.equal(writes(f.events).length, 1, 'a plain nudge');
+  assert.deepEqual(f.threads.due(WORKER, [request('fix-2', { in_reply_to: 'review-2' })], isAgent), []);
+});
+
+test('a worker with no brief is nudged into its thread, and that is recorded', (t) => {
+  const f = floor(t, { brief: null });
+  f.rendererWrite(inboxNudgeText(['review-2']));
+  assert.deepEqual(writes(f.events), [inboxNudgeText(['review-2'])]);
+  assert.deepEqual(f.threads.due(WORKER, [request('fix-2', { in_reply_to: 'review-2' })], isAgent), []);
+});
+
 test('other terminal input is never taken for a nudge', (t) => {
   const f = floor(t);
   f.rendererWrite('please review review-2');
@@ -305,7 +364,8 @@ test('routing a message records it against the Codex worker’s thread', (t) => 
   const closing = [];
   const hive = {
     registry: () => ({ godId: 'god', agents: { god: {}, [WORKER]: { provider: 'codex' } } }),
-    setRoutedObserver: (cb) => { observer = cb; }
+    setRoutedObserver: (cb) => { observer = cb; },
+    inbox: () => [request('review-1')]
   };
   const body = slice('hive.setRoutedObserver(', "ipcMain.handle('app:startClosingTime'");
   // eslint-disable-next-line no-new-func
@@ -316,4 +376,7 @@ test('routing a message records it against the Codex worker’s thread', (t) => 
   // fix-1 is part of the thread now, so while it is unhandled no new thread starts.
   assert.deepEqual(threads.due(WORKER, [fix, request('review-2')], isAgent), []);
   assert.ok(threads.get(WORKER).ids.includes('fix-1'));
+  // A request routed while the thread still has mail pending joins it.
+  observer(request('review-2'), [WORKER]);
+  assert.ok(threads.get(WORKER).ids.includes('review-2'), 'the inbox reached the observer');
 });

@@ -27,6 +27,12 @@ import { dirname } from 'node:path';
  *  - not when a follow-up to it is waiting, which is delivered into the current
  *    thread together with anything else pending.
  *  A new process starts its own thread, so its first request needs no other.
+ *
+ * A request that does not get a new thread is handled in the current one, and
+ * from then on belongs to it, so a correction to it continues the thread. That
+ * is recorded wherever it shows: the request is routed while the thread still
+ * has mail pending, a nudge hands it to the current thread, or the worker
+ * replies to it.
  */
 
 export interface ThreadMessage {
@@ -102,17 +108,36 @@ export class CodexThreads {
     if (!resumed) this.save(agentId, { fresh: true, ids: [] });
   }
 
-  /** A routed message. `isWorker` picks out the agents this applies to. */
-  observe(msg: ThreadMessage, targets: string[], isWorker: (id: string) => boolean, isAgent: (id: string) => boolean): void {
+  /** A routed message. `isWorker` picks out the agents this applies to;
+   *  `inboxOf` is a worker's pending mail. */
+  observe(
+    msg: ThreadMessage,
+    targets: string[],
+    isWorker: (id: string) => boolean,
+    isAgent: (id: string) => boolean,
+    inboxOf: (id: string) => ThreadMessage[]
+  ): void {
     if (!msg.id) return;
-    if (msg.from && isWorker(msg.from)) this.add(msg.from, msg.id);
+    if (msg.from && isWorker(msg.from)) {
+      // A reply shows the thread took the message it answers.
+      const answered = msg.in_reply_to ? [msg.in_reply_to] : [];
+      this.join(msg.from, [...answered, msg.id], answered.length > 0);
+    }
     for (const to of targets) {
       if (to === msg.from || !isWorker(to)) continue;
       const thread = this.get(to);
-      if (!opensThread(msg, thread, isAgent)) this.add(to, msg.id);
-      else if (thread.fresh) this.save(to, { fresh: false, ids: [...thread.ids, msg.id] });
+      if (!opensThread(msg, thread, isAgent)) this.join(to, [msg.id], false);
+      // No new thread can start while the current one has mail pending, so the
+      // worker takes this request in the thread it is in.
+      else if (thread.fresh || inboxOf(to).some((m) => thread.ids.includes(m.id))) this.join(to, [msg.id], true);
       // Otherwise it waits in the inbox for the new thread it opens.
     }
+  }
+
+  /** A nudge is handing this mail to the current thread. */
+  adopt(agentId: string, inbox: ThreadMessage[], isAgent: (id: string) => boolean): void {
+    const request = inbox.some((m) => m.act === 'request' && !!m.from && isAgent(m.from));
+    this.join(agentId, inbox.map((m) => m.id).filter(Boolean), request);
   }
 
   /** The pending requests a new thread should start with for this worker. */
@@ -125,10 +150,13 @@ export class CodexThreads {
     this.save(agentId, { fresh: false, ids: [...ids] });
   }
 
-  private add(agentId: string, id: string): void {
+  /** Record `ids` as part of the thread; `handled` says it has now had a request. */
+  private join(agentId: string, ids: string[], handled: boolean): void {
     const thread = this.get(agentId);
-    if (thread.ids.includes(id)) return;
-    this.save(agentId, { fresh: thread.fresh, ids: [...thread.ids, id] });
+    const added = ids.filter((id) => !thread.ids.includes(id));
+    const fresh = thread.fresh && !handled;
+    if (!added.length && fresh === thread.fresh) return;
+    this.save(agentId, { fresh, ids: [...thread.ids, ...added] });
   }
 
   private save(agentId: string, record: ThreadRecord): void {
