@@ -159,17 +159,25 @@ export function usesCumulativeGate(provider: string | undefined): boolean {
  * means "this run" for a Claude agent; tested against a file sample, the same
  * cap trips on the first beat for any long-lived session, from history alone.
  * The breaker is fed this difference instead; the ledger keeps the cumulative
- * row. A new session starts a new baseline, so what a fresh session spends
- * before its first sample is not counted (one beat at most).
+ * row.
+ *
+ * Only the first session seen for an agent in this run can hold history. A
+ * session that replaces it later began while this run was watching (the agent
+ * started a new thread), so all of it is this run's, including what it spent
+ * before the beat first sampled it: its baseline is zero.
  */
 export class RunBaseline {
   private readonly first = new Map<string, AgentUsageSample>();
 
   sinceFirstSight(sample: AgentUsageSample): AgentUsageSample {
     let base = this.first.get(sample.agentId);
+    if (base && base.sessionId !== sample.sessionId) {
+      base = { ...sample, input: 0, output: 0, cacheRead: 0, cacheCreation: 0, usd: 0 };
+      this.first.set(sample.agentId, base);
+    }
     // A smaller total than the baseline is a different file under the session.
     const shrank = base && (sample.input < base.input || sample.output < base.output);
-    if (!base || base.sessionId !== sample.sessionId || shrank) {
+    if (!base || shrank) {
       base = sample;
       this.first.set(sample.agentId, base);
     }

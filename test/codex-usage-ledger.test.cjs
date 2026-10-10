@@ -308,15 +308,30 @@ test('the breaker sees what a Codex session spends in this run, not its history'
   assert.match(state.reason, /^token limit: 2,700,000 work tokens/);
 });
 
-test('a new session, or a forgotten agent, starts a new baseline', () => {
+test('a session that replaces another in this run is counted from zero', () => {
   const s = { agentId: AGENT, sessionId: SESSION, ts: 1, input: 5_000, output: 50, cacheRead: 0, cacheCreation: 0, model: 'm', usd: 1 };
   const baseline = new RunBaseline();
   baseline.sinceFirstSight(s);
   assert.equal(baseline.sinceFirstSight({ ...s, input: 6_000 }).input, 1_000);
-  // Another session's totals have nothing to do with this one's starting point.
-  assert.equal(baseline.sinceFirstSight({ ...s, sessionId: 'other', input: 9_000 }).input, 0);
-  assert.equal(baseline.sinceFirstSight({ ...s, sessionId: 'other', input: 9_500 }).input, 500);
+  // The agent started a new thread while this run watched: everything that
+  // session holds was spent in this run, including what it spent before the
+  // beat first saw it.
+  const fresh = baseline.sinceFirstSight({ ...s, sessionId: 'other', input: 9_000, output: 90, usd: 2 });
+  assert.deepEqual([fresh.input, fresh.output, fresh.usd], [9_000, 90, 2]);
+  assert.equal(baseline.sinceFirstSight({ ...s, sessionId: 'other', input: 9_500 }).input, 9_500);
+  // A new thread usually holds far less than the long one it replaced.
+  const long = new RunBaseline();
+  long.sinceFirstSight({ ...s, input: 14_000_000, output: 900_000, usd: 200 });
+  const small = long.sinceFirstSight({ ...s, sessionId: 'third', input: 400, output: 5, usd: 0.1 });
+  assert.deepEqual([small.input, small.output, small.usd], [400, 5, 0.1]);
+});
+
+test('a forgotten agent starts its baseline again at the next sample', () => {
+  const s = { agentId: AGENT, sessionId: SESSION, ts: 1, input: 5_000, output: 50, cacheRead: 0, cacheCreation: 0, model: 'm', usd: 1 };
+  const baseline = new RunBaseline();
+  baseline.sinceFirstSight(s);
   baseline.forget(AGENT);
+  // A respawn resumes whatever session it finds; its history is not this run's.
   assert.equal(baseline.sinceFirstSight({ ...s, sessionId: 'other', input: 9_900 }).input, 0);
 });
 
