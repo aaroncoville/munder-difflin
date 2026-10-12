@@ -441,3 +441,100 @@ test('a backup copy is written before any condense attempt, success or abort', a
   const backupFile = path.join(backupsDir, stamps[0], 'a1', 'memory.md');
   assert.ok(fs.existsSync(backupFile));
 });
+
+// ── the size the condensed section is asked to fit ───────────────────────
+
+/** The byte limit the prompt states for the condensed section, or null. */
+const statedLimit = (prompt) => {
+  const m = /condensed section must be at most (\d+) bytes/.exec(prompt);
+  return m ? Number(m[1]) : null;
+};
+
+function largeFixture() {
+  const secs = [
+    section('old one', 2_000), section('old two', 2_000), section('old three', 2_000),
+    section('old four', 2_000), section('newest', 300)
+  ];
+  return fixture({ pinned: 'existing fact', condensed: 'an earlier summary', sections: secs });
+}
+
+test('the prompt states a byte limit that, met exactly, leaves the file at 80% of its size', async () => {
+  const { home, mem } = homeWith('a1', largeFixture());
+  const before = fs.statSync(mem).size;
+  let limit = null;
+  const { MemoryReflector } = loadReflectWithStub((n, prompt) => {
+    limit = statedLimit(prompt);
+    // A model that uses every byte it was given.
+    return okJson('z'.repeat(limit ?? 0), []);
+  });
+  const reflector = makeReflector({ MemoryReflector }, home, { recentKeep: 1 });
+  const [result] = await reflector.reflectNow('a1');
+  assert.ok(limit !== null && limit > 0, 'the prompt must carry a positive byte limit for the condensed section');
+  assert.equal(result.condensed, true);
+  const ceiling = Math.floor(before * 0.8);
+  assert.ok(result.newBytes <= ceiling, `${result.newBytes} bytes is over 80% of ${before}`);
+  // Not a limit so tight it throws away room the file had to spare.
+  assert.ok(result.newBytes >= ceiling - 2, `${result.newBytes} bytes leaves more than slack below ${ceiling}`);
+});
+
+test('the byte limit tracks the size of the file being condensed', async () => {
+  const limits = [];
+  for (const body of [2_000, 4_000]) {
+    const secs = [section('old one', body), section('old two', body), section('newest', 300)];
+    const { home } = homeWith('a1', fixture({ sections: secs }));
+    const { MemoryReflector } = loadReflectWithStub((n, prompt) => {
+      limits.push(statedLimit(prompt));
+      return okJson('short', []);
+    });
+    await makeReflector({ MemoryReflector }, home, { recentKeep: 1 }).reflectNow('a1');
+  }
+  assert.ok(limits[1] > limits[0], `limits ${limits.join(' and ')} must grow with the input`);
+});
+
+test('a summary that ignores the byte limit and does not shrink the file still aborts', async () => {
+  const { home, mem } = homeWith('a1', largeFixture());
+  const before = fs.readFileSync(mem, 'utf8');
+  const { MemoryReflector } = loadReflectWithStub(() => okJson('z'.repeat(before.length), []));
+  const reflector = makeReflector({ MemoryReflector }, home, { recentKeep: 1 });
+  const [result] = await reflector.reflectNow('a1');
+  assert.equal(result.condensed, false);
+  assert.equal(result.reason, 'not-smaller');
+  assert.equal(fs.readFileSync(mem, 'utf8'), before, 'a rejected rewrite must never touch the original');
+});
+
+// Pinned facts and the newest sections are kept verbatim, and can by
+// themselves take more than 80% of the file. The target is unreachable then,
+// but a summary can still shrink the file by the margin the size check needs.
+function pinnedHeavy(pinnedBytes) {
+  const secs = [section('old one', 2_000), section('newest', 300)];
+  return fixture({ pinned: pad('pinned', pinnedBytes), sections: secs });
+}
+
+test('when the verbatim regions leave no room for the 80% target, the limit is the room the size check allows', async () => {
+  const { home, mem } = homeWith('a1', pinnedHeavy(20_000));
+  const before = fs.statSync(mem).size;
+  let limit = null;
+  const { MemoryReflector } = loadReflectWithStub((n, prompt) => {
+    limit = statedLimit(prompt);
+    return okJson('z'.repeat(limit ?? 0), [pad('- a new durable fact ', 400)]);
+  });
+  const [result] = await makeReflector({ MemoryReflector }, home, { recentKeep: 1 }).reflectNow('a1');
+  assert.ok(limit > 0, `stated limit ${limit} must leave the model room to write a summary`);
+  // A model that uses every byte it was given, and hoists a fact, is accepted.
+  assert.equal(result.condensed, true, `rejected: ${result.reason}`);
+  assert.ok(result.newBytes < before * 0.95);
+});
+
+test('when even the size check leaves no room, no summary is requested and the scan backs off', async () => {
+  const { home, mem } = homeWith('a1', pinnedHeavy(40_000));
+  const before = fs.readFileSync(mem, 'utf8');
+  const { MemoryReflector, calls } = loadReflectWithStub(() => okJson('short', []));
+  const reflector = makeReflector({ MemoryReflector }, home, { recentKeep: 1 });
+  const [first] = await reflector.reflectNow();
+  assert.equal(calls.length, 0, 'a summary that cannot be accepted must not be paid for');
+  assert.equal(first.reason, 'not-smaller');
+  const [second] = await reflector.reflectNow();
+  assert.equal(second.reason, 'not-smaller-backoff');
+  assert.equal(calls.length, 0);
+  assert.equal(fs.readFileSync(mem, 'utf8'), before);
+});
