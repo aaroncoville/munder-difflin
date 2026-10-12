@@ -74,13 +74,19 @@ const HOIST_NONE = /^\(?none\)?\.?$/i;
  *  one back as its summary or as a fact has summarized nothing. */
 const CONDENSED_PLACEHOLDER = '<free-form condensed summary>';
 const HOIST_PLACEHOLDER = '<new durable fact, one per line>';
+/** The rewritten file is asked to come out at no more than this share of the
+ *  file it replaces. `verify` enforces only "under 95% of before";
+ *  without a stated size a model has no idea how much room the summary has,
+ *  and routinely wrote one that made the file larger than it started. */
+const CONDENSE_TARGET_RATIO = 0.8;
 
 /** Instruction prefix — kept byte-identical across calls (no dates/ids spliced
  *  in) so Claude Code prompt-caches it; the dynamic content goes in the tail. */
 const CONDENSE_SYSTEM = [
   "You are compacting one AI agent's long-term memory file. You will receive:",
   '(A) the current CONDENSED summary, (B) older RECENT sections being evicted,',
-  '(C) the PINNED durable-facts block (for context only — do not rewrite it).',
+  '(C) the PINNED durable-facts block (for context only — do not rewrite it),',
+  '(D) the SIZE LIMIT for the condensed section, in bytes.',
   'Output exactly one block in this format:',
   CONDENSED_MARKER,
   CONDENSED_PLACEHOLDER,
@@ -89,7 +95,8 @@ const CONDENSE_SYSTEM = [
   END_MARKER,
   'RULES:',
   '- The condensed section = a single bounded summary of (A)+(B). Re-summarize (A) together',
-  '  with (B) so the result does not grow unbounded. Target <= 1500 words. Preserve',
+  '  with (B) so the result does not grow unbounded. Target <= 1500 words, and never',
+  '  exceed the byte limit stated in (D): it is a ceiling, not a goal. Preserve',
   '  every decision, root cause, protocol, file path, commit SHA, and numeric result.',
   '  Drop routine standup chatter, resolved blockers, and superseded plans.',
   '- Write the condensed section as literal free-form text; do not JSON-encode or escape it.',
@@ -275,10 +282,13 @@ export class MemoryReflector {
       return { id, condensed: false, reason: 'backup-failed', oldBytes };
     }
 
-    // 2) SUMMARIZE the (condensed + evicted) tail via headless Haiku.
+    // 2) SUMMARIZE the (condensed + evicted) tail via headless Haiku, in as
+    // many bytes as are left once everything kept verbatim is counted.
+    const fixedBytes = Buffer.byteLength(rebuild(parsed.header, pinnedLines(parsed.pinned), '', keep), 'utf8');
+    const maxCondensedBytes = Math.max(0, Math.floor(oldBytes * CONDENSE_TARGET_RATIO) - fixedBytes);
     let summary: { condensed: string; hoist: string[] };
     try {
-      summary = await this.summarize(home, parsed.condensed, evict, parsed.pinned);
+      summary = await this.summarize(home, parsed.condensed, evict, parsed.pinned, maxCondensedBytes);
     } catch (e) {
       this.logAbort(id, 'summarize-failed', String(e));
       return { id, condensed: false, reason: 'summarize-failed', oldBytes };
@@ -336,7 +346,8 @@ export class MemoryReflector {
   // — the headless LLM call (the only non-deterministic step) —
 
   private async summarize(
-    home: string, condensed: string | null, evict: Section[], pinned: string | null
+    home: string, condensed: string | null, evict: Section[], pinned: string | null,
+    maxCondensedBytes: number
   ): Promise<{ condensed: string; hoist: string[] }> {
     const evictText = evict.map((s) => `${s.heading}\n${s.body}`).join('\n\n').trim();
     const prompt = [
@@ -350,7 +361,10 @@ export class MemoryReflector {
       evictText || '(none)',
       '',
       '(C) PINNED DURABLE FACTS (context only — do not rewrite):',
-      pinned?.trim() || '(none)'
+      pinned?.trim() || '(none)',
+      '',
+      '(D) SIZE LIMIT:',
+      `The condensed section must be at most ${maxCondensedBytes} bytes of UTF-8 text.`
     ].join('\n');
 
     // Scale the budget with the payload: a fixed 180s cap regardless of how
