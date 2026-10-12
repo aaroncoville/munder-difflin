@@ -81,6 +81,10 @@ const HOIST_PLACEHOLDER = '<new durable fact, one per line>';
 const CONDENSE_TARGET_RATIO = 0.8;
 /** A rewrite is accepted only below this share of the file it replaces. */
 const MAX_ACCEPTED_RATIO = 0.95;
+/** Bytes held back for pinned facts the summary may hoist, which are not known
+ *  until it returns. Only reserved when the limit falls back to the room the
+ *  acceptance check allows: below the target there is margin enough. */
+const HOIST_ALLOWANCE_BYTES = 512;
 
 /** Instruction prefix — kept byte-identical across calls (no dates/ids spliced
  *  in) so Claude Code prompt-caches it; the dynamic content goes in the tail. */
@@ -273,6 +277,21 @@ export class MemoryReflector {
       return { id, condensed: false, reason: 'nothing-to-evict', oldBytes };
     }
 
+    // The summary gets the bytes left once everything kept verbatim is
+    // counted. Pinned facts and the newest sections can by themselves exceed
+    // the target; the summary is then given the room the acceptance check
+    // allows instead. When there is none, no summary could be accepted, so
+    // none is asked for, and the scan backs off as for any not-smaller result.
+    const fixedBytes = Buffer.byteLength(rebuild(parsed.header, pinnedLines(parsed.pinned), '', keep), 'utf8');
+    const targetRoom = Math.floor(oldBytes * CONDENSE_TARGET_RATIO) - fixedBytes;
+    const acceptedRoom = Math.ceil(oldBytes * MAX_ACCEPTED_RATIO) - 1 - fixedBytes;
+    const maxCondensedBytes = targetRoom > 0 ? targetRoom : acceptedRoom - HOIST_ALLOWANCE_BYTES;
+    if (maxCondensedBytes <= 0) {
+      this.logAbort(id, 'not-smaller', 'the verbatim regions leave no room for a summary', { oldBytes });
+      this.notSmallerAt.set(id, oldBytes);
+      return { id, condensed: false, reason: 'not-smaller', oldBytes };
+    }
+
     // 1) BACK UP first — a lossless cold copy makes every later step recoverable.
     const stamp = utcStamp();
     const backup = join(home, 'hive', 'backups', stamp, id, 'memory.md');
@@ -284,10 +303,8 @@ export class MemoryReflector {
       return { id, condensed: false, reason: 'backup-failed', oldBytes };
     }
 
-    // 2) SUMMARIZE the (condensed + evicted) tail via headless Haiku, in as
-    // many bytes as are left once everything kept verbatim is counted.
-    const fixedBytes = Buffer.byteLength(rebuild(parsed.header, pinnedLines(parsed.pinned), '', keep), 'utf8');
-    const maxCondensedBytes = Math.max(0, Math.floor(oldBytes * CONDENSE_TARGET_RATIO) - fixedBytes);
+    // 2) SUMMARIZE the (condensed + evicted) tail via headless Haiku, in at
+    // most maxCondensedBytes.
     let summary: { condensed: string; hoist: string[] };
     try {
       summary = await this.summarize(home, parsed.condensed, evict, parsed.pinned, maxCondensedBytes);

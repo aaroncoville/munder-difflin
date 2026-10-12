@@ -501,3 +501,40 @@ test('a summary that ignores the byte limit and does not shrink the file still a
   assert.equal(result.reason, 'not-smaller');
   assert.equal(fs.readFileSync(mem, 'utf8'), before, 'a rejected rewrite must never touch the original');
 });
+
+// Pinned facts and the newest sections are kept verbatim, and can by
+// themselves take more than 80% of the file. The target is unreachable then,
+// but a summary can still shrink the file by the margin the size check needs.
+function pinnedHeavy(pinnedBytes) {
+  const secs = [section('old one', 2_000), section('newest', 300)];
+  return fixture({ pinned: pad('pinned', pinnedBytes), sections: secs });
+}
+
+test('when the verbatim regions leave no room for the 80% target, the limit is the room the size check allows', async () => {
+  const { home, mem } = homeWith('a1', pinnedHeavy(20_000));
+  const before = fs.statSync(mem).size;
+  let limit = null;
+  const { MemoryReflector } = loadReflectWithStub((n, prompt) => {
+    limit = statedLimit(prompt);
+    return okJson('z'.repeat(limit ?? 0), [pad('- a new durable fact ', 400)]);
+  });
+  const [result] = await makeReflector({ MemoryReflector }, home, { recentKeep: 1 }).reflectNow('a1');
+  assert.ok(limit > 0, `stated limit ${limit} must leave the model room to write a summary`);
+  // A model that uses every byte it was given, and hoists a fact, is accepted.
+  assert.equal(result.condensed, true, `rejected: ${result.reason}`);
+  assert.ok(result.newBytes < before * 0.95);
+});
+
+test('when even the size check leaves no room, no summary is requested and the scan backs off', async () => {
+  const { home, mem } = homeWith('a1', pinnedHeavy(40_000));
+  const before = fs.readFileSync(mem, 'utf8');
+  const { MemoryReflector, calls } = loadReflectWithStub(() => okJson('short', []));
+  const reflector = makeReflector({ MemoryReflector }, home, { recentKeep: 1 });
+  const [first] = await reflector.reflectNow();
+  assert.equal(calls.length, 0, 'a summary that cannot be accepted must not be paid for');
+  assert.equal(first.reason, 'not-smaller');
+  const [second] = await reflector.reflectNow();
+  assert.equal(second.reason, 'not-smaller-backoff');
+  assert.equal(calls.length, 0);
+  assert.equal(fs.readFileSync(mem, 'utf8'), before);
+});
