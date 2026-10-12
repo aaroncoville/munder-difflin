@@ -5327,11 +5327,13 @@ const NUDGE_SUBMIT_DELAY_MS = 140;
  * The session a respawn resumes when none was typed in: the agent's last one,
  * if a resume was asked for. A Codex worker on its first start since the app's
  * opens a new thread instead (codexThread.ts), and the skipped session is logged.
+ * The orchestrator is not a worker and keeps its session: its thread is the
+ * floor's working context, not a brief re-read.
  */
 function recordedSessionFor(agentId: string, provider: AgentProvider, opts: AgentSpawnOptions): string | undefined {
   if (opts.resume !== true) return undefined;
   const sid = hive.lastSession(agentId);
-  if (sid && provider === 'codex' && !codexThreads.resumesOnSpawn(agentId, opts.requireResume === true)) {
+  if (sid && provider === 'codex' && !opts.hive?.isGod && !codexThreads.resumesOnSpawn(agentId, opts.requireResume === true)) {
     hive.appendLog({ kind: 'codex-new-thread', agentId, reason: 'app-start', previousSessionId: sid });
     return undefined;
   }

@@ -440,10 +440,11 @@ test('a Codex worker restored at app start opens a new thread, and says so', (t)
   assert.equal(s.logs.length, 1);
 });
 
-test('an asked-for resume, another provider, or no session is left as it was', (t) => {
+test('an asked-for resume, the orchestrator, another provider, or no session is left as it was', (t) => {
   const asked = sessionChoice(t);
   assert.equal(asked.choose({ requireResume: true }), 'old-thread');
   assert.equal(sessionChoice(t, { provider: 'grok' }).choose({}), 'old-thread');
+  assert.equal(asked.choose({ hive: { id: WORKER, isGod: true } }), 'old-thread', 'the orchestrator keeps its session');
   assert.equal(asked.choose({ resume: false }), undefined);
   const none = sessionChoice(t, { recorded: false });
   assert.equal(none.choose({}), undefined);
