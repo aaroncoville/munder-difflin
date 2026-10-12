@@ -28,6 +28,13 @@ import { dirname } from 'node:path';
  *    thread together with anything else pending.
  *  A new process starts its own thread, so its first request needs no other.
  *
+ * A worker restored when the app starts is started as a new process rather
+ * than resuming its last session. Resuming would submit its brief into the old
+ * thread, a turn that carries all of that thread's history to do no work. The
+ * old session stays on disk, and a resume that is asked for still attaches it.
+ * The cost is that a follow-up to work from before the restart reaches the new
+ * thread, which has to read the earlier exchange back from the hive's mail.
+ *
  * A request that does not get a new thread is handled in the current one, and
  * from then on belongs to it, so a correction to it continues the thread. That
  * is recorded wherever it shows: the request is routed while the thread still
@@ -73,11 +80,13 @@ export function newThreadFor(thread: ThreadRecord, inbox: ThreadMessage[], isAge
 
 /**
  * Each Codex worker's current thread, kept on disk beside its Codex home so a
- * fix round that arrives after an app restart still finds the review it
+ * fix round that arrives after a resumed respawn still finds the review it
  * belongs to.
  */
 export class CodexThreads {
   private readonly records = new Map<string, ThreadRecord>();
+  /** The workers started since the app was. */
+  private readonly started = new Set<string>();
 
   /** @param pathFor where an agent's record lives, or null with no hive. */
   constructor(private readonly pathFor: (agentId: string) => string | null) {}
@@ -105,7 +114,14 @@ export class CodexThreads {
   /** The worker's process (re)started: a new process opens its own thread,
    *  while one that resumed its session keeps the record of that thread. */
   spawned(agentId: string, resumed: boolean): void {
+    this.started.add(agentId);
     if (!resumed) this.save(agentId, { fresh: true, ids: [] });
+  }
+
+  /** Should a respawn resume the worker's last session? Not on its first start
+   *  since the app's, unless `asked` says the resume was requested. */
+  resumesOnSpawn(agentId: string, asked: boolean): boolean {
+    return asked || this.started.has(agentId);
   }
 
   /** A routed message. `isWorker` picks out the agents this applies to;

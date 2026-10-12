@@ -2968,7 +2968,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     // resumeSessionId was read ONLY in the Claude branch, so a Codex agent
     // silently ignored it and started a brand-new empty session.
     const typedSid = typeof opts.resumeSessionId === 'string' ? opts.resumeSessionId.trim() : '';
-    const sid = typedSid || (opts.resume === true ? hive.lastSession(opts.hive.id) : undefined);
+    const sid = typedSid || recordedSessionFor(opts.hive.id, provider, opts);
     if (sid && rf) {
       const args = opts.args ?? [];
       if (!args.includes(rf)) { args.push(rf, sid); opts.args = args; didResume = true; }
@@ -5322,6 +5322,23 @@ const WORKER_WAKE_POLL_MS = 15_000;
  *  pattern). Also how often waiting stall-line enrichment re-checks for nudges
  *  still awaiting their Enter (scheduleStallEnrichment). */
 const NUDGE_SUBMIT_DELAY_MS = 140;
+
+/**
+ * The session a respawn resumes when none was typed in: the agent's last one,
+ * if a resume was asked for. A Codex worker on its first start since the app's
+ * opens a new thread instead (codexThread.ts), and the skipped session is logged.
+ * The orchestrator is not a worker and keeps its session: its thread is the
+ * floor's working context, not a brief re-read.
+ */
+function recordedSessionFor(agentId: string, provider: AgentProvider, opts: AgentSpawnOptions): string | undefined {
+  if (opts.resume !== true) return undefined;
+  const sid = hive.lastSession(agentId);
+  if (sid && provider === 'codex' && !opts.hive?.isGod && !codexThreads.resumesOnSpawn(agentId, opts.requireResume === true)) {
+    hive.appendLog({ kind: 'codex-new-thread', agentId, reason: 'app-start', previousSessionId: sid });
+    return undefined;
+  }
+  return sid;
+}
 
 /** How often the beat verifies the hook socket is bound AND still ours (#277). */
 const HOOK_HEALTH_MS = 15_000;
