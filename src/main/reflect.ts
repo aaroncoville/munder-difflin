@@ -79,6 +79,8 @@ const HOIST_PLACEHOLDER = '<new durable fact, one per line>';
  *  without a stated size a model has no idea how much room the summary has,
  *  and routinely wrote one that made the file larger than it started. */
 const CONDENSE_TARGET_RATIO = 0.8;
+/** A rewrite is accepted only below this share of the file it replaces. */
+const MAX_ACCEPTED_RATIO = 0.95;
 
 /** Instruction prefix — kept byte-identical across calls (no dates/ids spliced
  *  in) so Claude Code prompt-caches it; the dynamic content goes in the tail. */
@@ -529,7 +531,7 @@ export function verify(args: {
   if (newBytes <= 200) return { ok: false, reason: 'too-small' };
   if (!condensed.trim()) return { ok: false, reason: 'empty-condensed' };
   // 3) Actually smaller (a no-op condense is a failure).
-  if (!(newBytes < oldBytes * 0.95)) return { ok: false, reason: 'not-smaller' };
+  if (!(newBytes < oldBytes * MAX_ACCEPTED_RATIO)) return { ok: false, reason: 'not-smaller' };
   // 2) Pinned preserved: every old pinned line survives (hoist only adds).
   const newPinned = new Set(pinnedLines(re.pinned));
   for (const line of oldPinnedLines) if (!newPinned.has(line)) return { ok: false, reason: 'pinned-line-dropped' };
