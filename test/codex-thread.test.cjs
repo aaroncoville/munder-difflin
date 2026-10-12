@@ -404,3 +404,48 @@ test('routing a message records it against the Codex worker’s thread', (t) => 
   observer(request('review-2'), [WORKER]);
   assert.ok(threads.get(WORKER).ids.includes('review-2'), 'the inbox reached the observer');
 });
+
+// ── app start ─────────────────────────────────────────────────────────────
+
+test('a worker’s first start since the app did resumes only when asked to', (t) => {
+  const { threads, reopen } = records(t);
+  assert.equal(threads.resumesOnSpawn(WORKER, false), false, 'restored at app start: a new thread');
+  assert.equal(threads.resumesOnSpawn(WORKER, true), true, 'a resume that was asked for');
+  threads.spawned(WORKER, false);
+  assert.equal(threads.resumesOnSpawn(WORKER, false), true, 'respawned later in the same run');
+  // Another worker, or the next run of the app, starts over.
+  assert.equal(threads.resumesOnSpawn('dev', false), false);
+  assert.equal(reopen().resumesOnSpawn(WORKER, false), false);
+});
+
+/** The spawn's choice of session, loaded from index.ts. */
+function sessionChoice(t, { provider = 'codex', recorded = true } = {}) {
+  const { threads } = records(t);
+  const logs = [];
+  const hive = { lastSession: () => (recorded ? 'old-thread' : undefined), appendLog: (l) => logs.push(l) };
+  // eslint-disable-next-line no-new-func
+  const recordedSessionFor = new Function(
+    'hive', 'codexThreads',
+    `${slice('function recordedSessionFor(', '/** How often the beat verifies')}\nreturn recordedSessionFor;`
+  )(hive, threads);
+  return { threads, logs, choose: (opts) => recordedSessionFor(WORKER, provider, { resume: true, ...opts }) };
+}
+
+test('a Codex worker restored at app start opens a new thread, and says so', (t) => {
+  const s = sessionChoice(t);
+  assert.equal(s.choose({}), undefined, 'the old thread is not resumed');
+  assert.deepEqual(s.logs, [{ kind: 'codex-new-thread', agentId: WORKER, reason: 'app-start', previousSessionId: 'old-thread' }]);
+  s.threads.spawned(WORKER, false);
+  assert.equal(s.choose({}), 'old-thread', 'a respawn in the same run still resumes');
+  assert.equal(s.logs.length, 1);
+});
+
+test('an asked-for resume, another provider, or no session is left as it was', (t) => {
+  const asked = sessionChoice(t);
+  assert.equal(asked.choose({ requireResume: true }), 'old-thread');
+  assert.equal(sessionChoice(t, { provider: 'grok' }).choose({}), 'old-thread');
+  assert.equal(asked.choose({ resume: false }), undefined);
+  const none = sessionChoice(t, { recorded: false });
+  assert.equal(none.choose({}), undefined);
+  assert.deepEqual([...asked.logs, ...none.logs], [], 'nothing was skipped, so nothing is logged');
+});
