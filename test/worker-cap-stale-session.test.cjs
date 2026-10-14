@@ -140,3 +140,68 @@ test('a response split across two incremental reads is still counted once', () =
   fs.appendFileSync(file, `${assistantLine('s2', 'msg_a', 40)}\n${assistantLine('s2', 'msg_b', 3)}\n`);
   assert.equal(readAgentUsage(cwd, { sessionId: 's2' }).outputTokens, 43);
 });
+
+// Codex and Grok agents are costed from their own CLI's per-session files, found
+// by the same recorded session id, so a re-used name hits the same stale id.
+
+const OLD_SESSION = '01a04adb-bf51-7fe0-9627-df7d0dd58837';
+
+function writeCodexRollout(home, sessionId) {
+  const dir = path.join(home, 'sessions', '2026', '10', '07');
+  fs.mkdirSync(dir, { recursive: true });
+  const usage = { input_tokens: 2_000_000, cached_input_tokens: 0, output_tokens: 50_000, cache_write_input_tokens: 0, reasoning_output_tokens: 0 };
+  const lines = [
+    { timestamp: '2026-10-07T20:00:00.000Z', type: 'session_meta', payload: { id: sessionId } },
+    { timestamp: '2026-10-07T20:00:01.000Z', type: 'turn_context', payload: { model: 'gpt-5.6-sol' } },
+    { timestamp: '2026-10-07T20:05:00.000Z', type: 'event_msg',
+      payload: { type: 'token_count', info: { total_token_usage: usage, last_token_usage: usage } } }
+  ];
+  fs.writeFileSync(path.join(dir, `rollout-2026-10-07T20-00-00-${sessionId}.jsonl`),
+    lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+}
+
+function writeGrokUsage(cwd, sessionId) {
+  const dir = path.join(FAKE_HOME, '.grok', 'sessions', encodeURIComponent(cwd), sessionId);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'usage.json'), JSON.stringify({
+    sessionId,
+    updatedAt: '2026-10-07T20:05:00.000Z',
+    session: { inputTokens: 2_000_000, outputTokens: 50_000, cachedReadTokens: 0, cacheCreationTokens: 0, costUsdTicks: 5e10, primaryModelId: 'grok-4.6-build' }
+  }));
+}
+
+function codexWorker() {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-home-'));
+  writeCodexRollout(home, OLD_SESSION);
+  return new TelemetryCollector({
+    resolveCwd: () => null,
+    resolveSessionId: () => OLD_SESSION,
+    resolveCodexHome: () => home
+  });
+}
+
+function grokWorker() {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-cwd-'));
+  writeGrokUsage(cwd, OLD_SESSION);
+  return new TelemetryCollector({
+    resolveCwd: () => cwd,
+    resolveSessionId: () => OLD_SESSION
+  });
+}
+
+for (const [provider, make] of [['Codex', codexWorker], ['Grok', grokWorker]]) {
+  test(`a re-spawned ${provider} worker is not billed for the previous run`, () => {
+    const telemetry = make();
+    telemetry.startFreshSession('worker-a');
+    assert.equal(telemetry.getAgentUsage('worker-a'), null,
+      'until the new session reports in, the fresh worker has used nothing');
+  });
+
+  test(`a resumed ${provider} agent is still billed under its recorded session`, () => {
+    const telemetry = make();
+    const sample = telemetry.getAgentUsage('worker-a');
+    assert.ok(sample, 'a resume keeps its session, so its usage is its own');
+    assert.equal(sample.sessionId, OLD_SESSION);
+    assert.equal(sample.output, 50_000);
+  });
+}
