@@ -514,6 +514,7 @@ export class TelemetryCollector {
     const cwd = this.resolveCwd?.(agentId);
     const sessionId = this.resolveSessionId?.(agentId);
     if (!cwd || !sessionId) return null;
+    if (this.retiredSessions.get(agentId) === sessionId) return null;
     const file = join(homedir(), '.grok', 'sessions', encodeURIComponent(cwd), sessionId, 'usage.json');
     try {
       const parsed = JSON.parse(readFileSync(file, 'utf8')) as {
@@ -561,6 +562,7 @@ export class TelemetryCollector {
     const home = this.resolveCodexHome?.(agentId);
     const sessionId = this.resolveSessionId?.(agentId);
     if (!home || !sessionId) return null;
+    if (this.retiredSessions.get(agentId) === sessionId) return null;
     const file = rolloutFileFor(home, sessionId);
     const totals = file ? this.codexUsage.read(file) : null;
     if (!totals) return null;
