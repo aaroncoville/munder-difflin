@@ -156,6 +156,10 @@ export class TelemetryCollector {
   /** api_error subscribers — feeds Lane A's breaker error-storm trip (#6), which
    *  has no input source of its own (hook payloads don't expose api errors). */
   private readonly apiErrorSubs = new Set<(agentId: string) => void>();
+  /** agentId → the session id it was recorded under when it last started a
+   *  fresh session. That id belongs to the previous run, so the transcript
+   *  fallback ignores it until the new session reports in. */
+  private readonly retiredSessions = new Map<string, string>();
 
   constructor(opts: TelemetryCollectorOptions = {}) {
     this.host = opts.host ?? '127.0.0.1';
@@ -239,6 +243,20 @@ export class TelemetryCollector {
     }
     this.agentSessions.delete(agentId);
     this.spans.delete(agentId);
+  }
+
+  /** Mark that `agentId` is starting a NEW session rather than resuming one.
+   *
+   *  The agent's recorded session id is not updated until the new session's
+   *  first hook reports in, and until then it still names the previous run.
+   *  An agent re-spawned under the same id gets the same cwd, so the previous
+   *  run's transcript sits in the same project dir, and the transcript fallback
+   *  would bill the whole previous run to the new agent. Remembering the id it
+   *  had at this point lets the fallback report "no data" for it instead. */
+  startFreshSession(agentId: string): void {
+    const sessionId = this.resolveSessionId?.(agentId);
+    if (sessionId) this.retiredSessions.set(agentId, sessionId);
+    else this.retiredSessions.delete(agentId);
   }
 
   /** Recent tool spans for the per-agent waterfall (#7B.2), oldest→newest. */
@@ -450,6 +468,7 @@ export class TelemetryCollector {
     if (!cwd) return null;
     const sessionId = this.resolveSessionId?.(agentId);
     if (!sessionId) return null;
+    if (this.retiredSessions.get(agentId) === sessionId) return null;
     const u = readAgentUsage(cwd, { sessionId });
     if (!u.inputTokens && !u.outputTokens && !u.cacheReadTokens && !u.cacheWriteTokens) return null;
     return {
@@ -495,6 +514,7 @@ export class TelemetryCollector {
     const cwd = this.resolveCwd?.(agentId);
     const sessionId = this.resolveSessionId?.(agentId);
     if (!cwd || !sessionId) return null;
+    if (this.retiredSessions.get(agentId) === sessionId) return null;
     const file = join(homedir(), '.grok', 'sessions', encodeURIComponent(cwd), sessionId, 'usage.json');
     try {
       const parsed = JSON.parse(readFileSync(file, 'utf8')) as {
@@ -542,6 +562,7 @@ export class TelemetryCollector {
     const home = this.resolveCodexHome?.(agentId);
     const sessionId = this.resolveSessionId?.(agentId);
     if (!home || !sessionId) return null;
+    if (this.retiredSessions.get(agentId) === sessionId) return null;
     const file = rolloutFileFor(home, sessionId);
     const totals = file ? this.codexUsage.read(file) : null;
     if (!totals) return null;

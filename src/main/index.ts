@@ -4919,6 +4919,9 @@ async function processSpawnRequest(filePath: string): Promise<void> {
     args: launch.args,
     hive: meta, isolate, provider: raw.provider, env: brokerEnv
   };
+  // A worker never resumes, so any session id still recorded for this id is a
+  // previous run's — don't let the token cap bill this run for it.
+  telemetry.startFreshSession(workerId);
 
   let res: { ok: boolean; error?: string; worktreePath?: string };
   try {
