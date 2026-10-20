@@ -410,22 +410,65 @@ test('on hardware, reduced → full wants WebGL where canvas is live: one rebuil
 
   applyOfficeMotionPref('full');
   assert.equal(f.rebuilds, 1, 'canvas live, WebGL wanted: one rebuild');
+  // The canvas app on its way out stays on the protective settings: the
+  // full path's uncapped 2x belongs to the WebGL app that replaces it.
+  assert.equal(app.ticker.maxFPS, 15, 'the outgoing canvas app was uncapped');
+  assert.equal(app.renderer.resolution, 1, 'the outgoing canvas app was pushed to 2x');
+  assert.deepEqual(app.resizes, []);
   // A second input change while the rebuild is pending asks for nothing more.
   f.query.set(true); f.query.set(false);
   assert.equal(f.rebuilds, 1, 'a pending rebuild must not be asked for again');
+  assert.equal(app.ticker.maxFPS, 15);
 
   f.gate.detach();
   const rebuilt = fakeApp(2, 'webgl');
   f.gate.attach(rebuilt);
   assert.equal(f.rebuilds, 1);
-  assert.equal(rebuilt.ticker.maxFPS, 0);
+  assert.equal(rebuilt.ticker.maxFPS, 0, "the WebGL app gets the full path's settings");
+  assert.equal(rebuilt.renderer.resolution, 2);
 
-  // The OS hint is live too, under 'auto': on hardware it also flips the kind.
+  // The OS hint is live too, under 'auto': on hardware it also flips the
+  // kind, and the WebGL app waits on the protective settings meanwhile.
   applyOfficeMotionPref('auto');
   f.query.set(true);
   assert.equal(rebuilt.ticker.maxFPS, 15);
   assert.equal(rebuilt.renderer.resolution, 1);
   assert.equal(f.rebuilds, 2);
+  f.gate.dispose();
+});
+
+test('a fast full → reduced → full flap asks for one rebuild per distinct kind, not per flap', (t) => {
+  t.after(() => applyOfficeMotionPref('auto'));
+  const f = gateUnderTest({ classification: 'hardware', dpr: 2 });
+  const app = fakeApp(2, 'webgl');
+  f.gate.attach(app);
+
+  applyOfficeMotionPref('reduced');
+  assert.equal(f.rebuilds, 1, 'canvas wanted: one request');
+  assert.equal(app.ticker.maxFPS, 15);
+  // Flapped back: the OLD WebGL app matches the wish again, but its rebuild
+  // is already on the way. That must not retire the request...
+  applyOfficeMotionPref('full');
+  assert.equal(f.rebuilds, 1);
+  assert.equal(app.ticker.maxFPS, 0, 'a live app of the wanted kind takes the mode\'s settings');
+  // ...so flapping forward again does not ask a second time for canvas.
+  applyOfficeMotionPref('reduced');
+  assert.equal(f.rebuilds, 1, 'a flap asked twice for the same kind');
+  applyOfficeMotionPref('full');
+  applyOfficeMotionPref('reduced');
+  assert.equal(f.rebuilds, 1);
+
+  // The rebuild lands with the kind the decision wants NOW: that retires the
+  // request, and the next switch is a new, distinct one.
+  f.gate.detach();
+  const canvasApp = fakeApp(1, 'canvas');
+  canvasApp.ticker.maxFPS = 15;
+  f.gate.attach(canvasApp);
+  assert.equal(f.rebuilds, 1);
+  applyOfficeMotionPref('full');
+  assert.equal(f.rebuilds, 2, 'after a landed rebuild, the other kind is a new request');
+  assert.equal(canvasApp.ticker.maxFPS, 15, 'the outgoing canvas app stays protective');
+  assert.equal(canvasApp.renderer.resolution, 1);
   f.gate.dispose();
 });
 
@@ -436,10 +479,14 @@ test('a Pixi that cannot build the kind asked for is asked once, not forever', (
   f.gate.attach(fakeApp(1, 'canvas'));
   applyOfficeMotionPref('full');
   assert.equal(f.rebuilds, 1);
-  // The rebuild came back canvas again (no WebGL available after all).
+  // The rebuild came back canvas again (no WebGL available after all): it
+  // is left on the protective settings rather than run uncapped at 2x.
   f.gate.detach();
-  f.gate.attach(fakeApp(2, 'canvas'));
+  const again = fakeApp(2, 'canvas');
+  f.gate.attach(again);
   assert.equal(f.rebuilds, 1, 'attaching the wrong kind again must not ask again');
+  assert.equal(again.ticker.maxFPS, 15);
+  assert.equal(again.renderer.resolution, 1);
   f.query.set(true); f.query.set(false);
   assert.equal(f.rebuilds, 1);
   f.gate.dispose();
