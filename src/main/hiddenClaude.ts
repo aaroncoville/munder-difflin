@@ -1,5 +1,5 @@
 import * as pty from 'node-pty';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { resolveCommand, userShellPath } from './shellEnv';
@@ -161,6 +161,23 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
       PATH: userShellPath(),
       ...(opts.env ?? {})
     };
+    // CLAUDE_CODE_SKIP_PROMPT_HISTORY is the operator's choice, but it is on
+    // the strip list above: the hidden session's whole output IS its
+    // transcript, so with the flag in force the session cannot work at all.
+    // Honour the intent the other way round instead — when the inherited env
+    // carried the flag, the transcript is deleted as soon as it has been read
+    // (and again after the kill grace, in case the dying CLI flushes a last
+    // record), so no prompt history of this session is left on disk.
+    const discardTranscript = Boolean(process.env.CLAUDE_CODE_SKIP_PROMPT_HISTORY);
+    const transcriptPath = () => hiddenTranscriptPath(opts.cwd, sessionId, env);
+    const discardTranscriptNow = () => {
+      if (!discardTranscript) return;
+      const file = transcriptPath();
+      const remove = () => { try { rmSync(file, { force: true }); } catch { /* best-effort */ } };
+      remove();
+      const again = setTimeout(remove, 5_000);
+      again.unref?.();
+    };
 
     // Windows: node-pty's CreateProcess can't exec the npm `.cmd`/extensionless
     // `claude` shim directly (ERROR_BAD_EXE_FORMAT, error 193) — route non-.exe
@@ -215,7 +232,7 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
 
     const captureAndFinish = () => {
       const text = extractLastAssistantText(opts.cwd, sessionId, env);
-      if (text) { finish({ ok: true, text }); return; }
+      if (text) { finish({ ok: true, text }); discardTranscriptNow(); return; }
       // A cwd the CLI has never been trusted in blocks on the workspace-trust
       // dialog forever — it renders as ordinary boot output, so the boot-quiet
       // heuristic reads it as "ready" and sends the prompt into a menu that
@@ -229,11 +246,12 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
       // CLI never got past boot) or one with no assistant text in it (the
       // session died mid-turn). No path in it: the session id is fresh per
       // call, and reflect.ts counts identical failures by this text.
-      const written = existsSync(hiddenTranscriptPath(opts.cwd, sessionId, env));
+      const written = existsSync(transcriptPath());
       const error = looksLikeTrustDialog(rawOutput)
         ? 'workspace trust dialog blocked the session (cwd is not a trusted Claude Code directory)'
         : `no assistant response found in transcript (${written ? 'transcript has no assistant text' : 'transcript file was never written'})`;
       finish({ ok: false, error });
+      discardTranscriptNow();
     };
 
     const sendPrompt = () => {

@@ -51,9 +51,15 @@ const CLAUDE_CONFIG_KEEP = new Set([
  * (hiddenClaude.ts), where everything else under the CLAUDE_* prefix must
  * survive: an operator's backend selection (Foundry, Bedrock, Vertex, Mantle,
  * the Anthropic-on-AWS variants), the SKIP_*_AUTH switches that go with it,
- * the config dir, telemetry and tmpdir choices. buildPtyEnv's agent-PTY
- * behaviour (prefix-wide strip with a short keep-list) is a different rule
- * and is left as it is.
+ * the config dir, the remote-control session name prefix, telemetry and
+ * tmpdir choices. buildPtyEnv's agent-PTY behaviour (prefix-wide strip with
+ * a short keep-list) is a different rule and is left as it is.
+ *
+ * CLAUDE_CODE_SKIP_PROMPT_HISTORY is an operator choice, yet it is on this
+ * list: a hidden session's whole output is its transcript, so with the flag
+ * in force the session cannot work at all. The operator's intent is honoured
+ * the other way round — hiddenClaude.ts deletes the transcript as soon as it
+ * has read it when the inherited env carried the flag.
  */
 export const CLAUDE_SESSION_MARKERS = new Set([
   'CLAUDECODE',
@@ -70,8 +76,7 @@ export const CLAUDE_SESSION_MARKERS = new Set([
   'CLAUDE_CODE_MESSAGING_TOKEN',
   'CLAUDE_CODE_SSE_PORT',
   'CLAUDE_CODE_HOST_HTTP_PROXY_PORT',
-  'CLAUDE_CODE_HOST_SOCKS_PROXY_PORT',
-  'CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX'
+  'CLAUDE_CODE_HOST_SOCKS_PROXY_PORT'
 ]);
 
 /** `env` minus CLAUDE_SESSION_MARKERS, undefined values dropped. The input is

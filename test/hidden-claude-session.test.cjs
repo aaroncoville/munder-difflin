@@ -232,6 +232,45 @@ test('only a legacy directory existing does not move a new session\'s transcript
   assert.match(r.error, /transcript file was never written/);
 });
 
+test('without CLAUDE_CODE_SKIP_PROMPT_HISTORY the transcript is left where the CLI wrote it', async () => {
+  let file;
+  onSpawned = (rec) => {
+    file = claudeTranscriptPath(path.join(home, '.claude'), sessionIdOf(rec));
+    writeTranscript(file, [assistant('kept')]);
+    exitClean(rec);
+  };
+  const r = await run();
+  assert.equal(r.text, 'kept');
+  assert.equal(fs.existsSync(file), true);
+});
+
+test('CLAUDE_CODE_SKIP_PROMPT_HISTORY in the inherited env: stripped for the session, honoured by deleting the transcript once read', async () => {
+  await withEnv({ CLAUDE_CODE_SKIP_PROMPT_HISTORY: '1' }, async () => {
+    let file;
+    onSpawned = (rec) => {
+      // The session itself must not see the flag, or it would write nothing.
+      assert.equal(rec.opts.env.CLAUDE_CODE_SKIP_PROMPT_HISTORY, undefined);
+      file = claudeTranscriptPath(path.join(home, '.claude'), sessionIdOf(rec));
+      writeTranscript(file, [assistant('read once, then gone')]);
+      exitClean(rec);
+    };
+    const r = await run();
+    assert.equal(r.ok, true);
+    assert.equal(r.text, 'read once, then gone');
+    assert.equal(fs.existsSync(file), false, 'no prompt history left on disk');
+
+    // The same when the session produced no usable answer.
+    onSpawned = (rec) => {
+      file = claudeTranscriptPath(path.join(home, '.claude'), sessionIdOf(rec));
+      writeTranscript(file, [{ type: 'user' }]);
+      exitClean(rec);
+    };
+    const r2 = await run();
+    assert.equal(r2.ok, false);
+    assert.equal(fs.existsSync(file), false);
+  });
+});
+
 test('a transcript with no assistant text is reported as such, distinct from one never written', async () => {
   onSpawned = (rec) => {
     writeTranscript(claudeTranscriptPath(path.join(home, '.claude'), sessionIdOf(rec)), [{ type: 'user' }]);

@@ -32,8 +32,7 @@ const MARKERS = {
   CLAUDE_CODE_MESSAGING_TOKEN: 'secret-token',
   CLAUDE_CODE_SSE_PORT: '41234',
   CLAUDE_CODE_HOST_HTTP_PROXY_PORT: '36887',
-  CLAUDE_CODE_HOST_SOCKS_PROXY_PORT: '36887',
-  CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX: 'Librarian'
+  CLAUDE_CODE_HOST_SOCKS_PROXY_PORT: '36887'
 };
 
 // A Foundry-style operator configuration, with the other backends' switches
@@ -50,6 +49,9 @@ const CONFIG = {
   CLAUDE_CODE_USE_ANTHROPIC_AWS: '0',
   CLAUDE_CODE_USE_MANTLE: '0',
   CLAUDE_CONFIG_DIR: '/operator/claude',
+  // Genuine configuration despite the "session" in its name: the operator's
+  // chosen remote-control display name.
+  CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX: 'Librarian',
   CLAUDE_CODE_OAUTH_TOKEN: 'oauth',
   CLAUDE_CODE_MAX_OUTPUT_TOKENS: '8192',
   CLAUDE_CODE_ENABLE_TELEMETRY: '1',
