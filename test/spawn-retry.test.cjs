@@ -63,10 +63,73 @@ test('a person ending the process (Ctrl-C 130, SIGTERM 143, the CLI\'s interrupt
   }
 });
 
-test('a PTY that had input before it died was already in use, not a failed launch', () => {
+test('a PTY a person had typed into was already in use, not a failed launch', () => {
   assert.equal(spawnRetryReason({ ...GOD_EXIT, hadInput: true, alreadyRetried: false }), null);
   assert.equal(
     spawnRetryReason({ exitCode: 1, signal: 0, uptimeMs: 100, tail: '', hadInput: true, alreadyRetried: false }),
+    null
+  );
+});
+
+// ── who counts as input: the PTY manager's write source ──────────────────
+
+/** A PtyManager over a stubbed node-pty whose process we can end at will. */
+function managerWithFakeProcess() {
+  const procs = [];
+  const ptyModulePath = require.resolve('node-pty');
+  const saved = require.cache[ptyModulePath];
+  require.cache[ptyModulePath] = {
+    id: ptyModulePath, filename: ptyModulePath, loaded: true,
+    exports: {
+      spawn: () => {
+        const p = { pid: 77, writes: [], dataCb: null, exitCb: null };
+        p.onData = (cb) => { p.dataCb = cb; };
+        p.onExit = (cb) => { p.exitCb = cb; };
+        p.write = (d) => p.writes.push(d);
+        p.kill = () => {};
+        p.resize = () => {};
+        procs.push(p);
+        return p;
+      }
+    }
+  };
+  loadTs.reset();
+  loadTs.stub('src/main/procKill.ts', { ensureKilled: () => {} });
+  loadTs.stub('src/main/shellEnv.ts', {
+    captureFromLoginShell: () => null, userShellPath: () => '/stub/bin', isSafeCommandName: () => true,
+    windowsFallbackCandidates: () => []
+  });
+  const { PtyManager } = loadTs('src/main/pty.ts');
+  if (saved) require.cache[ptyModulePath] = saved; else delete require.cache[ptyModulePath];
+  const exits = [];
+  const manager = new PtyManager();
+  manager.setExitHandler((id, exitCode, info) => exits.push({ id, exitCode, info }));
+  return { manager, procs, exits };
+}
+
+test('automation writes (OSC/DEC replies, seeded prompts, inbox nudges) do not mark the PTY as used by a person', () => {
+  const { manager, procs, exits } = managerWithFakeProcess();
+  const res = manager.spawn({ id: 'p1', cwd: process.cwd(), command: '/bin/true', args: [] }, null);
+  assert.equal(res.ok, true, res.error);
+  // The default source is 'auto', so no automation caller has to say so.
+  assert.equal(manager.write('p1', '\x1b[?997;1n').ok, true);
+  assert.equal(manager.write('p1', 'seeded prompt text\r', 'auto').ok, true);
+  procs[0].exitCb({ exitCode: 1, signal: 0 });
+  assert.equal(exits[0].info.hadInput, false);
+  assert.equal(
+    spawnRetryReason({ exitCode: 1, signal: 0, uptimeMs: 100, tail: '', hadInput: exits[0].info.hadInput, alreadyRetried: false }),
+    'early-exit', 'the retry is not blocked by the harness\'s own writes'
+  );
+});
+
+test('a keystroke from the terminal (source user) marks the PTY as used, and that blocks the retry', () => {
+  const { manager, procs, exits } = managerWithFakeProcess();
+  assert.equal(manager.spawn({ id: 'p2', cwd: process.cwd(), command: '/bin/true', args: [] }, null).ok, true);
+  assert.equal(manager.write('p2', 'y', 'user').ok, true);
+  procs[0].exitCb({ exitCode: 1, signal: 0 });
+  assert.equal(exits[0].info.hadInput, true);
+  assert.equal(
+    spawnRetryReason({ exitCode: 1, signal: 0, uptimeMs: 100, tail: '', hadInput: exits[0].info.hadInput, alreadyRetried: false }),
     null
   );
 });
@@ -88,21 +151,37 @@ function fakeWindow() {
   return w;
 }
 
-/** A retrier over fakes that record everything. */
+/** A stand-in for the PtyManager's routing: output for an owner-less session
+ *  goes to the ATTACHED sink, never anywhere else. `attach` / `attachedWebContents`
+ *  mirror the real manager's API; `sinkFor` is its safeSend's choice. */
+function fakePtyManager() {
+  let attached = null;
+  return {
+    attach: (wc) => { attached = wc; },
+    attachedWebContents: () => attached,
+    sinkFor: (owner) => owner ?? attached
+  };
+}
+
+/** A retrier over fakes that record everything. The app's "live window"
+ *  (what main's own liveWebContents() would answer) is a DISTINCT object from
+ *  the manager's attached sink, and is handed to nothing: a retrier that
+ *  reached for it instead of the manager's sink would fail these tests. */
 function harness({ spawn } = {}) {
   const calls = { spawn: [], teardown: [], log: [], warn: [], afterSpawn: 0 };
   const live = new Set();
-  let liveWindow = null;
+  const manager = fakePtyManager();
+  const decoyLiveWindow = fakeWindow();
   const retrier = new SpawnRetrier({
     spawn: spawn ?? ((opts, owner) => { calls.spawn.push({ opts, owner }); live.add(opts.id); return { ok: true }; }),
     isLive: (id) => live.has(id),
-    liveWebContents: () => liveWindow,
+    attachedWebContents: () => manager.attachedWebContents(),
     teardown: (id) => calls.teardown.push(id),
     log: (e) => calls.log.push(e),
     afterSpawn: () => { calls.afterSpawn += 1; },
     warn: (m) => calls.warn.push(m)
   });
-  return { retrier, calls, live, setLiveWindow: (w) => { liveWindow = w; } };
+  return { retrier, calls, live, manager, decoyLiveWindow };
 }
 
 test('a launch failure is re-run once, as-is, after the delay, and the terminal is re-armed only after the spawn succeeds', (t) => {
@@ -150,10 +229,10 @@ test('a fresh spawn under the same id gets its own single retry', (t) => {
 
 test('the owner window destroyed during the wait cancels the retry and runs the normal teardown', (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  const { retrier, calls, setLiveWindow } = harness();
+  const { retrier, calls, manager, decoyLiveWindow } = harness();
   const owner = fakeWindow();
-  const other = fakeWindow();
-  setLiveWindow(other);
+  const attached = fakeWindow();
+  manager.attach(attached);
   retrier.spawned(OPTS.id, OPTS, owner);
   assert.equal(retrier.onExit(OPTS.id, 'god', GOD_EXIT), true);
 
@@ -161,32 +240,53 @@ test('the owner window destroyed during the wait cancels the retry and runs the 
   t.mock.timers.tick(SPAWN_RETRY_DELAY_MS);
 
   assert.deepEqual(calls.spawn, [], 'never spawned into a fallback window');
-  assert.deepEqual(other.sent, [], 'the other window heard nothing');
+  assert.deepEqual(attached.sent, [], 'the manager\'s default sink heard nothing: it is not this PTY\'s window');
+  assert.deepEqual(decoyLiveWindow.sent, []);
   assert.deepEqual(owner.sent, []);
   assert.deepEqual(calls.teardown, [OPTS.id]);
   assert.equal(calls.log[calls.log.length - 1].outcome, 'cancelled');
+  assert.equal(calls.log[calls.log.length - 1].reason, 'window-gone');
 });
 
-test('a PTY with no owner relaunches into the default window, and is torn down when there is none', (t) => {
+test('an owner-less PTY is checked against, and relaunched into, the manager\'s attached sink — the one its output goes to', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { retrier, calls, manager, decoyLiveWindow } = harness();
+  const attached = fakeWindow();
+  manager.attach(attached);
+  retrier.spawned(OPTS.id, OPTS, null);
+  assert.equal(retrier.onExit(OPTS.id, 'god', GOD_EXIT), true);
+  t.mock.timers.tick(SPAWN_RETRY_DELAY_MS);
+  assert.equal(calls.spawn.length, 1);
+  assert.equal(calls.spawn[0].owner, null, 'still owner-less, as spawned');
+  const sink = manager.sinkFor(null);
+  assert.equal(sink, attached);
+  assert.deepEqual(sink.sent.map((s) => s.channel), [`pty:relaunch:${OPTS.id}`]);
+  assert.deepEqual(decoyLiveWindow.sent, [], 'the app\'s live window is not the sink');
+});
+
+test('an owner-less PTY whose attached sink is destroyed (or missing) is cancelled with window-gone', (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   {
-    const { retrier, calls, setLiveWindow } = harness();
-    const primary = fakeWindow();
-    setLiveWindow(primary);
+    const { retrier, calls, manager, decoyLiveWindow } = harness();
+    const attached = fakeWindow();
+    manager.attach(attached);
     retrier.spawned(OPTS.id, OPTS, null);
     assert.equal(retrier.onExit(OPTS.id, 'god', GOD_EXIT), true);
+    attached.destroyed = true;
     t.mock.timers.tick(SPAWN_RETRY_DELAY_MS);
-    assert.equal(calls.spawn.length, 1);
-    assert.equal(calls.spawn[0].owner, null, 'still owner-less, as spawned');
-    assert.deepEqual(primary.sent.map((s) => s.channel), [`pty:relaunch:${OPTS.id}`]);
+    assert.deepEqual(calls.spawn, []);
+    assert.deepEqual(decoyLiveWindow.sent, [], 'no fallback to the app\'s live window');
+    assert.deepEqual(calls.teardown, [OPTS.id]);
+    assert.equal(calls.log[calls.log.length - 1].reason, 'window-gone');
   }
   {
-    const { retrier, calls } = harness();
+    const { retrier, calls } = harness(); // nothing attached at all
     retrier.spawned(OPTS.id, OPTS, null);
     assert.equal(retrier.onExit(OPTS.id, 'god', GOD_EXIT), true);
     t.mock.timers.tick(SPAWN_RETRY_DELAY_MS);
     assert.deepEqual(calls.spawn, []);
     assert.deepEqual(calls.teardown, [OPTS.id]);
+    assert.equal(calls.log[calls.log.length - 1].reason, 'window-gone');
   }
 });
 

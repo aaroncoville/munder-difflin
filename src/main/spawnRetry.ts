@@ -77,8 +77,10 @@ export interface SpawnRetryDeps {
   spawn(opts: SpawnOptions, owner: RetryWebContents | null): { ok: boolean; error?: string };
   /** Is a PTY with this id alive right now? */
   isLive(id: string): boolean;
-  /** The default window a spawn with no owner reports to, or null when none. */
-  liveWebContents(): RetryWebContents | null;
+  /** The sink the PTY manager routes an owner-less session's output to (its
+   *  attached webContents): the same object decides whether such a session
+   *  still has a window and receives its relaunch notification. */
+  attachedWebContents(): RetryWebContents | null;
   /** The normal post-exit teardown (archive, worktree, maps). */
   teardown(id: string): void;
   /** Hive log sink. */
@@ -142,7 +144,9 @@ export class SpawnRetrier {
     // The window the PTY reports to is gone (floor closed during the wait):
     // there is nowhere for the relaunched session to paint, and spawning it
     // into some other window would be a surprise. Archive as a plain death.
-    const wc = launch.owner ?? this.deps.liveWebContents();
+    // An owner-less PTY reports to the manager's attached sink, so that is the
+    // object checked and notified here — the same one its output goes to.
+    const wc = launch.owner ?? this.deps.attachedWebContents();
     if (!wc || wc.isDestroyed()) {
       this.deps.warn?.(`[pty] retry for ${agentId} cancelled: its window is gone`);
       this.deps.log({ kind: SPAWN_RETRY_LOG_KIND, agentId, outcome: 'cancelled', reason: 'window-gone' });

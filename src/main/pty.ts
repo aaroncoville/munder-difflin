@@ -49,9 +49,15 @@ export interface PtyExitInfo {
   /** ms between the spawn and the exit — a death inside the first couple of
    *  seconds is a launch that never got going, not a session that failed. */
   uptimeMs?: number;
-  /** True when anything was written to the PTY before it exited. */
+  /** True when a PERSON typed into the PTY before it exited (a `write` with
+   *  source 'user' — the renderer's xterm keystroke path). Automation (OSC/DEC
+   *  replies, seeded prompts, inbox nudges) writes with source 'auto' and
+   *  never sets it. */
   hadInput?: boolean;
 }
+
+/** Who a write comes from. Only 'user' marks the session as in use by a person. */
+export type PtyWriteSource = 'user' | 'auto';
 
 interface PtySession {
   id: string;
@@ -60,7 +66,7 @@ interface PtySession {
   command: string;
   /** Epoch ms of the spawn, for the exit handler's uptime. */
   spawnedAt: number;
-  /** Set by write(): somebody has talked to this PTY. */
+  /** Set by a write() with source 'user': a person has typed into this PTY. */
   hadInput: boolean;
   /** The window (webContents) that spawned this PTY and should receive its
    *  output. Multi-window: each floor owns its own terminals, so `pty:data:<id>`
@@ -351,6 +357,12 @@ export class PtyManager {
    *  sessions with no recorded owner; owned sessions route to their owner. */
   attachWebContents(wc: WebContents) {
     this.webContents = wc;
+  }
+
+  /** The sink an owner-less session's output goes to (see safeSend) — what a
+   *  relaunch notification for such a session must target as well. */
+  attachedWebContents(): WebContents | null {
+    return this.webContents;
   }
 
   /** Count live PTYs owned by a given window — used to scope a floor's
@@ -748,12 +760,14 @@ export class PtyManager {
     }
   }
 
-  write(id: string, data: string): { ok: boolean; error?: string } {
+  /** `source` defaults to 'auto': only the renderer's keystroke path says
+   *  'user', so a new automation caller can never count as a person. */
+  write(id: string, data: string, source: PtyWriteSource = 'auto'): { ok: boolean; error?: string } {
     const s = this.sessions.get(id);
     if (!s) return { ok: false, error: `no pty: ${id}` };
     try {
       s.proc.write(data);
-      s.hadInput = true;
+      if (source === 'user') s.hadInput = true;
       return { ok: true };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };

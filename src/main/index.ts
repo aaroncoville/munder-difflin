@@ -620,7 +620,7 @@ function removeWorkerScratch(workerId: string): void {
 const spawnRetrier = new SpawnRetrier({
   spawn: (opts, owner) => ptyManager.spawn(opts, owner as Electron.WebContents | null),
   isLive: (id) => ptyManager.list().some((p) => p.id === id),
-  liveWebContents: () => liveWebContents(),
+  attachedWebContents: () => ptyManager.attachedWebContents(),
   teardown: (id) => teardownPty(id),
   log: (event) => { try { hive.appendLog(event); } catch { /* best-effort */ } },
   afterSpawn: () => syncKeepAwake(),
@@ -3152,13 +3152,15 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // record matches what the registry and the PTY actually used.
   return { ...res, cwd: opts.cwd, ...(worktreePath ? { worktreePath } : {}), ...(resumeNotFound ? { resumeNotFound: true } : {}), ...(didResume ? { resumed: true } : {}), ...(seedPrompt ? { seedPrompt } : {}) };
 }
-ipcMain.handle('pty:write', (_evt, id: string, data: string) => {
+ipcMain.handle('pty:write', (_evt, id: string, data: string, source?: unknown) => {
   if (typeof id !== 'string' || typeof data !== 'string') return { ok: false, error: 'invalid args' };
   // The renderer's queued inbox nudge: when it should open a new Codex thread,
   // that is typed instead. The renderer's own Enter, a tick later, either
   // submits the `/new` or lands on an empty line; neither sends anything.
   if (isInboxNudge(data) && openNewCodexThread(id)) return { ok: true };
-  return ptyManager.write(id, data);
+  // Only the xterm keystroke path says 'user'; everything else (terminal
+  // query replies, seeded prompts, inbox automation) is 'auto' by default.
+  return ptyManager.write(id, data, source === 'user' ? 'user' : 'auto');
 });
 ipcMain.handle('pty:resize', (_evt, id: string, cols: number, rows: number) => {
   if (typeof id !== 'string' || typeof cols !== 'number' || typeof rows !== 'number') return { ok: false, error: 'invalid args' };

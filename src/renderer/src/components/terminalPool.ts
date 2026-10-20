@@ -347,7 +347,9 @@ export function acquireTerminal(ptyId: string, theme?: ThemeMap, fontSize = 14):
   // path resets it too.
   term.onData((data) => {
     if (entry.exited) return;
-    window.cth.writePty(ptyId, data);
+    // The one write that is a person typing: main uses it to tell a PTY in
+    // use from one that died on launch (spawnRetry.ts).
+    window.cth.writePty(ptyId, data, 'user');
     // A lone Escape or Ctrl-C closes interactive pickers. Arrow-key escape
     // sequences must NOT clear the block while the user navigates a picker.
     if (data === '\x1b' || data === '\x03') {
