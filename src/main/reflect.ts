@@ -67,6 +67,11 @@ const SUMMARIZE_BACKOFF_AFTER = 2;
 /** Ceiling on that wait: 6 h. */
 const SUMMARIZE_BACKOFF_CAP_MS = 6 * 60 * 60 * 1000;
 
+/** The hidden session answered, but not in the frame the prompt asked for.
+ *  Told apart from a session that produced nothing because it is logged as
+ *  its own abort class ('bad-framing') and never opens a backoff window. */
+class BadFramingError extends Error {}
+
 /** The fixed region headings of the bounded memory shape (the stable contract). */
 const PINNED_HEADING = '## 📌 Durable facts (pinned — never condensed)';
 const CONDENSED_HEADING = '## 🗜 Condensed history';
@@ -264,9 +269,14 @@ export class MemoryReflector {
             // enough to be a different case: no hidden session this tick. The
             // one `condense-backoff` line was written when the window opened.
             const hold = this.summarizeFailures.get(id);
-            if (hold && this.now() < hold.notBefore && bytes < hold.bytes * NOT_SMALLER_BACKOFF_GROWTH) {
-              results.push({ id, condensed: false, reason: 'summarize-backoff', oldBytes: bytes });
-              continue;
+            if (hold && this.now() < hold.notBefore) {
+              if (bytes < hold.bytes * NOT_SMALLER_BACKOFF_GROWTH) {
+                results.push({ id, condensed: false, reason: 'summarize-backoff', oldBytes: bytes });
+                continue;
+              }
+              // Grown past the size it failed at: a different case, so the
+              // streak starts over — a failure now counts as the first.
+              this.summarizeFailures.delete(id);
             }
           }
           text = readFileSync(mem, 'utf8');
@@ -338,6 +348,14 @@ export class MemoryReflector {
       summary = await this.summarize(home, parsed.condensed, evict, parsed.pinned, maxCondensedBytes);
     } catch (e) {
       const detail = String(e);
+      if (e instanceof BadFramingError) {
+        // A response that exists but does not follow the frame IS a response:
+        // the hidden session works, the model just answered badly, so the
+        // no-response streak ends here and no backoff window opens.
+        this.logAbort(id, 'bad-framing', detail);
+        this.summarizeFailures.delete(id);
+        return { id, condensed: false, reason: 'bad-framing', oldBytes };
+      }
       this.logAbort(id, 'summarize-failed', detail);
       this.backOffSummarize(id, detail, oldBytes, s);
       return { id, condensed: false, reason: 'summarize-failed', oldBytes };
@@ -466,7 +484,7 @@ export class MemoryReflector {
 
       if (result.ok && result.text) {
         const parsed = parseSummary(result.text);
-        if (!parsed) throw new Error('condense: response contained no parseable summary');
+        if (!parsed) throw new BadFramingError('condense: response contained no parseable summary');
         return parsed;
       }
 

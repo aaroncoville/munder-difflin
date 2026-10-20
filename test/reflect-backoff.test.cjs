@@ -178,18 +178,61 @@ test('a manual condense ignores the window', async () => {
   assert.equal(state.calls, calls + 2, 'the manual call spawned its hidden session');
 });
 
-test('a file that grew past the size it failed at gets a fresh try inside the window', async () => {
-  const { state, mem, tick } = harness();
+test('a file that grew past the size it failed at gets a fresh try inside the window, and the streak starts over', async () => {
+  const { state, mem, tick, backoffs } = harness();
   await tick();
   state.now += INTERVAL;
   await tick();
+  assert.equal(backoffs().length, 1);
   state.now += MIN;
   assert.equal((await tick()).reason, 'summarize-backoff');
 
   // More than NOT_SMALLER_BACKOFF_GROWTH (10%) larger than the failing size.
   fs.appendFileSync(mem, section('a lot more', 400), 'utf8');
   const calls = state.calls;
-  const r = await tick();
+  let r = await tick();
   assert.equal(r.reason, 'summarize-failed');
   assert.equal(state.calls, calls + 2);
+  // A different case: this failure is the FIRST of a new streak, so no window
+  // opens and no backoff line is written for it.
+  assert.equal(backoffs().length, 1);
+  state.now += MIN;
+  r = await tick();
+  assert.equal(r.reason, 'summarize-failed', 'not backed off: the streak restarted at one');
+  assert.equal(state.calls, calls + 4);
+  // ...and its second failure is what opens the next window, counted from one.
+  assert.equal(backoffs().length, 2);
+  assert.equal(backoffs()[1].failures, 2);
+  assert.equal(backoffs()[1].backoffMs, INTERVAL);
+});
+
+test('a response that exists but breaks the frame is "bad-framing": no backoff, and it ends a no-response streak', async () => {
+  const { state, tick, backoffs, aborts } = harness();
+  // Two no-response failures open a window...
+  await tick();
+  state.now += INTERVAL;
+  await tick();
+  assert.equal(backoffs().length, 1);
+
+  // ...then, once it has passed, the model answers with a broken frame: the
+  // CONDENSED marker is there but HOIST and END are missing.
+  state.now += INTERVAL;
+  state.respond = { ok: true, text: '<<<CONDENSED>>>\nhalf an answer with no closing markers' };
+  const calls = state.calls;
+  let r = await tick();
+  assert.equal(r.reason, 'bad-framing');
+  assert.equal(state.calls, calls + 1, 'a framing failure is not the transcript race; no second spawn');
+  assert.equal(aborts()[aborts().length - 1].reason, 'bad-framing');
+  assert.equal(backoffs().length, 1, 'no backoff window for a response that came back');
+
+  // The streak ended: the next no-response failure counts from one again.
+  state.now += INTERVAL;
+  state.respond = NO_RESPONSE;
+  r = await tick();
+  assert.equal(r.reason, 'summarize-failed');
+  assert.equal(backoffs().length, 1);
+  state.now += INTERVAL;
+  await tick();
+  assert.equal(backoffs().length, 2);
+  assert.equal(backoffs()[1].failures, 2);
 });
