@@ -307,17 +307,32 @@ export function createOfficeMotionGate(opts: MotionGateOptions): OfficeMotionGat
     timer = schedule(() => { timer = null; setUnattended(true); }, delay);
   };
 
+  const settle = (maxFPS: number, resolution: number) => {
+    if (!app) return;
+    app.ticker.maxFPS = maxFPS;
+    if (app.renderer.resolution !== resolution) {
+      app.renderer.resize(app.screen.width, app.screen.height, resolution);
+    }
+  };
+
   const apply = () => {
     if (!app) return;
-    app.ticker.maxFPS = decision.maxFPS;
-    if (app.renderer.resolution !== decision.resolution) {
-      app.renderer.resize(app.screen.width, app.screen.height, decision.resolution);
-    }
     const wanted = rendererFor(decision.mode);
-    if (app.renderer.name === wanted) { rebuildAskedFor = null; return; }
-    if (rebuildAskedFor === wanted) return;
-    rebuildAskedFor = wanted;
-    opts.onRendererKindChange?.();
+    if (app.renderer.name !== wanted) {
+      // The attached app is the wrong kind for this mode: it is on its way
+      // out (or Pixi could not build the wanted kind). Either way it stays
+      // on the protective settings whatever the direction — the new mode's
+      // frame cap and resolution belong to the app that attaches with the
+      // wanted kind, never to a canvas renderer running uncapped at 2x
+      // while its replacement loads.
+      settle(REDUCED_MOTION_MAX_FPS, REDUCED_MOTION_RESOLUTION);
+      if (rebuildAskedFor !== wanted) {
+        rebuildAskedFor = wanted;
+        opts.onRendererKindChange?.();
+      }
+      return;
+    }
+    settle(decision.maxFPS, decision.resolution);
   };
 
   const onFocus = () => { focused = true; arm(); };
@@ -333,7 +348,15 @@ export function createOfficeMotionGate(opts: MotionGateOptions): OfficeMotionGat
   return {
     get unattended() { return unattended; },
     get decision() { return decision; },
-    attach(next) { app = next; apply(); },
+    attach(next) {
+      app = next;
+      // Only a NEWLY attached app of the wanted kind retires a pending
+      // request. The old app matching a wish that flapped back (full →
+      // reduced → full with WebGL still live) does not: its rebuild is
+      // already on the way, and a further flap must not ask for another.
+      if (next.renderer.name === rendererFor(decision.mode)) rebuildAskedFor = null;
+      apply();
+    },
     detach() { app = null; },
     dispose() {
       if (disposed) return;
