@@ -5050,6 +5050,7 @@ async function ephemeralWorkerTick(): Promise<void> {
     const cfg = readConfig();
     const maxWorkers = Math.max(1, cfg.maxConcurrentWorkers ?? 4);
     const idleTimeoutMs = Math.max(1, cfg.workerIdleTimeoutMinutes ?? 20) * 60_000;
+    const idleCeilingMs = Math.max(1, cfg.workerIdleCeilingMultiplier ?? 3) * idleTimeoutMs;
     // Per-worker token cap. 0 = UNLIMITED (the default — wired but never throttles
     // unless a positive cap is set per-request or via defaultWorkerTokenCap).
     const defaultTokenCap = typeof cfg.defaultWorkerTokenCap === 'number' && cfg.defaultWorkerTokenCap > 0
@@ -5127,7 +5128,7 @@ async function ephemeralWorkerTick(): Promise<void> {
       if (idleMs === undefined) continue; // PTY already gone; teardownPty cleans up
       // Silent but waiting on a job it launched (a long test run) is not idle.
       const hasLiveJob = (): boolean => workerHasLiveJob(ptyManager.list().find((p) => p.id === workerId)?.pid);
-      if (shouldReapIdle(rec, { ptyIdleMs: idleMs, limitMs: idleTimeoutMs, now: Date.now(), hasLiveJob })) {
+      if (shouldReapIdle(rec, { ptyIdleMs: idleMs, limitMs: idleTimeoutMs, ceilingMs: idleCeilingMs, now: Date.now(), hasLiveJob })) {
         rec.releasing = true;
         console.warn(`[worker] reaping idle ${workerId} (${Math.round(idleMs / 60000)}min idle)`);
         informGod(

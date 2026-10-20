@@ -22,6 +22,7 @@ const PS_WITH_JOB = [
   '    1     0     1',
   '  100     1   100',
   '  101   100   100', // MCP server: shares the worker's group
+  '  102   101   102', // a helper the MCP server started in a session of its own
   '  200   100   200', // tool shell: its own group
   '  201   200   200', // the test suite it launched
   '  900     1   900'  // unrelated process elsewhere on the machine
@@ -34,6 +35,13 @@ test('a descendant in its own process group is a launched job', () => {
 
 test('descendants sharing the worker group (MCP servers) are not jobs', () => {
   assert.equal(hasLaunchedJob(100, parseProcessTable(PS_NO_JOB)), false);
+});
+
+test('a helper in its own group below an MCP server is not a job', () => {
+  // Some MCP servers start a child that calls setsid (a browser, a node
+  // worker). It is the server's, not something the worker launched.
+  const rows = parseProcessTable('  100 1 100\n  101 100 100\n  102 101 102\n  103 102 102');
+  assert.equal(hasLaunchedJob(100, rows), false);
 });
 
 test('a process in another group that is not a descendant is ignored', () => {
@@ -67,4 +75,13 @@ test('the process table is only consulted once the terminal is past the limit', 
   const reap = shouldReapIdle({}, { ptyIdleMs: 5 * MIN, limitMs: LIMIT, now: 5 * MIN, hasLiveJob: () => { probed++; return true; } });
   assert.equal(reap, false);
   assert.equal(probed, 0);
+});
+
+test('a worker silent past the ceiling is reaped even with a live job', () => {
+  const rec = {};
+  const o = { limitMs: LIMIT, ceilingMs: 3 * LIMIT, hasLiveJob: () => true };
+  // Under the ceiling the job keeps it alive...
+  assert.equal(shouldReapIdle(rec, { ...o, ptyIdleMs: 3 * LIMIT, now: 3 * LIMIT }), false);
+  // ...past it, terminal silence alone decides, however fresh the job is.
+  assert.equal(shouldReapIdle(rec, { ...o, ptyIdleMs: 3 * LIMIT + 1, now: 3 * LIMIT + 1 }), true);
 });
