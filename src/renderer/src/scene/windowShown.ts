@@ -10,6 +10,9 @@ import { useEffect, useState } from 'react';
 import type { WindowVisibility } from '@shared/windowVisibility';
 
 let shown = true;
+/** Whether main has pushed a state yet. A push is newer than any answer to
+ *  the seeding query still in flight, so the answer must not override it. */
+let pushed = false;
 const listeners = new Set<() => void>();
 
 export function getWindowShown(): boolean {
@@ -33,10 +36,30 @@ export function windowShownListenerCount(): number {
   return listeners.size;
 }
 
+function notify(): void {
+  for (const l of [...listeners]) l();
+}
+
 /** What App.tsx calls on every message from main. */
 export function applyWindowVisibility(v: WindowVisibility): void {
+  pushed = true;
   if (!setWindowShown(v.shown !== false)) return;
-  for (const l of [...listeners]) l();
+  notify();
+}
+
+/** What App.tsx calls with main's answer to the query it sends on subscribe:
+ *  the state of a renderer that loaded while its window was already
+ *  minimised. Ignored once a push has arrived, which is newer. */
+export function seedWindowVisibility(v: WindowVisibility): void {
+  if (pushed) return;
+  if (!setWindowShown(v.shown !== false)) return;
+  notify();
+}
+
+/** For tests: forget that anything was pushed. */
+export function resetWindowShown(): void {
+  pushed = false;
+  shown = true;
 }
 
 /** Is the window on screen, per the main process? */

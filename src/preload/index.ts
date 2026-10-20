@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron';
 import type { AgentProvider } from '../shared/agentProvider';
 import type { HireManifest } from '../shared/hire';
-import { WINDOW_VISIBILITY_CHANNEL, type WindowVisibility } from '../shared/windowVisibility';
+import { WINDOW_VISIBILITY_CHANNEL, WINDOW_VISIBILITY_GET_CHANNEL, type WindowVisibility } from '../shared/windowVisibility';
 export type { HireManifest } from '../shared/hire';
 import type { IntegrationRecord, IntegrationTemplate } from '../shared/integrations';
 export type { IntegrationRecord, IntegrationTemplate } from '../shared/integrations';
@@ -998,6 +998,10 @@ const api = {
     ipcRenderer.on(WINDOW_VISIBILITY_CHANNEL, listener);
     return () => ipcRenderer.removeListener(WINDOW_VISIBILITY_CHANNEL, listener);
   },
+  /** This window's state right now, for a renderer that loaded while the
+   *  window was already minimised. */
+  getWindowVisibility: (): Promise<WindowVisibility> =>
+    ipcRenderer.invoke(WINDOW_VISIBILITY_GET_CHANNEL),
 
   // ─── Quit confirmation ───────────────────────────────────────────────────
   onCloseRequested: (cb: (info: { ptyCount: number }) => void): (() => void) => {

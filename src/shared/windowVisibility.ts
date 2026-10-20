@@ -15,6 +15,10 @@
  */
 
 export const WINDOW_VISIBILITY_CHANNEL = 'window:visibility';
+/** invoke → the current state of the sender's window. A renderer that loads
+ *  (or reloads) while its window is already minimised would otherwise start
+ *  shown and never see a transition. */
+export const WINDOW_VISIBILITY_GET_CHANNEL = 'window:visibility:get';
 
 export interface WindowVisibility {
   /** False while minimised or hidden. */

@@ -19,10 +19,11 @@ const root = path.join(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
 const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 
-const { WINDOW_VISIBILITY_CHANNEL, windowShown } = loadTs('src/shared/windowVisibility.ts');
-const { installWindowVisibility, WINDOW_VISIBILITY_EVENTS } = loadTs('src/main/windowVisibility.ts');
+const { WINDOW_VISIBILITY_CHANNEL, WINDOW_VISIBILITY_GET_CHANNEL, windowShown } = loadTs('src/shared/windowVisibility.ts');
+const { installWindowVisibility, registerWindowVisibilityQuery, WINDOW_VISIBILITY_EVENTS } = loadTs('src/main/windowVisibility.ts');
 const {
-  getWindowShown, setWindowShown, applyWindowVisibility, subscribeWindowShown, windowShownListenerCount
+  getWindowShown, setWindowShown, applyWindowVisibility, seedWindowVisibility, resetWindowShown,
+  subscribeWindowShown, windowShownListenerCount
 } = loadTs('src/renderer/src/scene/windowShown.ts');
 
 /** A BrowserWindow that records its listeners and what it sent. */
@@ -55,7 +56,7 @@ test('main tells the renderer on minimise, restore, hide and show, with the stat
   assert.deepEqual([...WINDOW_VISIBILITY_EVENTS], ['minimize', 'restore', 'hide', 'show']);
   const win = fakeWindow();
   const uninstall = installWindowVisibility(win);
-  assert.equal(win.listenerCount, 4);
+  assert.equal(win.listenerCount, 5, 'four visibility events plus closed');
   win.minimized = true; win.fire('minimize');
   win.minimized = false; win.fire('restore');
   win.visible = false; win.fire('hide');
@@ -71,6 +72,64 @@ test('main tells the renderer on minimise, restore, hide and show, with the stat
   assert.equal(win.sent.length, 4);
   uninstall();
   assert.equal(win.listenerCount, 0);
+});
+
+test("'closed' uninstalls: no listener outlives the window", () => {
+  const win = fakeWindow();
+  installWindowVisibility(win);
+  assert.equal(win.listenerCount, 5, 'four visibility events plus closed');
+  win.fire('closed');
+  assert.equal(win.listenerCount, 0);
+});
+
+/** An ipcMain that records its handlers and lets a test invoke them. */
+function fakeIpc() {
+  const handlers = new Map();
+  return {
+    handle(channel, fn) { handlers.set(channel, fn); },
+    invoke(channel, sender) { return handlers.get(channel)({ sender }); }
+  };
+}
+
+test('a renderer subscribing while its window is already minimised is told so at once', () => {
+  resetWindowShown();
+  const win = fakeWindow({ minimized: true });
+  const ipc = fakeIpc();
+  const windows = new Map([['wc-1', win]]);
+  registerWindowVisibilityQuery(ipc, (sender) => windows.get(sender) ?? null);
+  installWindowVisibility(win);
+  // What App.tsx does: subscribe, then ask. The answer seeds the mirror.
+  let woke = 0;
+  const off = subscribeWindowShown(() => { woke += 1; });
+  assert.equal(getWindowShown(), true, 'the mirror starts shown');
+  seedWindowVisibility(ipc.invoke(WINDOW_VISIBILITY_GET_CHANNEL, 'wc-1'));
+  assert.equal(getWindowShown(), false, 'a renderer under a minimised window must start paused');
+  assert.equal(woke, 1);
+  // Restore reaches it as a push.
+  win.minimized = false; win.fire('restore');
+  applyWindowVisibility(win.sent.at(-1)[1]);
+  assert.equal(getWindowShown(), true);
+  assert.equal(woke, 2);
+  off();
+  resetWindowShown();
+});
+
+test('the query answers shown for a sender with no window, and never overrides a push that came first', () => {
+  const ipc = fakeIpc();
+  registerWindowVisibilityQuery(ipc, () => null);
+  assert.deepEqual(ipc.invoke(WINDOW_VISIBILITY_GET_CHANNEL, 'stranger'), { shown: true });
+  const gone = fakeWindow({ minimized: true }); gone.destroyed = true;
+  registerWindowVisibilityQuery(ipc, () => gone);
+  assert.deepEqual(ipc.invoke(WINDOW_VISIBILITY_GET_CHANNEL, 'x'), { shown: true }, 'a destroyed window reads as shown');
+
+  resetWindowShown();
+  applyWindowVisibility({ shown: true });   // main pushed 'restored' while the query was in flight
+  seedWindowVisibility({ shown: false });   // the stale answer lands
+  assert.equal(getWindowShown(), true, 'a stale query answer overrode a newer push');
+  resetWindowShown();
+  seedWindowVisibility({ shown: false });
+  assert.equal(getWindowShown(), false, 'with no push yet, the answer seeds the state');
+  resetWindowShown();
 });
 
 test('a renderer whose webContents throws does not take the event handler down', () => {
@@ -99,6 +158,7 @@ test('the renderer mirror starts shown, notifies on change only, and treats a ba
   assert.equal(woke, 2, 'unsubscribed');
   assert.equal(windowShownListenerCount(), 0);
   setWindowShown(true);
+  resetWindowShown();
 });
 
 test('wiring: main installs it per window, preload exposes it on the channel, App feeds the mirror', () => {
@@ -107,6 +167,8 @@ test('wiring: main installs it per window, preload exposes it on the channel, Ap
   assert.ok(i > 0);
   const after = main.slice(i, main.indexOf("win.once('ready-to-show'", i));
   assert.match(after, /installWindowVisibility\(win\);/, 'every window, floors included, must report its visibility');
+  assert.match(main, /registerWindowVisibilityQuery\(ipcMain, \(sender\) => BrowserWindow\.fromWebContents\(/,
+    'main must answer the query with the SENDER\'s window');
 
   const preload = strip(read('src/preload/index.ts'));
   const j = preload.indexOf('onWindowVisibility:');
@@ -114,9 +176,14 @@ test('wiring: main installs it per window, preload exposes it on the channel, Ap
   const api = preload.slice(j, preload.indexOf('},', j));
   assert.match(api, /ipcRenderer\.on\(WINDOW_VISIBILITY_CHANNEL, listener\);/);
   assert.match(api, /ipcRenderer\.removeListener\(WINDOW_VISIBILITY_CHANNEL, listener\)/);
+  assert.match(preload, /getWindowVisibility: \(\): Promise<WindowVisibility> =>\s*ipcRenderer\.invoke\(WINDOW_VISIBILITY_GET_CHANNEL\)/);
 
   const app = strip(read('src/renderer/src/App.tsx'));
-  assert.match(app, /window\.cth\.onWindowVisibility\(applyWindowVisibility\)/);
+  const k = app.indexOf('window.cth.onWindowVisibility(applyWindowVisibility)');
+  assert.ok(k > 0);
+  const effect = app.slice(k, app.indexOf('return off;', k));
+  assert.match(effect, /window\.cth\.getWindowVisibility\(\)\.then\(seedWindowVisibility\)/,
+    'App must subscribe first, then ask for the state now');
 });
 
 test('the office floor pauses on it next to document.hidden; the study ambiance folds it into visibility', () => {

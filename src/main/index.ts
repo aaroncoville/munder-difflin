@@ -10,7 +10,7 @@ import { join, resolve, sep, basename, dirname, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 import { request as httpsRequest } from 'node:https';
 import { PtyManager, type SpawnOptions } from './pty';
-import { installWindowVisibility } from './windowVisibility';
+import { installWindowVisibility, registerWindowVisibilityQuery } from './windowVisibility';
 import { SpawnRetrier } from './spawnRetry';
 import { resolveCommand as resolveCliCommand, isSafeCommandName } from './shellEnv';
 import { initAutoUpdater, abortPendingRestart } from './updater';
@@ -2393,6 +2393,10 @@ ipcMain.handle('hire:openFile', async () => {
  * window — cascades its position, and on close stops only its OWN terminals
  * while the app keeps running.
  */
+// A renderer asks for its window's state when it subscribes, so one that
+// loads while the window is already minimised starts paused.
+registerWindowVisibilityQuery(ipcMain, (sender) => BrowserWindow.fromWebContents(sender as Electron.WebContents));
+
 function createWindow(opts: { floor?: boolean } = {}): BrowserWindow {
   const isFloor = opts.floor === true;
 
