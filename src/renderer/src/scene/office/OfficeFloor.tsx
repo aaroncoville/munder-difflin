@@ -1104,6 +1104,8 @@ export function OfficeFloor() {
 
       // ─── Coffee delivery + desk screens, every frame ───────────────────────
       const updateDeskLife = (dt: number): void => {
+        // One shared beat for every monitor's screen-life (DeskScreen.ts).
+        DeskScreen.advance(dt);
         for (const [id, rt] of runtimes) {
           // Park the carried coffee the moment its courier is seated at home —
           // then, if there's still nothing to do, get up and wander off (the
@@ -1120,7 +1122,7 @@ export function OfficeFloor() {
           // The monitor lights up whenever its owner is in the chair.
           if (rt.screen) {
             rt.screen.setOn(rt.character.isSittingAtDesk());
-            rt.screen.update(dt);
+            rt.screen.update();
           }
         }
       };
