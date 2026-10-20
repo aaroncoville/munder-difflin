@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Application, Container, Graphics, Ticker, Texture } from 'pixi.js';
+import { Application, Container, Graphics, Ticker } from 'pixi.js';
 // PixiJS uses new Function() internally, blocked by Electron CSP — this patches it.
 import 'pixi.js/unsafe-eval';
 import { useStore, type Agent } from '@/store/store';
@@ -18,10 +18,10 @@ import {
 } from './glRecovery';
 import { planFloorRelease } from './floorRelease';
 import {
-  currentOfficeMotion, getOfficeMotionPref, prefersReducedMotion, resolveOfficeMotionMode,
-  subscribeOfficeMotionPref, unattendedPauseDelay, REDUCED_MOTION_MEDIA_QUERY
+  createOfficeMotionGate, currentOfficeMotion, REDUCED_MOTION_MEDIA_QUERY, type OfficeMotionGate
 } from './officeMotion';
-import { webglRendererInfo } from '@/components/terminalRenderer';
+import { loadTexture } from './textureCache';
+import { perTickChance } from './frameRate';
 import type { Tile, Facing, ErrandKind, ErrandSpot } from './themeRegistry';
 
 // The map, tileset atlases, desk-claim order, errand spots, coffee-economy
@@ -134,21 +134,10 @@ const CHEER_KEYS = [
   'office.cheer.6'
 ] as const;
 
-/** Load a texture via an <img> element. Unlike Pixi's Assets.load(), this
- *  handles extension-less data: URLs (Vite inlines small assets like the a5
- *  tileset as base64), which the Assets resolver fails to type-detect. */
-function loadTexture(url: string): Promise<Texture> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => {
-      const tex = Texture.from(img);
-      tex.source.scaleMode = 'nearest';
-      resolve(tex);
-    };
-    img.onerror = () => reject(new Error('failed to load ' + url.slice(0, 40)));
-    img.src = url;
-  });
-}
+/** Chance, per 60 Hz frame, that a café-goer strikes up a chat with a
+ *  table-mate. Rolled through perTickChance so it is the same chance per
+ *  SECOND at 15 fps as at 60 (frameRate.ts). */
+const CAFE_CHAT_CHANCE_PER_FRAME = 0.004;
 
 /** What the agent is doing right now, for the thought cloud. Prefer the live
  *  `action` (e.g. "edit App.tsx", "bash npm test"), fall back to the prompt we
@@ -234,63 +223,6 @@ export function OfficeFloor() {
     return () => document.removeEventListener('visibilitychange', onVis);
   }, []);
   const paused = !!fullscreenAgentId || ideOpen || docHidden;
-
-  // How hard the floor animates. 'full' is today's behaviour; 'reduced' caps the
-  // ticker at 15 fps and renders at 1x, which is what a software GPU (SwiftShader
-  // on WSL2/WSLg) needs to stop eating cores — see officeMotion.ts. The setting
-  // is mirrored from config by App.tsx; the OS reduced-motion hint is live too.
-  // The MODE is a dep of the mount effect below because the canvas resolution is
-  // fixed at init, so flipping it rebuilds the scene through the one mount path,
-  // the same way a theme change does.
-  const officeMotionPref = useSyncExternalStore(subscribeOfficeMotionPref, getOfficeMotionPref);
-  const [osReducedMotion, setOsReducedMotion] = useState(() => prefersReducedMotion());
-  useEffect(() => {
-    const mq = window.matchMedia?.(REDUCED_MOTION_MEDIA_QUERY);
-    if (!mq) return;
-    const onChange = () => setOsReducedMotion(mq.matches);
-    mq.addEventListener('change', onChange);
-    return () => mq.removeEventListener('change', onChange);
-  }, []);
-  const motionMode = resolveOfficeMotionMode(
-    officeMotionPref, webglRendererInfo().classification, osReducedMotion);
-
-  // On the reduced path the ticker also stops when nobody can be watching: the
-  // window unfocused for UNATTENDED_GRACE_MS with no agent changing state in
-  // that time. Any agent change while unfocused re-arms the grace, and focus
-  // clears it at once. 'full' never does this — a real GPU keeps today's
-  // behaviour, blur included.
-  const [focused, setFocused] = useState(() => document.hasFocus());
-  useEffect(() => {
-    const onFocus = () => setFocused(true);
-    const onBlur = () => setFocused(false);
-    window.addEventListener('focus', onFocus);
-    window.addEventListener('blur', onBlur);
-    return () => {
-      window.removeEventListener('focus', onFocus);
-      window.removeEventListener('blur', onBlur);
-    };
-  }, []);
-  const lastAgentChangeAtRef = useRef(Date.now());
-  const [unattended, setUnattended] = useState(false);
-  useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const arm = () => {
-      if (timer) { clearTimeout(timer); timer = null; }
-      const delay = unattendedPauseDelay({
-        mode: motionMode, focused, lastAgentChangeAt: lastAgentChangeAtRef.current, now: Date.now()
-      });
-      if (delay === null) { setUnattended(false); return; }
-      timer = setTimeout(() => { timer = null; setUnattended(true); }, delay);
-    };
-    arm();
-    const unsub = useStore.subscribe((s, prev) => {
-      if (s.agents === prev.agents) return;
-      lastAgentChangeAtRef.current = Date.now();
-      setUnattended(false);
-      arm();
-    });
-    return () => { if (timer) clearTimeout(timer); unsub(); };
-  }, [focused, motionMode]);
   // Whether the scene has been torn down because it stayed covered. Deliberately
   // state and not a ref: it is a dependency of the mount effect below, so
   // flipping it is what performs the teardown and the later rebuild, through the
@@ -310,16 +242,51 @@ export function OfficeFloor() {
   // Read inside init(), which finishes asynchronously and would otherwise start a
   // ticker the effect below had already been asked to stop.
   const pausedRef = useRef(paused);
-  const unattendedRef = useRef(unattended);
-  useEffect(() => {
-    pausedRef.current = paused;
-    unattendedRef.current = unattended;
+
+  // How hard the floor animates. 'full' is today's behaviour; 'reduced' caps the
+  // ticker at 15 fps and renders at 1x, which is what a software GPU (SwiftShader
+  // on WSL2/WSLg) needs to stop eating cores — see officeMotion.ts. The gate owns
+  // the inputs (the setting App.tsx mirrors from config, the OS reduced-motion
+  // hint, window focus, the store's agents slice) and applies a change to the
+  // LIVE application — maxFPS on the ticker, resolution through renderer.resize
+  // — rather than rebuilding the scene, which would reload the theme and walk
+  // the whole cast back in through the door over a settings change.
+  //
+  // On the reduced path the gate also reports the floor UNATTENDED once the
+  // window has sat unfocused for UNATTENDED_GRACE_MS with no agent changing
+  // state, counted from whichever happened last; any agent change re-arms the
+  // grace and focus clears it at once. 'full' never does this — a real GPU keeps
+  // today's behaviour, blur included.
+  const gateRef = useRef<OfficeMotionGate | null>(null);
+  // Start or stop the live ticker from the three gates. Reads refs only, so the
+  // identity the gate captures on mount is as good as any later one.
+  const syncTicker = () => {
     const ticker = appRef.current?.ticker;
     if (!ticker) return; // app.init() hasn't created it yet — init() applies it
     // Uncovering the floor is not a reason to draw into a context that is gone.
-    if (shouldRunTicker({ paused, contextLost: contextLostRef.current, unattended })) ticker.start();
+    const run = shouldRunTicker({
+      paused: pausedRef.current,
+      contextLost: contextLostRef.current,
+      unattended: gateRef.current?.unattended ?? false
+    });
+    if (run) ticker.start();
     else ticker.stop();
-  }, [paused, unattended]);
+  };
+  useEffect(() => {
+    const gate = createOfficeMotionGate({
+      target: window,
+      hasFocus: () => document.hasFocus(),
+      onAgentsChange: (l) => useStore.subscribe((s, prev) => { if (s.agents !== prev.agents) l(); }),
+      reducedMotionQuery: window.matchMedia?.(REDUCED_MOTION_MEDIA_QUERY) ?? null,
+      onUnattendedChange: syncTicker
+    });
+    gateRef.current = gate;
+    return () => { gate.dispose(); gateRef.current = null; };
+  }, []);
+  useEffect(() => {
+    pausedRef.current = paused;
+    syncTicker();
+  }, [paused]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -345,7 +312,7 @@ export function OfficeFloor() {
       // Load the active theme bundle (falls back to 'office' on a bad/absent bundle).
       const theme = await loadTheme(officeTheme);
       // Setting × GPU probe × OS hint → frame cap and resolution (officeMotion.ts).
-      const motion = currentOfficeMotion();
+      const motion = gateRef.current?.decision ?? currentOfficeMotion();
       await app.init({
         background: hexNum(theme.palette.background),
         antialias: motion.antialias,
@@ -401,6 +368,7 @@ export function OfficeFloor() {
       app.stage.addChild(world);
 
       const mapRenderer = new TiledMapRenderer(resolveThemeMap(theme), tilesetTextures);
+      (app as any).__releaseTextures = () => mapRenderer.releaseTextures();
       world.addChild(mapRenderer.getContainer());
       const charLayer = mapRenderer.getCharacterContainer();
       const tileCount = mapRenderer.getContainer().children.reduce(
@@ -886,7 +854,7 @@ export function OfficeFloor() {
               emitQuip(id, rt, b.spotIdx);
             }
             // Occasionally strike up a chat with a table-mate who arrived too.
-            else if (Math.random() < 0.004) maybePairChat(id, rt, b.spotIdx);
+            else if (Math.random() < perTickChance(CAFE_CHAT_CHANCE_PER_FRAME, dt)) maybePairChat(id, rt, b.spotIdx);
           }
           b.timer -= dt;
           if (b.timer <= 0) endBreak(id, rt);
@@ -1827,7 +1795,9 @@ export function OfficeFloor() {
       // Reaching this point means init() returned a context, so whatever loss
       // brought us here is over.
       contextLostRef.current = false;
-      if (!shouldRunTicker({ paused: pausedRef.current, contextLost: false, unattended: unattendedRef.current })) {
+      // From here on the gate applies setting / OS-hint changes to THIS app live.
+      gateRef.current?.attach(app);
+      if (!shouldRunTicker({ paused: pausedRef.current, contextLost: false, unattended: gateRef.current?.unattended ?? false })) {
         app.ticker.stop();
       }
 
@@ -1888,12 +1858,16 @@ export function OfficeFloor() {
         try { (a as any).__unsub?.(); } catch { /* noop */ }
         try { (a as any).__offMessage?.(); } catch { /* noop */ }
         try { clearInterval((a as any).__taskBoardPoll); } catch { /* noop */ }
+        gateRef.current?.detach();
         safeDestroy(a);
+        // The atlases outlive the scene (textureCache.ts); the tiles cut from
+        // them must not.
+        try { (a as any).__releaseTextures?.(); } catch { /* noop */ }
       }
       appRef.current = null;
       while (host.firstChild) host.removeChild(host.firstChild);
     };
-  }, [officeTheme, glGeneration, i18n.language, released, motionMode]);
+  }, [officeTheme, glGeneration, i18n.language, released]);
 
   return (
     <div

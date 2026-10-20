@@ -62,6 +62,8 @@ export class TiledMapRenderer {
   private zones: Map<string, ZoneRect> = new Map();
   private characterContainer: Container;
   private rootContainer: Container;
+  /** Every sub-texture buildTileLayers cut from the atlases, for releaseTextures. */
+  private ownedTextures: Texture[] = [];
 
   private static readonly WALKABLE_SPAWN_PREFIXES = ['desk-', 'pc-', 'warroom-', 'entrance'];
 
@@ -82,6 +84,21 @@ export class TiledMapRenderer {
 
   getContainer(): Container { return this.rootContainer; }
   getCharacterContainer(): Container { return this.characterContainer; }
+
+  /** Destroy the tile textures this renderer created. Each `new Texture` in
+   *  buildTileLayers subscribes to its atlas source's 'resize' event, and the
+   *  atlases outlive the scene now (textureCache.ts), so a rebuilt floor that
+   *  never let go of its tiles would leave the previous floor's thousands of
+   *  textures hanging off the shared atlas for the life of the process. The
+   *  sources are NOT destroyed: they are the cache's. Sprites are destroyed by
+   *  the Application's own teardown (with texture: false), so order does not
+   *  matter; call this once the ticker is stopped. */
+  releaseTextures(): void {
+    for (const t of this.ownedTextures) {
+      try { t.destroy(); } catch { /* already gone */ }
+    }
+    this.ownedTextures = [];
+  }
 
   isWalkable(tx: number, ty: number): boolean {
     if (tx < 0 || ty < 0 || tx >= this.width || ty >= this.height) return false;
@@ -216,7 +233,9 @@ export class TiledMapRenderer {
             const srcY = Math.floor(localId / cols) * th;
 
             const frame = new Rectangle(srcX, srcY, tw, th);
-            const sprite = new Sprite(new Texture({ source: texture.source, frame }));
+            const tile = new Texture({ source: texture.source, frame });
+            this.ownedTextures.push(tile);
+            const sprite = new Sprite(tile);
 
             if (flippedH || flippedV || flippedD) {
               sprite.anchor.set(0.5, 0.5);

@@ -1,4 +1,4 @@
-import { Container, Graphics, Sprite } from 'pixi.js';
+import { Container, Graphics, Sprite, type Texture } from 'pixi.js';
 import type { TiledMapRenderer } from './TiledMapRenderer';
 import type { MonitorConfig } from './themeRegistry';
 
@@ -29,6 +29,9 @@ export class DeskScreen {
   private anim = new Graphics();
   private on = false;
   private t = 0;
+  /** The monitor-on glyphs, cut from the atlas by textureForGid — ours to
+   *  destroy (see TiledMapRenderer.releaseTextures for why). */
+  private textures: Texture[] = [];
 
   constructor(mapRenderer: TiledMapRenderer, topLeft: { x: number; y: number }, monitor?: MonitorConfig) {
     const ts = mapRenderer.tileSize;
@@ -36,6 +39,7 @@ export class DeskScreen {
     for (const [gid, dx, dy] of onGids) {
       const tex = mapRenderer.textureForGid(gid);
       if (!tex) continue;
+      this.textures.push(tex);
       const s = new Sprite(tex);
       s.x = dx * ts;
       s.y = dy * ts;
@@ -81,5 +85,9 @@ export class DeskScreen {
 
   destroy(): void {
     this.container.destroy({ children: true });
+    for (const t of this.textures) {
+      try { t.destroy(); } catch { /* already gone */ }
+    }
+    this.textures = [];
   }
 }

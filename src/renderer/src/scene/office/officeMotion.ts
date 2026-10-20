@@ -23,14 +23,22 @@
  * 1.44 Mpx × 15 = ~22 Mpx/s instead of 5.76 Mpx × 60 = ~346 Mpx/s: sixteen
  * times less rasterisation for a scene that, at a glance, looks the same.
  * Pixel-art sprites with nearest-neighbour scaling do not mind 1x; bubble text
- * gets a little softer, which is the trade.
+ * gets a little softer, which is the trade. The simulation itself is unchanged
+ * at 15 fps: the two per-frame constants it had are time-based now
+ * (frameRate.ts).
  *
  * 'reduced' also lets the ticker stop outright while nobody is watching: once
  * the window has been unfocused for UNATTENDED_GRACE_MS with no agent changing
- * state, there is nothing to animate for anyone (`unattendedPauseDelay`).
+ * state — counted from whichever of the two happened LAST, so a window that was
+ * quiet while focused still gets its full grace after blur — there is nothing
+ * to animate for anyone (`unattendedPauseDelay`).
  *
- * Everything here except `currentOfficeMotion` is pure — no DOM, no Pixi — so
- * node:test can pin it (test/office-motion.test.cjs).
+ * `createOfficeMotionGate` is the runtime: it owns the inputs' listeners and
+ * the grace timer, and applies a change to the LIVE Pixi application (maxFPS
+ * on the ticker, resolution through renderer.resize) rather than rebuilding
+ * the scene. Everything takes injected dependencies so node:test can drive it
+ * with a fake window, store, clock and app (test/office-motion.test.cjs); only
+ * `currentOfficeMotion` and the defaults touch the DOM, lazily.
  */
 import { webglRendererInfo, type WebglClassification } from '@/components/terminalRenderer';
 
@@ -101,24 +109,29 @@ export function decideOfficeMotion(
 
 /** How long until an unwatched floor may stop its ticker, or null when it must
  *  keep running: the window is focused, or the mode is 'full' (today's
- *  behaviour, which never pauses for focus). Zero means "now": the grace has
- *  already elapsed since the last agent state change. */
+ *  behaviour, which never pauses for focus). The grace counts from the later
+ *  of the blur and the last agent state change — a window that sat quiet for
+ *  an hour while focused still gets the whole grace once it loses focus. Zero
+ *  means "now". */
 export function unattendedPauseDelay(input: {
   mode: OfficeMotionMode;
   focused: boolean;
+  /** When the window last lost focus. */
+  blurredAt: number;
   lastAgentChangeAt: number;
   now: number;
   graceMs?: number;
 }): number | null {
   if (input.focused || input.mode !== 'reduced') return null;
   const grace = input.graceMs ?? UNATTENDED_GRACE_MS;
-  return Math.max(0, grace - (input.now - input.lastAgentChangeAt));
+  const quietSince = Math.max(input.blurredAt, input.lastAgentChangeAt);
+  return Math.max(0, grace - (input.now - quietSince));
 }
 
 /* ─── The mirrored setting ───────────────────────────────────────────────────
  *
  * Same shape as terminalRenderer.ts: App.tsx mirrors config into a module
- * variable on initial load and on every config:changed, and OfficeFloor
+ * variable on initial load and on every config:changed, and the gate below
  * subscribes so a change in Settings takes effect on the live floor.
  */
 
@@ -138,10 +151,15 @@ export function setOfficeMotionPref(next: OfficeMotionPref | undefined): boolean
   return true;
 }
 
-/** Subscribe to setting changes (useSyncExternalStore shape). */
+/** Subscribe to setting changes. */
 export function subscribeOfficeMotionPref(listener: () => void): () => void {
   listeners.add(listener);
   return () => { listeners.delete(listener); };
+}
+
+/** For tests: how many subscribers the setting has. */
+export function officeMotionPrefListenerCount(): number {
+  return listeners.size;
 }
 
 /** What App.tsx calls: record the setting and wake the floor if it changed. */
@@ -180,4 +198,136 @@ export function currentOfficeMotion(): OfficeMotionDecision {
     console.info(`[OfficeFloor] reduced motion: ${why} — ${REDUCED_MOTION_MAX_FPS} fps, ${REDUCED_MOTION_RESOLUTION}x resolution`);
   }
   return decision;
+}
+
+/* ─── The gate: inputs in, live application out ───────────────────────────── */
+
+type Listener = () => void;
+
+/** The slice of a Pixi Application the gate touches. */
+export interface MotionGateApp {
+  ticker: { maxFPS: number };
+  /** `resize(w, h, resolution)` re-sizes the canvas source at the new density
+   *  and, with autoDensity, keeps the CSS size — Pixi 8's live-resolution path. */
+  renderer: { resolution: number; resize(width: number, height: number, resolution?: number): void };
+  /** Logical (CSS) size, which is what resize wants. */
+  screen: { width: number; height: number };
+}
+
+export interface MotionGateOptions {
+  /** Focus source — `window` in the app. */
+  target: {
+    addEventListener(type: 'focus' | 'blur', fn: Listener): void;
+    removeEventListener(type: 'focus' | 'blur', fn: Listener): void;
+  };
+  hasFocus: () => boolean;
+  /** Fires on every agent state change (the store's agents slice). Returns the
+   *  unsubscribe. */
+  onAgentsChange: (listener: Listener) => () => void;
+  /** Called when the unattended verdict flips, so the floor can re-run
+   *  shouldRunTicker against its other gates. */
+  onUnattendedChange: (unattended: boolean) => void;
+  /** The OS hint, live. Null when matchMedia is unavailable. */
+  reducedMotionQuery?: {
+    addEventListener(type: 'change', fn: Listener): void;
+    removeEventListener(type: 'change', fn: Listener): void;
+  } | null;
+  /** The setting's subscription; defaults to the mirrored one above. */
+  onPrefChange?: (listener: Listener) => () => void;
+  /** The decision, re-read on every input change; defaults to currentOfficeMotion. */
+  decide?: () => OfficeMotionDecision;
+  /** Injectable for tests. */
+  now?: () => number;
+  schedule?: (fn: Listener, ms: number) => unknown;
+  cancel?: (handle: unknown) => void;
+  graceMs?: number;
+}
+
+export interface OfficeMotionGate {
+  /** True while the reduced path has decided nobody is watching. */
+  readonly unattended: boolean;
+  /** The decision in force. */
+  readonly decision: OfficeMotionDecision;
+  /** Apply the decision to this app now and on every input change until
+   *  detach(). The floor attaches once init() has produced a renderer. */
+  attach(app: MotionGateApp): void;
+  detach(): void;
+  /** Drop every listener and timer. Idempotent. */
+  dispose(): void;
+}
+
+export function createOfficeMotionGate(opts: MotionGateOptions): OfficeMotionGate {
+  const now = opts.now ?? (() => Date.now());
+  const schedule = opts.schedule ?? ((fn: Listener, ms: number) => setTimeout(fn, ms));
+  const cancel = opts.cancel ?? ((h: unknown) => clearTimeout(h as ReturnType<typeof setTimeout>));
+  const decide = opts.decide ?? currentOfficeMotion;
+  const onPrefChange = opts.onPrefChange ?? subscribeOfficeMotionPref;
+
+  let decision = decide();
+  let app: MotionGateApp | null = null;
+  let focused = opts.hasFocus();
+  // Both start "now": a floor that is born unfocused and quiet still waits the
+  // whole grace before it stops.
+  let blurredAt = now();
+  let lastAgentChangeAt = now();
+  let unattended = false;
+  let timer: unknown = null;
+  let disposed = false;
+
+  const setUnattended = (next: boolean) => {
+    if (next === unattended) return;
+    unattended = next;
+    opts.onUnattendedChange(next);
+  };
+
+  /** Re-plan from the current inputs: clear the verdict, and (re)start the
+   *  grace timer if one applies. */
+  const arm = () => {
+    if (timer !== null) { cancel(timer); timer = null; }
+    const delay = unattendedPauseDelay({
+      mode: decision.mode, focused, blurredAt, lastAgentChangeAt, now: now(), graceMs: opts.graceMs
+    });
+    if (delay === null) { setUnattended(false); return; }
+    if (delay === 0) { setUnattended(true); return; }
+    setUnattended(false);
+    timer = schedule(() => { timer = null; setUnattended(true); }, delay);
+  };
+
+  const apply = () => {
+    if (!app) return;
+    app.ticker.maxFPS = decision.maxFPS;
+    if (app.renderer.resolution !== decision.resolution) {
+      app.renderer.resize(app.screen.width, app.screen.height, decision.resolution);
+    }
+  };
+
+  const onFocus = () => { focused = true; arm(); };
+  const onBlur = () => { focused = false; blurredAt = now(); arm(); };
+  const onAgents = () => { lastAgentChangeAt = now(); arm(); };
+  const onInputs = () => { decision = decide(); apply(); arm(); };
+
+  opts.target.addEventListener('focus', onFocus);
+  opts.target.addEventListener('blur', onBlur);
+  const offAgents = opts.onAgentsChange(onAgents);
+  const offPref = onPrefChange(onInputs);
+  opts.reducedMotionQuery?.addEventListener('change', onInputs);
+  arm();
+
+  return {
+    get unattended() { return unattended; },
+    get decision() { return decision; },
+    attach(next) { app = next; apply(); },
+    detach() { app = null; },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      app = null;
+      if (timer !== null) { cancel(timer); timer = null; }
+      opts.target.removeEventListener('focus', onFocus);
+      opts.target.removeEventListener('blur', onBlur);
+      offAgents();
+      offPref();
+      opts.reducedMotionQuery?.removeEventListener('change', onInputs);
+    }
+  };
 }
