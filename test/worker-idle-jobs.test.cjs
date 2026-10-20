@@ -85,3 +85,10 @@ test('a worker silent past the ceiling is reaped even with a live job', () => {
   // ...past it, terminal silence alone decides, however fresh the job is.
   assert.equal(shouldReapIdle(rec, { ...o, ptyIdleMs: 3 * LIMIT + 1, now: 3 * LIMIT + 1 }), true);
 });
+
+test('a zombie tool shell is not a live job', () => {
+  // A shell that exited but has not been waited for yet keeps its group id.
+  const out = '  100     1   100 Ss\n  101   100   100 S\n  200   100   200 Z';
+  assert.equal(hasLaunchedJob(100, parseProcessTable(out)), false);
+  assert.equal(hasLaunchedJob(100, parseProcessTable(out.replace(/ Z$/, ' S+'))), true);
+});

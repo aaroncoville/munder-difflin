@@ -19,21 +19,22 @@
  */
 import { spawnSync } from 'node:child_process';
 
-export interface ProcRow { pid: number; ppid: number; pgid: number }
+export interface ProcRow { pid: number; ppid: number; pgid: number; stat?: string }
 
-/** Parse `ps -axo pid=,ppid=,pgid=` output. */
+/** Parse `ps -axo pid=,ppid=,pgid=,stat=` output (the stat column is optional). */
 export function parseProcessTable(out: string): ProcRow[] {
   const rows: ProcRow[] = [];
   for (const line of out.split('\n')) {
-    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s*$/);
-    if (m) rows.push({ pid: Number(m[1]), ppid: Number(m[2]), pgid: Number(m[3]) });
+    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)(?:\s+(\S+))?\s*$/);
+    if (m) rows.push({ pid: Number(m[1]), ppid: Number(m[2]), pgid: Number(m[3]), stat: m[4] });
   }
   return rows;
 }
 
-/** Does `rootPid` have a direct child outside its own process group? */
+/** Does `rootPid` have a live direct child outside its own process group?
+ *  Zombies keep their group id until reaped, so they are skipped. */
 export function hasLaunchedJob(rootPid: number, rows: ProcRow[]): boolean {
-  return rows.some((r) => r.ppid === rootPid && r.pgid !== rootPid);
+  return rows.some((r) => r.ppid === rootPid && r.pgid !== rootPid && !r.stat?.startsWith('Z'));
 }
 
 /** Probe the live process table for jobs under `pid`. Fails toward "no job"
@@ -41,7 +42,7 @@ export function hasLaunchedJob(rootPid: number, rows: ProcRow[]): boolean {
 export function workerHasLiveJob(pid: number | undefined): boolean {
   if (typeof pid !== 'number' || pid <= 0 || process.platform === 'win32') return false;
   try {
-    const r = spawnSync('ps', ['-axo', 'pid=,ppid=,pgid='], { timeout: 2_000 });
+    const r = spawnSync('ps', ['-axo', 'pid=,ppid=,pgid=,stat='], { timeout: 2_000 });
     if (r.error || r.status !== 0) return false;
     return hasLaunchedJob(pid, parseProcessTable(String(r.stdout ?? '')));
   } catch {
