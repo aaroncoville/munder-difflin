@@ -49,8 +49,14 @@ function idOf(value: unknown): string | null {
  * Entries without a string `id` (a malformed card the god hand-wrote) pass
  * through untouched — there is no key to merge them on, and dropping them would
  * lose data the same way this function exists to prevent.
+ *
+ * With `now`, a card whose status changed — or that has no `updatedAt` at all —
+ * is stamped `updatedAt: now`. Writers echo the raw card back, old `updatedAt`
+ * included, so without this a card moved to 'doing' would look as old as its
+ * creation to anything that ages cards by their last update. An `updatedAt`
+ * the caller changed in this write is its own stamp and is kept.
  */
-export function mergeTaskLedger(existing: unknown, incoming: unknown): unknown[] {
+export function mergeTaskLedger(existing: unknown, incoming: unknown, now?: string): unknown[] {
   const incomingList = Array.isArray(incoming) ? incoming : [];
   const existingList = Array.isArray(existing) ? existing : [];
   const byId = new Map<string, RawTask>();
@@ -62,7 +68,12 @@ export function mergeTaskLedger(existing: unknown, incoming: unknown): unknown[]
     const id = idOf(entry);
     if (!id) return entry;
     const prior = byId.get(id);
-    return prior ? { ...prior, ...(entry as RawTask) } : entry;
+    const merged = prior ? { ...prior, ...(entry as RawTask) } : (entry as RawTask);
+    if (!now) return prior ? merged : entry;
+    const callerStamped = !!prior && merged.updatedAt !== prior.updatedAt;
+    const statusChanged = !!prior && merged.status !== prior.status;
+    if (!merged.updatedAt || (statusChanged && !callerStamped)) return { ...merged, updatedAt: now };
+    return prior ? merged : entry;
   });
 }
 
