@@ -29,6 +29,7 @@ import { Icon } from '@/components/Icon';
 import { SidebarSplitter } from '@/components/SidebarSplitter';
 import { acquireTerminal, applyTerminalRendererPref, notifyThemeChangeAll } from '@/components/terminalPool';
 import { applyOfficeMotionPref } from '@/scene/office/officeMotion';
+import { applyWindowVisibility } from '@/scene/windowShown';
 import { FullscreenTerminal } from '@/components/FullscreenTerminal';
 import { TaskDetailOverlay } from '@/components/TaskDetailOverlay';
 import { IdePanel } from '@/ide/IdePanel';
@@ -158,6 +159,9 @@ export function App() {
 
   // Quit warning subscription
   useEffect(() => window.cth.onCloseRequested((info) => setQuitWarn(info)), []);
+
+  // Window minimised/restored, from main — the floor pauses on it.
+  useEffect(() => window.cth.onWindowVisibility(applyWindowVisibility), []);
 
   // Shareable hires: a validated manifest arriving via the munderdifflin://
   // deep link (or file import) pre-fills the Add-Agent modal. Never spawns by itself.

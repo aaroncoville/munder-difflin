@@ -22,6 +22,7 @@ import {
 } from './officeMotion';
 import { chooseRenderer, describeRendererChoice, type PixiRendererPreference } from './officeRenderer';
 import { createRenderOnChange, sceneChangedSinceRender } from './renderOnChange';
+import { useWindowShown } from '@/scene/windowShown';
 import { webglRendererInfo } from '@/components/terminalRenderer';
 import { loadTexture } from './textureCache';
 import { perTickChance } from './frameRate';
@@ -225,7 +226,10 @@ export function OfficeFloor() {
     document.addEventListener('visibilitychange', onVis);
     return () => document.removeEventListener('visibilitychange', onVis);
   }, []);
-  const paused = !!fullscreenAgentId || ideOpen || docHidden;
+  // document.hidden never flips for a minimised window on WSLg; main reports
+  // minimise/restore and hide/show itself (shared/windowVisibility.ts).
+  const windowShown = useWindowShown();
+  const paused = !!fullscreenAgentId || ideOpen || docHidden || !windowShown;
   // Whether the scene has been torn down because it stayed covered. Deliberately
   // state and not a ref: it is a dependency of the mount effect below, so
   // flipping it is what performs the teardown and the later rebuild, through the

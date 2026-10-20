@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron';
 import type { AgentProvider } from '../shared/agentProvider';
 import type { HireManifest } from '../shared/hire';
+import { WINDOW_VISIBILITY_CHANNEL, type WindowVisibility } from '../shared/windowVisibility';
 export type { HireManifest } from '../shared/hire';
 import type { IntegrationRecord, IntegrationTemplate } from '../shared/integrations';
 export type { IntegrationRecord, IntegrationTemplate } from '../shared/integrations';
@@ -987,6 +988,15 @@ const api = {
     const listener = (_e: IpcRendererEvent, config: HarnessConfig) => cb(config);
     ipcRenderer.on('config:changed', listener);
     return () => ipcRenderer.removeListener('config:changed', listener);
+  },
+
+  // ─── Window visibility ───────────────────────────────────────────────────
+  /** Fired by main when this window is minimised/restored or hidden/shown —
+   *  document.hidden does not flip for a minimised window on WSLg. */
+  onWindowVisibility: (cb: (v: WindowVisibility) => void): (() => void) => {
+    const listener = (_e: IpcRendererEvent, v: WindowVisibility) => cb(v);
+    ipcRenderer.on(WINDOW_VISIBILITY_CHANNEL, listener);
+    return () => ipcRenderer.removeListener(WINDOW_VISIBILITY_CHANNEL, listener);
   },
 
   // ─── Quit confirmation ───────────────────────────────────────────────────

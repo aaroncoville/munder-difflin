@@ -10,6 +10,7 @@ import { join, resolve, sep, basename, dirname, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 import { request as httpsRequest } from 'node:https';
 import { PtyManager, type SpawnOptions } from './pty';
+import { installWindowVisibility } from './windowVisibility';
 import { SpawnRetrier } from './spawnRetry';
 import { resolveCommand as resolveCliCommand, isSafeCommandName } from './shellEnv';
 import { initAutoUpdater, abortPendingRestart } from './updater';
@@ -2439,6 +2440,10 @@ function createWindow(opts: { floor?: boolean } = {}): BrowserWindow {
   // primary. The primary is also seeded synchronously so boot events route now.
   win.on('focus', () => { mainWindow = win; });
   if (!isFloor) mainWindow = win;
+  // Tell the renderer when the window is minimised or hidden: document.hidden
+  // never flips for a minimised window on WSLg, and the office floor kept
+  // drawing at full cost behind it (shared/windowVisibility.ts).
+  installWindowVisibility(win);
 
   // Permission gate for the renderer (our own trusted, local content). The only
   // permission we constrain is microphone capture: it's allowed ONLY while a mic

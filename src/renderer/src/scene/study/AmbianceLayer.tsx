@@ -34,6 +34,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { webglRendererInfo } from '@/components/terminalRenderer';
 import { chooseRenderer, describeRendererChoice } from '@/scene/office/officeRenderer';
+import { getWindowShown, subscribeWindowShown } from '@/scene/windowShown';
 import type { Room } from './roomManifest';
 import {
   HEARTH_SPREAD, MOTE_CAP, ambianceEnabled, driftMotes, flicker, glowRings, glowsFor,
@@ -81,15 +82,17 @@ export function useReducedMotion(): boolean {
   return reduced;
 }
 
-/** Is anybody looking? */
+/** Is anybody looking? document.hidden, and main's word on whether the
+ *  window is minimised, which document.hidden does not cover on WSLg. */
 function usePageVisible(): boolean {
   const [visible, setVisible] = useState(true);
   useEffect(() => {
     if (typeof document === 'undefined') return;
-    const read = (): void => setVisible(!document.hidden);
+    const read = (): void => setVisible(!document.hidden && getWindowShown());
     read();
     document.addEventListener('visibilitychange', read);
-    return () => document.removeEventListener('visibilitychange', read);
+    const unsubscribe = subscribeWindowShown(read);
+    return () => { document.removeEventListener('visibilitychange', read); unsubscribe(); };
   }, []);
   return visible;
 }
