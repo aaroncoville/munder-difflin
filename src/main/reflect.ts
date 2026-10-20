@@ -66,6 +66,15 @@ const NOT_SMALLER_BACKOFF_GROWTH = 1.1;
 const SUMMARIZE_BACKOFF_AFTER = 2;
 /** Ceiling on that wait: 6 h. */
 const SUMMARIZE_BACKOFF_CAP_MS = 6 * 60 * 60 * 1000;
+/** A file that grew by at least max(25%, 16 KiB) past the size it failed at
+ *  is a materially different condense (a new eviction payload) and gets a
+ *  fresh streak. A trickle of growth is not: god's memory.md gains a few
+ *  hundred bytes an hour, which must not reopen the spend every tick. */
+const STREAK_RESET_GROWTH_RATIO = 0.25;
+const STREAK_RESET_GROWTH_BYTES = 16 * 1024;
+/** Failures that have nothing to do with the file's content: a different
+ *  payload cannot change them, so growth never resets their streak. */
+const CONTENT_INDEPENDENT_FAILURE = /trust dialog|transcript file was never written/i;
 
 /** The hidden session answered, but not in the frame the prompt asked for.
  *  Told apart from a session that produced nothing because it is logged as
@@ -192,7 +201,11 @@ export class MemoryReflector {
    *  error text, how many ticks in a row produced it, the file size at the
    *  last one, and the time before which the autonomous scan leaves the file
    *  alone (SUMMARIZE_BACKOFF_AFTER / SUMMARIZE_BACKOFF_CAP_MS). */
-  private summarizeFailures = new Map<string, { detail: string; count: number; bytes: number; notBefore: number }>();
+  private summarizeFailures = new Map<string, {
+    detail: string; count: number; bytes: number; notBefore: number;
+    /** Growth never resets this streak (CONTENT_INDEPENDENT_FAILURE). */
+    contentIndependent: boolean;
+  }>();
 
   /**
    * @param getHome      Lazily resolve harnessHome so reflection follows config.
@@ -270,11 +283,15 @@ export class MemoryReflector {
             // one `condense-backoff` line was written when the window opened.
             const hold = this.summarizeFailures.get(id);
             if (hold) {
-              if (bytes >= hold.bytes * NOT_SMALLER_BACKOFF_GROWTH) {
-                // Grown past the size it failed at: a different case, so the
-                // streak starts over — a failure now counts as the first.
-                // Whatever the streak's state: one failure so far (no window
-                // yet), a window still open, or a window already expired.
+              const grownEnough = bytes - hold.bytes >=
+                Math.max(hold.bytes * STREAK_RESET_GROWTH_RATIO, STREAK_RESET_GROWTH_BYTES);
+              if (grownEnough && !hold.contentIndependent) {
+                // Grown materially past the size it failed at: a different
+                // case, so the streak starts over — a failure now counts as
+                // the first. Whatever the streak's state: one failure so far
+                // (no window yet), a window still open, or one already expired.
+                // Not for a failure the content cannot change (trust dialog,
+                // transcript never written): that streak holds through growth.
                 this.summarizeFailures.delete(id);
               } else if (this.now() < hold.notBefore) {
                 results.push({ id, condensed: false, reason: 'summarize-backoff', oldBytes: bytes });
@@ -424,7 +441,10 @@ export class MemoryReflector {
   private backOffSummarize(id: string, detail: string, oldBytes: number, s: ReflectSettings): void {
     const prev = this.summarizeFailures.get(id);
     const count = prev && prev.detail === detail ? prev.count + 1 : 1;
-    const entry = { detail, count, bytes: oldBytes, notBefore: 0 };
+    const entry = {
+      detail, count, bytes: oldBytes, notBefore: 0,
+      contentIndependent: CONTENT_INDEPENDENT_FAILURE.test(detail)
+    };
     if (count >= SUMMARIZE_BACKOFF_AFTER) {
       const interval = Math.max(60_000, s.intervalMs);
       const backoffMs = Math.min(SUMMARIZE_BACKOFF_CAP_MS, interval * 2 ** (count - SUMMARIZE_BACKOFF_AFTER));
