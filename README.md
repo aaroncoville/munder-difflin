@@ -440,9 +440,13 @@ software GPU (…)` once. The `terminalRenderer` setting (Settings → General �
 The office floor follows the same probe through the `officeMotion` setting (Settings → General →
 Office floor motion): `auto` (default) animates fully on a real GPU and, on a software GPU or when the
 OS asks for reduced motion, caps the Pixi ticker at 15 fps, renders the canvas at 1x instead of ≥2x
-device pixels, and stops the ticker once the window has sat unfocused for 30 s with no agent
-activity. `full` and `reduced` force either path; on WSLg the reduced path cuts the floor's
-rasterisation roughly sixteenfold (frames × pixels per second).
+device pixels, and stops the ticker once the window has sat unfocused for 30 s or is minimised.
+`full` and `reduced` force either path; on WSLg the reduced path cuts the floor's rasterisation
+roughly sixteenfold (frames × pixels per second). On a software GPU the floor and the study's
+ambiance layer are built on Pixi's Canvas2D renderer instead of WebGL, so none of their drawing
+reaches the GPU process at all (the console logs `[office] pixi renderer: canvas (reduced, software
+GPU)` when the floor builds). On the reduced path the floor is also only redrawn when something on
+it changed, so an idle floor draws a few times a second at most and a still one not at all.
 
 ## Architecture
 
