@@ -621,6 +621,8 @@ const spawnRetrier = new SpawnRetrier({
   spawn: (opts, owner) => ptyManager.spawn(opts, owner as Electron.WebContents | null),
   isLive: (id) => ptyManager.list().some((p) => p.id === id),
   attachedWebContents: () => ptyManager.attachedWebContents(),
+  liveWebContents: () => liveWebContents(),
+  attachWebContents: (wc) => ptyManager.attachWebContents(wc as Electron.WebContents),
   teardown: (id) => teardownPty(id),
   log: (event) => { try { hive.appendLog(event); } catch { /* best-effort */ } },
   afterSpawn: () => syncKeepAwake(),
@@ -2553,6 +2555,10 @@ function createWindow(opts: { floor?: boolean } = {}): BrowserWindow {
       mainWindow = null;
       for (const w of allWindows) { if (!w.isDestroyed()) { mainWindow = w; break; } }
     }
+    // The PTY manager's default sink (owner-less sessions' output, and the
+    // relaunch notification a launch-failure retry sends) must not point at
+    // a dead window: re-point it at whichever window is live, or clear it.
+    if (ptyManager.attachedWebContents() === null) ptyManager.attachWebContents(liveWebContents());
     syncKeepAwake();
   });
 
@@ -2961,7 +2967,9 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     const explicitSid = typeof opts.resumeSessionId === 'string' ? opts.resumeSessionId.trim() : '';
     const sid = explicitSid || (opts.resume === true ? hive.lastSession(opts.hive.id) : undefined);
     if (sid && !args.includes('--resume')) {
-      if (seedSessionTranscript(opts.cwd, sid)) {
+      // Seed where THIS child will look: its own merged env decides the config
+      // dir (CLAUDE_CONFIG_DIR, HOME) the CLI resolves transcripts under.
+      if (seedSessionTranscript(opts.cwd, sid, ptyManager.envFor(opts))) {
         args.push('--resume', sid);
         didResume = true;
       } else if (explicitSid) {

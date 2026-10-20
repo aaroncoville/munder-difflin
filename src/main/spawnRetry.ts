@@ -78,9 +78,16 @@ export interface SpawnRetryDeps {
   /** Is a PTY with this id alive right now? */
   isLive(id: string): boolean;
   /** The sink the PTY manager routes an owner-less session's output to (its
-   *  attached webContents): the same object decides whether such a session
-   *  still has a window and receives its relaunch notification. */
+   *  attached webContents), null when none or destroyed: the same object
+   *  decides whether such a session still has a window and receives its
+   *  relaunch notification. */
   attachedWebContents(): RetryWebContents | null;
+  /** Any live window, for when the attached sink is gone (the primary closed
+   *  while a floor lives). */
+  liveWebContents(): RetryWebContents | null;
+  /** Re-point the manager's default sink, so the relaunched session's output
+   *  and its relaunch notification go to the same window. */
+  attachWebContents(wc: RetryWebContents): void;
   /** The normal post-exit teardown (archive, worktree, maps). */
   teardown(id: string): void;
   /** Hive log sink. */
@@ -145,8 +152,18 @@ export class SpawnRetrier {
     // there is nowhere for the relaunched session to paint, and spawning it
     // into some other window would be a surprise. Archive as a plain death.
     // An owner-less PTY reports to the manager's attached sink, so that is the
-    // object checked and notified here — the same one its output goes to.
-    const wc = launch.owner ?? this.deps.attachedWebContents();
+    // object checked and notified here — the same one its output goes to. When
+    // that sink is gone (the primary closed during the wait) but another
+    // window lives, the manager is re-pointed at it first, so output and the
+    // relaunch notification agree; only no window at all cancels.
+    let wc = launch.owner;
+    if (!wc) {
+      wc = this.deps.attachedWebContents();
+      if (!wc) {
+        wc = this.deps.liveWebContents();
+        if (wc && !wc.isDestroyed()) this.deps.attachWebContents(wc);
+      }
+    }
     if (!wc || wc.isDestroyed()) {
       this.deps.warn?.(`[pty] retry for ${agentId} cancelled: its window is gone`);
       this.deps.log({ kind: SPAWN_RETRY_LOG_KIND, agentId, outcome: 'cancelled', reason: 'window-gone' });
