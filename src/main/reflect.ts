@@ -73,8 +73,22 @@ const SUMMARIZE_BACKOFF_CAP_MS = 6 * 60 * 60 * 1000;
 const STREAK_RESET_GROWTH_RATIO = 0.25;
 const STREAK_RESET_GROWTH_BYTES = 16 * 1024;
 /** Failures that have nothing to do with the file's content: a different
- *  payload cannot change them, so growth never resets their streak. */
-const CONTENT_INDEPENDENT_FAILURE = /trust dialog|transcript file was never written/i;
+ *  payload cannot change them, so growth never resets their streak. A small
+ *  explicit list, each entry one way the hidden session fails before, or
+ *  regardless of, the prompt: */
+const CONTENT_INDEPENDENT_FAILURES: readonly RegExp[] = [
+  /trust dialog/i,                              // workspace-trust dialog blocked the session
+  /transcript file was never written/i,         // transcript saving off; the CLI never got that far
+  /empty prompt/i,                              // hiddenClaude refused before spawning
+  /cwd does not exist/i,                        // hiddenClaude refused before spawning
+  /\bENOENT\b|\bEACCES\b|\bEPERM\b/,            // node-pty spawn error codes
+  /no such file or directory/i,                 // execvp / posix_spawn: executable not found
+  /permission denied/i,                         // execvp / posix_spawn: executable not runnable
+  /executable not found|command not found/i     // resolver / shell wording for the same
+];
+function isContentIndependentFailure(detail: string): boolean {
+  return CONTENT_INDEPENDENT_FAILURES.some((re) => re.test(detail));
+}
 
 /** The hidden session answered, but not in the frame the prompt asked for.
  *  Told apart from a session that produced nothing because it is logged as
@@ -203,7 +217,7 @@ export class MemoryReflector {
    *  alone (SUMMARIZE_BACKOFF_AFTER / SUMMARIZE_BACKOFF_CAP_MS). */
   private summarizeFailures = new Map<string, {
     detail: string; count: number; bytes: number; notBefore: number;
-    /** Growth never resets this streak (CONTENT_INDEPENDENT_FAILURE). */
+    /** Growth never resets this streak (CONTENT_INDEPENDENT_FAILURES). */
     contentIndependent: boolean;
   }>();
 
@@ -443,7 +457,7 @@ export class MemoryReflector {
     const count = prev && prev.detail === detail ? prev.count + 1 : 1;
     const entry = {
       detail, count, bytes: oldBytes, notBefore: 0,
-      contentIndependent: CONTENT_INDEPENDENT_FAILURE.test(detail)
+      contentIndependent: isContentIndependentFailure(detail)
     };
     if (count >= SUMMARIZE_BACKOFF_AFTER) {
       const interval = Math.max(60_000, s.intervalMs);

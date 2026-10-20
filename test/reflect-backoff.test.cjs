@@ -264,8 +264,37 @@ test('growth resets a streak whose window has already expired', async () => {
   assert.equal(backoffs()[1].backoffMs, INTERVAL);
 });
 
-test('a content-independent failure (trust dialog, transcript never written) keeps its streak through any growth', async () => {
-  for (const respond of [TRUST_DIALOG, NO_RESPONSE]) {
+/** Every way the hidden session fails before, or regardless of, the prompt:
+ *  the explicit list reflect.ts keeps. Each is enumerated below. */
+const CONTENT_INDEPENDENT = [
+  TRUST_DIALOG,
+  NO_RESPONSE,
+  { ok: false, error: 'empty prompt' },
+  { ok: false, error: 'cwd does not exist: /Users/me/HarnessAgents' },
+  { ok: false, error: 'spawn /Users/me/.nvm/versions/node/v22/bin/claude ENOENT' },
+  { ok: false, error: 'spawn claude EACCES' },
+  { ok: false, error: 'posix_spawnp failed.: No such file or directory' },
+  { ok: false, error: 'execvp(3) failed.: Permission denied' },
+  { ok: false, error: 'executable not found: claude' },
+  { ok: false, error: 'bash: claude: command not found' }
+];
+
+test('a content-dependent failure (transcript present but no assistant text, timeout) IS reset by growth', async () => {
+  for (const respond of [ERR_PARSE_RACE, { ok: false, error: 'hidden session timed out' }]) {
+    const { state, mem, tick, backoffs } = harness(BIG);
+    state.respond = respond;
+    await tick();
+    state.now += INTERVAL;
+    await tick();
+    assert.equal(backoffs().length, 1);
+    state.now += MIN;
+    fs.appendFileSync(mem, section('a lot more', 20 * KIB), 'utf8');
+    assert.equal((await tick()).reason, 'summarize-failed', respond.error);
+  }
+});
+
+test('a content-independent failure (trust dialog, transcript never written, spawn/config failures) keeps its streak through any growth', async () => {
+  for (const respond of CONTENT_INDEPENDENT) {
     const { state, mem, tick, backoffs } = harness(BIG);
     state.respond = respond;
     await tick();
