@@ -3,9 +3,9 @@ import { existsSync, readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { resolveCommand, userShellPath } from './shellEnv';
-import { buildPtyEnv } from './ptyEnv';
+import { stripClaudeSessionMarkers } from './ptyEnv';
 import { expandTilde } from './fs';
-import { projectDir } from './transcript';
+import { newSessionProjectDir } from './transcript';
 import { ensureKilled } from './procKill';
 
 /**
@@ -74,23 +74,26 @@ export function looksLikeTrustDialog(rawOutput: string): boolean {
 }
 
 /**
- * The transcript file a hidden session writes: `<project dir>/<session id>.jsonl`.
+ * The transcript file a hidden session writes: `<project dir>/<session id>.jsonl`,
+ * under the config dir the session actually runs with (`env` is its spawn
+ * env, so an exported CLAUDE_CONFIG_DIR is honoured) and under the CURRENT
+ * project key — a new session never writes to a legacy-keyed directory.
  * The session id is OURS (passed as `--session-id`), so the lookup is exact.
  * The previous "newest .jsonl in the project dir" scan could pick up a
  * DIFFERENT session running in the same cwd — the god agent runs in the
  * harness home, the very cwd the reflect loop uses — and hand its last reply
  * back as the hidden session's answer. Exported for the regression test. */
-export function hiddenTranscriptPath(cwd: string, sessionId: string): string {
-  return path.join(projectDir(cwd), `${sessionId}.jsonl`);
+export function hiddenTranscriptPath(cwd: string, sessionId: string, env: NodeJS.ProcessEnv): string {
+  return path.join(newSessionProjectDir(cwd, env), `${sessionId}.jsonl`);
 }
 
 /**
  * Extract the last assistant text block from the hidden session's own
  * transcript. Null when the file was never written or holds no assistant text.
  */
-function extractLastAssistantText(cwd: string, sessionId: string): string | null {
+function extractLastAssistantText(cwd: string, sessionId: string, env: NodeJS.ProcessEnv): string | null {
   try {
-    const file = hiddenTranscriptPath(cwd, sessionId);
+    const file = hiddenTranscriptPath(cwd, sessionId, env);
     if (!existsSync(file)) return null;
     const lines = readFileSync(file, 'utf8').split('\n');
     for (let i = lines.length - 1; i >= 0; i--) {
@@ -142,6 +145,23 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
     const idleMs = opts.idleMs ?? 3500;
     const timeoutMs = opts.timeoutMs ?? 180_000;
 
+    // The inherited env minus the parent Claude session's identity markers,
+    // then the user-shell PATH, then the caller's own values. The app is
+    // routinely launched from inside a Claude Code terminal, and a hidden
+    // session that inherits that session's CLAUDE_CODE_CHILD_SESSION marker
+    // runs with transcript saving OFF — it answers the prompt (a full model
+    // call, ~75 s for a memory condense) and writes nothing to disk, so every
+    // capture ends in 'no assistant response found in transcript'. That was
+    // the whole of god's six-in-a-row condense-abort run on 2026-10-20; agent
+    // PTYs had their strip since 7049fac1, hidden sessions never did. The
+    // strip is a denylist (ptyEnv.ts), so operator configuration such as
+    // CLAUDE_CONFIG_DIR or a Foundry/Bedrock/Vertex selection passes through.
+    const env: Record<string, string> = {
+      ...stripClaudeSessionMarkers(process.env),
+      PATH: userShellPath(),
+      ...(opts.env ?? {})
+    };
+
     // Windows: node-pty's CreateProcess can't exec the npm `.cmd`/extensionless
     // `claude` shim directly (ERROR_BAD_EXE_FORMAT, error 193) — route non-.exe
     // targets through cmd.exe. A real claude.exe (WinGet) launches directly. (#22)
@@ -155,17 +175,7 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
         cols: 220,
         rows: 50,
         cwd: opts.cwd,
-        // The SAME layering agent PTYs get (ptyEnv.ts): the inherited env minus
-        // the parent Claude session's identity markers, then PATH, then ours.
-        // The app is routinely launched from inside a Claude Code terminal, and
-        // a hidden session that inherits that session's CLAUDE_CODE_CHILD_SESSION
-        // marker runs with transcript saving OFF — it answers the prompt (a full
-        // model call, ~75 s for a memory condense) and writes nothing to disk, so
-        // every capture ends in 'no assistant response found in transcript'.
-        // That was the whole of god's six-in-a-row condense-abort run on
-        // 2026-10-20; agent PTYs had been given this strip in 7049fac1, hidden
-        // sessions never were.
-        env: buildPtyEnv(process.env, userShellPath(), opts.env),
+        env,
       });
     } catch (e) {
       resolve({ ok: false, error: e instanceof Error ? e.message : String(e) });
@@ -204,7 +214,7 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
     };
 
     const captureAndFinish = () => {
-      const text = extractLastAssistantText(opts.cwd, sessionId);
+      const text = extractLastAssistantText(opts.cwd, sessionId, env);
       if (text) { finish({ ok: true, text }); return; }
       // A cwd the CLI has never been trusted in blocks on the workspace-trust
       // dialog forever — it renders as ordinary boot output, so the boot-quiet
@@ -219,7 +229,7 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
       // CLI never got past boot) or one with no assistant text in it (the
       // session died mid-turn). No path in it: the session id is fresh per
       // call, and reflect.ts counts identical failures by this text.
-      const written = existsSync(hiddenTranscriptPath(opts.cwd, sessionId));
+      const written = existsSync(hiddenTranscriptPath(opts.cwd, sessionId, env));
       const error = looksLikeTrustDialog(rawOutput)
         ? 'workspace trust dialog blocked the session (cwd is not a trusted Claude Code directory)'
         : `no assistant response found in transcript (${written ? 'transcript has no assistant text' : 'transcript file was never written'})`;

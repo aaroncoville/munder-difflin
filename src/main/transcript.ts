@@ -40,8 +40,8 @@ function legacyProjectKey(cwd: string): string {
  *  our own stale copies forever. When neither exists we return the CURRENT
  *  spelling, because callers that go on to create the directory must create the
  *  one Claude Code will actually read. */
-export function projectDir(cwd: string): string {
-  const root = path.join(os.homedir(), '.claude/projects');
+export function projectDir(cwd: string, env: NodeJS.ProcessEnv = process.env): string {
+  const root = projectsRoot(env);
   const current = path.join(root, projectKey(cwd));
   if (existsSync(current)) return current;
   // For cwd '/' the legacy key is the empty string, and path.join(root, '')
@@ -53,6 +53,29 @@ export function projectDir(cwd: string): string {
   if (!legacyKey) return current;
   const legacy = path.join(root, legacyKey);
   return existsSync(legacy) ? legacy : current;
+}
+
+/** The directory Claude Code keeps its state in: $CLAUDE_CONFIG_DIR when the
+ *  operator exported one, else ~/.claude. `env` is the environment the CLI in
+ *  question actually runs with — a hidden session's spawn env, for one — not
+ *  necessarily this process's. */
+export function claudeConfigDir(env: NodeJS.ProcessEnv = process.env): string {
+  const configured = env.CLAUDE_CONFIG_DIR?.trim();
+  if (!configured) return path.join(os.homedir(), '.claude');
+  return configured.replace(/^~(?=[\\/]|$)/, os.homedir());
+}
+
+function projectsRoot(env: NodeJS.ProcessEnv): string {
+  return path.join(claudeConfigDir(env), 'projects');
+}
+
+/** Where a NEW session with this cwd writes its transcript: the CURRENT key
+ *  under the config dir the session runs with, always. The legacy fallback in
+ *  projectDir exists for reading transcripts written before the key changed;
+ *  a session started now never writes there, even when both directories
+ *  exist, so a reader looking for a session it just started must not either. */
+export function newSessionProjectDir(cwd: string, env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(projectsRoot(env), projectKey(cwd));
 }
 
 /** Ensure session `<sessionId>.jsonl` exists in `cwd`'s Claude project dir so a
