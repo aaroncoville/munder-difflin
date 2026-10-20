@@ -13,10 +13,11 @@
  *
  * Loaded here instead, keyed by URL, the atlas is one TextureSource for the
  * life of the process and a rebuild reuses it. The sub-textures cut from it
- * per scene (tiles, monitor glyphs) are the scene's to destroy — see
- * TiledMapRenderer.releaseTextures and DeskScreen.destroy — because each one
- * subscribes to the source's 'resize' event and would otherwise hang off the
- * shared atlas for as long as it lives.
+ * per scene (tiles, and the monitor glyphs textureForGid hands out) belong to
+ * the TiledMapRenderer that cut them and go with it — releaseTextures(), the
+ * one call the floor makes on teardown — because each one subscribes to the
+ * source's 'resize' event and would otherwise hang off the shared atlas for
+ * as long as it lives.
  */
 import { Texture } from 'pixi.js';
 

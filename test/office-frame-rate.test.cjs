@@ -15,7 +15,7 @@ const root = path.join(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
 const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 
-const { smoothingFactor, perTickChance, framesElapsed, REFERENCE_FPS } =
+const { smoothingFactor, perTickChance, effectiveFrames, REFERENCE_FPS } =
   loadTs('src/renderer/src/scene/office/frameRate.ts');
 // Camera's only pixi import is a type, so it loads with no pixi in the process.
 const { Camera, LERP_SPEED } = loadTs('src/renderer/src/scene/office/Camera.ts');
@@ -63,41 +63,110 @@ test('the camera pans to the same place after a second at 15 fps and at 60', () 
   assert.notEqual(a.x, 0, 'the camera never moved');
 });
 
-test('a nudge covers the same ground per second at 15 fps as at 60', () => {
-  assert.equal(framesElapsed(1 / 60), 1);
-  assert.equal(framesElapsed(1 / 15), 4);
-  assert.equal(framesElapsed(0), 0);
-  assert.equal(framesElapsed(-1), 0);
+// --- the nudge ------------------------------------------------------------------------
+//
+// nudgeToward is measured on the camera's own position (`currentX`), not on the
+// container it drives: a FITTED camera — the only kind the floor has, it never
+// calls focusOn — is pinned by the map-edge clamp, because the fit zoom makes
+// one axis exactly the view and the other smaller, and both branches of the
+// clamp then centre the container whatever the camera's position is. So the
+// container shows nothing of a nudge, fixed or broken; the position does.
+//
+// The camera is settled first (run until it stops moving to within 1e-6), so a
+// sample measures the nudge and not the fit still converging. And the test
+// carries its own mutants, built through the frameRate seam: a per-tick push
+// (effectiveFrames → 1, the code before this fix) and no push at all
+// (effectiveFrames → 0). The guard proves the measurement can tell them apart.
 
-  // Sample the nudge's path at the same wall-clock instants from both rates.
-  // A fitted camera (no manual override) nudged toward a point to its right:
-  // the lerp tugs it home, the nudge pushes it out, and the two meet.
-  const path = (fps, seconds, every) => {
-    const container = { x: 0, y: 0, scale: { set() {} } };
-    const cam = new Camera(container);
-    cam.setMapSize(4000, 4000);
-    cam.setViewSize(800, 600);
-    cam.fitToScreen();
-    for (let i = 0; i < 30; i++) cam.update(1 / 60); // settle on the fit
-    const home = container.x;
-    cam.nudgeToward(3000, 2000, 1200);
-    const samples = [];
-    for (let i = 1; i <= fps * seconds; i++) {
-      cam.update(1 / fps);
-      if (((i / fps) * 1000) % every === 0) samples.push(container.x - home);
-    }
-    return samples;
-  };
-  // Every 200 ms over 2 s (1.2 s of nudge, then the lerp bringing it back).
-  const at60 = path(60, 2, 200), at15 = path(15, 2, 200);
+const FRAME_RATE = 'src/renderer/src/scene/office/frameRate.ts';
+const CAMERA = 'src/renderer/src/scene/office/Camera.ts';
+
+/** Camera built against a frameRate whose effectiveFrames is `mutant`, or the
+ *  real one when no mutant is given. */
+function cameraWith(mutant) {
+  const real = loadTs.fresh(FRAME_RATE);
+  if (mutant) loadTs.stub(FRAME_RATE, { ...real, effectiveFrames: mutant });
+  try { return loadTs.fresh(CAMERA).Camera; } finally { loadTs.fresh(FRAME_RATE); }
+}
+
+/** Run a fitted camera to rest, then nudge it and sample its x every `everyMs`
+ *  for `seconds` at `fps`. Returns displacements from the rest position. */
+function nudgePath(CameraClass, fps, seconds, everyMs) {
+  const container = { x: 0, y: 0, scale: { set() {} } };
+  const cam = new CameraClass(container);
+  cam.setMapSize(4000, 4000);
+  cam.setViewSize(800, 600);
+  cam.fitToScreen();
+  let settled = false;
+  for (let i = 0; i < 10_000 && !settled; i++) {
+    const [x, y, z] = [cam.currentX, cam.currentY, cam.currentZoom];
+    cam.update(1 / 60);
+    settled = Math.abs(cam.currentX - x) < 1e-6 && Math.abs(cam.currentY - y) < 1e-6
+      && Math.abs(cam.currentZoom - z) < 1e-6;
+  }
+  assert.ok(settled, 'the camera never came to rest');
+  const home = cam.currentX;
+  cam.nudgeToward(3000, 2000, 1200);
+  const samples = [];
+  const stepMs = 1000 / fps;
+  for (let i = 1; i <= fps * seconds; i++) {
+    cam.update(1 / fps);
+    if (Math.round(i * stepMs) % everyMs === 0) samples.push(cam.currentX - home);
+  }
+  return samples;
+}
+
+test('a nudge covers the same ground per second at 15 fps as at 60', () => {
+  // One frame's push at the reference rate; at 15 fps, what four per-frame
+  // pushes leave standing once the lerp has eaten at the first three.
+  close(effectiveFrames(LERP_SPEED, 1 / 60), 1, 1e-12, 'one frame is one push');
+  close(effectiveFrames(LERP_SPEED, 1 / 15), (1 - 0.92 ** 4) / 0.08, 1e-12, 'four frames, decayed');
+  assert.ok(effectiveFrames(LERP_SPEED, 1 / 15) < 4, 'plain velocity × dt would overshoot');
+  assert.equal(effectiveFrames(0, 1 / 15), 4, 'with nothing decaying it is the frame count');
+  assert.equal(effectiveFrames(LERP_SPEED, 0), 0);
+  assert.equal(effectiveFrames(LERP_SPEED, -1), 0);
+
+  // Every 200 ms over 2 s: 1.2 s of nudge, then the lerp bringing it home.
+  const at60 = nudgePath(Camera, 60, 2, 200);
+  const at15 = nudgePath(Camera, 15, 2, 200);
   assert.equal(at60.length, 10);
   assert.equal(at15.length, 10);
   const peak = Math.max(...at60.map(Math.abs));
   assert.ok(peak > 5, `the nudge never moved the camera (${peak}px)`);
-  // Euler steps of 1/15 s against a continuous pull leave a few percent; a
-  // per-tick push, by contrast, would cover a QUARTER of the ground at 15.
+  // What is left is the ease sampled once per tick instead of once per frame,
+  // which leaves the coarser tick pushing a little less: under 3% of the peak,
+  // measured, so 4% here. A per-tick push is off by 4x (next test).
   for (let i = 0; i < at60.length; i++) {
-    close(at15[i], at60[i], peak * 0.05, `sample ${i} (${(i + 1) * 200} ms)`);
+    close(at15[i], at60[i], peak * 0.04, `sample ${i} (${(i + 1) * 200} ms)`);
+  }
+});
+
+test('mutation guard: the nudge measurement tells a per-tick push and no push from the fix', () => {
+  const at60 = nudgePath(Camera, 60, 2, 200);
+  const peak = Math.max(...at60.map(Math.abs));
+
+  // The code before the fix: one push per tick. At 15 fps that is a quarter
+  // of the pushes per second, and the path must say so — by more than 3x.
+  const PerTick = cameraWith(() => 1);
+  const perTick15 = nudgePath(PerTick, 15, 2, 200);
+  const perTickPeak = Math.max(...perTick15.map(Math.abs));
+  assert.ok(perTickPeak > 0, 'the per-tick mutant did not move at all');
+  assert.ok(peak > 3 * perTickPeak,
+    `a per-tick push at 15 fps should fall short of the 60 fps path by >3x (${peak} vs ${perTickPeak})`);
+  // …and at 60 fps the per-tick mutant IS the fixed path, which is the point:
+  // the fix changed nothing at the reference rate.
+  const perTick60 = nudgePath(PerTick, 60, 2, 200);
+  for (let i = 0; i < at60.length; i++) close(perTick60[i], at60[i], 1e-9, `per-tick at 60, sample ${i}`);
+
+  // No push: a settled camera stays put. "Put" is a thousandth of a pixel —
+  // the lerp goes on converging below the 1e-6-per-frame rest threshold, and
+  // that residue adds up to a few millionths over two seconds; the nudge it
+  // must not show is three thousand pixels.
+  const NoNudge = cameraWith(() => 0);
+  for (const fps of [15, 60]) {
+    for (const d of nudgePath(NoNudge, fps, 2, 200)) {
+      assert.ok(Math.abs(d) < 1e-3, `the nudge-disabled mutant moved ${d}px at ${fps} fps`);
+    }
   }
 });
 
@@ -117,6 +186,6 @@ test('the floor rolls the chat through perTickChance and lerps through smoothing
   const camera = strip(read('src/renderer/src/scene/office/Camera.ts'));
   assert.match(camera, /const k = smoothingFactor\(LERP_SPEED, dt\);/);
   assert.doesNotMatch(camera, /\* LERP_SPEED;/, 'a per-tick lerp is back');
-  assert.match(camera, /const push = ease \* framesElapsed\(dt\);/);
+  assert.match(camera, /const push = ease \* effectiveFrames\(LERP_SPEED, dt\);/);
   assert.doesNotMatch(camera, /nudgeOffset[XY] \* ease;/, 'a per-tick nudge is back');
 });

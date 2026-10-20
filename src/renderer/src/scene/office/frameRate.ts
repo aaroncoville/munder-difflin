@@ -31,8 +31,18 @@ export const smoothingFactor = compound;
 /** The chance to use this tick, given the per-60Hz-frame chance. */
 export const perTickChance = compound;
 
-/** How many reference frames `dt` seconds are — for a per-frame DISPLACEMENT
- *  (a velocity, not a rate), which simply scales. */
-export function framesElapsed(dt: number): number {
-  return dt > 0 ? dt * REFERENCE_FPS : 0;
+/** How many frames' worth of a per-frame IMPULSE lands over `dt` seconds when
+ *  something else decays what is left of each one by `decay` per frame — the
+ *  camera nudge, pushed against the camera's own lerp. One frame at a time the
+ *  impulses add up as the geometric sum 1 + (1-d) + (1-d)² + … over the tick's
+ *  frames, which is (1 - (1-d)^n) / d. That is exactly 1 at the reference rate
+ *  (today's behaviour, untouched) and a little under n at a slower one, which
+ *  is what "the same push, applied per frame" comes to; plain n (velocity ×
+ *  dt) overshoots by the decay the finer steps would have applied between
+ *  pushes — ~10% at 15 fps for the nudge. With no decay it is n itself. */
+export function effectiveFrames(decay: number, dt: number): number {
+  if (!(dt > 0)) return 0;
+  const n = dt * REFERENCE_FPS;
+  if (!(decay > 0)) return n;
+  return (1 - (1 - decay) ** n) / decay;
 }
