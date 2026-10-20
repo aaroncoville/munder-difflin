@@ -22,7 +22,9 @@ export type TerminalInputSource = 'user' | 'auto';
 /** How long a keyboard flag stays valid. `onKey` and its `onData` run in the
  *  same tick, so this only has to outlast a busy frame, not a round trip. */
 export const KEYBOARD_FLAG_MS = 250;
-/** A paste flag waits for an async clipboard read before `term.paste` fires. */
+/** A paste flag is armed right before `term.paste` (feedPaste) or by the
+ *  browser's `paste` event just before xterm feeds the text; the window only
+ *  has to outlast that hand-off. */
 export const PASTE_FLAG_MS = 3_000;
 /** Pasted text arrives wrapped in bracketed-paste markers; a terminal reply
  *  never does, so the wrapper alone identifies a person's paste — the browser's
@@ -57,12 +59,36 @@ export function createInputSourceTracker(): InputSourceTracker {
   };
 }
 
-/** Wire a tracker to a terminal's keyboard events. Only `onKey` is needed from
- *  xterm; the pane calls `notePaste` from its own paste paths. */
+/** The slice of xterm a paste needs. */
+export interface PasteTarget { paste(text: string): void }
+
+/**
+ * Feed clipboard text to the terminal as a person's paste. The flag is armed
+ * only when there is text to paste and the terminal is still alive: an empty
+ * or failed clipboard read pastes nothing, so arming would latch 'user' onto
+ * whatever the terminal says next (a DA1 reply to the CLI, say) for the whole
+ * paste window. Returns whether anything was pasted.
+ */
+export function feedPaste(
+  tracker: InputSourceTracker, term: PasteTarget, text: string | null | undefined, exited: boolean
+): boolean {
+  if (exited || typeof text !== 'string' || !text) return false;
+  tracker.notePaste();
+  term.paste(text);
+  return true;
+}
+
+/** Wire a tracker to a terminal's keyboard events, and to the browser's own
+ *  paste when a host element is given: the native Ctrl/Cmd+V never passes the
+ *  pane's paste paths (xterm's textarea handles the DOM `paste` event itself,
+ *  and that event bubbles to the host), so with bracketed-paste mode off the
+ *  plain text it delivers would otherwise read as automation. */
 export function attachInputSourceTracker(
-  term: { onKey(listener: (event: unknown) => void): unknown }
+  term: { onKey(listener: (event: unknown) => void): unknown },
+  pasteHost?: { addEventListener(type: 'paste', listener: () => void): void }
 ): InputSourceTracker {
   const tracker = createInputSourceTracker();
   term.onKey(() => tracker.noteKeyboard());
+  pasteHost?.addEventListener('paste', () => tracker.notePaste());
   return tracker;
 }

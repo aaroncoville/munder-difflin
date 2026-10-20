@@ -40,7 +40,7 @@ import {
 } from './terminalAutomation';
 import { sanitizeTerminalSelection } from './terminalSelection';
 import { terminalKeySequence } from './terminalKeys';
-import { attachInputSourceTracker } from './terminalInputSource';
+import { attachInputSourceTracker, feedPaste } from './terminalInputSource';
 import '@xterm/xterm/css/xterm.css';
 
 export interface TerminalEntry {
@@ -162,7 +162,10 @@ export function acquireTerminal(ptyId: string, theme?: ThemeMap, fontSize = 14):
   registerMarkdownLinkProvider(term, ptyId);
   // Tells a person's keystrokes and pastes apart from the terminal's own
   // replies to a CLI's startup probes, for the write source (see onData).
-  const inputSource = attachInputSourceTracker(term);
+  // The host also hears the browser's own `paste` event (native Ctrl/Cmd+V goes
+  // to xterm's textarea inside it and bubbles up), so a plain-text paste with
+  // bracketed-paste mode off is a person's too.
+  const inputSource = attachInputSourceTracker(term, host);
   // NOTE: don't open() yet — xterm needs its host connected to the document to
   // measure correctly. We open on first attach (see attachTerminal).
 
@@ -251,13 +254,15 @@ export function acquireTerminal(ptyId: string, theme?: ThemeMap, fontSize = 14):
    *  Falls back to the async read if the sync bridge is unavailable (an older
    *  preload), so this degrades to the previous behaviour rather than to nothing. */
   const pasteClipboard = (): void => {
-    inputSource.notePaste();
     if (entry.exited) return;
+    // feedPaste arms the 'user' flag only once there is text to paste and the
+    // terminal is still alive, so an empty clipboard (or a terminal that died
+    // during the async read) never latches the flag onto the CLI's next reply.
     try {
       const text = window.cth.readClipboardSync?.();
-      if (typeof text === 'string') { if (text) term.paste(text); return; }
+      if (typeof text === 'string') { feedPaste(inputSource, term, text, entry.exited); return; }
     } catch { /* fall through to the async path */ }
-    void window.cth.readClipboard().then((t) => { if (t) term.paste(t); });
+    void window.cth.readClipboard().then((t) => { feedPaste(inputSource, term, t, entry.exited); });
   };
   term.attachCustomKeyEventHandler((ev) => {
     if (ev.type !== 'keydown') return true;
