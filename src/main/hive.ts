@@ -214,6 +214,9 @@ export interface SpawnInjection {
 }
 
 const HOP_CAP = 12;
+/** How long an unparseable outbox file is given to be finished by its sender
+ *  before the router drops it. */
+const MALFORMED_RETRY_MS = 2_000;
 
 function sleepSync(ms: number): void {
   const sab = new SharedArrayBuffer(4);
@@ -1877,7 +1880,31 @@ export class HiveManager {
     if (this.routerTimer) { clearInterval(this.routerTimer); this.routerTimer = null; }
   }
 
-  routeOnce(): number {
+  /** Outbox files that failed to parse, by path → when that was first seen.
+   *  The router polls, so it can read a file mid-write; such a file gets
+   *  MALFORMED_RETRY_MS to be completed before it is dropped. */
+  private malformedSince = new Map<string, number>();
+
+  /** A file that failed to parse: drop it once it has stayed unparseable for
+   *  MALFORMED_RETRY_MS, telling its sender; until then leave it in place. */
+  private dropMalformedAfterRetry(id: string, outbox: string, f: string, now: number): void {
+    const full = join(outbox, f);
+    const since = this.malformedSince.get(full);
+    if (since === undefined) { this.malformedSince.set(full, now); return; }
+    if (now - since < MALFORMED_RETRY_MS) return;
+    this.malformedSince.delete(full);
+    this.appendLog({ kind: 'drop', reason: 'malformed-json', from: id, file: f });
+    try { renameSync(full, join(outbox, '.sent', `bad-${f}`)); } catch { /* noop */ }
+    this.deliver(this.normalize({
+      from: 'router', to: id, act: 'inform', requires_reply: false,
+      subject: `Undelivered: ${f} is not valid JSON`,
+      body: `Your outbox file ${f} still did not parse as JSON after a retry, so it was not delivered. `
+        + `It was moved to outbox/.sent/bad-${f}. Fix it and write it to your outbox again `
+        + `(write to a .tmp name and rename it into place so it is never read half-written).`
+    }, 'router'), id);
+  }
+
+  routeOnce(now = Date.now()): number {
     const root = this.root();
     if (!root) return 0;
     const agentsDir = join(root, 'agents');
@@ -1897,15 +1924,13 @@ export class HiveManager {
           } catch {
             const repaired = repairLiteralLineBreaksInJsonStrings(raw);
             if (!repaired.changed) {
-              this.appendLog({ kind: 'drop', reason: 'malformed-json', from: id, file: f });
-              try { renameSync(full, join(outbox, '.sent', `bad-${f}`)); } catch { /* noop */ }
+              this.dropMalformedAfterRetry(id, outbox, f, now);
               continue;
             }
             try {
               partial = JSON.parse(repaired.text) as Partial<HiveMessage>;
             } catch {
-              this.appendLog({ kind: 'drop', reason: 'malformed-json', from: id, file: f });
-              try { renameSync(full, join(outbox, '.sent', `bad-${f}`)); } catch { /* noop */ }
+              this.dropMalformedAfterRetry(id, outbox, f, now);
               continue;
             }
             this.appendLog({
@@ -1915,6 +1940,7 @@ export class HiveManager {
               repair: 'literal-line-break'
             });
           }
+          this.malformedSince.delete(full);
           const msg = this.normalize(partial, id);
           msg.from = id; // sender is authoritative — the owning directory
           this.routeMessage(msg);
