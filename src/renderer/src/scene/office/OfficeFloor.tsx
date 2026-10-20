@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Application, Container, Graphics, Ticker } from 'pixi.js';
+import { Application, Container, Graphics, Ticker, UPDATE_PRIORITY } from 'pixi.js';
 // PixiJS uses new Function() internally, blocked by Electron CSP — this patches it.
 import 'pixi.js/unsafe-eval';
 import { useStore, type Agent } from '@/store/store';
@@ -21,6 +21,7 @@ import {
   createOfficeMotionGate, currentOfficeMotion, REDUCED_MOTION_MEDIA_QUERY, type OfficeMotionGate
 } from './officeMotion';
 import { chooseRenderer, describeRendererChoice, type PixiRendererPreference } from './officeRenderer';
+import { createRenderOnChange, sceneChangedSinceRender } from './renderOnChange';
 import { webglRendererInfo } from '@/components/terminalRenderer';
 import { loadTexture } from './textureCache';
 import { perTickChance } from './frameRate';
@@ -346,6 +347,20 @@ export function OfficeFloor() {
       console.info(describeRendererChoice('office', app.renderer.name, motion.mode, renderer));
       // 0 is Pixi's own "uncapped"; the reduced path sets REDUCED_MOTION_MAX_FPS.
       app.ticker.maxFPS = motion.maxFPS;
+      // The TickerPlugin draws every tick. Take that over: on the reduced path
+      // the ticker still advances the simulation at 15 fps, but the stage is
+      // only drawn when Pixi has queued a change for it, or the canvas was
+      // cleared by a resize (renderOnChange.ts). The full path draws every
+      // tick as before. LOW priority, like the plugin's, so it runs after the
+      // simulation tick below.
+      app.ticker.remove(app.render, app);
+      const paint = createRenderOnChange({
+        render: () => app.render(),
+        changed: () => sceneChangedSinceRender(app.stage.renderGroup),
+        decision: () => gateRef.current?.decision ?? motion
+      });
+      app.renderer.on('resize', paint.invalidate);
+      app.ticker.add((tk: Ticker) => { paint.step(tk.lastTime); }, undefined, UPDATE_PRIORITY.LOW);
       while (host.firstChild) host.removeChild(host.firstChild);
       host.appendChild(app.canvas);
 
