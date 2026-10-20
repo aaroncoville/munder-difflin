@@ -31,11 +31,16 @@ export type TerminalRendererPref = 'auto' | 'dom' | 'webgl';
 export type WebglClassification = 'hardware' | 'software' | 'unknown';
 
 /** Renderer strings that mean "a CPU is pretending to be a GPU". SwiftShader is
- *  Chromium's own fallback (what WSLg gets); llvmpipe/softpipe are Mesa's; the
- *  rest cover the generic spellings ANGLE and Mesa use for offscreen/software
- *  backends. Hardware strings name a vendor part (NVIDIA, AMD, Intel, Apple M*,
- *  Adreno, Mali) and never match. */
-export const SOFTWARE_WEBGL_RE = /swiftshader|llvmpipe|softpipe|software|mesa offscreen/i;
+ *  Chromium's own fallback (what WSLg gets); llvmpipe/softpipe are Mesa's;
+ *  "Microsoft Basic Render Driver" is WARP, the Direct3D software rasterizer a
+ *  Windows VM or RDP session hands to ANGLE; the rest cover the generic
+ *  spellings ANGLE and Mesa use for offscreen/software backends. "warp" is
+ *  word-bounded so a vendor part that merely contains the letters never
+ *  matches. Hardware strings name a vendor part (NVIDIA, AMD, Intel, Apple M*,
+ *  Adreno, Mali) and never match — "Mesa Intel(R) Xe Graphics" is hardware;
+ *  only "Mesa OffScreen" is the software one. */
+export const SOFTWARE_WEBGL_RE =
+  /swiftshader|llvmpipe|softpipe|software|mesa offscreen|microsoft basic render|\bwarp\b/i;
 
 /** Classify an UNMASKED_RENDERER_WEBGL string. `null` (extension unavailable,
  *  or no WebGL at all) is 'unknown', never 'software': without evidence we keep

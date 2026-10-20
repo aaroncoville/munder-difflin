@@ -433,7 +433,7 @@ On a machine with no usable GPU (WSL2/WSLg, most VMs) Chromium backs WebGL with 
 software rasterizer, and the WebGL terminal renderer then costs several CPU cores just to paint
 idle terminals. The renderer probes WebGL once per window (`WEBGL_debug_renderer_info`) and, when
 the unmasked renderer string names a software backend (SwiftShader, llvmpipe, softpipe, "software",
-"Mesa OffScreen"), keeps xterm on its DOM renderer and logs `[terminal] webgl renderer skipped:
+"Mesa OffScreen", WARP / "Microsoft Basic Render Driver"), keeps xterm on its DOM renderer and logs `[terminal] webgl renderer skipped:
 software GPU (…)` once. The `terminalRenderer` setting (Settings → General → Terminal renderer, or
 `config.json`) controls this: `auto` (default) follows the probe, `dom` always uses the text engine,
 `webgl` always leases the GPU renderer. Unknown renderers count as hardware, so Macs are unchanged.
