@@ -257,7 +257,8 @@ export function OfficeFloor() {
   // hint, window focus) and applies a change to the
   // LIVE application — maxFPS on the ticker, resolution through renderer.resize
   // — rather than rebuilding the scene, which would reload the theme and walk
-  // the whole cast back in through the door over a settings change.
+  // the whole cast back in through the door over a settings change. The one
+  // exception is the renderer kind, which only init can set.
   //
   // On the reduced path the gate also reports the floor UNATTENDED once the
   // window has sat unfocused for UNATTENDED_GRACE_MS; focus clears it at once.
@@ -284,7 +285,11 @@ export function OfficeFloor() {
       target: window,
       hasFocus: () => document.hasFocus(),
       reducedMotionQuery: window.matchMedia?.(REDUCED_MOTION_MEDIA_QUERY) ?? null,
-      onUnattendedChange: syncTicker
+      onUnattendedChange: syncTicker,
+      // The renderer kind (canvas/WebGL, officeRenderer.ts) is fixed at init;
+      // a mode change that wants the other kind rebuilds through the one mount
+      // path, like a context loss does.
+      onRendererKindChange: () => setGlGeneration((n) => n + 1)
     });
     gateRef.current = gate;
     return () => { gate.dispose(); gateRef.current = null; };

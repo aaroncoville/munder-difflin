@@ -44,6 +44,7 @@
  * `currentOfficeMotion` and the defaults touch the DOM, lazily.
  */
 import { webglRendererInfo, type WebglClassification } from '@/components/terminalRenderer';
+import { chooseRenderer, type PixiRendererPreference } from './officeRenderer';
 
 /** The user's setting. 'auto' is the default: reduced on a software GPU or when
  *  the OS asks for reduced motion, full otherwise. */
@@ -208,8 +209,9 @@ type Listener = () => void;
 export interface MotionGateApp {
   ticker: { maxFPS: number };
   /** `resize(w, h, resolution)` re-sizes the canvas source at the new density
-   *  and, with autoDensity, keeps the CSS size — Pixi 8's live-resolution path. */
-  renderer: { resolution: number; resize(width: number, height: number, resolution?: number): void };
+   *  and, with autoDensity, keeps the CSS size — Pixi 8's live-resolution path.
+   *  `name` is the renderer kind Pixi built ('webgl' | 'canvas' | 'webgpu'). */
+  renderer: { name: string; resolution: number; resize(width: number, height: number, resolution?: number): void };
   /** Logical (CSS) size, which is what resize wants. */
   screen: { width: number; height: number };
 }
@@ -233,6 +235,16 @@ export interface MotionGateOptions {
   onPrefChange?: (listener: Listener) => () => void;
   /** The decision, re-read on every input change; defaults to currentOfficeMotion. */
   decide?: () => OfficeMotionDecision;
+  /** The renderer kind a mode wants (officeRenderer.ts); defaults to
+   *  chooseRenderer over the cached probe. */
+  rendererFor?: (mode: OfficeMotionMode) => PixiRendererPreference;
+  /** The one thing the gate cannot apply live: the renderer KIND is fixed when
+   *  Application.init builds it. When the decision wants a different kind from
+   *  the one attached, the gate asks for a rebuild — once per mismatch, so a
+   *  Pixi that cannot build the kind asked for does not loop. Textures are
+   *  cached per process, so the rebuild is cheap; the cast walking back in is
+   *  the price of an explicit renderer switch. */
+  onRendererKindChange?: () => void;
   /** Injectable for tests. */
   now?: () => number;
   schedule?: (fn: Listener, ms: number) => unknown;
@@ -259,6 +271,8 @@ export function createOfficeMotionGate(opts: MotionGateOptions): OfficeMotionGat
   const cancel = opts.cancel ?? ((h: unknown) => clearTimeout(h as ReturnType<typeof setTimeout>));
   const decide = opts.decide ?? currentOfficeMotion;
   const onPrefChange = opts.onPrefChange ?? subscribeOfficeMotionPref;
+  const rendererFor = opts.rendererFor
+    ?? ((mode: OfficeMotionMode) => chooseRenderer(mode, webglRendererInfo().classification).preference);
 
   let decision = decide();
   let app: MotionGateApp | null = null;
@@ -269,6 +283,10 @@ export function createOfficeMotionGate(opts: MotionGateOptions): OfficeMotionGat
   let unattended = false;
   let timer: unknown = null;
   let disposed = false;
+  // The kind the last rebuild was asked for, until an app of that kind
+  // attaches (or the wanted kind is live again). Stops a second request for
+  // a kind Pixi has just shown it cannot build.
+  let rebuildAskedFor: PixiRendererPreference | null = null;
 
   const setUnattended = (next: boolean) => {
     if (next === unattended) return;
@@ -295,6 +313,11 @@ export function createOfficeMotionGate(opts: MotionGateOptions): OfficeMotionGat
     if (app.renderer.resolution !== decision.resolution) {
       app.renderer.resize(app.screen.width, app.screen.height, decision.resolution);
     }
+    const wanted = rendererFor(decision.mode);
+    if (app.renderer.name === wanted) { rebuildAskedFor = null; return; }
+    if (rebuildAskedFor === wanted) return;
+    rebuildAskedFor = wanted;
+    opts.onRendererKindChange?.();
   };
 
   const onFocus = () => { focused = true; arm(); };

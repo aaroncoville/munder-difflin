@@ -29,6 +29,7 @@ const {
   REDUCED_MOTION_MAX_FPS, REDUCED_MOTION_RESOLUTION, FULL_MOTION_MIN_RESOLUTION, UNATTENDED_GRACE_MS
 } = M;
 const { shouldRunTicker } = loadTs('src/renderer/src/scene/office/glRecovery.ts');
+const { chooseRenderer } = loadTs('src/renderer/src/scene/office/officeRenderer.ts');
 
 const CLASSES = ['hardware', 'software', 'unknown'];
 
@@ -209,13 +210,14 @@ function fakeQuery() {
   };
 }
 
-function fakeApp(resolution) {
+function fakeApp(resolution, name = 'webgl') {
   const app = {
     initCalls: 0,
     resizes: [],
     ticker: { maxFPS: 0 },
     screen: { width: 1600, height: 900 },
     renderer: {
+      name,
       resolution,
       resize(w, h, r) { app.resizes.push([w, h, r]); if (r !== undefined) this.resolution = r; }
     },
@@ -230,6 +232,7 @@ function gateUnderTest({ classification = 'software', focused = true, dpr = 2 } 
   const target = fakeTarget();
   const query = fakeQuery();
   const verdicts = [];
+  let rebuilds = 0;
   let isFocused = focused;
   const gate = createOfficeMotionGate({
     target,
@@ -237,10 +240,12 @@ function gateUnderTest({ classification = 'software', focused = true, dpr = 2 } 
     onUnattendedChange: (v) => verdicts.push(v),
     reducedMotionQuery: query,
     decide: () => decideOfficeMotion(getOfficeMotionPref(), classification, query.matches, dpr),
+    rendererFor: (mode) => chooseRenderer(mode, classification).preference,
+    onRendererKindChange: () => { rebuilds += 1; },
     now: clock.now, schedule: clock.schedule, cancel: clock.cancel
   });
   return {
-    gate, clock, target, query, verdicts,
+    gate, clock, target, query, verdicts, get rebuilds() { return rebuilds; },
     focus() { isFocused = true; target.fire('focus'); },
     blur() { isFocused = false; target.fire('blur'); }
   };
@@ -332,45 +337,111 @@ test('unattended: the full path never pauses on blur, and switching to reduced p
   f.gate.dispose();
 });
 
-test('a mode change applies to the LIVE application; it never inits again', (t) => {
+test('on a software GPU a mode change applies to the LIVE application and never rebuilds: canvas either way', (t) => {
   t.after(() => applyOfficeMotionPref('auto'));
-  const f = gateUnderTest({ classification: 'hardware', dpr: 2 });
-  const app = fakeApp(2);
+  const f = gateUnderTest({ classification: 'software', dpr: 2 });
+  assert.equal(f.gate.decision.mode, 'reduced');
+  const app = fakeApp(1, 'canvas');
   // What the floor does: init once with the decision's knobs, then attach.
   app.init();
   app.ticker.maxFPS = f.gate.decision.maxFPS;
   f.gate.attach(app);
   assert.equal(app.initCalls, 1);
-  assert.equal(app.ticker.maxFPS, 0);
-  assert.deepEqual(app.resizes, [], 'attach resized a canvas already at the right resolution');
-
-  applyOfficeMotionPref('reduced');
   assert.equal(app.ticker.maxFPS, 15);
-  assert.equal(app.renderer.resolution, 1);
-  assert.deepEqual(app.resizes, [[1600, 900, 1]], 'resolution must go through renderer.resize at the logical size');
-  assert.equal(app.initCalls, 1, 'a settings change rebuilt the application');
+  assert.deepEqual(app.resizes, [], 'attach resized a canvas already at the right resolution');
+  assert.equal(f.rebuilds, 0, 'attaching the kind the mode wants must not rebuild');
 
   applyOfficeMotionPref('full');
   assert.equal(app.ticker.maxFPS, 0);
   assert.equal(app.renderer.resolution, 2);
-  assert.deepEqual(app.resizes, [[1600, 900, 1], [1600, 900, 2]]);
-  assert.equal(app.initCalls, 1);
+  assert.deepEqual(app.resizes, [[1600, 900, 2]], 'resolution must go through renderer.resize at the logical size');
+  assert.equal(f.rebuilds, 0, "'full' on a software GPU is still canvas: fps and resolution change live, nothing rebuilds");
 
-  // The OS hint is live too, under 'auto'.
-  applyOfficeMotionPref('auto');
-  f.query.set(true);
+  applyOfficeMotionPref('reduced');
   assert.equal(app.ticker.maxFPS, 15);
   assert.equal(app.renderer.resolution, 1);
-  f.query.set(false);
-  assert.equal(app.ticker.maxFPS, 0);
-  assert.equal(app.renderer.resolution, 2);
-  assert.equal(app.initCalls, 1);
+  assert.deepEqual(app.resizes, [[1600, 900, 2], [1600, 900, 1]]);
+  assert.equal(f.rebuilds, 0);
+  assert.equal(app.initCalls, 1, 'a settings change rebuilt the application');
 
   // Detached (the scene is being torn down), the app is left alone.
   f.gate.detach();
+  applyOfficeMotionPref('full');
+  assert.equal(app.ticker.maxFPS, 15);
+  assert.equal(app.renderer.resolution, 1);
+  assert.equal(f.rebuilds, 0);
+  f.gate.dispose();
+});
+
+test('on hardware, full → reduced wants canvas where WebGL is live: fps and resolution apply, then exactly one rebuild', (t) => {
+  t.after(() => applyOfficeMotionPref('auto'));
+  const f = gateUnderTest({ classification: 'hardware', dpr: 2 });
+  assert.equal(f.gate.decision.mode, 'full');
+  const app = fakeApp(2, 'webgl');
+  f.gate.attach(app);
+  assert.equal(f.rebuilds, 0);
+
   applyOfficeMotionPref('reduced');
-  assert.equal(app.ticker.maxFPS, 0);
-  assert.equal(app.renderer.resolution, 2);
+  assert.equal(app.ticker.maxFPS, 15, 'the cap must land on the live app even though a rebuild is coming');
+  assert.equal(app.renderer.resolution, 1);
+  assert.equal(f.rebuilds, 1, 'WebGL live, canvas wanted: one rebuild');
+
+  // The floor tears the WebGL app down and attaches a canvas one born at the
+  // decision in force. That is the end of it: no second rebuild.
+  f.gate.detach();
+  const rebuilt = fakeApp(f.gate.decision.resolution, chooseRenderer(f.gate.decision.mode, 'hardware').preference);
+  assert.equal(rebuilt.renderer.name, 'canvas');
+  rebuilt.ticker.maxFPS = f.gate.decision.maxFPS;
+  f.gate.attach(rebuilt);
+  assert.equal(rebuilt.ticker.maxFPS, 15);
+  assert.deepEqual(rebuilt.resizes, []);
+  assert.equal(f.rebuilds, 1);
+  f.gate.dispose();
+});
+
+test('on hardware, reduced → full wants WebGL where canvas is live: one rebuild, never canvas uncapped at 2x', (t) => {
+  t.after(() => applyOfficeMotionPref('auto'));
+  const f = gateUnderTest({ classification: 'hardware', dpr: 2 });
+  applyOfficeMotionPref('reduced');
+  const app = fakeApp(1, 'canvas');
+  app.ticker.maxFPS = 15;
+  f.gate.attach(app);
+  assert.equal(f.rebuilds, 0);
+
+  applyOfficeMotionPref('full');
+  assert.equal(f.rebuilds, 1, 'canvas live, WebGL wanted: one rebuild');
+  // A second input change while the rebuild is pending asks for nothing more.
+  f.query.set(true); f.query.set(false);
+  assert.equal(f.rebuilds, 1, 'a pending rebuild must not be asked for again');
+
+  f.gate.detach();
+  const rebuilt = fakeApp(2, 'webgl');
+  f.gate.attach(rebuilt);
+  assert.equal(f.rebuilds, 1);
+  assert.equal(rebuilt.ticker.maxFPS, 0);
+
+  // The OS hint is live too, under 'auto': on hardware it also flips the kind.
+  applyOfficeMotionPref('auto');
+  f.query.set(true);
+  assert.equal(rebuilt.ticker.maxFPS, 15);
+  assert.equal(rebuilt.renderer.resolution, 1);
+  assert.equal(f.rebuilds, 2);
+  f.gate.dispose();
+});
+
+test('a Pixi that cannot build the kind asked for is asked once, not forever', (t) => {
+  t.after(() => applyOfficeMotionPref('auto'));
+  const f = gateUnderTest({ classification: 'hardware', dpr: 2 });
+  applyOfficeMotionPref('reduced');
+  f.gate.attach(fakeApp(1, 'canvas'));
+  applyOfficeMotionPref('full');
+  assert.equal(f.rebuilds, 1);
+  // The rebuild came back canvas again (no WebGL available after all).
+  f.gate.detach();
+  f.gate.attach(fakeApp(2, 'canvas'));
+  assert.equal(f.rebuilds, 1, 'attaching the wrong kind again must not ask again');
+  f.query.set(true); f.query.set(false);
+  assert.equal(f.rebuilds, 1);
   f.gate.dispose();
 });
 
@@ -378,12 +449,14 @@ test('a context-loss rebuild attaches a fresh app at the decision in force', (t)
   t.after(() => applyOfficeMotionPref('auto'));
   const f = gateUnderTest({ classification: 'hardware' });
   applyOfficeMotionPref('reduced');
-  // The floor builds the replacement with gate.decision, so it is born at 1x.
-  const rebuilt = fakeApp(f.gate.decision.resolution);
+  // The floor builds the replacement with gate.decision, so it is born at 1x
+  // and on the kind the mode wants.
+  const rebuilt = fakeApp(f.gate.decision.resolution, 'canvas');
   rebuilt.ticker.maxFPS = f.gate.decision.maxFPS;
   f.gate.attach(rebuilt);
   assert.equal(rebuilt.ticker.maxFPS, 15);
   assert.deepEqual(rebuilt.resizes, []);
+  assert.equal(f.rebuilds, 0);
   f.gate.dispose();
 });
 
@@ -436,6 +509,8 @@ test('OfficeFloor builds its renderer from the decision, attaches the gate, and 
   assert.match(gateCall, /hasFocus: \(\) => document\.hasFocus\(\),/);
   assert.doesNotMatch(gateCall, /agents/, 'the store must not be an input to the unattended pause');
   assert.match(gateCall, /onUnattendedChange: syncTicker/);
+  assert.match(gateCall, /onRendererKindChange: \(\) => setGlGeneration\(\(n\) => n \+ 1\)/,
+    'a renderer-kind change must rebuild through the one mount path');
   assert.match(src, /gate\.dispose\(\);/);
   // Every ticker start/stop decision passes the unattended gate.
   assert.match(src, /unattended: gateRef\.current\?\.unattended \?\? false/);
