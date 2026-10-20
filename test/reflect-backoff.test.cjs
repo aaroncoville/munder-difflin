@@ -206,6 +206,41 @@ test('a file that grew past the size it failed at gets a fresh try inside the wi
   assert.equal(backoffs()[1].backoffMs, INTERVAL);
 });
 
+test('growth resets a one-failure streak too (no window open yet)', async () => {
+  const { state, mem, tick, backoffs } = harness();
+  await tick(); // count one, notBefore 0
+  // More than 10% larger than the failing size.
+  fs.appendFileSync(mem, section('a lot more', 400), 'utf8');
+  state.now += INTERVAL;
+  assert.equal((await tick()).reason, 'summarize-failed');
+  // Without the reset this second identical failure would be the streak's
+  // second and open a window; with it, it is the first of a new streak.
+  assert.equal(backoffs().length, 0);
+  state.now += INTERVAL;
+  await tick();
+  assert.equal(backoffs().length, 1);
+  assert.equal(backoffs()[0].failures, 2);
+});
+
+test('growth resets a streak whose window has already expired', async () => {
+  const { state, mem, tick, backoffs } = harness();
+  await tick();
+  state.now += INTERVAL;
+  await tick();
+  assert.equal(backoffs().length, 1); // window: one interval
+  state.now += 2 * INTERVAL; // well past it
+  fs.appendFileSync(mem, section('a lot more', 400), 'utf8');
+  assert.equal((await tick()).reason, 'summarize-failed');
+  // Without the reset this would be failure three (a 2-interval window);
+  // with it, the first of a new streak: no new line.
+  assert.equal(backoffs().length, 1);
+  state.now += INTERVAL;
+  await tick();
+  assert.equal(backoffs().length, 2);
+  assert.equal(backoffs()[1].failures, 2);
+  assert.equal(backoffs()[1].backoffMs, INTERVAL);
+});
+
 test('a response that exists but breaks the frame is "bad-framing": no backoff, and it ends a no-response streak', async () => {
   const { state, tick, backoffs, aborts } = harness();
   // Two no-response failures open a window...

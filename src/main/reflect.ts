@@ -269,14 +269,17 @@ export class MemoryReflector {
             // enough to be a different case: no hidden session this tick. The
             // one `condense-backoff` line was written when the window opened.
             const hold = this.summarizeFailures.get(id);
-            if (hold && this.now() < hold.notBefore) {
-              if (bytes < hold.bytes * NOT_SMALLER_BACKOFF_GROWTH) {
+            if (hold) {
+              if (bytes >= hold.bytes * NOT_SMALLER_BACKOFF_GROWTH) {
+                // Grown past the size it failed at: a different case, so the
+                // streak starts over — a failure now counts as the first.
+                // Whatever the streak's state: one failure so far (no window
+                // yet), a window still open, or a window already expired.
+                this.summarizeFailures.delete(id);
+              } else if (this.now() < hold.notBefore) {
                 results.push({ id, condensed: false, reason: 'summarize-backoff', oldBytes: bytes });
                 continue;
               }
-              // Grown past the size it failed at: a different case, so the
-              // streak starts over — a failure now counts as the first.
-              this.summarizeFailures.delete(id);
             }
           }
           text = readFileSync(mem, 'utf8');
