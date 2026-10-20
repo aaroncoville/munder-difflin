@@ -70,6 +70,7 @@ import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WakeSkipLog, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
+import { shouldReapIdle, workerHasLiveJob } from './workerIdleJobs';
 import {
   CODEX_ACTIVITY_TTL_MS,
   CodexHomes,
@@ -386,6 +387,8 @@ interface WorkerRec {
   /** Per-worker TOTAL-token cap from the spawn-request (overrides the config
    *  default). 0/undefined = no per-request cap. P4 plumbing — unlimited today. */
   tokenCap?: number;
+  /** When a job the worker launched was last seen alive (see workerIdleJobs). */
+  jobSeenAt?: number;
 }
 /** Live ephemeral workers by id. Populated by the spawn-request watcher; consulted
  *  by teardownPty so a finished/crashed/reaped worker's worktree is PRESERVED (not
@@ -5122,7 +5125,9 @@ async function ephemeralWorkerTick(): Promise<void> {
       }
       const idleMs = ptyManager.idleFor(workerId);
       if (idleMs === undefined) continue; // PTY already gone; teardownPty cleans up
-      if (idleMs > idleTimeoutMs) {
+      // Silent but waiting on a job it launched (a long test run) is not idle.
+      const hasLiveJob = (): boolean => workerHasLiveJob(ptyManager.list().find((p) => p.id === workerId)?.pid);
+      if (shouldReapIdle(rec, { ptyIdleMs: idleMs, limitMs: idleTimeoutMs, now: Date.now(), hasLiveJob })) {
         rec.releasing = true;
         console.warn(`[worker] reaping idle ${workerId} (${Math.round(idleMs / 60000)}min idle)`);
         informGod(
