@@ -177,6 +177,13 @@ export function planInitFailure(
  *
  *  Kept here, next to the loss policy, and exported so the component asks this
  *  question rather than re-deriving it from two booleans at the call site. */
-export function shouldRunTicker(state: { paused: boolean; contextLost: boolean }): boolean {
-  return !state.paused && !state.contextLost;
+export function shouldRunTicker(state: {
+  paused: boolean;
+  contextLost: boolean;
+  /** The reduced-motion path's "nobody is watching" pause: window unfocused
+   *  past the grace with no agent state change (see officeMotion.ts). Optional
+   *  so the two gates above keep their meaning and their callers unchanged. */
+  unattended?: boolean;
+}): boolean {
+  return !state.paused && !state.contextLost && !state.unattended;
 }

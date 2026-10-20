@@ -437,6 +437,12 @@ the unmasked renderer string names a software backend (SwiftShader, llvmpipe, so
 software GPU (…)` once. The `terminalRenderer` setting (Settings → General → Terminal renderer, or
 `config.json`) controls this: `auto` (default) follows the probe, `dom` always uses the text engine,
 `webgl` always leases the GPU renderer. Unknown renderers count as hardware, so Macs are unchanged.
+The office floor follows the same probe through the `officeMotion` setting (Settings → General →
+Office floor motion): `auto` (default) animates fully on a real GPU and, on a software GPU or when the
+OS asks for reduced motion, caps the Pixi ticker at 15 fps, renders the canvas at 1x instead of ≥2x
+device pixels, and stops the ticker once the window has sat unfocused for 30 s with no agent
+activity. `full` and `reduced` force either path; on WSLg the reduced path cuts the floor's
+rasterisation roughly sixteenfold (frames × pixels per second).
 
 ## Architecture
 

@@ -279,6 +279,9 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
   // Terminal painter (WebGL vs DOM). Staged like every other config setting.
   const [terminalRenderer, setTerminalRenderer] =
     useState<'auto' | 'dom' | 'webgl'>(cfgX.terminalRenderer ?? 'auto');
+  // Office floor motion budget (full vs 15 fps at 1x). Staged the same way.
+  const [officeMotion, setOfficeMotion] =
+    useState<'auto' | 'full' | 'reduced'>(cfgX.officeMotion ?? 'auto');
   const toggleSimpleMode = async () => {
     const next = !simpleMode;
     setSimpleMode(next);
@@ -1090,6 +1093,30 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                               <option value="auto">{t('settings.general.terminalRendererAuto')}</option>
                               <option value="dom">{t('settings.general.terminalRendererDom')}</option>
                               <option value="webgl">{t('settings.general.terminalRendererWebgl')}</option>
+                            </select>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                              <span style={{ fontSize: 13, lineHeight: '20px', color: 'var(--cth-ink-900)' }}>
+                                {t('settings.general.officeMotion')}
+                              </span>
+                              <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>
+                                {t('settings.general.officeMotionDesc')}
+                              </span>
+                            </div>
+                            <select
+                              value={officeMotion}
+                              onChange={(e) => {
+                                const next = e.target.value as 'auto' | 'full' | 'reduced';
+                                setOfficeMotion(next);
+                                stage({ officeMotion: next });
+                              }}
+                              style={slackInputStyle}
+                              aria-label={t('settings.general.officeMotion')}
+                            >
+                              <option value="auto">{t('settings.general.officeMotionAuto')}</option>
+                              <option value="full">{t('settings.general.officeMotionFull')}</option>
+                              <option value="reduced">{t('settings.general.officeMotionReduced')}</option>
                             </select>
                           </div>
                         </div>

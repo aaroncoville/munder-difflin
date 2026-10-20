@@ -344,6 +344,13 @@ export interface HarnessConfig {
    *  (Mirrored in preload + renderer config; decided in
    *  src/renderer/src/components/terminalRenderer.ts.) */
   terminalRenderer?: 'auto' | 'dom' | 'webgl';
+  /** How hard the office floor animates. 'auto' (default) runs the Pixi scene
+   *  at full frame rate and >=2x resolution on a real GPU, and drops to 15 fps
+   *  at 1x (plus a pause once the window has been unfocused for 30 s with no
+   *  agent activity) on a software GPU or when the OS prefers reduced motion.
+   *  'full' / 'reduced' force either way. (Mirrored in preload + renderer
+   *  config; decided in src/renderer/src/scene/office/officeMotion.ts.) */
+  officeMotion?: 'auto' | 'full' | 'reduced';
   /** Per-CLI-provider local/self-hosted base URL (Ollama/LM Studio/vLLM, …) for the
    *  OpenCode/Crush/pi/qwen engines; applied at spawn (config-injection or proxy
    *  upstream). API KEYS are NOT stored here — they live write-only in the secret
@@ -482,6 +489,7 @@ const DEFAULTS: HarnessConfig = {
   tvShowOffices: false,
   officeTheme: 'office',
   terminalRenderer: 'auto',
+  officeMotion: 'auto',
   slackEnabled: false,
   slackSigningSecret: undefined,
   slackBotToken: undefined,

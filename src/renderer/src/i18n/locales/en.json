@@ -252,7 +252,12 @@
       "terminalRendererDesc": "Auto uses the GPU renderer on a real GPU and the browser's text engine when WebGL is software-emulated (WSL2, VMs), where the GPU renderer burns CPU for nothing. Pick one to force it. Applies to open terminals and new ones alike.",
       "terminalRendererAuto": "Auto (detect GPU)",
       "terminalRendererDom": "Text engine (DOM)",
-      "terminalRendererWebgl": "GPU (WebGL)"
+      "terminalRendererWebgl": "GPU (WebGL)",
+      "officeMotion": "Office floor motion",
+      "officeMotionDesc": "Auto animates the floor fully on a real GPU and drops to 15 fps at 1x resolution when WebGL is software-emulated (WSL2, VMs) or the OS asks for reduced motion; reduced also pauses the floor once the window has sat unfocused for 30 s with no agent activity. Pick one to force it.",
+      "officeMotionAuto": "Auto (detect GPU)",
+      "officeMotionFull": "Full",
+      "officeMotionReduced": "Reduced (15 fps, 1x)"
     },
     "agentsModels": {
       "defaultModel": "Default agent model",

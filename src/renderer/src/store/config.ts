@@ -131,6 +131,10 @@ export interface HarnessConfig {
   /** Terminal painter: 'auto' = WebGL on a real GPU, DOM on a software GPU;
    *  'dom' / 'webgl' force it. Mirrors src/main/config.ts. */
   terminalRenderer?: 'auto' | 'dom' | 'webgl';
+  /** Office floor motion: 'auto' = full on a real GPU, 15 fps at 1x on a
+   *  software GPU or with OS reduced motion; 'full' / 'reduced' force it.
+   *  Mirrors src/main/config.ts. */
+  officeMotion?: 'auto' | 'full' | 'reduced';
   /** Per-CLI-provider local/self-hosted base URL (Ollama/LM Studio/vLLM, …) for the
    *  OpenCode/Crush/pi/qwen engines; applied at spawn. API KEYS are NOT stored here —
    *  they live write-only in the secret broker. */

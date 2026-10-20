@@ -28,6 +28,7 @@ import { PixelButton } from '@/components/PixelButton';
 import { Icon } from '@/components/Icon';
 import { SidebarSplitter } from '@/components/SidebarSplitter';
 import { acquireTerminal, applyTerminalRendererPref, notifyThemeChangeAll } from '@/components/terminalPool';
+import { applyOfficeMotionPref } from '@/scene/office/officeMotion';
 import { FullscreenTerminal } from '@/components/FullscreenTerminal';
 import { TaskDetailOverlay } from '@/components/TaskDetailOverlay';
 import { IdePanel } from '@/ide/IdePanel';
@@ -120,6 +121,8 @@ export function App() {
       // Mirror the terminal painter setting into the pool, which decides on
       // attach (synchronously, so it cannot read config itself).
       applyTerminalRendererPref(c.terminalRenderer);
+      // Same for the office floor's motion budget; OfficeFloor subscribes.
+      applyOfficeMotionPref(c.officeMotion);
       // Mirror the triggers so Settings → Connections and the Command Center's
       // Triggers tab read one list, not two copies that drift — whichever surface
       // saves calls these same setters and the other repaints. No extra IPC: main
@@ -150,6 +153,7 @@ export function App() {
   useEffect(() => window.cth.onConfigChanged((c) => {
     setConfig(c);
     applyTerminalRendererPref(c.terminalRenderer);
+    applyOfficeMotionPref(c.officeMotion);
   }), []);
 
   // Quit warning subscription

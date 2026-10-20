@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Application, Container, Graphics, Ticker, Texture } from 'pixi.js';
 // PixiJS uses new Function() internally, blocked by Electron CSP — this patches it.
@@ -17,6 +17,11 @@ import {
   installContextLossRecovery, planInitFailure, shouldRunTicker, DEFAULT_MAX_INIT_RETRIES
 } from './glRecovery';
 import { planFloorRelease } from './floorRelease';
+import {
+  currentOfficeMotion, getOfficeMotionPref, prefersReducedMotion, resolveOfficeMotionMode,
+  subscribeOfficeMotionPref, unattendedPauseDelay, REDUCED_MOTION_MEDIA_QUERY
+} from './officeMotion';
+import { webglRendererInfo } from '@/components/terminalRenderer';
 import type { Tile, Facing, ErrandKind, ErrandSpot } from './themeRegistry';
 
 // The map, tileset atlases, desk-claim order, errand spots, coffee-economy
@@ -229,6 +234,63 @@ export function OfficeFloor() {
     return () => document.removeEventListener('visibilitychange', onVis);
   }, []);
   const paused = !!fullscreenAgentId || ideOpen || docHidden;
+
+  // How hard the floor animates. 'full' is today's behaviour; 'reduced' caps the
+  // ticker at 15 fps and renders at 1x, which is what a software GPU (SwiftShader
+  // on WSL2/WSLg) needs to stop eating cores — see officeMotion.ts. The setting
+  // is mirrored from config by App.tsx; the OS reduced-motion hint is live too.
+  // The MODE is a dep of the mount effect below because the canvas resolution is
+  // fixed at init, so flipping it rebuilds the scene through the one mount path,
+  // the same way a theme change does.
+  const officeMotionPref = useSyncExternalStore(subscribeOfficeMotionPref, getOfficeMotionPref);
+  const [osReducedMotion, setOsReducedMotion] = useState(() => prefersReducedMotion());
+  useEffect(() => {
+    const mq = window.matchMedia?.(REDUCED_MOTION_MEDIA_QUERY);
+    if (!mq) return;
+    const onChange = () => setOsReducedMotion(mq.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+  const motionMode = resolveOfficeMotionMode(
+    officeMotionPref, webglRendererInfo().classification, osReducedMotion);
+
+  // On the reduced path the ticker also stops when nobody can be watching: the
+  // window unfocused for UNATTENDED_GRACE_MS with no agent changing state in
+  // that time. Any agent change while unfocused re-arms the grace, and focus
+  // clears it at once. 'full' never does this — a real GPU keeps today's
+  // behaviour, blur included.
+  const [focused, setFocused] = useState(() => document.hasFocus());
+  useEffect(() => {
+    const onFocus = () => setFocused(true);
+    const onBlur = () => setFocused(false);
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('blur', onBlur);
+    };
+  }, []);
+  const lastAgentChangeAtRef = useRef(Date.now());
+  const [unattended, setUnattended] = useState(false);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const arm = () => {
+      if (timer) { clearTimeout(timer); timer = null; }
+      const delay = unattendedPauseDelay({
+        mode: motionMode, focused, lastAgentChangeAt: lastAgentChangeAtRef.current, now: Date.now()
+      });
+      if (delay === null) { setUnattended(false); return; }
+      timer = setTimeout(() => { timer = null; setUnattended(true); }, delay);
+    };
+    arm();
+    const unsub = useStore.subscribe((s, prev) => {
+      if (s.agents === prev.agents) return;
+      lastAgentChangeAtRef.current = Date.now();
+      setUnattended(false);
+      arm();
+    });
+    return () => { if (timer) clearTimeout(timer); unsub(); };
+  }, [focused, motionMode]);
   // Whether the scene has been torn down because it stayed covered. Deliberately
   // state and not a ref: it is a dependency of the mount effect below, so
   // flipping it is what performs the teardown and the later rebuild, through the
@@ -248,14 +310,16 @@ export function OfficeFloor() {
   // Read inside init(), which finishes asynchronously and would otherwise start a
   // ticker the effect below had already been asked to stop.
   const pausedRef = useRef(paused);
+  const unattendedRef = useRef(unattended);
   useEffect(() => {
     pausedRef.current = paused;
+    unattendedRef.current = unattended;
     const ticker = appRef.current?.ticker;
     if (!ticker) return; // app.init() hasn't created it yet — init() applies it
     // Uncovering the floor is not a reason to draw into a context that is gone.
-    if (shouldRunTicker({ paused, contextLost: contextLostRef.current })) ticker.start();
+    if (shouldRunTicker({ paused, contextLost: contextLostRef.current, unattended })) ticker.start();
     else ticker.stop();
-  }, [paused]);
+  }, [paused, unattended]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -280,22 +344,29 @@ export function OfficeFloor() {
     const init = async () => {
       // Load the active theme bundle (falls back to 'office' on a bad/absent bundle).
       const theme = await loadTheme(officeTheme);
+      // Setting × GPU probe × OS hint → frame cap and resolution (officeMotion.ts).
+      const motion = currentOfficeMotion();
       await app.init({
         background: hexNum(theme.palette.background),
-        antialias: false,
+        antialias: motion.antialias,
         roundPixels: true,
-        // resolution: 1 let the OS/browser upscale the canvas on scaled and
-        // HiDPI displays (125–150% is the Windows laptop default), blurring
-        // everything — worst of all the bubble text, which is small to begin
-        // with. Render at the real device pixel density instead, floored at 2
-        // so the half-scale-supersampled bubble text stays legible even at
-        // 100% scaling. autoDensity keeps the canvas CSS size in logical px.
-        resolution: Math.max(window.devicePixelRatio || 1, 2),
+        // On the full path, resolution: 1 let the OS/browser upscale the canvas
+        // on scaled and HiDPI displays (125–150% is the Windows laptop default),
+        // blurring everything — worst of all the bubble text, which is small to
+        // begin with. So it renders at the real device pixel density, floored
+        // at 2 so the half-scale-supersampled bubble text stays legible even at
+        // 100% scaling (fullMotionResolution). The reduced path renders at 1x:
+        // on a software GPU every device pixel is CPU, and the pixel-art
+        // sprites do not mind. autoDensity keeps the canvas CSS size in logical
+        // px either way.
+        resolution: motion.resolution,
         autoDensity: true,
         width: host.clientWidth || 800,
         height: host.clientHeight || 600,
       });
       if (mountIdRef.current !== mountId) { safeDestroy(app); return; }
+      // 0 is Pixi's own "uncapped"; the reduced path sets REDUCED_MOTION_MAX_FPS.
+      app.ticker.maxFPS = motion.maxFPS;
       while (host.firstChild) host.removeChild(host.firstChild);
       host.appendChild(app.canvas);
 
@@ -1756,7 +1827,9 @@ export function OfficeFloor() {
       // Reaching this point means init() returned a context, so whatever loss
       // brought us here is over.
       contextLostRef.current = false;
-      if (pausedRef.current) app.ticker.stop();
+      if (!shouldRunTicker({ paused: pausedRef.current, contextLost: false, unattended: unattendedRef.current })) {
+        app.ticker.stop();
+      }
 
       const resize = new ResizeObserver((entries) => {
         for (const e of entries) {
@@ -1820,7 +1893,7 @@ export function OfficeFloor() {
       appRef.current = null;
       while (host.firstChild) host.removeChild(host.firstChild);
     };
-  }, [officeTheme, glGeneration, i18n.language, released]);
+  }, [officeTheme, glGeneration, i18n.language, released, motionMode]);
 
   return (
     <div
