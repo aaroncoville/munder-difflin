@@ -271,6 +271,38 @@ test('CLAUDE_CODE_SKIP_PROMPT_HISTORY in the inherited env: stripped for the ses
   });
 });
 
+test('CLAUDE_CODE_SKIP_PROMPT_HISTORY given to the session itself: read from the merged env, hidden from the child, transcript deleted', async () => {
+  let file;
+  onSpawned = (rec) => {
+    assert.equal(rec.opts.env.CLAUDE_CODE_SKIP_PROMPT_HISTORY, undefined, 'the child must not see the flag');
+    assert.equal(rec.opts.env.MEMPALACE_PATH, '/palace', 'the rest of the caller\'s env still lands');
+    file = claudeTranscriptPath(path.join(home, '.claude'), sessionIdOf(rec));
+    writeTranscript(file, [assistant('captured despite the flag')]);
+    exitClean(rec);
+  };
+  const r = await run({ MEMPALACE_PATH: '/palace', CLAUDE_CODE_SKIP_PROMPT_HISTORY: '1' });
+  assert.equal(r.ok, true);
+  assert.equal(r.text, 'captured despite the flag');
+  assert.equal(fs.existsSync(file), false);
+});
+
+test('CLAUDE_CODE_SKIP_PROMPT_HISTORY: the global timeout path deletes the transcript too', async () => {
+  await withEnv({ CLAUDE_CODE_SKIP_PROMPT_HISTORY: '1' }, async () => {
+    let file;
+    onSpawned = (rec) => {
+      // The CLI wrote a transcript but never finished and never exited.
+      file = claudeTranscriptPath(path.join(home, '.claude'), sessionIdOf(rec));
+      writeTranscript(file, [{ type: 'user' }]);
+    };
+    const r = await runHiddenClaude('summarize this', {
+      model: 'claude-haiku-5-5', cwd, bootCapMs: 5, idleMs: 5, timeoutMs: 60
+    });
+    assert.equal(r.ok, false);
+    assert.match(r.error, /hidden session timed out/);
+    assert.equal(fs.existsSync(file), false);
+  });
+});
+
 test('a transcript with no assistant text is reported as such, distinct from one never written', async () => {
   onSpawned = (rec) => {
     writeTranscript(claudeTranscriptPath(path.join(home, '.claude'), sessionIdOf(rec)), [{ type: 'user' }]);
