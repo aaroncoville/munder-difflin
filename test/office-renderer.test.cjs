@@ -93,3 +93,13 @@ test('OfficeFloor passes the preference to init, logs the choice once, and guard
   assert.match(src, /planInitFailure\(err, initRetriesRef\.current, \{ renderer: preference \}\)/,
     'the failure planner must know which renderer was asked for');
 });
+
+test('the study ambiance layer asks Pixi for the same renderer, from the probe alone', () => {
+  const src = strip(read('src/renderer/src/scene/study/AmbianceLayer.tsx'));
+  assert.match(src, /chooseRenderer\('full', webglRendererInfo\(\)\.classification\)/,
+    'the study has no motion setting; the GPU probe is its only input');
+  const i = src.indexOf('application.init({');
+  assert.ok(i > 0);
+  assert.match(src.slice(i, i + 80), /application\.init\(\{\s*preference: renderer\.preference,/);
+  assert.match(src, /describeRendererChoice\('study',/);
+});

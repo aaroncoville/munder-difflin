@@ -32,6 +32,8 @@
  * per resize is the failure mode the office floor has already been bitten by.
  */
 import { useEffect, useRef, useState } from 'react';
+import { webglRendererInfo } from '@/components/terminalRenderer';
+import { chooseRenderer, describeRendererChoice } from '@/scene/office/officeRenderer';
 import type { Room } from './roomManifest';
 import {
   HEARTH_SPREAD, MOTE_CAP, ambianceEnabled, driftMotes, flicker, glowRings, glowsFor,
@@ -46,6 +48,23 @@ const CANDLE = 0xc9a227;
 const HEARTH = 0xb0524e;
 /** The coal under it, hotter than the light it throws. `--cth-peach`. */
 const EMBER = 0xc98a4b;
+
+let rendererLogged = false;
+
+/** Which Pixi renderer to ask for, and the one log line about it. The study
+ *  has no motion setting of its own; reduced motion switches the layer off
+ *  outright (ambianceEnabled), so the only input is the GPU: Canvas2D on a
+ *  software one, where every WebGL draw is SwiftShader work in the GPU
+ *  process (see officeRenderer.ts), WebGL otherwise. Logged once per
+ *  process, not once per room, since a house has ten rooms. */
+function studyRenderer(): ReturnType<typeof chooseRenderer> {
+  return chooseRenderer('full', webglRendererInfo().classification);
+}
+function logStudyRenderer(actual: string, choice: ReturnType<typeof chooseRenderer>): void {
+  if (rendererLogged) return;
+  rendererLogged = true;
+  console.info(describeRendererChoice('study', actual, 'full', choice));
+}
 
 /** Does this machine want less movement? Read once per mount, and re-read on
  *  change, because somebody can turn it on while the app is open. */
@@ -238,7 +257,9 @@ export function AmbianceLayer({ room, view }: AmbianceLayerProps): JSX.Element |
           // `init` is the step after which an Application can be destroyed and
           // before which it cannot, so it is the step the guard runs. An
           // unmount landing in here is held until the line below.
+          const renderer = studyRenderer();
           const wanted = await owned.initialize(() => application.init({
+            preference: renderer.preference,
             width: Math.round(view.w),
             height: Math.round(view.h),
             backgroundAlpha: 0,
@@ -250,6 +271,7 @@ export function AmbianceLayer({ room, view }: AmbianceLayerProps): JSX.Element |
           // now that destroying it is possible, and there is nothing to parent
           // into a detached node.
           if (!wanted) return;
+          logStudyRenderer(application.renderer?.name ?? renderer.preference, renderer);
 
           // Input belongs to the DOM. 'none' is pixi's own opt-out, on top of the
           // host's `pointer-events: none` — the canvas must be invisible to the
