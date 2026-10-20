@@ -128,6 +128,8 @@ export interface HiveTask {
   dependsOn: string[];
   priority: number;
   createdAt: string;
+  /** Last status change, stamped by writeTasks; ages a card that sits in 'doing'. */
+  updatedAt?: string;
   /** First-class human feedback: the god appends {q} when a card can only
    *  proceed with the human's input (status goes blocked); the harness UI
    *  fills in {a}. The full history stays on the card forever. */
@@ -1963,7 +1965,7 @@ export class HiveManager {
     this.ensureHive();
     const path = join(root, 'tasks.json');
     const current = this.readJson<{ tasks?: unknown }>(path, { tasks: [] });
-    const merged = mergeTaskLedger(current?.tasks, tasks);
+    const merged = mergeTaskLedger(current?.tasks, tasks, new Date().toISOString());
     this.writeJson(path, { tasks: merged });
     this.appendLog({ kind: 'tasks', count: merged.length });
     this.commit(`hive: tasks (${merged.length})`);

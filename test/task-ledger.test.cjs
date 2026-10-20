@@ -98,6 +98,53 @@ test('a brand new card is added untouched', () => {
   assert.deepEqual(out[1], fresh);
 });
 
+// ── updatedAt stamping ───────────────────────────────────────────────────────
+// The heartbeat ages a 'doing' card by updatedAt (falling back to createdAt), so
+// a card moved through the UI must carry the time of the move, not of its birth.
+
+const NOW = '2026-10-20T03:00:00.000Z';
+
+test('a status change stamps updatedAt with the write time', () => {
+  const disk = [{ id: 'a', title: 'A', status: 'todo', createdAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-10-01T00:00:00.000Z' }];
+  // The kanban sends the raw card back with only its status changed.
+  const [moved] = mergeTaskLedger(disk, [{ ...disk[0], status: 'doing' }], NOW);
+  assert.equal(moved.updatedAt, NOW);
+});
+
+test('an updatedAt the caller supplies is kept, even alongside a status change', () => {
+  const disk = [{ id: 'a', title: 'A', status: 'todo', updatedAt: '2026-10-01T00:00:00.000Z' }];
+  const supplied = '2026-10-19T12:00:00.000Z';
+  const [moved] = mergeTaskLedger(disk, [{ id: 'a', status: 'doing', updatedAt: supplied }], NOW);
+  assert.equal(moved.updatedAt, supplied);
+});
+
+test('the same status leaves an existing updatedAt alone', () => {
+  const disk = [{ id: 'a', title: 'A', status: 'doing', updatedAt: '2026-10-01T00:00:00.000Z' }];
+  const [same] = mergeTaskLedger(disk, [{ id: 'a', title: 'A renamed', status: 'doing' }], NOW);
+  assert.equal(same.updatedAt, '2026-10-01T00:00:00.000Z');
+});
+
+test('a card without updatedAt gets one', () => {
+  const disk = [{ id: 'old', title: 'Old', status: 'doing', createdAt: '2026-10-01T00:00:00.000Z' }];
+  const [old, fresh] = mergeTaskLedger(disk, [disk[0], { id: 'new', title: 'New', status: 'todo' }], NOW);
+  assert.equal(old.updatedAt, NOW);
+  assert.equal(fresh.updatedAt, NOW);
+});
+
+test('hive.writeTasks stamps a card moved to doing', (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-task-ledger-stamp-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const hive = new HiveManager(() => home);
+  const ledger = () => JSON.parse(fs.readFileSync(path.join(home, 'hive', 'tasks.json'), 'utf8')).tasks;
+
+  const card = { id: 'a', title: 'A', status: 'todo', createdAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-10-01T00:00:00.000Z' };
+  hive.writeTasks([card]);
+  const before = Date.now();
+  hive.writeTasks([{ ...card, status: 'doing' }]);
+  const stamped = Date.parse(ledger()[0].updatedAt);
+  assert.ok(stamped >= before - 1000 && stamped <= Date.now(), `updatedAt ${ledger()[0].updatedAt} is the write time`);
+});
+
 // ── patchTaskInLedger ────────────────────────────────────────────────────────
 
 test('moving a card does not normalize the rest of it', () => {

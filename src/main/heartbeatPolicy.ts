@@ -14,9 +14,10 @@ export interface ReengageInputs {
   /** Whether the floor has gone quiet for at least the mission's
    *  quietThresholdMs (see isFloorQuiet in index.ts). */
   quiet: boolean;
-  /** Count of tasks.json cards with status 'doing'. Only meaningful when
-   *  `quiet` is true and `actionable` is 0 — see doingTaskCount below, whose
-   *  read failures are deliberately biased so this is never a false zero. */
+  /** Count of tasks.json cards with status 'doing' that are not stale. Only
+   *  meaningful when `quiet` is true and `actionable` is 0 — see doingTaskTally
+   *  below, whose read failures are deliberately biased so this is never a
+   *  false zero. */
   doingCount: number;
   /** Heartbeat mission config knob (ScheduledMission.suppressWhenIdle,
    *  default true). true: a quiet floor with nothing 'doing' has nothing for
@@ -37,21 +38,55 @@ export function shouldReengage(inputs: ReengageInputs): boolean {
   return inputs.doingCount > 0;
 }
 
-/** Count of tasks.json cards with status 'doing', read directly from
+/** A 'doing' card whose last update (updatedAt, else createdAt) is older than
+ *  this no longer counts as work in flight. A card left in 'doing' after its
+ *  worker went away would otherwise keep a quiet floor re-engaging god on
+ *  every beat, all night. */
+export const STALE_DOING_MS = 12 * 60 * 60 * 1000;
+
+/** 'doing' cards split by age: `fresh` were updated within STALE_DOING_MS,
+ *  `stale` were not. */
+export interface DoingTally {
+  fresh: number;
+  stale: number;
+}
+
+/** Tally of tasks.json cards with status 'doing', read directly from
  *  `<root>/tasks.json`. A missing root, a missing file, unparsable JSON, or a
- *  `tasks` field that is not an array are all treated as "at least one doing
- *  card" (returns 1) rather than 0 — the read is only ever used to decide
- *  whether a quiet floor is safe to leave alone, so a ledger we cannot trust
- *  must fail toward waking god, never toward silence. An empty-but-valid
+ *  `tasks` field that is not an array are all treated as "one fresh doing
+ *  card" rather than none — the read is only ever used to decide whether a
+ *  quiet floor is safe to leave alone, so a ledger we cannot trust must fail
+ *  toward waking god, never toward silence. For the same reason a card whose
+ *  timestamps are missing or unparsable counts as fresh. An empty-but-valid
  *  tasks array is a genuine, trustworthy zero. */
-export function doingTaskCount(root: string | null): number {
-  if (!root) return 1;
+export function doingTaskTally(root: string | null, now: number = Date.now()): DoingTally {
+  const untrusted = { fresh: 1, stale: 0 };
+  if (!root) return untrusted;
   try {
     const raw = readFileSync(join(root, 'tasks.json'), 'utf8');
     const parsed = JSON.parse(raw) as { tasks?: unknown };
-    if (!Array.isArray(parsed?.tasks)) return 1;
-    return parsed.tasks.filter((t: { status?: unknown }) => t && t.status === 'doing').length;
+    if (!Array.isArray(parsed?.tasks)) return untrusted;
+    const tally = { fresh: 0, stale: 0 };
+    for (const t of parsed.tasks as Array<{ status?: unknown; updatedAt?: unknown; createdAt?: unknown }>) {
+      if (!t || t.status !== 'doing') continue;
+      const at = Date.parse(String(t.updatedAt ?? t.createdAt ?? ''));
+      if (Number.isFinite(at) && now - at > STALE_DOING_MS) tally.stale++;
+      else tally.fresh++;
+    }
+    return tally;
   } catch {
-    return 1;
+    return untrusted;
   }
+}
+
+/** Count of 'doing' cards that still count as work in flight (see
+ *  doingTaskTally). */
+export function doingTaskCount(root: string | null, now: number = Date.now()): number {
+  return doingTaskTally(root, now).fresh;
+}
+
+/** Log reason for a quiet beat that did not re-engage. Stale 'doing' cards get
+ *  their own reason so quiet-no-doing-cards keeps meaning nothing was doing. */
+export function suppressionReason(tally: DoingTally): string {
+  return tally.stale > 0 ? 'quiet-stale-doing-cards' : 'quiet-no-doing-cards';
 }

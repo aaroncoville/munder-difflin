@@ -13,7 +13,7 @@ const vm = require('node:vm');
 const ts = require('typescript');
 const loadTs = require('./load-ts.cjs');
 
-const { shouldReengage } = loadTs('src/main/heartbeatPolicy.ts');
+const { shouldReengage, suppressionReason } = loadTs('src/main/heartbeatPolicy.ts');
 const REPO = path.resolve(__dirname, '..');
 
 function armHeartbeatSource() {
@@ -27,9 +27,8 @@ function armHeartbeatSource() {
 }
 
 /** Run one beat on a floor described by `floor`, and say what it did. */
-function beatOn({ actionable = 0, quiet = true, doing = 0, suppressWhenIdle } = {}) {
+function beatOn({ actionable = 0, quiet = true, doing = 0, stale = 0, suppressWhenIdle, logged = [] } = {}) {
   const reengaged = [];
-  const logged = [];
   let beat = null;
   const ctx = vm.createContext({
     Date, Math, console: { error() {} },
@@ -37,8 +36,9 @@ function beatOn({ actionable = 0, quiet = true, doing = 0, suppressWhenIdle } = 
     missionTimers: new Map(),
     godActionableInboxCount: () => actionable,
     isFloorQuiet: () => quiet,
-    doingTaskCount: () => doing,
+    doingTaskTally: () => ({ fresh: doing, stale }),
     shouldReengage,
+    suppressionReason,
     reengageGod: (digest) => { reengaged.push(digest); },
     buildHeartbeatDigest: () => 'digest',
     looksStuck: () => false,
@@ -68,4 +68,21 @@ test('mail for god re-engages however busy the floor is', () => {
 
 test('turning suppression off restores the old wake on every quiet floor', () => {
   assert.deepEqual(beatOn({ quiet: true, doing: 0, suppressWhenIdle: false }), { reengaged: 1, suppressed: 0 });
+});
+
+test('a quiet floor whose only doing cards are stale is not re-engaged, and the log says why', () => {
+  const logged = [];
+  assert.deepEqual(beatOn({ quiet: true, doing: 0, stale: 2, logged }), { reengaged: 0, suppressed: 1 });
+  assert.equal(logged[0].reason, 'quiet-stale-doing-cards');
+  assert.equal(logged[0].staleDoingCount, 2);
+});
+
+test('a quiet floor with nothing doing at all keeps the quiet-no-doing-cards reason', () => {
+  const logged = [];
+  beatOn({ quiet: true, doing: 0, stale: 0, logged });
+  assert.equal(logged[0].reason, 'quiet-no-doing-cards');
+});
+
+test('a quiet floor with a fresh card beside a stale one is re-engaged', () => {
+  assert.deepEqual(beatOn({ quiet: true, doing: 1, stale: 1 }), { reengaged: 1, suppressed: 0 });
 });

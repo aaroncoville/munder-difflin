@@ -80,9 +80,10 @@ test('atomic add is idempotent and delete removes only the named card', (t) => {
 test('patch refuses an unknown card without rewriting the ledger', (t) => {
   const hive = floor(t);
   hive.writeTasks([card('existing')]);
+  const before = tasks(hive);
 
   assert.equal(hive.patchTask('missing', { status: 'done' }), false);
-  assert.deepEqual(tasks(hive), [card('existing')]);
+  assert.deepEqual(tasks(hive), before);
 });
 
 test('renderer task actions never send a whole stale ledger back to main', () => {
