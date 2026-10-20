@@ -54,6 +54,18 @@ const TRANSCRIPT_RACE_ATTEMPTS = 2;
  *  same file every tick for zero additional shrink. Manual (onlyId) condenses
  *  bypass this, same as they bypass the size/section trigger. */
 const NOT_SMALLER_BACKOFF_GROWTH = 1.1;
+/** Consecutive identical 'summarize-failed' aborts (same agent, same error
+ *  text, file not materially larger) before the autonomous scan stops
+ *  spending a hidden session on that file every tick. Each tick's attempt is
+ *  a hidden `claude` spawn — CPU on a loaded machine plus a model call — and
+ *  a failure that repeats verbatim (transcript never written, trust dialog,
+ *  model unavailable) is not going to come out differently next tick. From
+ *  here the wait doubles per further identical failure, capped below; the
+ *  streak ends on any other outcome, a manual condense, or the file growing
+ *  past NOT_SMALLER_BACKOFF_GROWTH of the size it failed at. */
+const SUMMARIZE_BACKOFF_AFTER = 2;
+/** Ceiling on that wait: 6 h. */
+const SUMMARIZE_BACKOFF_CAP_MS = 6 * 60 * 60 * 1000;
 
 /** The fixed region headings of the bounded memory shape (the stable contract). */
 const PINNED_HEADING = '## 📌 Durable facts (pinned — never condensed)';
@@ -171,20 +183,28 @@ export class MemoryReflector {
    *  autonomous scan (NOT_SMALLER_BACKOFF_GROWTH) until the file has grown
    *  past it by a meaningful margin; cleared on a successful condense. */
   private notSmallerAt = new Map<string, number>();
+  /** agentId -> the running streak of identical 'summarize-failed' aborts: the
+   *  error text, how many ticks in a row produced it, the file size at the
+   *  last one, and the time before which the autonomous scan leaves the file
+   *  alone (SUMMARIZE_BACKOFF_AFTER / SUMMARIZE_BACKOFF_CAP_MS). */
+  private summarizeFailures = new Map<string, { detail: string; count: number; bytes: number; notBefore: number }>();
 
   /**
    * @param getHome      Lazily resolve harnessHome so reflection follows config.
    * @param getCommand   The base `claude` command (only its binary name is used).
    * @param getMemoryEnv Extra env (the shared MemPalace path) merged into the call.
    * @param getSettings  Reflect tunables (interval + thresholds), read each tick.
-   * @param appendLog    Sink for `condense`/`condense-abort` events (hive log.jsonl).
+   * @param appendLog    Sink for `condense`/`condense-abort`/`condense-backoff`
+   *                     events (hive log.jsonl).
+   * @param now          Clock, injectable so the backoff schedule is testable.
    */
   constructor(
     private getHome: () => string | null,
     private getCommand: () => string,
     private getMemoryEnv: () => Record<string, string>,
     private getSettings: () => ReflectSettings,
-    private appendLog: (event: Record<string, unknown>) => void
+    private appendLog: (event: Record<string, unknown>) => void,
+    private now: () => number = Date.now
   ) {}
 
   // — lifecycle (mirrors MemoryManager) —
@@ -238,6 +258,14 @@ export class MemoryReflector {
             const failedAt = this.notSmallerAt.get(id);
             if (typeof failedAt === 'number' && bytes < failedAt * NOT_SMALLER_BACKOFF_GROWTH) {
               results.push({ id, condensed: false, reason: 'not-smaller-backoff', oldBytes: bytes });
+              continue;
+            }
+            // Inside a summarize backoff window, and the file has not grown
+            // enough to be a different case: no hidden session this tick. The
+            // one `condense-backoff` line was written when the window opened.
+            const hold = this.summarizeFailures.get(id);
+            if (hold && this.now() < hold.notBefore && bytes < hold.bytes * NOT_SMALLER_BACKOFF_GROWTH) {
+              results.push({ id, condensed: false, reason: 'summarize-backoff', oldBytes: bytes });
               continue;
             }
           }
@@ -309,9 +337,14 @@ export class MemoryReflector {
     try {
       summary = await this.summarize(home, parsed.condensed, evict, parsed.pinned, maxCondensedBytes);
     } catch (e) {
-      this.logAbort(id, 'summarize-failed', String(e));
+      const detail = String(e);
+      this.logAbort(id, 'summarize-failed', detail);
+      this.backOffSummarize(id, detail, oldBytes, s);
       return { id, condensed: false, reason: 'summarize-failed', oldBytes };
     }
+    // A response came back: whatever happens to it below, the streak of
+    // identical summarize failures is over.
+    this.summarizeFailures.delete(id);
     // Defense-in-depth beyond the prompt contract: a "## " line echoed from the
     // material being summarized would otherwise be re-parsed as a NEW section
     // boundary on the next load, corrupting the 3-region structure (the root
@@ -360,6 +393,29 @@ export class MemoryReflector {
   private logAbort(id: string, reason: string, detail?: string, extra?: Record<string, unknown>): void {
     try { this.appendLog({ kind: 'condense-abort', agentId: id, reason, ...(detail ? { detail } : {}), ...extra }); }
     catch { /* best-effort */ }
+  }
+
+  /** Extend (or start) an agent's streak of identical summarize failures and,
+   *  once it reaches SUMMARIZE_BACKOFF_AFTER, open a backoff window for the
+   *  autonomous scan: one interval, doubling per further identical failure,
+   *  capped at SUMMARIZE_BACKOFF_CAP_MS. Exactly one `condense-backoff` line
+   *  per window, so the log shows the decision rather than a skip per tick. */
+  private backOffSummarize(id: string, detail: string, oldBytes: number, s: ReflectSettings): void {
+    const prev = this.summarizeFailures.get(id);
+    const count = prev && prev.detail === detail ? prev.count + 1 : 1;
+    const entry = { detail, count, bytes: oldBytes, notBefore: 0 };
+    if (count >= SUMMARIZE_BACKOFF_AFTER) {
+      const interval = Math.max(60_000, s.intervalMs);
+      const backoffMs = Math.min(SUMMARIZE_BACKOFF_CAP_MS, interval * 2 ** (count - SUMMARIZE_BACKOFF_AFTER));
+      entry.notBefore = this.now() + backoffMs;
+      try {
+        this.appendLog({
+          kind: 'condense-backoff', agentId: id, reason: 'summarize-failed', detail,
+          failures: count, backoffMs, oldBytes
+        });
+      } catch { /* best-effort */ }
+    }
+    this.summarizeFailures.set(id, entry);
   }
 
   // — the headless LLM call (the only non-deterministic step) —
