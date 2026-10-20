@@ -31,7 +31,7 @@ import { saveAskAttachment } from './askAttachments';
 import { HiveManager, type AgentMeta, type HiveMessage, type HiveTask } from './hive';
 import { HookServer } from './hooks';
 import { CircuitBreaker, type BreakerInput } from './breaker';
-import { shouldReengage, doingTaskCount } from './heartbeatPolicy';
+import { shouldReengage, doingTaskTally, suppressionReason } from './heartbeatPolicy';
 import { CumulativeSampleGate, RunBaseline, snapshotUsageFor, usesCumulativeGate, type UsageProvider } from './usage';
 import { MemoryManager } from './memory';
 import { testHindsightConnection } from './hindsightAdapter';
@@ -1398,18 +1398,20 @@ function armHeartbeat(m: ScheduledMission): void {
       // tasks.json is only read when it can actually change the outcome: a
       // quiet floor, no actionable mail, and the knob on — every other case is
       // decided by actionable/floorQuiet alone, so skip the extra read.
-      const doingCount = (floorQuiet && actionable === 0 && suppressWhenIdle)
-        ? doingTaskCount(hive.root())
-        : 0;
+      const doing = (floorQuiet && actionable === 0 && suppressWhenIdle)
+        ? doingTaskTally(hive.root())
+        : { fresh: 0, stale: 0 };
+      const doingCount = doing.fresh;
       if (shouldReengage({ actionable, quiet: floorQuiet, doingCount, suppressWhenIdle })) {
         reengageGod(buildHeartbeatDigest(quiet, actionable));
         next = Math.round(base * 2.5);            // back off after re-engaging
       } else if (floorQuiet) {
         // Would have re-engaged under the old (pre-suppressWhenIdle) semantics —
         // the floor is quiet and there is no actionable mail — but nothing is
-        // 'doing', so there is nothing here for god to review. Stay quiet and
-        // re-arm on the normal cadence (no back-off: this beat did nothing).
-        hive.appendLog({ kind: 'heartbeat-suppressed', reason: 'quiet-no-doing-cards', actionable, doingCount });
+        // 'doing' (or every 'doing' card is stale), so there is nothing here for
+        // god to review. Stay quiet and re-arm on the normal cadence (no
+        // back-off: this beat did nothing).
+        hive.appendLog({ kind: 'heartbeat-suppressed', reason: suppressionReason(doing), actionable, doingCount, staleDoingCount: doing.stale });
       } else if (looksStuck(quiet)) {
         next = Math.max(30_000, Math.round(base / 4)); // tighten when an agent is wedged
       }

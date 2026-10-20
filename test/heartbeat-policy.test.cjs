@@ -15,7 +15,9 @@ const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 
-const { shouldReengage, doingTaskCount } = loadTs('src/main/heartbeatPolicy.ts');
+const {
+  shouldReengage, doingTaskCount, doingTaskTally, suppressionReason, STALE_DOING_MS
+} = loadTs('src/main/heartbeatPolicy.ts');
 
 function tmpRoot(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-heartbeat-policy-'));
@@ -94,4 +96,80 @@ test('a malformed tasks.json (tasks is not an array) fails toward "has doing car
 
 test('a null hive root (hive disabled) fails toward "has doing cards"', () => {
   assert.equal(doingTaskCount(null) > 0, true);
+});
+
+// ─── stale doing cards ─────────────────────────────────────────────────────
+
+const HOUR = 60 * 60 * 1000;
+const NOW = Date.parse('2026-10-20T12:00:00.000Z');
+const hoursAgo = (h) => new Date(NOW - h * HOUR).toISOString();
+
+test('a doing card is stale after 12 hours without an update', () => {
+  assert.equal(STALE_DOING_MS, 12 * HOUR);
+});
+
+test('a freshly updated doing card still counts as active', (t) => {
+  const root = tmpRoot(t);
+  writeTasks(root, [{ id: '1', status: 'doing', createdAt: hoursAgo(30), updatedAt: hoursAgo(1) }]);
+  assert.deepEqual(doingTaskTally(root, NOW), { fresh: 1, stale: 0 });
+  assert.equal(doingTaskCount(root, NOW), 1);
+});
+
+test('a doing card last updated 13 hours ago no longer counts as active', (t) => {
+  const root = tmpRoot(t);
+  writeTasks(root, [{ id: '1', status: 'doing', createdAt: hoursAgo(20), updatedAt: hoursAgo(13) }]);
+  assert.deepEqual(doingTaskTally(root, NOW), { fresh: 0, stale: 1 });
+  assert.equal(doingTaskCount(root, NOW), 0);
+});
+
+test('one fresh plus one stale doing card still counts as active', (t) => {
+  const root = tmpRoot(t);
+  writeTasks(root, [
+    { id: '1', status: 'doing', createdAt: hoursAgo(2), updatedAt: hoursAgo(2) },
+    { id: '2', status: 'doing', createdAt: hoursAgo(40), updatedAt: hoursAgo(13) }
+  ]);
+  assert.deepEqual(doingTaskTally(root, NOW), { fresh: 1, stale: 1 });
+  assert.equal(doingTaskCount(root, NOW), 1);
+});
+
+test('a doing card with no updatedAt is aged by createdAt', (t) => {
+  const root = tmpRoot(t);
+  writeTasks(root, [
+    { id: '1', status: 'doing', createdAt: hoursAgo(13) },
+    { id: '2', status: 'doing', createdAt: hoursAgo(1) }
+  ]);
+  assert.deepEqual(doingTaskTally(root, NOW), { fresh: 1, stale: 1 });
+});
+
+test('a doing card with no readable timestamp counts as active, never as stale', (t) => {
+  const root = tmpRoot(t);
+  writeTasks(root, [
+    { id: '1', status: 'doing' },
+    { id: '2', status: 'doing', updatedAt: 'not a date' }
+  ]);
+  assert.deepEqual(doingTaskTally(root, NOW), { fresh: 2, stale: 0 });
+});
+
+test('stale cards in other statuses are ignored', (t) => {
+  const root = tmpRoot(t);
+  writeTasks(root, [
+    { id: '1', status: 'todo', updatedAt: hoursAgo(50) },
+    { id: '2', status: 'blocked', updatedAt: hoursAgo(50) }
+  ]);
+  assert.deepEqual(doingTaskTally(root, NOW), { fresh: 0, stale: 0 });
+});
+
+test('an untrustworthy ledger tallies as one fresh doing card', (t) => {
+  const root = tmpRoot(t);
+  assert.deepEqual(doingTaskTally(root, NOW), { fresh: 1, stale: 0 });
+  assert.deepEqual(doingTaskTally(null, NOW), { fresh: 1, stale: 0 });
+});
+
+test('suppression reason keeps quiet-no-doing-cards for a floor with nothing doing', () => {
+  assert.equal(suppressionReason({ fresh: 0, stale: 0 }), 'quiet-no-doing-cards');
+});
+
+test('suppression reason names stale doing cards when only stale cards are doing', () => {
+  assert.equal(suppressionReason({ fresh: 0, stale: 1 }), 'quiet-stale-doing-cards');
+  assert.equal(suppressionReason({ fresh: 0, stale: 3 }), 'quiet-stale-doing-cards');
 });
