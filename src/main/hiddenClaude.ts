@@ -161,14 +161,21 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
       PATH: userShellPath(),
       ...(opts.env ?? {})
     };
-    // CLAUDE_CODE_SKIP_PROMPT_HISTORY is the operator's choice, but it is on
-    // the strip list above: the hidden session's whole output IS its
-    // transcript, so with the flag in force the session cannot work at all.
-    // Honour the intent the other way round instead — when the inherited env
-    // carried the flag, the transcript is deleted as soon as it has been read
-    // (and again after the kill grace, in case the dying CLI flushes a last
-    // record), so no prompt history of this session is left on disk.
-    const discardTranscript = Boolean(process.env.CLAUDE_CODE_SKIP_PROMPT_HISTORY);
+    // CLAUDE_CODE_SKIP_PROMPT_HISTORY is the operator's choice, whichever
+    // layer it came from (the inherited env, or the caller's own), but the
+    // hidden session's whole output IS its transcript, so with the flag in
+    // force the session cannot work at all. It is read from the merged layers
+    // as they were BEFORE the strip (the denylist above has already taken the
+    // inherited copy out of `env`; the caller's copy, layered on top, is still
+    // there), then removed from what the child sees, and the intent is
+    // honoured the other way round: the transcript is deleted on every finish
+    // path (answer captured, no answer, trust dialog, timeout) — and again
+    // after the kill grace, in case the dying CLI flushes a last record — so
+    // no prompt history of this session is left on disk.
+    const discardTranscript = Boolean(
+      opts.env?.CLAUDE_CODE_SKIP_PROMPT_HISTORY ?? process.env.CLAUDE_CODE_SKIP_PROMPT_HISTORY
+    );
+    delete env.CLAUDE_CODE_SKIP_PROMPT_HISTORY;
     const transcriptPath = () => hiddenTranscriptPath(opts.cwd, sessionId, env);
     const discardTranscriptNow = () => {
       if (!discardTranscript) return;
@@ -227,12 +234,14 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
       clearTimeout(bootMaxTimer);
       clearTimeout(globalTimer);
       kill();
+      // Every way out passes here, the global timeout included.
+      discardTranscriptNow();
       resolve(r);
     };
 
     const captureAndFinish = () => {
       const text = extractLastAssistantText(opts.cwd, sessionId, env);
-      if (text) { finish({ ok: true, text }); discardTranscriptNow(); return; }
+      if (text) { finish({ ok: true, text }); return; }
       // A cwd the CLI has never been trusted in blocks on the workspace-trust
       // dialog forever — it renders as ordinary boot output, so the boot-quiet
       // heuristic reads it as "ready" and sends the prompt into a menu that
@@ -251,7 +260,6 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
         ? 'workspace trust dialog blocked the session (cwd is not a trusted Claude Code directory)'
         : `no assistant response found in transcript (${written ? 'transcript has no assistant text' : 'transcript file was never written'})`;
       finish({ ok: false, error });
-      discardTranscriptNow();
     };
 
     const sendPrompt = () => {

@@ -355,14 +355,33 @@ export class PtyManager {
 
   /** The default/fallback output sink — set to the PRIMARY window. Used only for
    *  sessions with no recorded owner; owned sessions route to their owner. */
-  attachWebContents(wc: WebContents) {
+  attachWebContents(wc: WebContents | null) {
     this.webContents = wc;
   }
 
   /** The sink an owner-less session's output goes to (see safeSend) — what a
-   *  relaunch notification for such a session must target as well. */
+   *  relaunch notification for such a session must target as well. Null once
+   *  that window is destroyed: a stale sink is no sink. */
   attachedWebContents(): WebContents | null {
-    return this.webContents;
+    const wc = this.webContents;
+    return wc && !wc.isDestroyed() ? wc : null;
+  }
+
+  /** The environment a spawn with these options hands its child: the
+   *  inherited env minus the parent Claude session's identity, the user-shell
+   *  PATH (plus the hive runtime), the app's defaults, then the per-agent
+   *  values. Public so a caller that must look where THIS child will look
+   *  (resume seeding into its config dir) sees exactly the child's env. */
+  envFor(opts: Pick<SpawnOptions, 'env'>): Record<string, string> {
+    // Build a user-shell PATH so child can resolve subprocess deps. Cached
+    // for the session (shellEnv.userShellPath, fenced against rc-file noise) —
+    // the interactive-shell launch it replaces cost ~1s of main-thread freeze
+    // on EVERY spawn.
+    const userPath = withHiveRuntimeFallback(
+      process.platform === 'win32' ? (process.env.PATH || '') : userShellPath(),
+      opts.env?.HIVE_ROOT
+    );
+    return buildPtyEnv(process.env, userPath, opts.env);
   }
 
   /** Count live PTYs owned by a given window — used to scope a floor's
@@ -583,14 +602,7 @@ export class PtyManager {
     }
     const resolved = this.resolveCommand(opts.command).path;
     try {
-      // Build a user-shell PATH so child can resolve subprocess deps. Cached
-      // for the session (shellEnv.userShellPath, fenced against rc-file noise) —
-      // the interactive-shell launch it replaces cost ~1s of main-thread freeze
-      // on EVERY spawn.
-      const userPath = withHiveRuntimeFallback(
-        process.platform === 'win32' ? (process.env.PATH || '') : userShellPath(),
-        opts.env?.HIVE_ROOT
-      );
+      const env = this.envFor(opts);
 
       // On Windows, .cmd/.bat files (and extensionless shims) cannot be executed
       // directly by CreateProcess — only .exe/.com can. Two ways out, in order of
@@ -690,7 +702,7 @@ export class PtyManager {
         // Inherited env minus the parent Claude session's identity markers,
         // then the app's defaults and locale, then per-agent values — see
         // ptyEnv.ts for why the strip exists and why it is prefix-based.
-        env: buildPtyEnv(process.env, userPath, opts.env)
+        env
       });
 
       // Capture THIS session object so the proc's callbacks can tell whether the

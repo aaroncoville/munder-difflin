@@ -43,6 +43,7 @@ import {
 } from './terminalAutomation';
 import { sanitizeTerminalSelection } from './terminalSelection';
 import { terminalKeySequence } from './terminalKeys';
+import { attachInputSourceTracker } from './terminalInputSource';
 import '@xterm/xterm/css/xterm.css';
 
 export interface TerminalEntry {
@@ -162,6 +163,9 @@ export function acquireTerminal(ptyId: string, theme?: ThemeMap, fontSize = 14):
   term.loadAddon(new Unicode11Addon());
   term.unicode.activeVersion = '11';
   registerMarkdownLinkProvider(term, ptyId);
+  // Tells a person's keystrokes and pastes apart from the terminal's own
+  // replies to a CLI's startup probes, for the write source (see onData).
+  const inputSource = attachInputSourceTracker(term);
   // NOTE: don't open() yet — xterm needs its host connected to the document to
   // measure correctly. We open on first attach (see attachTerminal).
 
@@ -250,6 +254,7 @@ export function acquireTerminal(ptyId: string, theme?: ThemeMap, fontSize = 14):
    *  Falls back to the async read if the sync bridge is unavailable (an older
    *  preload), so this degrades to the previous behaviour rather than to nothing. */
   const pasteClipboard = (): void => {
+    inputSource.notePaste();
     if (entry.exited) return;
     try {
       const text = window.cth.readClipboardSync?.();
@@ -267,7 +272,8 @@ export function acquireTerminal(ptyId: string, theme?: ThemeMap, fontSize = 14):
     // below already use.
     const seq = terminalKeySequence(ev);
     if (seq !== null) {
-      if (!entry.exited) window.cth.writePty(ptyId, seq);
+      // A keydown writing its own sequence bypasses onData: it is a person.
+      if (!entry.exited) window.cth.writePty(ptyId, seq, 'user');
       ev.preventDefault();
       return false;
     }
@@ -350,9 +356,10 @@ export function acquireTerminal(ptyId: string, theme?: ThemeMap, fontSize = 14):
   // path resets it too.
   term.onData((data) => {
     if (entry.exited) return;
-    // The one write that is a person typing: main uses it to tell a PTY in
-    // use from one that died on launch (spawnRetry.ts).
-    window.cth.writePty(ptyId, data, 'user');
+    // 'user' for a keystroke or a paste, 'auto' for the terminal's own replies
+    // to a CLI's startup probes (see terminalInputSource.ts): main uses it to
+    // tell a PTY somebody has used from one that died on launch (spawnRetry.ts).
+    window.cth.writePty(ptyId, data, inputSource.consume(data));
     // A lone Escape or Ctrl-C closes interactive pickers. Arrow-key escape
     // sequences must NOT clear the block while the user navigates a picker.
     if (data === '\x1b' || data === '\x03') {

@@ -45,12 +45,12 @@ function fixture(sections) {
 
 /** A fresh reflector over a fresh temp home, with a scripted hidden session,
  *  a captured log, and a clock the test moves by hand. */
-function harness() {
+function harness({ sectionBytes = 300 } = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-reflect-backoff-'));
   const dir = path.join(home, 'hive', 'agents', 'god');
   fs.mkdirSync(dir, { recursive: true });
   const mem = path.join(dir, 'memory.md');
-  fs.writeFileSync(mem, fixture([section('old one', 300), section('old two', 300), section('newest', 300)]), 'utf8');
+  fs.writeFileSync(mem, fixture([section('old one', sectionBytes), section('old two', sectionBytes), section('newest', sectionBytes)]), 'utf8');
 
   const state = { calls: 0, respond: NO_RESPONSE, now: 1_800_000_000_000, log: [] };
   loadTs.reset();
@@ -178,8 +178,31 @@ test('a manual condense ignores the window', async () => {
   assert.equal(state.calls, calls + 2, 'the manual call spawned its hidden session');
 });
 
-test('a file that grew past the size it failed at gets a fresh try inside the window, and the streak starts over', async () => {
-  const { state, mem, tick, backoffs } = harness();
+// ── growth and the streak ────────────────────────────────────────────────
+// A ~64 KiB fixture, so the reset threshold max(25%, 16 KiB) is ~16 KiB: a
+// representative memory.md, where a 6 KiB gain is a busy hour and a 20 KiB
+// gain is a materially different condense.
+const KIB = 1024;
+const BIG = { sectionBytes: 21_500 }; // 3 sections → ~64 KiB
+const ERR_PARSE_RACE = { ok: false, error: 'no assistant response found in transcript (transcript has no assistant text)' };
+
+test('a 6 KiB gain on a 64 KiB file does NOT reset the streak: still backed off', async () => {
+  const { state, mem, tick, backoffs } = harness(BIG);
+  state.respond = ERR_PARSE_RACE; // a content-dependent failure
+  await tick();
+  state.now += INTERVAL;
+  await tick();
+  assert.equal(backoffs().length, 1);
+  state.now += MIN;
+  fs.appendFileSync(mem, section('a busy hour', 6 * KIB), 'utf8');
+  const calls = state.calls;
+  assert.equal((await tick()).reason, 'summarize-backoff');
+  assert.equal(state.calls, calls, 'no hidden session spent on a trickle of growth');
+});
+
+test('a 20 KiB gain on a 64 KiB file resets the streak inside the window: a fresh try, counted from one', async () => {
+  const { state, mem, tick, backoffs } = harness(BIG);
+  state.respond = ERR_PARSE_RACE;
   await tick();
   state.now += INTERVAL;
   await tick();
@@ -187,8 +210,7 @@ test('a file that grew past the size it failed at gets a fresh try inside the wi
   state.now += MIN;
   assert.equal((await tick()).reason, 'summarize-backoff');
 
-  // More than NOT_SMALLER_BACKOFF_GROWTH (10%) larger than the failing size.
-  fs.appendFileSync(mem, section('a lot more', 400), 'utf8');
+  fs.appendFileSync(mem, section('a lot more', 20 * KIB), 'utf8');
   const calls = state.calls;
   let r = await tick();
   assert.equal(r.reason, 'summarize-failed');
@@ -207,10 +229,10 @@ test('a file that grew past the size it failed at gets a fresh try inside the wi
 });
 
 test('growth resets a one-failure streak too (no window open yet)', async () => {
-  const { state, mem, tick, backoffs } = harness();
+  const { state, mem, tick, backoffs } = harness(BIG);
+  state.respond = ERR_PARSE_RACE;
   await tick(); // count one, notBefore 0
-  // More than 10% larger than the failing size.
-  fs.appendFileSync(mem, section('a lot more', 400), 'utf8');
+  fs.appendFileSync(mem, section('a lot more', 20 * KIB), 'utf8');
   state.now += INTERVAL;
   assert.equal((await tick()).reason, 'summarize-failed');
   // Without the reset this second identical failure would be the streak's
@@ -223,13 +245,14 @@ test('growth resets a one-failure streak too (no window open yet)', async () => 
 });
 
 test('growth resets a streak whose window has already expired', async () => {
-  const { state, mem, tick, backoffs } = harness();
+  const { state, mem, tick, backoffs } = harness(BIG);
+  state.respond = ERR_PARSE_RACE;
   await tick();
   state.now += INTERVAL;
   await tick();
   assert.equal(backoffs().length, 1); // window: one interval
   state.now += 2 * INTERVAL; // well past it
-  fs.appendFileSync(mem, section('a lot more', 400), 'utf8');
+  fs.appendFileSync(mem, section('a lot more', 20 * KIB), 'utf8');
   assert.equal((await tick()).reason, 'summarize-failed');
   // Without the reset this would be failure three (a 2-interval window);
   // with it, the first of a new streak: no new line.
@@ -239,6 +262,26 @@ test('growth resets a streak whose window has already expired', async () => {
   assert.equal(backoffs().length, 2);
   assert.equal(backoffs()[1].failures, 2);
   assert.equal(backoffs()[1].backoffMs, INTERVAL);
+});
+
+test('a content-independent failure (trust dialog, transcript never written) keeps its streak through any growth', async () => {
+  for (const respond of [TRUST_DIALOG, NO_RESPONSE]) {
+    const { state, mem, tick, backoffs } = harness(BIG);
+    state.respond = respond;
+    await tick();
+    state.now += INTERVAL;
+    await tick();
+    assert.equal(backoffs().length, 1);
+    state.now += MIN;
+    fs.appendFileSync(mem, section('a lot more', 20 * KIB), 'utf8');
+    const calls = state.calls;
+    assert.equal((await tick()).reason, 'summarize-backoff', respond.error);
+    assert.equal(state.calls, calls, 'a bigger payload cannot fix a session that never writes a transcript');
+    // And once the window passes, the streak continues (failure three), not restarts.
+    state.now += INTERVAL;
+    assert.equal((await tick()).reason, 'summarize-failed');
+    assert.equal(backoffs()[backoffs().length - 1].failures, 3);
+  }
 });
 
 test('a response that exists but breaks the frame is "bad-framing": no backoff, and it ends a no-response streak', async () => {
