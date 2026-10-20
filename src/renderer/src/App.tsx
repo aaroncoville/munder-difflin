@@ -27,7 +27,7 @@ import { PixelPanel } from '@/components/PixelPanel';
 import { PixelButton } from '@/components/PixelButton';
 import { Icon } from '@/components/Icon';
 import { SidebarSplitter } from '@/components/SidebarSplitter';
-import { acquireTerminal, notifyThemeChangeAll } from '@/components/terminalPool';
+import { acquireTerminal, applyTerminalRendererPref, notifyThemeChangeAll } from '@/components/terminalPool';
 import { FullscreenTerminal } from '@/components/FullscreenTerminal';
 import { TaskDetailOverlay } from '@/components/TaskDetailOverlay';
 import { IdePanel } from '@/ide/IdePanel';
@@ -117,6 +117,9 @@ export function App() {
       // Mirror the active office theme so OfficeFloor renders it (gated on the
       // tvShowOffices flag; off = always the office). Settings keeps this synced.
       useStore.getState().setOfficeTheme(c.tvShowOffices ? (c.officeTheme ?? 'office') : 'office');
+      // Mirror the terminal painter setting into the pool, which decides on
+      // attach (synchronously, so it cannot read config itself).
+      applyTerminalRendererPref(c.terminalRenderer);
       // Mirror the triggers so Settings → Connections and the Command Center's
       // Triggers tab read one list, not two copies that drift — whichever surface
       // saves calls these same setters and the other repaints. No extra IPC: main
@@ -144,7 +147,10 @@ export function App() {
 
   // Config subscription — the copy loaded above would otherwise go stale the
   // moment anything saves a setting.
-  useEffect(() => window.cth.onConfigChanged(setConfig), []);
+  useEffect(() => window.cth.onConfigChanged((c) => {
+    setConfig(c);
+    applyTerminalRendererPref(c.terminalRenderer);
+  }), []);
 
   // Quit warning subscription
   useEffect(() => window.cth.onCloseRequested((info) => setQuitWarn(info)), []);

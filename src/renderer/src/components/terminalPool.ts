@@ -22,6 +22,9 @@ import { arabicJoinRanges } from '@/terminal/arabicJoiner';
 import { attachArabicSpacingFix } from '@/terminal/arabicSpacingFix';
 import { isArabicTerminalEnabled } from '@/terminal/arabicSetting';
 import {
+  setTerminalRendererPref, wantsWebglRenderer, type TerminalRendererPref
+} from './terminalRenderer';
+import {
   classifyPathToken, isPathToken, stripPathToken, terminalLinkSpans, type PathAction
 } from '@shared/terminalPaths';
 import {
@@ -598,6 +601,12 @@ function leaseWebglRenderer(entry: TerminalEntry): void {
   // (xterm.js has no bidi: xtermjs/xterm.js#701). Skipping the lease IS the
   // feature, not a fallback.
   if (isArabicTerminalEnabled()) return;
+  // Software GPU (SwiftShader on WSL2/WSLg, llvmpipe in a VM) or the user's
+  // 'dom' setting: the DOM renderer is the cheap one there, so skipping the
+  // lease is the point. terminalRenderer.ts owns the probe and logs the skip
+  // once. xterm paints with its DOM renderer whenever no addon is loaded, which
+  // is the same path every fallback above already takes.
+  if (!wantsWebglRenderer()) return;
   try {
     const webgl = new WebglAddon();
     webgl.onContextLoss(() => {
@@ -750,6 +759,42 @@ export function notifyArabicTerminalChangeAll(): void {
   }
   console.log(`[terminal] arabic -> ${want ? 'on' : 'off'}: `
     + `${changed.length}/${open.length} open terminal(s) switched`);
+}
+
+/** Apply the `terminalRenderer` setting (App.tsx mirrors it from config on load
+ *  and on every save) and, when it changed, move the open terminals over.
+ *
+ *  Same shape as the Arabic switch above: upgrade in place, never rebuild, since
+ *  the scrollback lives only in xterm's buffer. Dropping to the DOM renderer
+ *  releases the lease on every open terminal. Going the other way re-leases
+ *  only the terminals that are ON SCREEN (host in the document) — an off-screen
+ *  one gets its lease on the next attach, as always, so a change of setting can
+ *  never blow Chromium's live-context cap. */
+export function applyTerminalRendererPref(pref: TerminalRendererPref | undefined): void {
+  if (!setTerminalRendererPref(pref)) return;
+  notifyTerminalRendererChangeAll();
+}
+
+export function notifyTerminalRendererChangeAll(): void {
+  const want = wantsWebglRenderer();
+  const open = [...pool.values()].filter((e) => e.opened && !e.exited);
+  let switched = 0;
+  for (const entry of open) {
+    if (!want && entry.webgl) {
+      releaseWebglRenderer(entry);
+      repaintTerminalAfterRendererLoss(entry);
+      switched++;
+    } else if (want && !entry.webgl && entry.host.isConnected) {
+      leaseWebglRenderer(entry);
+      if (entry.webgl) {
+        entry.needsRendererRepaint = true;
+        repaintTerminalAfterRendererLoss(entry);
+        switched++;
+      }
+    }
+  }
+  console.log(`[terminal] renderer -> ${want ? 'webgl' : 'dom'}: `
+    + `${switched}/${open.length} open terminal(s) switched`);
 }
 
 /** Re-parent a pty's terminal into `container`, opening xterm on first attach. */

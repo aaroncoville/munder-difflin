@@ -276,6 +276,9 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
     setArabicTerminal(isArabicTerminalEnabled());
     setArabicFollowsLanguage(isArabicTerminalFollowingLanguage());
   }, [i18n.language]);
+  // Terminal painter (WebGL vs DOM). Staged like every other config setting.
+  const [terminalRenderer, setTerminalRenderer] =
+    useState<'auto' | 'dom' | 'webgl'>(cfgX.terminalRenderer ?? 'auto');
   const toggleSimpleMode = async () => {
     const next = !simpleMode;
     setSimpleMode(next);
@@ -1064,6 +1067,30 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                             >
                               {arabicTerminal ? t('common.on') : t('common.off')}
                             </PixelButton>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                              <span style={{ fontSize: 13, lineHeight: '20px', color: 'var(--cth-ink-900)' }}>
+                                {t('settings.general.terminalRenderer')}
+                              </span>
+                              <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>
+                                {t('settings.general.terminalRendererDesc')}
+                              </span>
+                            </div>
+                            <select
+                              value={terminalRenderer}
+                              onChange={(e) => {
+                                const next = e.target.value as 'auto' | 'dom' | 'webgl';
+                                setTerminalRenderer(next);
+                                stage({ terminalRenderer: next });
+                              }}
+                              style={slackInputStyle}
+                              aria-label={t('settings.general.terminalRenderer')}
+                            >
+                              <option value="auto">{t('settings.general.terminalRendererAuto')}</option>
+                              <option value="dom">{t('settings.general.terminalRendererDom')}</option>
+                              <option value="webgl">{t('settings.general.terminalRendererWebgl')}</option>
+                            </select>
                           </div>
                         </div>
                       </div>

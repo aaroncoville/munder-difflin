@@ -247,7 +247,12 @@
       "resetStartOver": "reset & start over",
       "arabicTerminal": "Arabic / RTL text in terminals",
       "arabicTerminalDesc": "Renders terminals with the browser's text engine so Arabic joins and reads right-to-left (xterm has no bidi of its own). Off is the GPU renderer: faster, but RTL-blind. Applies to open terminals and new ones alike.",
-      "arabicTerminalFollowsLanguage": "Following your app language. Switch it here to override that either way — the choice sticks even if you change language again."
+      "arabicTerminalFollowsLanguage": "Following your app language. Switch it here to override that either way — the choice sticks even if you change language again.",
+      "terminalRenderer": "Terminal renderer",
+      "terminalRendererDesc": "Auto uses the GPU renderer on a real GPU and the browser's text engine when WebGL is software-emulated (WSL2, VMs), where the GPU renderer burns CPU for nothing. Pick one to force it. Applies to open terminals and new ones alike.",
+      "terminalRendererAuto": "Auto (detect GPU)",
+      "terminalRendererDom": "Text engine (DOM)",
+      "terminalRendererWebgl": "GPU (WebGL)"
     },
     "agentsModels": {
       "defaultModel": "Default agent model",

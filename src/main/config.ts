@@ -337,6 +337,13 @@ export interface HarnessConfig {
    *  `tvShowOffices` is on; otherwise the office theme is used. Unbuilt show
    *  themes fall back to 'office' in the loader. */
   officeTheme?: 'office' | 'friends' | 'brooklyn99' | 'siliconvalley' | 'got' | 'hogwarts';
+  /** Which painter xterm uses for terminals. 'auto' (default) leases the WebGL
+   *  renderer only when the renderer process finds a real GPU behind WebGL;
+   *  on a software GPU (SwiftShader/llvmpipe — WSL2, VMs) it keeps the DOM
+   *  renderer, which is far cheaper there. 'dom' / 'webgl' force either way.
+   *  (Mirrored in preload + renderer config; decided in
+   *  src/renderer/src/components/terminalRenderer.ts.) */
+  terminalRenderer?: 'auto' | 'dom' | 'webgl';
   /** Per-CLI-provider local/self-hosted base URL (Ollama/LM Studio/vLLM, …) for the
    *  OpenCode/Crush/pi/qwen engines; applied at spawn (config-injection or proxy
    *  upstream). API KEYS are NOT stored here — they live write-only in the secret
@@ -474,6 +481,7 @@ const DEFAULTS: HarnessConfig = {
   multiWindow: true,
   tvShowOffices: false,
   officeTheme: 'office',
+  terminalRenderer: 'auto',
   slackEnabled: false,
   slackSigningSecret: undefined,
   slackBotToken: undefined,
