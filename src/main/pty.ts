@@ -46,6 +46,9 @@ export interface PtyExitInfo {
   tail?: string;
   command?: string;
   cwd?: string;
+  /** ms between the spawn and the exit — a death inside the first couple of
+   *  seconds is a launch that never got going, not a session that failed. */
+  uptimeMs?: number;
 }
 
 interface PtySession {
@@ -53,6 +56,8 @@ interface PtySession {
   proc: pty.IPty;
   cwd: string;
   command: string;
+  /** Epoch ms of the spawn, for the exit handler's uptime. */
+  spawnedAt: number;
   /** The window (webContents) that spawned this PTY and should receive its
    *  output. Multi-window: each floor owns its own terminals, so `pty:data:<id>`
    *  / `pty:exit:<id>` route ONLY here — never broadcast — so one floor's stream
@@ -685,6 +690,7 @@ export class PtyManager {
         proc,
         cwd: opts.cwd,
         command: resolved,
+        spawnedAt: Date.now(),
         lastOutputAt: Date.now(),
         hasOutput: false,
         tail: '',
@@ -724,7 +730,8 @@ export class PtyManager {
             signal,
             tail: session.tail,
             command: session.command,
-            cwd: session.cwd
+            cwd: session.cwd,
+            uptimeMs: Math.max(0, Date.now() - session.spawnedAt)
           });
         } catch { /* never throw out of onExit */ }
       });
