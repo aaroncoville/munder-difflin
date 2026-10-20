@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Application, Container, Graphics, Ticker } from 'pixi.js';
+import { Application, Container, Graphics, Ticker, UPDATE_PRIORITY } from 'pixi.js';
 // PixiJS uses new Function() internally, blocked by Electron CSP — this patches it.
 import 'pixi.js/unsafe-eval';
 import { useStore, type Agent } from '@/store/store';
@@ -14,12 +14,16 @@ import { pickSoloLine, pickExchange, type BreakSpot } from './cafeteriaLines';
 import { colors } from '@/design/tokens';
 import { loadTheme, resolveThemeMap, themeTilesetUrls } from './themeLoader';
 import {
-  installContextLossRecovery, planInitFailure, shouldRunTicker, DEFAULT_MAX_INIT_RETRIES
+  installContextLossRecovery, planInitFailure, shouldRunTicker, usesWebglContext, DEFAULT_MAX_INIT_RETRIES
 } from './glRecovery';
 import { planFloorRelease } from './floorRelease';
 import {
   createOfficeMotionGate, currentOfficeMotion, REDUCED_MOTION_MEDIA_QUERY, type OfficeMotionGate
 } from './officeMotion';
+import { chooseRenderer, describeRendererChoice, type PixiRendererPreference } from './officeRenderer';
+import { createRenderOnChange, sceneChangedSinceRender } from './renderOnChange';
+import { useWindowShown } from '@/scene/windowShown';
+import { webglRendererInfo } from '@/components/terminalRenderer';
 import { loadTexture } from './textureCache';
 import { perTickChance } from './frameRate';
 import type { Tile, Facing, ErrandKind, ErrandSpot } from './themeRegistry';
@@ -222,7 +226,10 @@ export function OfficeFloor() {
     document.addEventListener('visibilitychange', onVis);
     return () => document.removeEventListener('visibilitychange', onVis);
   }, []);
-  const paused = !!fullscreenAgentId || ideOpen || docHidden;
+  // document.hidden never flips for a minimised window on WSLg; main reports
+  // minimise/restore and hide/show itself (shared/windowVisibility.ts).
+  const windowShown = useWindowShown();
+  const paused = !!fullscreenAgentId || ideOpen || docHidden || !windowShown;
   // Whether the scene has been torn down because it stayed covered. Deliberately
   // state and not a ref: it is a dependency of the mount effect below, so
   // flipping it is what performs the teardown and the later rebuild, through the
@@ -247,16 +254,17 @@ export function OfficeFloor() {
   // ticker at 15 fps and renders at 1x, which is what a software GPU (SwiftShader
   // on WSL2/WSLg) needs to stop eating cores — see officeMotion.ts. The gate owns
   // the inputs (the setting App.tsx mirrors from config, the OS reduced-motion
-  // hint, window focus, the store's agents slice) and applies a change to the
+  // hint, window focus) and applies a change to the
   // LIVE application — maxFPS on the ticker, resolution through renderer.resize
   // — rather than rebuilding the scene, which would reload the theme and walk
-  // the whole cast back in through the door over a settings change.
+  // the whole cast back in through the door over a settings change. The one
+  // exception is the renderer kind, which only init can set.
   //
   // On the reduced path the gate also reports the floor UNATTENDED once the
-  // window has sat unfocused for UNATTENDED_GRACE_MS with no agent changing
-  // state, counted from whichever happened last; any agent change re-arms the
-  // grace and focus clears it at once. 'full' never does this — a real GPU keeps
-  // today's behaviour, blur included.
+  // window has sat unfocused for UNATTENDED_GRACE_MS; focus clears it at once.
+  // What the agents are doing is not an input: a busy floor's store changes
+  // for as long as anyone works, and used to keep an unfocused window drawing.
+  // 'full' never does this — a real GPU keeps today's behaviour, blur included.
   const gateRef = useRef<OfficeMotionGate | null>(null);
   // Start or stop the live ticker from the three gates. Reads refs only, so the
   // identity the gate captures on mount is as good as any later one.
@@ -276,9 +284,12 @@ export function OfficeFloor() {
     const gate = createOfficeMotionGate({
       target: window,
       hasFocus: () => document.hasFocus(),
-      onAgentsChange: (l) => useStore.subscribe((s, prev) => { if (s.agents !== prev.agents) l(); }),
       reducedMotionQuery: window.matchMedia?.(REDUCED_MOTION_MEDIA_QUERY) ?? null,
-      onUnattendedChange: syncTicker
+      onUnattendedChange: syncTicker,
+      // The renderer kind (canvas/WebGL, officeRenderer.ts) is fixed at init;
+      // a mode change that wants the other kind rebuilds through the one mount
+      // path, like a context loss does.
+      onRendererKindChange: () => setGlGeneration((n) => n + 1)
     });
     gateRef.current = gate;
     return () => { gate.dispose(); gateRef.current = null; };
@@ -308,12 +319,21 @@ export function OfficeFloor() {
     const envelopes: MessageEnvelope[] = [];
     const MAX_ENVELOPES = 16;
 
+    // Which renderer this build asked for; read by the failure planner below.
+    let preference: PixiRendererPreference | undefined;
+
     const init = async () => {
       // Load the active theme bundle (falls back to 'office' on a bad/absent bundle).
       const theme = await loadTheme(officeTheme);
       // Setting × GPU probe × OS hint → frame cap and resolution (officeMotion.ts).
       const motion = gateRef.current?.decision ?? currentOfficeMotion();
+      // Canvas2D on a software GPU or the reduced path, WebGL otherwise
+      // (officeRenderer.ts): on SwiftShader every GL draw is CPU work in the
+      // GPU process; Canvas2D keeps it on this thread with no context to lose.
+      const renderer = chooseRenderer(motion.mode, webglRendererInfo().classification);
+      preference = renderer.preference;
       await app.init({
+        preference: renderer.preference,
         background: hexNum(theme.palette.background),
         antialias: motion.antialias,
         roundPixels: true,
@@ -332,8 +352,23 @@ export function OfficeFloor() {
         height: host.clientHeight || 600,
       });
       if (mountIdRef.current !== mountId) { safeDestroy(app); return; }
+      console.info(describeRendererChoice('office', app.renderer.name, motion.mode, renderer));
       // 0 is Pixi's own "uncapped"; the reduced path sets REDUCED_MOTION_MAX_FPS.
       app.ticker.maxFPS = motion.maxFPS;
+      // The TickerPlugin draws every tick. Take that over: on the reduced path
+      // the ticker still advances the simulation at 15 fps, but the stage is
+      // only drawn when Pixi has queued a change for it, or the canvas was
+      // cleared by a resize (renderOnChange.ts). The full path draws every
+      // tick as before. LOW priority, like the plugin's, so it runs after the
+      // simulation tick below.
+      app.ticker.remove(app.render, app);
+      const paint = createRenderOnChange({
+        render: () => app.render(),
+        changed: () => sceneChangedSinceRender(app.stage.renderGroup),
+        decision: () => gateRef.current?.decision ?? motion
+      });
+      app.renderer.on('resize', paint.invalidate);
+      app.ticker.add((tk: Ticker) => { paint.step(tk.lastTime); }, undefined, UPDATE_PRIORITY.LOW);
       while (host.firstChild) host.removeChild(host.firstChild);
       host.appendChild(app.canvas);
 
@@ -341,8 +376,9 @@ export function OfficeFloor() {
       // startup), so it is the one Chromium evicts once enough xterm terminals —
       // each of which takes a context via @xterm/addon-webgl — are open. Pixi
       // reports nothing when that happens: the floor just goes blank forever.
-      // Rebuild instead. See glRecovery.ts.
-      (app as any).__glRecovery = installContextLossRecovery(app.canvas, {
+      // Rebuild instead. See glRecovery.ts. The canvas renderer has no context
+      // to lose, so it gets no listener either.
+      if (usesWebglContext(app.renderer)) (app as any).__glRecovery = installContextLossRecovery(app.canvas, {
         // Stop the ticker before the browser can bill us for another frame.
         // Guarded on mountId like the rest: a torn-down scene's canvas must not
         // reach in and stop a ticker that now belongs to its replacement.
@@ -1076,6 +1112,8 @@ export function OfficeFloor() {
 
       // ─── Coffee delivery + desk screens, every frame ───────────────────────
       const updateDeskLife = (dt: number): void => {
+        // One shared beat for every monitor's screen-life (DeskScreen.ts).
+        DeskScreen.advance(dt);
         for (const [id, rt] of runtimes) {
           // Park the carried coffee the moment its courier is seated at home —
           // then, if there's still nothing to do, get up and wander off (the
@@ -1092,7 +1130,7 @@ export function OfficeFloor() {
           // The monitor lights up whenever its owner is in the chair.
           if (rt.screen) {
             rt.screen.setOn(rt.character.isSittingAtDesk());
-            rt.screen.update(dt);
+            rt.screen.update();
           }
         }
       };
@@ -1817,7 +1855,7 @@ export function OfficeFloor() {
 
     init().catch((err) => {
       if (mountIdRef.current !== mountId) return;
-      const plan = planInitFailure(err, initRetriesRef.current);
+      const plan = planInitFailure(err, initRetriesRef.current, { renderer: preference });
 
       // Pixi could not get a context — usually the GPU process restarting under
       // us — and reports that as "this browser does not support WebGL". Retry

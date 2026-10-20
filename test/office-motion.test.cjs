@@ -6,7 +6,7 @@
 // the floor consults this before it builds its renderer, and the gate keeps the
 // live application in step afterwards. These pin the decision (setting ×
 // classification × reduced-motion → fps/resolution), the unattended pause as
-// behaviour against a fake window/store/clock/app, that the gate lets go of
+// behaviour against a fake window/clock/app, that the gate lets go of
 // everything on dispose, and that the floor and config actually wire it up.
 
 const test = require('node:test');
@@ -29,6 +29,7 @@ const {
   REDUCED_MOTION_MAX_FPS, REDUCED_MOTION_RESOLUTION, FULL_MOTION_MIN_RESOLUTION, UNATTENDED_GRACE_MS
 } = M;
 const { shouldRunTicker } = loadTs('src/renderer/src/scene/office/glRecovery.ts');
+const { chooseRenderer } = loadTs('src/renderer/src/scene/office/officeRenderer.ts');
 
 const CLASSES = ['hardware', 'software', 'unknown'];
 
@@ -95,28 +96,26 @@ test('the reduced path does roughly a sixteenth of the full path\'s rasterisatio
 // --- the unattended planner ---------------------------------------------------------
 
 test('the full path never pauses for focus — today\'s behaviour on a real GPU', () => {
-  assert.equal(unattendedPauseDelay({ mode: 'full', focused: false, blurredAt: 0, lastAgentChangeAt: 0, now: 10_000_000 }), null);
+  assert.equal(unattendedPauseDelay({ mode: 'full', focused: false, blurredAt: 0, now: 10_000_000 }), null);
 });
 
-test('a focused window never pauses, however quiet the agents are', () => {
-  assert.equal(unattendedPauseDelay({ mode: 'reduced', focused: true, blurredAt: 0, lastAgentChangeAt: 0, now: 10_000_000 }), null);
+test('a focused window never pauses', () => {
+  assert.equal(unattendedPauseDelay({ mode: 'reduced', focused: true, blurredAt: 0, now: 10_000_000 }), null);
 });
 
-test('the grace counts from the LATER of the blur and the last agent change', () => {
+test('the grace counts from the blur and nothing else', () => {
   const t0 = 1_000_000;
-  // Just blurred, agents changed a moment ago: wait the full grace.
-  assert.equal(unattendedPauseDelay({ mode: 'reduced', focused: false, blurredAt: t0, lastAgentChangeAt: t0, now: t0 }), 30_000);
-  // Agents changed 12 s after the blur: wait from the change.
-  assert.equal(unattendedPauseDelay({ mode: 'reduced', focused: false, blurredAt: t0, lastAgentChangeAt: t0 + 12_000, now: t0 + 12_000 }), 30_000);
-  assert.equal(unattendedPauseDelay({ mode: 'reduced', focused: false, blurredAt: t0, lastAgentChangeAt: t0 + 12_000, now: t0 + 20_000 }), 22_000);
-  // Agents last changed an HOUR before the blur: still the full grace from the
-  // blur. A window that was quiet while someone looked at it is not unattended
-  // the instant they look away.
-  assert.equal(unattendedPauseDelay({ mode: 'reduced', focused: false, blurredAt: t0, lastAgentChangeAt: t0 - 3_600_000, now: t0 }), 30_000);
-  // Quiet AND blurred for longer than the grace already: pause now, never a negative delay.
-  assert.equal(unattendedPauseDelay({ mode: 'reduced', focused: false, blurredAt: t0, lastAgentChangeAt: t0, now: t0 + 90_000 }), 0);
+  assert.equal(unattendedPauseDelay({ mode: 'reduced', focused: false, blurredAt: t0, now: t0 }), 30_000);
+  assert.equal(unattendedPauseDelay({ mode: 'reduced', focused: false, blurredAt: t0, now: t0 + 20_000 }), 10_000);
+  // Blurred for longer than the grace already: pause now, never a negative delay.
+  assert.equal(unattendedPauseDelay({ mode: 'reduced', focused: false, blurredAt: t0, now: t0 + 90_000 }), 0);
   // The grace is injectable.
-  assert.equal(unattendedPauseDelay({ mode: 'reduced', focused: false, blurredAt: t0, lastAgentChangeAt: t0, now: t0, graceMs: 5_000 }), 5_000);
+  assert.equal(unattendedPauseDelay({ mode: 'reduced', focused: false, blurredAt: t0, now: t0, graceMs: 5_000 }), 5_000);
+  // The agents are not an input. A busy floor's store changes several times a
+  // second for as long as anyone works; counting from the last change meant
+  // the pause never came and an unfocused window drew all afternoon.
+  assert.equal(unattendedPauseDelay({ mode: 'reduced', focused: false, blurredAt: t0, lastAgentChangeAt: t0 + 29_000, now: t0 + 30_000 }), 0,
+    'an agent change re-armed the grace');
 });
 
 test('shouldRunTicker keeps its two gates and adds the unattended one', () => {
@@ -161,11 +160,11 @@ test('the OS hint reads false with no DOM, never throws', () => {
 
 // --- the gate, as behaviour ------------------------------------------------------------
 //
-// A fake window that counts its listeners, a fake agents subscription that
-// counts its subscribers, a fake reduced-motion query, a clock whose timers only
-// fire when the test advances it, and a Pixi application that only writes down
-// what it was told. The decision is computed from the REAL setting (so
-// applyOfficeMotionPref is the thing under test) with the probe stubbed.
+// A fake window that counts its listeners, a fake reduced-motion query, a
+// clock whose timers only fire when the test advances it, and a Pixi
+// application that only writes down what it was told. The decision is computed
+// from the REAL setting (so applyOfficeMotionPref is the thing under test) with
+// the probe stubbed.
 
 function fakeClock(start = 0) {
   let t = start;
@@ -200,15 +199,6 @@ function fakeTarget() {
   };
 }
 
-function fakeAgents() {
-  const subs = new Set();
-  return {
-    subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
-    change() { for (const fn of [...subs]) fn(); },
-    get subscriberCount() { return subs.size; }
-  };
-}
-
 function fakeQuery() {
   const subs = new Set();
   return {
@@ -220,13 +210,14 @@ function fakeQuery() {
   };
 }
 
-function fakeApp(resolution) {
+function fakeApp(resolution, name = 'webgl') {
   const app = {
     initCalls: 0,
     resizes: [],
     ticker: { maxFPS: 0 },
     screen: { width: 1600, height: 900 },
     renderer: {
+      name,
       resolution,
       resize(w, h, r) { app.resizes.push([w, h, r]); if (r !== undefined) this.resolution = r; }
     },
@@ -239,27 +230,28 @@ function fakeApp(resolution) {
 function gateUnderTest({ classification = 'software', focused = true, dpr = 2 } = {}) {
   const clock = fakeClock(1_000_000);
   const target = fakeTarget();
-  const agents = fakeAgents();
   const query = fakeQuery();
   const verdicts = [];
+  let rebuilds = 0;
   let isFocused = focused;
   const gate = createOfficeMotionGate({
     target,
     hasFocus: () => isFocused,
-    onAgentsChange: agents.subscribe,
     onUnattendedChange: (v) => verdicts.push(v),
     reducedMotionQuery: query,
     decide: () => decideOfficeMotion(getOfficeMotionPref(), classification, query.matches, dpr),
+    rendererFor: (mode) => chooseRenderer(mode, classification).preference,
+    onRendererKindChange: () => { rebuilds += 1; },
     now: clock.now, schedule: clock.schedule, cancel: clock.cancel
   });
   return {
-    gate, clock, target, agents, query, verdicts,
+    gate, clock, target, query, verdicts, get rebuilds() { return rebuilds; },
     focus() { isFocused = true; target.fire('focus'); },
     blur() { isFocused = false; target.fire('blur'); }
   };
 }
 
-test('unattended: blur, nothing for 30 s, pause; focus resumes; a change re-arms', (t) => {
+test('unattended: blur, 30 s, pause; focus resumes; blur again, 30 s, pause again', (t) => {
   t.after(() => applyOfficeMotionPref('auto'));
   const f = gateUnderTest({ classification: 'software' });
   assert.equal(f.gate.decision.mode, 'reduced');
@@ -278,23 +270,28 @@ test('unattended: blur, nothing for 30 s, pause; focus resumes; a change re-arms
   assert.deepEqual(f.verdicts, [true, false]);
   assert.equal(f.clock.pendingCount, 0, 'a focused floor keeps a timer armed');
 
-  // Blur again later; an agent change mid-grace restarts the 30 s from there.
   f.clock.advanceTo(1_100_000);
   f.blur();
-  f.clock.advanceTo(1_120_000);
-  f.agents.change();
+  f.clock.advanceTo(1_129_999);
+  assert.equal(f.gate.unattended, false);
   f.clock.advanceTo(1_130_000);
-  assert.equal(f.gate.unattended, false, 'the agent change did not re-arm the grace');
-  f.clock.advanceTo(1_150_000);
-  assert.equal(f.gate.unattended, true, 'not paused 30 s after the last change');
-
-  // And an agent change while PAUSED resumes, then re-arms.
-  f.agents.change();
-  assert.equal(f.gate.unattended, false, 'an agent change while paused did not resume');
-  f.clock.advanceTo(1_180_000);
-  assert.equal(f.gate.unattended, true);
-  assert.deepEqual(f.verdicts, [true, false, true, false, true]);
+  assert.equal(f.gate.unattended, true, 'not paused 30 s after the second blur');
+  assert.deepEqual(f.verdicts, [true, false, true]);
   f.gate.dispose();
+});
+
+test('unattended: the gate has no agents input, so a busy floor pauses like a quiet one', (t) => {
+  t.after(() => applyOfficeMotionPref('auto'));
+  // The gate is built over a window, a query and the setting — nothing else.
+  // If it took a store subscription it would show up as a listener below.
+  const f = gateUnderTest({ classification: 'software' });
+  f.blur();
+  f.clock.advanceTo(1_000_000 + 30_000);
+  assert.equal(f.gate.unattended, true);
+  assert.equal(f.target.listenerCount, 2, 'the window is the only focus source');
+  f.gate.dispose();
+  const motion = strip(read('src/renderer/src/scene/office/officeMotion.ts'));
+  assert.doesNotMatch(motion, /lastAgentChangeAt|onAgentsChange/, 'the agents slice must not keep an unfocused floor awake');
 });
 
 test('unattended: a window quiet for an hour while focused still gets 30 s after blur', (t) => {
@@ -340,45 +337,111 @@ test('unattended: the full path never pauses on blur, and switching to reduced p
   f.gate.dispose();
 });
 
-test('a mode change applies to the LIVE application; it never inits again', (t) => {
+test('on a software GPU a mode change applies to the LIVE application and never rebuilds: canvas either way', (t) => {
   t.after(() => applyOfficeMotionPref('auto'));
-  const f = gateUnderTest({ classification: 'hardware', dpr: 2 });
-  const app = fakeApp(2);
+  const f = gateUnderTest({ classification: 'software', dpr: 2 });
+  assert.equal(f.gate.decision.mode, 'reduced');
+  const app = fakeApp(1, 'canvas');
   // What the floor does: init once with the decision's knobs, then attach.
   app.init();
   app.ticker.maxFPS = f.gate.decision.maxFPS;
   f.gate.attach(app);
   assert.equal(app.initCalls, 1);
-  assert.equal(app.ticker.maxFPS, 0);
-  assert.deepEqual(app.resizes, [], 'attach resized a canvas already at the right resolution');
-
-  applyOfficeMotionPref('reduced');
   assert.equal(app.ticker.maxFPS, 15);
-  assert.equal(app.renderer.resolution, 1);
-  assert.deepEqual(app.resizes, [[1600, 900, 1]], 'resolution must go through renderer.resize at the logical size');
-  assert.equal(app.initCalls, 1, 'a settings change rebuilt the application');
+  assert.deepEqual(app.resizes, [], 'attach resized a canvas already at the right resolution');
+  assert.equal(f.rebuilds, 0, 'attaching the kind the mode wants must not rebuild');
 
   applyOfficeMotionPref('full');
   assert.equal(app.ticker.maxFPS, 0);
   assert.equal(app.renderer.resolution, 2);
-  assert.deepEqual(app.resizes, [[1600, 900, 1], [1600, 900, 2]]);
-  assert.equal(app.initCalls, 1);
+  assert.deepEqual(app.resizes, [[1600, 900, 2]], 'resolution must go through renderer.resize at the logical size');
+  assert.equal(f.rebuilds, 0, "'full' on a software GPU is still canvas: fps and resolution change live, nothing rebuilds");
 
-  // The OS hint is live too, under 'auto'.
-  applyOfficeMotionPref('auto');
-  f.query.set(true);
+  applyOfficeMotionPref('reduced');
   assert.equal(app.ticker.maxFPS, 15);
   assert.equal(app.renderer.resolution, 1);
-  f.query.set(false);
-  assert.equal(app.ticker.maxFPS, 0);
-  assert.equal(app.renderer.resolution, 2);
-  assert.equal(app.initCalls, 1);
+  assert.deepEqual(app.resizes, [[1600, 900, 2], [1600, 900, 1]]);
+  assert.equal(f.rebuilds, 0);
+  assert.equal(app.initCalls, 1, 'a settings change rebuilt the application');
 
   // Detached (the scene is being torn down), the app is left alone.
   f.gate.detach();
+  applyOfficeMotionPref('full');
+  assert.equal(app.ticker.maxFPS, 15);
+  assert.equal(app.renderer.resolution, 1);
+  assert.equal(f.rebuilds, 0);
+  f.gate.dispose();
+});
+
+test('on hardware, full → reduced wants canvas where WebGL is live: fps and resolution apply, then exactly one rebuild', (t) => {
+  t.after(() => applyOfficeMotionPref('auto'));
+  const f = gateUnderTest({ classification: 'hardware', dpr: 2 });
+  assert.equal(f.gate.decision.mode, 'full');
+  const app = fakeApp(2, 'webgl');
+  f.gate.attach(app);
+  assert.equal(f.rebuilds, 0);
+
   applyOfficeMotionPref('reduced');
-  assert.equal(app.ticker.maxFPS, 0);
-  assert.equal(app.renderer.resolution, 2);
+  assert.equal(app.ticker.maxFPS, 15, 'the cap must land on the live app even though a rebuild is coming');
+  assert.equal(app.renderer.resolution, 1);
+  assert.equal(f.rebuilds, 1, 'WebGL live, canvas wanted: one rebuild');
+
+  // The floor tears the WebGL app down and attaches a canvas one born at the
+  // decision in force. That is the end of it: no second rebuild.
+  f.gate.detach();
+  const rebuilt = fakeApp(f.gate.decision.resolution, chooseRenderer(f.gate.decision.mode, 'hardware').preference);
+  assert.equal(rebuilt.renderer.name, 'canvas');
+  rebuilt.ticker.maxFPS = f.gate.decision.maxFPS;
+  f.gate.attach(rebuilt);
+  assert.equal(rebuilt.ticker.maxFPS, 15);
+  assert.deepEqual(rebuilt.resizes, []);
+  assert.equal(f.rebuilds, 1);
+  f.gate.dispose();
+});
+
+test('on hardware, reduced → full wants WebGL where canvas is live: one rebuild, never canvas uncapped at 2x', (t) => {
+  t.after(() => applyOfficeMotionPref('auto'));
+  const f = gateUnderTest({ classification: 'hardware', dpr: 2 });
+  applyOfficeMotionPref('reduced');
+  const app = fakeApp(1, 'canvas');
+  app.ticker.maxFPS = 15;
+  f.gate.attach(app);
+  assert.equal(f.rebuilds, 0);
+
+  applyOfficeMotionPref('full');
+  assert.equal(f.rebuilds, 1, 'canvas live, WebGL wanted: one rebuild');
+  // A second input change while the rebuild is pending asks for nothing more.
+  f.query.set(true); f.query.set(false);
+  assert.equal(f.rebuilds, 1, 'a pending rebuild must not be asked for again');
+
+  f.gate.detach();
+  const rebuilt = fakeApp(2, 'webgl');
+  f.gate.attach(rebuilt);
+  assert.equal(f.rebuilds, 1);
+  assert.equal(rebuilt.ticker.maxFPS, 0);
+
+  // The OS hint is live too, under 'auto': on hardware it also flips the kind.
+  applyOfficeMotionPref('auto');
+  f.query.set(true);
+  assert.equal(rebuilt.ticker.maxFPS, 15);
+  assert.equal(rebuilt.renderer.resolution, 1);
+  assert.equal(f.rebuilds, 2);
+  f.gate.dispose();
+});
+
+test('a Pixi that cannot build the kind asked for is asked once, not forever', (t) => {
+  t.after(() => applyOfficeMotionPref('auto'));
+  const f = gateUnderTest({ classification: 'hardware', dpr: 2 });
+  applyOfficeMotionPref('reduced');
+  f.gate.attach(fakeApp(1, 'canvas'));
+  applyOfficeMotionPref('full');
+  assert.equal(f.rebuilds, 1);
+  // The rebuild came back canvas again (no WebGL available after all).
+  f.gate.detach();
+  f.gate.attach(fakeApp(2, 'canvas'));
+  assert.equal(f.rebuilds, 1, 'attaching the wrong kind again must not ask again');
+  f.query.set(true); f.query.set(false);
+  assert.equal(f.rebuilds, 1);
   f.gate.dispose();
 });
 
@@ -386,12 +449,14 @@ test('a context-loss rebuild attaches a fresh app at the decision in force', (t)
   t.after(() => applyOfficeMotionPref('auto'));
   const f = gateUnderTest({ classification: 'hardware' });
   applyOfficeMotionPref('reduced');
-  // The floor builds the replacement with gate.decision, so it is born at 1x.
-  const rebuilt = fakeApp(f.gate.decision.resolution);
+  // The floor builds the replacement with gate.decision, so it is born at 1x
+  // and on the kind the mode wants.
+  const rebuilt = fakeApp(f.gate.decision.resolution, 'canvas');
   rebuilt.ticker.maxFPS = f.gate.decision.maxFPS;
   f.gate.attach(rebuilt);
   assert.equal(rebuilt.ticker.maxFPS, 15);
   assert.deepEqual(rebuilt.resizes, []);
+  assert.equal(f.rebuilds, 0);
   f.gate.dispose();
 });
 
@@ -400,7 +465,6 @@ test('dispose lets go of every listener and the timer', (t) => {
   const before = officeMotionPrefListenerCount();
   const f = gateUnderTest({ classification: 'software' });
   assert.equal(f.target.listenerCount, 2);
-  assert.equal(f.agents.subscriberCount, 1);
   assert.equal(f.query.listenerCount, 1);
   assert.equal(officeMotionPrefListenerCount(), before + 1);
   f.blur();
@@ -408,7 +472,6 @@ test('dispose lets go of every listener and the timer', (t) => {
 
   f.gate.dispose();
   assert.equal(f.target.listenerCount, 0);
-  assert.equal(f.agents.subscriberCount, 0);
   assert.equal(f.query.listenerCount, 0);
   assert.equal(officeMotionPrefListenerCount(), before);
   assert.equal(f.clock.pendingCount, 0, 'the grace timer outlived the gate');
@@ -444,8 +507,10 @@ test('OfficeFloor builds its renderer from the decision, attaches the gate, and 
   const gateCall = src.slice(g, src.indexOf('});', g));
   assert.match(gateCall, /target: window,/);
   assert.match(gateCall, /hasFocus: \(\) => document\.hasFocus\(\),/);
-  assert.match(gateCall, /if \(s\.agents !== prev\.agents\) l\(\);/);
+  assert.doesNotMatch(gateCall, /agents/, 'the store must not be an input to the unattended pause');
   assert.match(gateCall, /onUnattendedChange: syncTicker/);
+  assert.match(gateCall, /onRendererKindChange: \(\) => setGlGeneration\(\(n\) => n \+ 1\)/,
+    'a renderer-kind change must rebuild through the one mount path');
   assert.match(src, /gate\.dispose\(\);/);
   // Every ticker start/stop decision passes the unattended gate.
   assert.match(src, /unattended: gateRef\.current\?\.unattended \?\? false/);

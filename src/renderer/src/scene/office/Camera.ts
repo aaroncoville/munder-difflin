@@ -100,21 +100,27 @@ export class Camera {
       }
     }
 
-    this.container.scale.set(this.currentZoom);
-    this.container.x = this.viewWidth / 2 - this.currentX * this.currentZoom;
-    this.container.y = this.viewHeight / 2 - this.currentY * this.currentZoom;
+    // Clamp in locals and assign once. Pixi queues a container for the next
+    // render on every write that changes a value, so writing the unclamped
+    // position and then the clamped one marked the world changed on every
+    // tick of a camera that had long settled (renderOnChange.ts).
+    let x = this.viewWidth / 2 - this.currentX * this.currentZoom;
+    let y = this.viewHeight / 2 - this.currentY * this.currentZoom;
 
     const scaledW = this.mapWidth * this.currentZoom;
     const scaledH = this.mapHeight * this.currentZoom;
     if (scaledW <= this.viewWidth) {
-      this.container.x = (this.viewWidth - scaledW) / 2;
+      x = (this.viewWidth - scaledW) / 2;
     } else {
-      this.container.x = Math.min(0, Math.max(this.viewWidth - scaledW, this.container.x));
+      x = Math.min(0, Math.max(this.viewWidth - scaledW, x));
     }
     if (scaledH <= this.viewHeight) {
-      this.container.y = (this.viewHeight - scaledH) / 2;
+      y = (this.viewHeight - scaledH) / 2;
     } else {
-      this.container.y = Math.min(0, Math.max(this.viewHeight - scaledH, this.container.y));
+      y = Math.min(0, Math.max(this.viewHeight - scaledH, y));
     }
+    this.container.scale.set(this.currentZoom);
+    this.container.x = x;
+    this.container.y = y;
   }
 }

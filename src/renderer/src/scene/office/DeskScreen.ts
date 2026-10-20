@@ -24,11 +24,33 @@ const DEFAULT_ON_GIDS: ReadonlyArray<readonly [number, number, number]> = [
  *  blue desktop is drawn in the tile art. The animation stays inside it. */
 const SCREEN = { x: 3, y: 5, w: 25, h: 12 };
 
+/** The screen-life animation steps on a shared 4 Hz beat. It was drawn afresh
+ *  every tick, which on the reduced path (renderOnChange.ts) meant a Graphics
+ *  redraw — a change to render — fifteen times a second per lit monitor, for
+ *  lines that only move a pixel ~3 times a second and a cursor that blinks
+ *  twice. Stepping the clock at 4 Hz loses nothing visible (Math.round already
+ *  stepped the lines at ~3 Hz) and, because the beat is shared, every monitor
+ *  on the floor redraws on the same ticks: at most four draws a second for all
+ *  of them together, rather than fifteen for any one. */
+export const SCREEN_BEAT_S = 0.25;
+let clock = 0;
+
 export class DeskScreen {
+  /** Advance the shared animation clock. The floor calls this once per tick,
+   *  before it updates any screen. */
+  static advance(dt: number): void {
+    clock += dt;
+  }
+  /** For tests: the shared clock, in seconds. */
+  static get clock(): number { return clock; }
+
   readonly container = new Container();
   private anim = new Graphics();
   private on = false;
-  private t = 0;
+  /** The shared clock when the screen lit, so each monitor keeps its own
+   *  phase (the moment its owner sat down), as it did with a private clock. */
+  private onAt = 0;
+  private drawnBeat = -1;
 
   constructor(mapRenderer: TiledMapRenderer, topLeft: { x: number; y: number }, monitor?: MonitorConfig) {
     const ts = mapRenderer.tileSize;
@@ -58,23 +80,29 @@ export class DeskScreen {
     if (on === this.on) return;
     this.on = on;
     this.container.visible = on;
-    if (!on) { this.anim.clear(); this.t = 0; }
+    if (on) { this.onAt = clock; this.drawnBeat = -1; }
+    else this.anim.clear();
   }
 
-  update(dt: number): void {
+  /** Redraw the screen-life frame if the shared beat moved since the last
+   *  one. Between beats the Graphics is left alone, so nothing is queued. */
+  update(): void {
     if (!this.on) return;
-    this.t += dt;
+    const beat = Math.floor(clock / SCREEN_BEAT_S);
+    if (beat === this.drawnBeat) return;
+    this.drawnBeat = beat;
+    const t = Math.max(0, beat * SCREEN_BEAT_S - this.onAt);
     const g = this.anim;
     g.clear();
     // Two faint "output" lines scrolling up the desktop, wrapping around —
     // the eternal build log — plus a cursor blinking in the lower left.
     for (let i = 0; i < 2; i++) {
-      const phase = (this.t * 3.2 + i * (SCREEN.h / 2)) % SCREEN.h;
+      const phase = (t * 3.2 + i * (SCREEN.h / 2)) % SCREEN.h;
       const y = SCREEN.y + SCREEN.h - 1 - phase;
-      const w = 6 + ((i * 7 + Math.floor(this.t / 1.7)) % 9);
+      const w = 6 + ((i * 7 + Math.floor(t / 1.7)) % 9);
       g.rect(SCREEN.x + 2, Math.round(y), w, 1).fill({ color: 0xcfe6ff, alpha: 0.55 });
     }
-    if (Math.floor(this.t / 0.53) % 2 === 0) {
+    if (Math.floor(t / 0.53) % 2 === 0) {
       g.rect(SCREEN.x + 2, SCREEN.y + SCREEN.h - 2, 2, 2).fill({ color: 0xffffff, alpha: 0.9 });
     }
   }
