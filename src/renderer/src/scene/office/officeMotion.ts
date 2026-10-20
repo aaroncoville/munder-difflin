@@ -28,16 +28,19 @@
  * (frameRate.ts).
  *
  * 'reduced' also lets the ticker stop outright while nobody is watching: once
- * the window has been unfocused for UNATTENDED_GRACE_MS with no agent changing
- * state — counted from whichever of the two happened LAST, so a window that was
- * quiet while focused still gets its full grace after blur — there is nothing
- * to animate for anyone (`unattendedPauseDelay`).
+ * the window has been unfocused for UNATTENDED_GRACE_MS there is nothing to
+ * animate for anyone (`unattendedPauseDelay`), and focus brings it back. Only
+ * the blur counts. An earlier version also re-armed the grace on every agent
+ * state change, on the theory that a changing floor was worth watching; on a
+ * busy floor the agents slice changes several times a second for as long as
+ * anyone is working, so the pause never came, and an unfocused window drew
+ * all afternoon.
  *
  * `createOfficeMotionGate` is the runtime: it owns the inputs' listeners and
  * the grace timer, and applies a change to the LIVE Pixi application (maxFPS
  * on the ticker, resolution through renderer.resize) rather than rebuilding
  * the scene. Everything takes injected dependencies so node:test can drive it
- * with a fake window, store, clock and app (test/office-motion.test.cjs); only
+ * with a fake window, clock and app (test/office-motion.test.cjs); only
  * `currentOfficeMotion` and the defaults touch the DOM, lazily.
  */
 import { webglRendererInfo, type WebglClassification } from '@/components/terminalRenderer';
@@ -55,8 +58,8 @@ export const REDUCED_MOTION_MAX_FPS = 15;
 export const REDUCED_MOTION_RESOLUTION = 1;
 /** The floor of the full path's resolution (see OfficeFloor.tsx for why 2). */
 export const FULL_MOTION_MIN_RESOLUTION = 2;
-/** How long an unfocused window has to sit with no agent state change before
- *  the reduced path stops the ticker altogether. */
+/** How long a window has to sit unfocused before the reduced path stops the
+ *  ticker altogether. */
 export const UNATTENDED_GRACE_MS = 30_000;
 
 export interface OfficeMotionDecision {
@@ -109,23 +112,20 @@ export function decideOfficeMotion(
 
 /** How long until an unwatched floor may stop its ticker, or null when it must
  *  keep running: the window is focused, or the mode is 'full' (today's
- *  behaviour, which never pauses for focus). The grace counts from the later
- *  of the blur and the last agent state change — a window that sat quiet for
- *  an hour while focused still gets the whole grace once it loses focus. Zero
- *  means "now". */
+ *  behaviour, which never pauses for focus). The grace counts from the blur
+ *  and nothing else: what the agents are doing does not change whether anyone
+ *  is looking. Zero means "now". */
 export function unattendedPauseDelay(input: {
   mode: OfficeMotionMode;
   focused: boolean;
   /** When the window last lost focus. */
   blurredAt: number;
-  lastAgentChangeAt: number;
   now: number;
   graceMs?: number;
 }): number | null {
   if (input.focused || input.mode !== 'reduced') return null;
   const grace = input.graceMs ?? UNATTENDED_GRACE_MS;
-  const quietSince = Math.max(input.blurredAt, input.lastAgentChangeAt);
-  return Math.max(0, grace - (input.now - quietSince));
+  return Math.max(0, grace - (input.now - input.blurredAt));
 }
 
 /* ─── The mirrored setting ───────────────────────────────────────────────────
@@ -221,9 +221,6 @@ export interface MotionGateOptions {
     removeEventListener(type: 'focus' | 'blur', fn: Listener): void;
   };
   hasFocus: () => boolean;
-  /** Fires on every agent state change (the store's agents slice). Returns the
-   *  unsubscribe. */
-  onAgentsChange: (listener: Listener) => () => void;
   /** Called when the unattended verdict flips, so the floor can re-run
    *  shouldRunTicker against its other gates. */
   onUnattendedChange: (unattended: boolean) => void;
@@ -266,10 +263,9 @@ export function createOfficeMotionGate(opts: MotionGateOptions): OfficeMotionGat
   let decision = decide();
   let app: MotionGateApp | null = null;
   let focused = opts.hasFocus();
-  // Both start "now": a floor that is born unfocused and quiet still waits the
-  // whole grace before it stops.
+  // Starts "now": a floor that is born unfocused still waits the whole grace
+  // before it stops.
   let blurredAt = now();
-  let lastAgentChangeAt = now();
   let unattended = false;
   let timer: unknown = null;
   let disposed = false;
@@ -285,7 +281,7 @@ export function createOfficeMotionGate(opts: MotionGateOptions): OfficeMotionGat
   const arm = () => {
     if (timer !== null) { cancel(timer); timer = null; }
     const delay = unattendedPauseDelay({
-      mode: decision.mode, focused, blurredAt, lastAgentChangeAt, now: now(), graceMs: opts.graceMs
+      mode: decision.mode, focused, blurredAt, now: now(), graceMs: opts.graceMs
     });
     if (delay === null) { setUnattended(false); return; }
     if (delay === 0) { setUnattended(true); return; }
@@ -303,12 +299,10 @@ export function createOfficeMotionGate(opts: MotionGateOptions): OfficeMotionGat
 
   const onFocus = () => { focused = true; arm(); };
   const onBlur = () => { focused = false; blurredAt = now(); arm(); };
-  const onAgents = () => { lastAgentChangeAt = now(); arm(); };
   const onInputs = () => { decision = decide(); apply(); arm(); };
 
   opts.target.addEventListener('focus', onFocus);
   opts.target.addEventListener('blur', onBlur);
-  const offAgents = opts.onAgentsChange(onAgents);
   const offPref = onPrefChange(onInputs);
   opts.reducedMotionQuery?.addEventListener('change', onInputs);
   arm();
@@ -325,7 +319,6 @@ export function createOfficeMotionGate(opts: MotionGateOptions): OfficeMotionGat
       if (timer !== null) { cancel(timer); timer = null; }
       opts.target.removeEventListener('focus', onFocus);
       opts.target.removeEventListener('blur', onBlur);
-      offAgents();
       offPref();
       opts.reducedMotionQuery?.removeEventListener('change', onInputs);
     }

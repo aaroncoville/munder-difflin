@@ -254,16 +254,16 @@ export function OfficeFloor() {
   // ticker at 15 fps and renders at 1x, which is what a software GPU (SwiftShader
   // on WSL2/WSLg) needs to stop eating cores — see officeMotion.ts. The gate owns
   // the inputs (the setting App.tsx mirrors from config, the OS reduced-motion
-  // hint, window focus, the store's agents slice) and applies a change to the
+  // hint, window focus) and applies a change to the
   // LIVE application — maxFPS on the ticker, resolution through renderer.resize
   // — rather than rebuilding the scene, which would reload the theme and walk
   // the whole cast back in through the door over a settings change.
   //
   // On the reduced path the gate also reports the floor UNATTENDED once the
-  // window has sat unfocused for UNATTENDED_GRACE_MS with no agent changing
-  // state, counted from whichever happened last; any agent change re-arms the
-  // grace and focus clears it at once. 'full' never does this — a real GPU keeps
-  // today's behaviour, blur included.
+  // window has sat unfocused for UNATTENDED_GRACE_MS; focus clears it at once.
+  // What the agents are doing is not an input: a busy floor's store changes
+  // for as long as anyone works, and used to keep an unfocused window drawing.
+  // 'full' never does this — a real GPU keeps today's behaviour, blur included.
   const gateRef = useRef<OfficeMotionGate | null>(null);
   // Start or stop the live ticker from the three gates. Reads refs only, so the
   // identity the gate captures on mount is as good as any later one.
@@ -283,7 +283,6 @@ export function OfficeFloor() {
     const gate = createOfficeMotionGate({
       target: window,
       hasFocus: () => document.hasFocus(),
-      onAgentsChange: (l) => useStore.subscribe((s, prev) => { if (s.agents !== prev.agents) l(); }),
       reducedMotionQuery: window.matchMedia?.(REDUCED_MOTION_MEDIA_QUERY) ?? null,
       onUnattendedChange: syncTicker
     });
