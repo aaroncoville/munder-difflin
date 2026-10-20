@@ -1,9 +1,11 @@
 import * as pty from 'node-pty';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { resolveCommand, userShellPath } from './shellEnv';
+import { stripClaudeSessionMarkers } from './ptyEnv';
 import { expandTilde } from './fs';
-import { projectDir } from './transcript';
+import { newSessionProjectDir } from './transcript';
 import { ensureKilled } from './procKill';
 
 /**
@@ -72,28 +74,28 @@ export function looksLikeTrustDialog(rawOutput: string): boolean {
 }
 
 /**
- * Extract the last assistant text block from the transcript JSONL written
- * at or after `spawnedAt`. Reuses projectDir() from transcript.ts.
+ * The transcript file a hidden session writes: `<project dir>/<session id>.jsonl`,
+ * under the config dir the session actually runs with (`env` is its spawn
+ * env, so an exported CLAUDE_CONFIG_DIR is honoured) and under the CURRENT
+ * project key — a new session never writes to a legacy-keyed directory.
+ * The session id is OURS (passed as `--session-id`), so the lookup is exact.
+ * The previous "newest .jsonl in the project dir" scan could pick up a
+ * DIFFERENT session running in the same cwd — the god agent runs in the
+ * harness home, the very cwd the reflect loop uses — and hand its last reply
+ * back as the hidden session's answer. Exported for the regression test. */
+export function hiddenTranscriptPath(cwd: string, sessionId: string, env: NodeJS.ProcessEnv): string {
+  return path.join(newSessionProjectDir(cwd, env), `${sessionId}.jsonl`);
+}
+
+/**
+ * Extract the last assistant text block from the hidden session's own
+ * transcript. Null when the file was never written or holds no assistant text.
  */
-function extractLastAssistantText(cwd: string, spawnedAt: number): string | null {
+function extractLastAssistantText(cwd: string, sessionId: string, env: NodeJS.ProcessEnv): string | null {
   try {
-    const dir = projectDir(cwd);
-    if (!existsSync(dir)) return null;
-
-    const candidates: { f: string; mtime: number }[] = [];
-    for (const f of readdirSync(dir)) {
-      if (!f.endsWith('.jsonl')) continue;
-      try {
-        const mtime = statSync(path.join(dir, f)).mtimeMs;
-        // 5 s slack: include files that already existed at spawn but were
-        // updated by this session. Sort by mtime and take the newest.
-        if (mtime >= spawnedAt - 5000) candidates.push({ f, mtime });
-      } catch { /* file removed between readdir and stat — skip */ }
-    }
-    if (!candidates.length) return null;
-    candidates.sort((a, b) => b.mtime - a.mtime);
-
-    const lines = readFileSync(path.join(dir, candidates[0].f), 'utf8').split('\n');
+    const file = hiddenTranscriptPath(cwd, sessionId, env);
+    if (!existsSync(file)) return null;
+    const lines = readFileSync(file, 'utf8').split('\n');
     for (let i = lines.length - 1; i >= 0; i--) {
       const trimmed = lines[i].trim();
       if (!trimmed) continue;
@@ -129,9 +131,12 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
     const disallowed = opts.disallowedTools ?? ['Edit', 'Write', 'NotebookEdit'];
     const addDirs = (opts.addDirs ?? []).filter((d) => d && existsSync(d));
 
+    // Our own session id pins the transcript file name (see hiddenTranscriptPath).
+    const sessionId = randomUUID();
     const args: string[] = [
       '--model', opts.model,
       '--permission-mode', 'bypassPermissions',
+      '--session-id', sessionId,
       '--disallowedTools', ...disallowed,
     ];
     for (const d of addDirs) { args.push('--add-dir', d); }
@@ -140,7 +145,40 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
     const idleMs = opts.idleMs ?? 3500;
     const timeoutMs = opts.timeoutMs ?? 180_000;
 
-    const spawnedAt = Date.now();
+    // The inherited env minus the parent Claude session's identity markers,
+    // then the user-shell PATH, then the caller's own values. The app is
+    // routinely launched from inside a Claude Code terminal, and a hidden
+    // session that inherits that session's CLAUDE_CODE_CHILD_SESSION marker
+    // runs with transcript saving OFF — it answers the prompt (a full model
+    // call, ~75 s for a memory condense) and writes nothing to disk, so every
+    // capture ends in 'no assistant response found in transcript'. That was
+    // the whole of god's six-in-a-row condense-abort run on 2026-10-20; agent
+    // PTYs had their strip since 7049fac1, hidden sessions never did. The
+    // strip is a denylist (ptyEnv.ts), so operator configuration such as
+    // CLAUDE_CONFIG_DIR or a Foundry/Bedrock/Vertex selection passes through.
+    const env: Record<string, string> = {
+      ...stripClaudeSessionMarkers(process.env),
+      PATH: userShellPath(),
+      ...(opts.env ?? {})
+    };
+    // CLAUDE_CODE_SKIP_PROMPT_HISTORY is the operator's choice, but it is on
+    // the strip list above: the hidden session's whole output IS its
+    // transcript, so with the flag in force the session cannot work at all.
+    // Honour the intent the other way round instead — when the inherited env
+    // carried the flag, the transcript is deleted as soon as it has been read
+    // (and again after the kill grace, in case the dying CLI flushes a last
+    // record), so no prompt history of this session is left on disk.
+    const discardTranscript = Boolean(process.env.CLAUDE_CODE_SKIP_PROMPT_HISTORY);
+    const transcriptPath = () => hiddenTranscriptPath(opts.cwd, sessionId, env);
+    const discardTranscriptNow = () => {
+      if (!discardTranscript) return;
+      const file = transcriptPath();
+      const remove = () => { try { rmSync(file, { force: true }); } catch { /* best-effort */ } };
+      remove();
+      const again = setTimeout(remove, 5_000);
+      again.unref?.();
+    };
+
     // Windows: node-pty's CreateProcess can't exec the npm `.cmd`/extensionless
     // `claude` shim directly (ERROR_BAD_EXE_FORMAT, error 193) — route non-.exe
     // targets through cmd.exe. A real claude.exe (WinGet) launches directly. (#22)
@@ -154,11 +192,7 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
         cols: 220,
         rows: 50,
         cwd: opts.cwd,
-        env: {
-          ...process.env,
-          PATH: userShellPath(),
-          ...(opts.env ?? {}),
-        } as Record<string, string>,
+        env,
       });
     } catch (e) {
       resolve({ ok: false, error: e instanceof Error ? e.message : String(e) });
@@ -197,8 +231,8 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
     };
 
     const captureAndFinish = () => {
-      const text = extractLastAssistantText(opts.cwd, spawnedAt);
-      if (text) { finish({ ok: true, text }); return; }
+      const text = extractLastAssistantText(opts.cwd, sessionId, env);
+      if (text) { finish({ ok: true, text }); discardTranscriptNow(); return; }
       // A cwd the CLI has never been trusted in blocks on the workspace-trust
       // dialog forever — it renders as ordinary boot output, so the boot-quiet
       // heuristic reads it as "ready" and sends the prompt into a menu that
@@ -206,10 +240,18 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
       // DIFFERENT failure from a genuine transient no-response race (retrying
       // hits the identical dialog and fails identically), so it gets its own,
       // actionable error instead of the generic one.
+      // The generic message keeps its leading phrase (reflect.ts keys its
+      // one-shot retry on it) and says which of the two shapes it was: a
+      // transcript that was never written at all (transcript saving off, the
+      // CLI never got past boot) or one with no assistant text in it (the
+      // session died mid-turn). No path in it: the session id is fresh per
+      // call, and reflect.ts counts identical failures by this text.
+      const written = existsSync(transcriptPath());
       const error = looksLikeTrustDialog(rawOutput)
         ? 'workspace trust dialog blocked the session (cwd is not a trusted Claude Code directory)'
-        : 'no assistant response found in transcript';
+        : `no assistant response found in transcript (${written ? 'transcript has no assistant text' : 'transcript file was never written'})`;
       finish({ ok: false, error });
+      discardTranscriptNow();
     };
 
     const sendPrompt = () => {

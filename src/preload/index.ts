@@ -605,8 +605,12 @@ const api = {
    *  into — the renderer stores that, not the raw `~/…` the user typed. */
   spawnPty: (opts: SpawnPtyOptions): Promise<{ ok: boolean; error?: string; cwd?: string; worktreePath?: string; resumeNotFound?: boolean; resumed?: boolean; seedPrompt?: string }> =>
     ipcRenderer.invoke('pty:spawn', opts),
-  writePty: (id: string, data: string): Promise<{ ok: boolean; error?: string }> =>
-    ipcRenderer.invoke('pty:write', id, data),
+  /** `source` is 'user' ONLY from the terminal's keystroke handler; every
+   *  automated write (terminal query replies, seeded prompts, inbox nudges,
+   *  dropped paths) leaves it at 'auto', so main can tell a PTY a person has
+   *  used from one only the harness has touched. */
+  writePty: (id: string, data: string, source: 'user' | 'auto' = 'auto'): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('pty:write', id, data, source),
   resizePty: (id: string, cols: number, rows: number): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke('pty:resize', id, cols, rows),
   redrawPty: (id: string): Promise<{ ok: boolean; error?: string }> =>
