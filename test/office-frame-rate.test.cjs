@@ -15,7 +15,7 @@ const root = path.join(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
 const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 
-const { smoothingFactor, perTickChance, REFERENCE_FPS } =
+const { smoothingFactor, perTickChance, framesElapsed, REFERENCE_FPS } =
   loadTs('src/renderer/src/scene/office/frameRate.ts');
 // Camera's only pixi import is a type, so it loads with no pixi in the process.
 const { Camera, LERP_SPEED } = loadTs('src/renderer/src/scene/office/Camera.ts');
@@ -63,6 +63,44 @@ test('the camera pans to the same place after a second at 15 fps and at 60', () 
   assert.notEqual(a.x, 0, 'the camera never moved');
 });
 
+test('a nudge covers the same ground per second at 15 fps as at 60', () => {
+  assert.equal(framesElapsed(1 / 60), 1);
+  assert.equal(framesElapsed(1 / 15), 4);
+  assert.equal(framesElapsed(0), 0);
+  assert.equal(framesElapsed(-1), 0);
+
+  // Sample the nudge's path at the same wall-clock instants from both rates.
+  // A fitted camera (no manual override) nudged toward a point to its right:
+  // the lerp tugs it home, the nudge pushes it out, and the two meet.
+  const path = (fps, seconds, every) => {
+    const container = { x: 0, y: 0, scale: { set() {} } };
+    const cam = new Camera(container);
+    cam.setMapSize(4000, 4000);
+    cam.setViewSize(800, 600);
+    cam.fitToScreen();
+    for (let i = 0; i < 30; i++) cam.update(1 / 60); // settle on the fit
+    const home = container.x;
+    cam.nudgeToward(3000, 2000, 1200);
+    const samples = [];
+    for (let i = 1; i <= fps * seconds; i++) {
+      cam.update(1 / fps);
+      if (((i / fps) * 1000) % every === 0) samples.push(container.x - home);
+    }
+    return samples;
+  };
+  // Every 200 ms over 2 s (1.2 s of nudge, then the lerp bringing it back).
+  const at60 = path(60, 2, 200), at15 = path(15, 2, 200);
+  assert.equal(at60.length, 10);
+  assert.equal(at15.length, 10);
+  const peak = Math.max(...at60.map(Math.abs));
+  assert.ok(peak > 5, `the nudge never moved the camera (${peak}px)`);
+  // Euler steps of 1/15 s against a continuous pull leave a few percent; a
+  // per-tick push, by contrast, would cover a QUARTER of the ground at 15.
+  for (let i = 0; i < at60.length; i++) {
+    close(at15[i], at60[i], peak * 0.05, `sample ${i} (${(i + 1) * 200} ms)`);
+  }
+});
+
 test('the chance of a café chat in any given second is the same at 15 fps as at 60', () => {
   const p60 = 0.004;
   const quietSecond = (fps) => (1 - perTickChance(p60, 1 / fps)) ** fps;
@@ -79,4 +117,6 @@ test('the floor rolls the chat through perTickChance and lerps through smoothing
   const camera = strip(read('src/renderer/src/scene/office/Camera.ts'));
   assert.match(camera, /const k = smoothingFactor\(LERP_SPEED, dt\);/);
   assert.doesNotMatch(camera, /\* LERP_SPEED;/, 'a per-tick lerp is back');
+  assert.match(camera, /const push = ease \* framesElapsed\(dt\);/);
+  assert.doesNotMatch(camera, /nudgeOffset[XY] \* ease;/, 'a per-tick nudge is back');
 });

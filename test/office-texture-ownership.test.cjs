@@ -98,20 +98,47 @@ test('a scene releases every tile it cut from the atlas, and leaves the atlas al
   assert.equal(atlas.source.listeners, 1);
 }));
 
-test('a desk screen owns the monitor glyphs it cut and destroys them with itself', () => withPixi((pixi) => {
+test('the scene\'s one release path covers the desk screens\' glyphs too', () => withPixi((pixi) => {
+  // A real map renderer, real desk screens built on it exactly as the floor
+  // builds them (their constructor calls textureForGid), and the one call the
+  // floor makes on teardown: mapRenderer.releaseTextures(). The screens'
+  // own destroy() is NOT on that path — the floor never calls it on teardown,
+  // only when an agent is removed mid-scene — so the glyphs have to come out
+  // with the tiles.
+  const { TiledMapRenderer } = loadTs.fresh('src/renderer/src/scene/office/TiledMapRenderer.ts');
   const { DeskScreen } = loadTs.fresh('src/renderer/src/scene/office/DeskScreen.ts');
-  const source = new pixi.Source();
-  const cut = [];
-  const mapRenderer = {
-    tileSize: 16,
-    textureForGid: (gid) => { const t = new pixi.module.Texture({ source, frame: { gid } }); cut.push(t); return t; }
-  };
-  const screen = new DeskScreen(mapRenderer, { x: 2, y: 3 }, { onGids: [[7, 0, 0], [8, 1, 0], [9, 0, 1]] });
-  assert.equal(cut.length, 3);
-  assert.equal(source.listeners, 3);
-  screen.destroy();
-  assert.ok(cut.every((t) => t.destroyed), 'a glyph outlived its screen');
-  assert.equal(source.listeners, 0);
+  const atlas = new pixi.module.Texture();
+  const map = new TiledMapRenderer(MAP, [atlas]);
+  const tiles = pixi.made.length - 1;
+  assert.equal(atlas.source.listeners, 1 + tiles);
+
+  const monitor = { onGids: [[7, 0, 0], [8, 1, 0], [9, 0, 1]] };
+  const screens = [
+    new DeskScreen(map, { x: 0, y: 0 }, monitor),
+    new DeskScreen(map, { x: 2, y: 0 }, monitor)
+  ];
+  const glyphs = pixi.made.slice(1 + tiles);
+  assert.equal(glyphs.length, 6, 'three glyphs per screen, two screens');
+  assert.equal(atlas.source.listeners, 1 + tiles + 6, 'each glyph listens to the shared atlas');
+  // A screen's sprites are destroyed with the Application's stage (texture:
+  // false) — the glyph textures must survive that, they are not the sprite's.
+  for (const s of screens) s.container.destroy({ children: true });
+  assert.ok(glyphs.every((t) => !t.destroyed), 'destroying the sprites destroyed the shared glyphs');
+
+  // Teardown: the one call.
+  map.releaseTextures();
+  assert.ok(glyphs.every((t) => t.destroyed), 'a glyph survived the scene');
+  assert.equal(atlas.destroyed, false);
+  assert.equal(atlas.source.listeners, 1, 'listeners left on the atlas after the release');
+
+  // An agent removed mid-scene: its screen's destroy() takes the sprites and
+  // leaves the glyphs to the scene — never a double destroy at teardown.
+  const again = new TiledMapRenderer(MAP, [atlas]);
+  const removed = new DeskScreen(again, { x: 0, y: 0 }, monitor);
+  removed.destroy();
+  assert.equal(atlas.source.listeners, 1 + tiles + 3, 'destroy() of a screen must not touch the glyphs');
+  again.releaseTextures();
+  assert.equal(atlas.source.listeners, 1);
 }));
 
 test('an atlas is loaded once per process and a failed load is not remembered', async () => {

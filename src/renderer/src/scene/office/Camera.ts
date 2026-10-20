@@ -1,5 +1,5 @@
 import { Container } from 'pixi.js';
-import { smoothingFactor } from './frameRate';
+import { framesElapsed, smoothingFactor } from './frameRate';
 
 // Simplified port of shahar061/the-office (office/engine/camera.ts).
 // Phase targeting is dropped (we have no project phases); kept: fit-to-screen,
@@ -85,8 +85,12 @@ export class Camera {
       this.nudgeElapsed += dt;
       const t = Math.min(this.nudgeElapsed / this.nudgeDuration, 1);
       const ease = 1 - t;
-      this.currentX += this.nudgeOffsetX * ease;
-      this.currentY += this.nudgeOffsetY * ease;
+      // The offset was tuned as a per-60Hz-frame push; scale it by the frames
+      // this tick stands for so the nudge covers the same ground per second
+      // at any ticker rate.
+      const push = ease * framesElapsed(dt);
+      this.currentX += this.nudgeOffsetX * push;
+      this.currentY += this.nudgeOffsetY * push;
       if (t >= 1) {
         this.nudgeDuration = 0;
         this.nudgeOffsetX = 0;

@@ -30,3 +30,9 @@ export const smoothingFactor = compound;
 
 /** The chance to use this tick, given the per-60Hz-frame chance. */
 export const perTickChance = compound;
+
+/** How many reference frames `dt` seconds are — for a per-frame DISPLACEMENT
+ *  (a velocity, not a rate), which simply scales. */
+export function framesElapsed(dt: number): number {
+  return dt > 0 ? dt * REFERENCE_FPS : 0;
+}

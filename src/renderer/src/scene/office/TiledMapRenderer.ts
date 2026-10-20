@@ -62,7 +62,8 @@ export class TiledMapRenderer {
   private zones: Map<string, ZoneRect> = new Map();
   private characterContainer: Container;
   private rootContainer: Container;
-  /** Every sub-texture buildTileLayers cut from the atlases, for releaseTextures. */
+  /** Every sub-texture cut from the atlases — the tiles buildTileLayers paints
+   *  and the glyphs textureForGid hands out — for releaseTextures. */
   private ownedTextures: Texture[] = [];
 
   private static readonly WALKABLE_SPAWN_PREFIXES = ['desk-', 'pc-', 'warroom-', 'entrance'];
@@ -85,13 +86,15 @@ export class TiledMapRenderer {
   getContainer(): Container { return this.rootContainer; }
   getCharacterContainer(): Container { return this.characterContainer; }
 
-  /** Destroy the tile textures this renderer created. Each `new Texture` in
-   *  buildTileLayers subscribes to its atlas source's 'resize' event, and the
-   *  atlases outlive the scene now (textureCache.ts), so a rebuilt floor that
-   *  never let go of its tiles would leave the previous floor's thousands of
-   *  textures hanging off the shared atlas for the life of the process. The
-   *  sources are NOT destroyed: they are the cache's. Sprites are destroyed by
-   *  the Application's own teardown (with texture: false), so order does not
+  /** Destroy every sub-texture this renderer cut: the tiles buildTileLayers
+   *  painted and the glyphs textureForGid handed out. Each `new Texture`
+   *  subscribes to its atlas source's 'resize' event, and the atlases outlive
+   *  the scene now (textureCache.ts), so a rebuilt floor that never let go of
+   *  them would leave the previous floor's thousands of textures hanging off
+   *  the shared atlas for the life of the process. The ONE release path for
+   *  the scene: OfficeFloor calls it on teardown. The sources are NOT
+   *  destroyed: they are the cache's. Sprites are destroyed by the
+   *  Application's own teardown (with texture: false), so order does not
    *  matter; call this once the ticker is stopped. */
   releaseTextures(): void {
     for (const t of this.ownedTextures) {
@@ -129,9 +132,11 @@ export class TiledMapRenderer {
   /** A sub-texture for one tileset tile, addressed by gid — for dynamic props
    *  that reuse map art (e.g. the lit monitor variant overlaid when an agent
    *  sits down). Returns undefined for gid 0 / out-of-range.
-   *  NOTE: allocates a fresh Texture per call and the CALLER owns its lifetime
-   *  (fine for constructor-time use, kept alive by sprites; do NOT call this
-   *  per frame or the textures leak). */
+   *  NOTE: allocates a fresh Texture per call, owned by THIS renderer and
+   *  destroyed by releaseTextures() with the tiles — so a prop torn down
+   *  mid-scene (an agent removed) leaves its few glyphs until the scene goes,
+   *  and a caller must NOT destroy them itself. Fine for constructor-time use;
+   *  do NOT call this per frame or they pile up until teardown. */
   textureForGid(gid: number): Texture | undefined {
     const tileId = gid & TILE_ID_MASK;
     if (tileId === 0) return undefined;
@@ -143,7 +148,9 @@ export class TiledMapRenderer {
     const th = tileset.tileheight ?? this.tileSize;
     const localId = tileId - tileset.firstgid;
     const frame = new Rectangle((localId % cols) * tw, Math.floor(localId / cols) * th, tw, th);
-    return new Texture({ source: texture.source, frame });
+    const cut = new Texture({ source: texture.source, frame });
+    this.ownedTextures.push(cut);
+    return cut;
   }
 
   private parseCollisionLayer(): void {
