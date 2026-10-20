@@ -10,7 +10,7 @@ import { join, resolve, sep, basename, dirname, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 import { request as httpsRequest } from 'node:https';
 import { PtyManager, type SpawnOptions } from './pty';
-import { SPAWN_RETRY_DELAY_MS, SPAWN_RETRY_LOG_KIND, spawnRetryReason } from './spawnRetry';
+import { SpawnRetrier } from './spawnRetry';
 import { resolveCommand as resolveCliCommand, isSafeCommandName } from './shellEnv';
 import { initAutoUpdater, abortPendingRestart } from './updater';
 import { askToConfirmQuit } from './quitRequest';
@@ -228,11 +228,6 @@ const codexCatchupCache = new ReadingCache<number | null>(CODEX_ACTIVITY_TTL_MS)
  *  install disabled) so the freshly-installed CLI launches in the SAME pty/window —
  *  no user click. Cleared the moment it's consumed, so it can never loop installs. */
 const pendingInstallRelaunch = new Map<string, { opts: AgentSpawnOptions; owner: Electron.WebContents | null; bin: string; rung: string }>();
-/** The exact PTY spawn each live agent id was last launched with, so a launch
- *  that dies before it gets going (spawnRetry.ts) can be re-run once, as-is,
- *  into the same pty/window. `retried` flips on that one retry; the entry is
- *  replaced by every fresh spawn and dropped by teardownPty. */
-const lastSpawn = new Map<string, { opts: SpawnOptions; owner: Electron.WebContents | null; retried: boolean }>();
 const hive = new HiveManager(
   () => readConfig().harnessHome,
   (channel, payload) => {
@@ -478,7 +473,7 @@ function teardownPty(id: string): void {
   //    non-worker PTY; ensures a dead worker's token can never reach an integration.
   try { integrationBroker.revoke(id); } catch { /* best-effort */ }
   // A torn-down id has nothing left to retry (and a pending retry must not fire).
-  lastSpawn.delete(id);
+  spawnRetrier.forget(id);
   // 1) Archive the agent — retained + flagged; only live-PTY agents are active.
   const agentId = ptyToAgent.get(id);
   if (agentId) {
@@ -622,6 +617,15 @@ function removeWorkerScratch(workerId: string): void {
 // SAME pty/window (no user click). Provider-agnostic. Idempotent by construction: the
 // relaunch carries `noAutoInstall`, so the installer can never fire (let alone loop) a
 // second time — a binary that's somehow still missing just spawns and exits normally.
+const spawnRetrier = new SpawnRetrier({
+  spawn: (opts, owner) => ptyManager.spawn(opts, owner as Electron.WebContents | null),
+  isLive: (id) => ptyManager.list().some((p) => p.id === id),
+  liveWebContents: () => liveWebContents(),
+  teardown: (id) => teardownPty(id),
+  log: (event) => { try { hive.appendLog(event); } catch { /* best-effort */ } },
+  afterSpawn: () => syncKeepAwake(),
+  warn: (message) => console.warn(message)
+});
 ptyManager.setExitHandler((id, exitCode, info) => {
   // Record an ABNORMAL death before teardown — teardownPty drops the
   // pty->agent mapping, so after it runs we can no longer say WHOSE process
@@ -659,49 +663,17 @@ ptyManager.setExitHandler((id, exitCode, info) => {
     analytics.track('agent_install_finished', { provider, rung: pending.rung, outcome: 'install_failed' });
   }
   // A launch that died before it got going (exec failure, or any non-zero exit
-  // within the first two seconds) is re-run ONCE after a short delay, as-is,
-  // into the same pty/window — before the teardown below would archive the
-  // agent. The 2026-10-20 case: god's `claude` exec'd into "Permission denied"
-  // 444 ms after the app-start spawn while the CLI's npm package was being
-  // reinstalled; archiving god took the whole floor down, and the next app
-  // start spawned fine. Explicit kills never reach this handler (pty.ts drops
-  // the session before the exit fires), so only natural deaths are retried.
-  const last = lastSpawn.get(id);
-  const retryReason = last
-    ? spawnRetryReason({
-        exitCode, signal: info?.signal, uptimeMs: info?.uptimeMs, tail: info?.tail,
-        alreadyRetried: last.retried
-      })
-    : null;
-  if (last && retryReason) {
-    last.retried = true;
-    const agentId = ptyToAgent.get(id) ?? id;
-    console.warn(
-      `[pty] ${agentId} exited (code ${exitCode}) ${info?.uptimeMs ?? '?'} ms after launch (${retryReason}); ` +
-      `retrying the spawn once in ${SPAWN_RETRY_DELAY_MS} ms`
-    );
-    try {
-      hive.appendLog({
-        kind: SPAWN_RETRY_LOG_KIND, agentId, reason: retryReason, exitCode,
-        uptimeMs: info?.uptimeMs, delayMs: SPAWN_RETRY_DELAY_MS
-      });
-    } catch { /* best-effort */ }
-    setTimeout(() => {
-      // Torn down meanwhile (tab closed, archived, quit) or already replaced by
-      // a fresh spawn under the same id: nothing left to retry.
-      if (lastSpawn.get(id) !== last) return;
-      if (ptyManager.list().some((p) => p.id === id)) return;
-      // Re-arm the renderer's terminal (clear the latched "process exited" line,
-      // re-enable input) so the relaunched CLI paints onto a clean grid.
-      const wc = (last.owner && !last.owner.isDestroyed()) ? last.owner : liveWebContents();
-      try { wc?.send(`pty:relaunch:${id}`); } catch { /* window gone */ }
-      const res = ptyManager.spawn(last.opts, last.owner);
-      if (res.ok) { syncKeepAwake(); return; }
-      console.error(`[pty] retry spawn for ${agentId} failed: ${res.error}`);
-      teardownPty(id);
-    }, SPAWN_RETRY_DELAY_MS);
-    return;
-  }
+  // within the first two seconds, not ended by a person) is re-run ONCE after
+  // a short delay, as-is, into the same pty/window — before the teardown below
+  // would archive the agent (spawnRetry.ts). The 2026-10-20 case: god's
+  // `claude` exec'd into "Permission denied" 444 ms after the app-start spawn
+  // while the CLI's npm package was being reinstalled; archiving god took the
+  // whole floor down, and the next app start spawned fine. Explicit kills never
+  // reach this handler (pty.ts drops the session before the exit fires), so
+  // only natural deaths are retried.
+  if (spawnRetrier.onExit(id, ptyToAgent.get(id) ?? id, {
+    exitCode, signal: info?.signal, uptimeMs: info?.uptimeMs, tail: info?.tail, hadInput: info?.hadInput
+  })) return;
   teardownPty(id);
 });
 
@@ -3169,7 +3141,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // Everything above has settled into `opts` (flags, env, cwd, resume), so this
   // is what a launch-failure retry re-runs — not spawnAgentCore, whose
   // provisioning steps are not all repeatable.
-  if (res.ok) lastSpawn.set(opts.id, { opts, owner, retried: false });
+  if (res.ok) spawnRetrier.spawned(opts.id, opts, owner);
   syncKeepAwake(); // arm the power-save blocker while ≥1 agent PTY is alive (#18)
   // Hand the resolved worktree path back to the renderer so it can persist it on
   // the agent (only set when isolation actually provisioned a worktree above).

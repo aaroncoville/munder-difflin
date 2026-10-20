@@ -49,6 +49,8 @@ export interface PtyExitInfo {
   /** ms between the spawn and the exit — a death inside the first couple of
    *  seconds is a launch that never got going, not a session that failed. */
   uptimeMs?: number;
+  /** True when anything was written to the PTY before it exited. */
+  hadInput?: boolean;
 }
 
 interface PtySession {
@@ -58,6 +60,8 @@ interface PtySession {
   command: string;
   /** Epoch ms of the spawn, for the exit handler's uptime. */
   spawnedAt: number;
+  /** Set by write(): somebody has talked to this PTY. */
+  hadInput: boolean;
   /** The window (webContents) that spawned this PTY and should receive its
    *  output. Multi-window: each floor owns its own terminals, so `pty:data:<id>`
    *  / `pty:exit:<id>` route ONLY here — never broadcast — so one floor's stream
@@ -691,6 +695,7 @@ export class PtyManager {
         cwd: opts.cwd,
         command: resolved,
         spawnedAt: Date.now(),
+        hadInput: false,
         lastOutputAt: Date.now(),
         hasOutput: false,
         tail: '',
@@ -731,7 +736,8 @@ export class PtyManager {
             tail: session.tail,
             command: session.command,
             cwd: session.cwd,
-            uptimeMs: Math.max(0, Date.now() - session.spawnedAt)
+            uptimeMs: Math.max(0, Date.now() - session.spawnedAt),
+            hadInput: session.hadInput
           });
         } catch { /* never throw out of onExit */ }
       });
@@ -747,6 +753,7 @@ export class PtyManager {
     if (!s) return { ok: false, error: `no pty: ${id}` };
     try {
       s.proc.write(data);
+      s.hadInput = true;
       return { ok: true };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
