@@ -14,12 +14,14 @@ import { pickSoloLine, pickExchange, type BreakSpot } from './cafeteriaLines';
 import { colors } from '@/design/tokens';
 import { loadTheme, resolveThemeMap, themeTilesetUrls } from './themeLoader';
 import {
-  installContextLossRecovery, planInitFailure, shouldRunTicker, DEFAULT_MAX_INIT_RETRIES
+  installContextLossRecovery, planInitFailure, shouldRunTicker, usesWebglContext, DEFAULT_MAX_INIT_RETRIES
 } from './glRecovery';
 import { planFloorRelease } from './floorRelease';
 import {
   createOfficeMotionGate, currentOfficeMotion, REDUCED_MOTION_MEDIA_QUERY, type OfficeMotionGate
 } from './officeMotion';
+import { chooseRenderer, describeRendererChoice, type PixiRendererPreference } from './officeRenderer';
+import { webglRendererInfo } from '@/components/terminalRenderer';
 import { loadTexture } from './textureCache';
 import { perTickChance } from './frameRate';
 import type { Tile, Facing, ErrandKind, ErrandSpot } from './themeRegistry';
@@ -308,12 +310,21 @@ export function OfficeFloor() {
     const envelopes: MessageEnvelope[] = [];
     const MAX_ENVELOPES = 16;
 
+    // Which renderer this build asked for; read by the failure planner below.
+    let preference: PixiRendererPreference | undefined;
+
     const init = async () => {
       // Load the active theme bundle (falls back to 'office' on a bad/absent bundle).
       const theme = await loadTheme(officeTheme);
       // Setting × GPU probe × OS hint → frame cap and resolution (officeMotion.ts).
       const motion = gateRef.current?.decision ?? currentOfficeMotion();
+      // Canvas2D on a software GPU or the reduced path, WebGL otherwise
+      // (officeRenderer.ts): on SwiftShader every GL draw is CPU work in the
+      // GPU process; Canvas2D keeps it on this thread with no context to lose.
+      const renderer = chooseRenderer(motion.mode, webglRendererInfo().classification);
+      preference = renderer.preference;
       await app.init({
+        preference: renderer.preference,
         background: hexNum(theme.palette.background),
         antialias: motion.antialias,
         roundPixels: true,
@@ -332,6 +343,7 @@ export function OfficeFloor() {
         height: host.clientHeight || 600,
       });
       if (mountIdRef.current !== mountId) { safeDestroy(app); return; }
+      console.info(describeRendererChoice('office', app.renderer.name, motion.mode, renderer));
       // 0 is Pixi's own "uncapped"; the reduced path sets REDUCED_MOTION_MAX_FPS.
       app.ticker.maxFPS = motion.maxFPS;
       while (host.firstChild) host.removeChild(host.firstChild);
@@ -341,8 +353,9 @@ export function OfficeFloor() {
       // startup), so it is the one Chromium evicts once enough xterm terminals —
       // each of which takes a context via @xterm/addon-webgl — are open. Pixi
       // reports nothing when that happens: the floor just goes blank forever.
-      // Rebuild instead. See glRecovery.ts.
-      (app as any).__glRecovery = installContextLossRecovery(app.canvas, {
+      // Rebuild instead. See glRecovery.ts. The canvas renderer has no context
+      // to lose, so it gets no listener either.
+      if (usesWebglContext(app.renderer)) (app as any).__glRecovery = installContextLossRecovery(app.canvas, {
         // Stop the ticker before the browser can bill us for another frame.
         // Guarded on mountId like the rest: a torn-down scene's canvas must not
         // reach in and stop a ticker that now belongs to its replacement.
@@ -1817,7 +1830,7 @@ export function OfficeFloor() {
 
     init().catch((err) => {
       if (mountIdRef.current !== mountId) return;
-      const plan = planInitFailure(err, initRetriesRef.current);
+      const plan = planInitFailure(err, initRetriesRef.current, { renderer: preference });
 
       // Pixi could not get a context — usually the GPU process restarting under
       // us — and reports that as "this browser does not support WebGL". Retry
