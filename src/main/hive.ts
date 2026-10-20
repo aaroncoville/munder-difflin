@@ -1909,6 +1909,9 @@ export class HiveManager {
     if (!root) return 0;
     const agentsDir = join(root, 'agents');
     if (!existsSync(agentsDir)) return 0;
+    // A sender may remove or rename a half-written file itself; forget it, so a
+    // later file of the same name starts its own retry window.
+    for (const p of this.malformedSince.keys()) if (!existsSync(p)) this.malformedSince.delete(p);
     let routed = 0;
     for (const id of readdirSync(agentsDir)) {
       const outbox = join(agentsDir, id, 'outbox');

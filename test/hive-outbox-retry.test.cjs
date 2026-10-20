@@ -75,3 +75,47 @@ test('a .tmp file is never read', async (t) => {
   assert.equal(fs.existsSync(path.join(outbox, 'verdict.tmp')), true);
   assert.equal(hive.inbox('worker-1').length, 0);
 });
+
+test('a later file of the same name gets its own retry after a drop', async (t) => {
+  const { hive, outbox } = await floor(t);
+  const file = path.join(outbox, 'verdict.json');
+  fs.writeFileSync(file, HALF);
+  hive.routeOnce(T0);
+  hive.routeOnce(T0 + 2_000);
+  assert.equal(fs.existsSync(file), false, 'the first file was dropped');
+
+  fs.writeFileSync(file, HALF);
+  hive.routeOnce(T0 + 10_000);
+  assert.equal(fs.existsSync(file), true, 'the new file is not dropped on its first read');
+  hive.routeOnce(T0 + 12_000);
+  assert.equal(fs.existsSync(file), false);
+});
+
+test('a later file of the same name gets its own retry after a delivery', async (t) => {
+  const { hive, outbox } = await floor(t);
+  const file = path.join(outbox, 'verdict.json');
+  fs.writeFileSync(file, HALF);
+  hive.routeOnce(T0);
+  fs.writeFileSync(file, FULL);
+  assert.equal(hive.routeOnce(T0 + 1_000), 1);
+
+  fs.writeFileSync(file, HALF);
+  hive.routeOnce(T0 + 10_000);
+  assert.equal(fs.existsSync(file), true, 'the new file is not dropped on its first read');
+});
+
+test('a malformed file its sender removed does not mark a later file of the same name', async (t) => {
+  const { hive, outbox } = await floor(t);
+  const file = path.join(outbox, 'verdict.json');
+  fs.writeFileSync(file, HALF);
+  hive.routeOnce(T0);
+  fs.rmSync(file); // the sender gave up on it and will write it again
+  hive.routeOnce(T0 + 1_000);
+
+  fs.writeFileSync(file, HALF);
+  hive.routeOnce(T0 + 10_000);
+  assert.equal(fs.existsSync(file), true, 'the new file is not dropped on its first read');
+  fs.writeFileSync(file, FULL);
+  assert.equal(hive.routeOnce(T0 + 11_000), 1);
+  assert.equal(hive.inbox('worker-1').length, 0, 'no drop notice');
+});
