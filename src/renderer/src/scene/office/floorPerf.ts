@@ -11,10 +11,19 @@
  *
  * Every sample window it reports: renders/s, ticker ticks/s, rAF/s, the
  * canvas size and resolution, the renderer kind, document visibility and
- * focus, whether the ticker runs, each character's status and flags, and the
- * dirty-queue culprits — for every container queued on the stage's render
- * group at the end of a tick, its constructor name, label and a short parent
- * chain, counted over the window, top five.
+ * focus, whether the ticker runs, the cast as counts (how many, how many
+ * active and seated, how many per status), and the dirty-queue culprits —
+ * for every container queued on the stage's render group at the end of a
+ * tick, its constructor name, a class-like label and a short parent chain,
+ * counted over the window, top five.
+ *
+ * A sample is bounded and anonymous by construction, since it is written to
+ * the hive's log: no agent ids or names (they come from what the user typed),
+ * no per-character rows, status keys from a fixed list with the rest folded
+ * into 'other', at most TOP_CULPRITS culprits of at most MAX_CULPRIT_CHARS
+ * each, and a label only when it looks like an identifier (LABEL_RE), never
+ * free text. The sampler also runs the shared acceptance check before the
+ * IPC, so nothing over the byte cap is sent.
  *
  * Cost: off, nothing is installed and the per-tick path has a null check per
  * render. On, one ticker callback at priority -10 (after the simulation,
@@ -28,7 +37,7 @@
  * office settings) OR a dev build (import.meta.env.DEV, recorded once by
  * App.tsx), since the question it answers comes up on the dev build first.
  */
-import { FLOOR_PERF_KIND } from '@shared/floorPerfEvent';
+import { FLOOR_PERF_KIND, acceptFloorPerfEvent } from '@shared/floorPerfEvent';
 
 export const SAMPLE_EVERY_MS = 15_000;
 export const EARLY_SAMPLES = 20;
@@ -36,6 +45,12 @@ export const LATE_SAMPLE_EVERY_MS = 300_000;
 export const TOP_CULPRITS = 5;
 /** Distinct culprits tracked per window; the rest fold into 'other'. */
 export const MAX_CULPRITS = 64;
+/** The longest culprit description a sample carries. */
+export const MAX_CULPRIT_CHARS = 96;
+/** A container label worth reporting: a short identifier, not a name. */
+export const LABEL_RE = /^[a-z][a-z0-9_-]{0,23}$/i;
+/** The statuses a sample counts by; anything else is 'other'. */
+export const CAST_STATUSES = ['idle', 'working', 'thinking', 'waiting', 'blocked', 'compacting', 'looping', 'success', 'ghost'] as const;
 /** The ticker priority the counter runs at: after the simulation (NORMAL, 0),
  *  before the paint (LOW, -25). */
 export const COUNTER_PRIORITY = -10;
@@ -92,16 +107,47 @@ export interface RenderGroupQueues {
 }
 
 /** `Graphics#halo < Container < Container`: the constructor name, its label
- *  when it has one of its own, and up to `depth` ancestors. */
+ *  when it has one of its own that looks like an identifier (LABEL_RE — a
+ *  label can be anything, and a nameplate's would be a name), and up to
+ *  `depth` ancestors. Never longer than MAX_CULPRIT_CHARS. */
 export function describeContainer(c: ContainerLike, depth = 2): string {
   const name = (n: ContainerLike) => {
     const ctor = n.constructor?.name ?? 'Container';
-    return n.label && n.label !== ctor ? `${ctor}#${n.label}` : ctor;
+    const label = n.label;
+    return label && label !== ctor && LABEL_RE.test(label) ? `${ctor}#${label}` : ctor;
   };
   const parts = [name(c)];
   let p = c.parent;
   for (let i = 0; i < depth && p; i++) { parts.push(name(p)); p = p.parent; }
-  return parts.join(' < ');
+  return parts.join(' < ').slice(0, MAX_CULPRIT_CHARS);
+}
+
+/** One character's state, as the floor hands it over: no id, no name. */
+export interface FloorPerfCastMember {
+  status: string;
+  active: boolean;
+  seated: boolean;
+}
+
+/** The cast as counts: a fixed set of keys whatever the floor holds. */
+export interface FloorPerfCast {
+  total: number;
+  active: number;
+  seated: number;
+  byStatus: Record<(typeof CAST_STATUSES)[number] | 'other', number>;
+}
+
+/** Fold the cast into counts. Statuses outside CAST_STATUSES count as 'other'. */
+export function summarizeCast(members: readonly FloorPerfCastMember[]): FloorPerfCast {
+  const byStatus = Object.fromEntries([...CAST_STATUSES, 'other'].map((k) => [k, 0])) as FloorPerfCast['byStatus'];
+  let active = 0, seated = 0;
+  for (const m of members) {
+    const key = (CAST_STATUSES as readonly string[]).includes(m.status) ? (m.status as (typeof CAST_STATUSES)[number]) : 'other';
+    byStatus[key] += 1;
+    if (m.active) active += 1;
+    if (m.seated) seated += 1;
+  }
+  return { total: members.length, active, seated, byStatus };
 }
 
 /** Count this tick's queued containers into `into` (one per container, by
@@ -136,13 +182,6 @@ export function topCulprits(counts: Map<string, number>, n = TOP_CULPRITS): Arra
 
 /* ─── The sampler ───────────────────────────────────────────────────────── */
 
-export interface FloorPerfCharacter {
-  id: string;
-  status: string;
-  active: boolean;
-  seated: boolean;
-}
-
 export interface FloorPerfApp {
   ticker: {
     started: boolean;
@@ -169,15 +208,16 @@ export interface FloorPerfSample {
   visibility: string;
   focus: boolean;
   tickerRunning: boolean;
-  characters: FloorPerfCharacter[];
+  cast: FloorPerfCast;
   culprits: Array<{ what: string; ticks: number }>;
   tags?: Record<string, string | number | boolean>;
 }
 
 export interface FloorPerfOptions {
   app: FloorPerfApp;
-  /** The cast on this canvas; a layer with none (the Study's ambiance) omits it. */
-  characters?: () => FloorPerfCharacter[];
+  /** The cast on this canvas, statuses and flags only; a layer with none
+   *  (the Study's ambiance) omits it. */
+  cast?: () => readonly FloorPerfCastMember[];
   /** Carried on every sample as-is: which scene, which room, which cap. */
   tags?: Record<string, string | number | boolean>;
   /** Where samples go: the hive log, through window.cth.hiveLogEvent. */
@@ -204,8 +244,10 @@ export function createFloorPerf(opts: FloorPerfOptions): FloorPerf {
   const now = opts.now ?? (() => performance.now());
   const schedule = opts.schedule ?? ((fn: () => void, ms: number) => setTimeout(fn, ms));
   const cancel = opts.cancel ?? ((h: unknown) => clearTimeout(h as ReturnType<typeof setTimeout>));
-  const requestFrame = opts.requestFrame ?? ((fn: () => void) => requestAnimationFrame(fn));
-  const cancelFrame = opts.cancelFrame ?? ((h: unknown) => cancelAnimationFrame(h as number));
+  // No rAF (a test host): no frame count, and nothing else lost.
+  const hasRaf = typeof requestAnimationFrame === 'function';
+  const requestFrame = opts.requestFrame ?? ((fn: () => void) => (hasRaf ? requestAnimationFrame(fn) : null));
+  const cancelFrame = opts.cancelFrame ?? ((h: unknown) => { if (hasRaf && h !== null) cancelAnimationFrame(h as number); });
   const doc = opts.doc ?? (typeof document !== 'undefined' ? document : { visibilityState: 'unknown', hasFocus: () => false });
 
   let ticks = 0, dirtyTicks = 0, renders = 0, frames = 0;
@@ -245,7 +287,7 @@ export function createFloorPerf(opts: FloorPerfOptions): FloorPerf {
       visibility: doc.visibilityState,
       focus: doc.hasFocus(),
       tickerRunning: opts.app.ticker.started,
-      characters: opts.characters?.() ?? [],
+      cast: summarizeCast(opts.cast?.() ?? []),
       culprits: topCulprits(culprits),
       ...(opts.tags ? { tags: opts.tags } : {})
     };
@@ -259,7 +301,12 @@ export function createFloorPerf(opts: FloorPerfOptions): FloorPerf {
     timer = schedule(() => {
       timer = null;
       if (disposed) return;
-      try { opts.log(sample()); } catch { /* a diagnostic must never take the floor down */ }
+      try {
+        const s = sample();
+        // The shared acceptance check, before the IPC: an oversized sample
+        // is dropped here, not in main.
+        if (acceptFloorPerfEvent(s)) opts.log(s);
+      } catch { /* a diagnostic must never take the floor down */ }
       samples += 1;
       arm();
     }, sampleIntervalMs(samples));

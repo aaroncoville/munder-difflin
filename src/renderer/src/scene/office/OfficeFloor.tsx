@@ -375,10 +375,11 @@ export function OfficeFloor() {
       if (floorPerfEnabled()) {
         perf = createFloorPerf({
           app,
-          characters: () => {
+          // Statuses and flags only — no ids, no names: the sample goes to
+          // the hive's log.
+          cast: () => {
             const agents = useStore.getState().agents;
             return [...runtimes].map(([id, rt]) => ({
-              id,
               status: agents.find((a) => a.id === id)?.status ?? 'unknown',
               active: rt.character.isActive(),
               seated: rt.character.isSittingAtDesk()
@@ -388,8 +389,10 @@ export function OfficeFloor() {
         });
         (app as any).__perf = perf;
       }
+      // The render callback is chosen once: diagnostics off, the plain
+      // render; on, the counted one. Nothing per render when off.
       const paint = createRenderOnChange({
-        render: () => { app.render(); perf?.onRender(); },
+        render: perf ? () => { app.render(); perf.onRender(); } : () => app.render(),
         changed: () => sceneChangedSinceRender(app.stage.renderGroup),
         decision: () => gateRef.current?.decision ?? motion
       });

@@ -300,7 +300,8 @@ test('OfficeFloor takes the TickerPlugin render off the ticker and drives its ow
   assert.ok(i > 0);
   const call = src.slice(i, src.indexOf('});', i));
   // The paint draws, then tells the floor-perf diagnostic (floorPerf.ts).
-  assert.match(call, /render: \(\) => \{ app\.render\(\); perf\?\.onRender\(\); \},/);
+  assert.match(call, /render: perf \? \(\) => \{ app\.render\(\); perf\.onRender\(\); \} : \(\) => app\.render\(\),/,
+    'the render callback is chosen once; nothing per render when diagnostics are off');
   assert.match(call, /changed: \(\) => sceneChangedSinceRender\(app\.stage\.renderGroup\),/);
   assert.match(call, /decision: \(\) => gateRef\.current\?\.decision \?\? motion/, 'the decision must be the live one');
   assert.match(src, /app\.renderer\.on\('resize', paint\.invalidate\);/, 'a resize clears the canvas; it must force a draw');

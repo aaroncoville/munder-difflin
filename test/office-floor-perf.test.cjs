@@ -43,7 +43,7 @@ function harness(a, extra = {}) {
   const logged = [];
   const p = perf.createFloorPerf({
     app: a,
-    characters: () => [{ id: 'god', status: 'idle', active: false, seated: true }],
+    cast: () => [{ status: 'idle', active: false, seated: true }, { status: 'working', active: true, seated: true }, { status: 'daydreaming', active: false, seated: false }],
     log: (s) => logged.push(s),
     now: () => t,
     schedule: (fn, ms) => { const h = { fn, ms, at: t + ms }; timers.push(h); return h; },
@@ -133,7 +133,9 @@ test('a sample: rates over the window, dirty ticks, culprits by description, and
   assert.equal(s.visibility, 'visible');
   assert.equal(s.focus, true);
   assert.equal(s.tickerRunning, true);
-  assert.deepEqual(s.characters, [{ id: 'god', status: 'idle', active: false, seated: true }]);
+  assert.deepEqual(s.cast, { total: 3, active: 1, seated: 2, byStatus: { idle: 1, working: 1, thinking: 0, waiting: 0, blocked: 0, compacting: 0, looping: 0, success: 0, ghost: 0, other: 1 } });
+  assert.equal('characters' in s, false, 'no per-character rows in a sample');
+  assert.doesNotMatch(JSON.stringify(s), /god|daydream/, 'no ids or free text');
   assert.deepEqual(s.culprits, [
     { what: 'xform: Graphics#halo < Container#world < Container', ticks: 30 },
     { what: 'view: Sprite < Container#world < Container', ticks: 10 }
@@ -190,13 +192,37 @@ test('top five culprits, largest first; past 64 distinct ones the rest fold into
   assert.equal(perf.countCulprits(groupOf(0), new Map()), false);
 });
 
-test('describeContainer: constructor, own label, two ancestors', () => {
+test('describeContainer: constructor, an identifier-like label, two ancestors; names and free text are dropped, length is capped', () => {
   const root = { constructor: { name: 'Container' }, label: 'Container', parent: null };
   const mid = { constructor: { name: 'Container' }, label: 'world', parent: root };
   const leaf = { constructor: { name: 'Graphics' }, label: null, parent: mid };
   assert.equal(perf.describeContainer(leaf), 'Graphics < Container#world < Container');
   assert.equal(perf.describeContainer(leaf, 1), 'Graphics < Container#world');
   assert.equal(perf.describeContainer(leaf, 0), 'Graphics');
+  const named = { constructor: { name: 'Text' }, label: 'Dwight Schrute', parent: mid };
+  assert.equal(perf.describeContainer(named), 'Text < Container#world < Container', 'a label with a space is a name, not a class');
+  const pathy = { constructor: { name: 'Sprite' }, label: '/Users/someone/project', parent: null };
+  assert.equal(perf.describeContainer(pathy), 'Sprite');
+  const long = { constructor: { name: 'X'.repeat(200) }, label: null, parent: null };
+  assert.equal(perf.describeContainer(long).length, perf.MAX_CULPRIT_CHARS);
+});
+
+test('summarizeCast: fixed keys, unknown statuses fold into other, nothing else is kept', () => {
+  const c = perf.summarizeCast([]);
+  assert.deepEqual(Object.keys(c.byStatus), [...perf.CAST_STATUSES, 'other']);
+  assert.equal(c.total, 0);
+  const d = perf.summarizeCast([{ status: 'blocked', active: false, seated: false, id: 'leak', name: 'Leak' }]);
+  assert.deepEqual(Object.keys(d), ['total', 'active', 'seated', 'byStatus']);
+  assert.equal(d.byStatus.blocked, 1);
+});
+
+test('a sample that would not pass the shared acceptance check is not handed to the sink', () => {
+  const a = app();
+  const h = harness(a, { tags: { pad: 'x'.repeat(9000) } });
+  h.advance(15_000); h.fire();
+  assert.equal(h.logged.length, 0, 'an oversized sample must be dropped before the IPC');
+  assert.equal(h.timers.length, 1, 'and the sampler goes on');
+  h.p.dispose();
 });
 
 test('schedule: every 15 s for the first 20 samples, every 5 min after, logged through the sink', () => {
@@ -243,7 +269,7 @@ test('a sampler without a cast carries its tags on every sample', () => {
   });
   t = 15_000;
   const s = p.sample();
-  assert.deepEqual(s.characters, []);
+  assert.equal(s.cast.total, 0);
   assert.deepEqual(s.tags, { scene: 'study', room: 'library', maxFPS: 6 });
   p.dispose();
 });
