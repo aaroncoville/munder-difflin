@@ -189,3 +189,30 @@ test('the floor rolls the chat through perTickChance and lerps through smoothing
   assert.match(camera, /const push = ease \* effectiveFrames\(LERP_SPEED, dt\);/);
   assert.doesNotMatch(camera, /nudgeOffset[XY] \* ease;/, 'a per-tick nudge is back');
 });
+
+// An exponential lerp never arrives: after a pan it kept writing the world's
+// position by a millionth of a pixel a tick for seconds — invisible under
+// roundPixels, but a change the floor renders every tick (renderOnChange.ts).
+// Within SNAP_PX / SNAP_ZOOM of the target it lands exactly and stops writing.
+test('the camera lands on its target and stops moving, within a couple of seconds', () => {
+  const { SNAP_PX, SNAP_ZOOM } = loadTs('src/renderer/src/scene/office/Camera.ts');
+  assert.ok(SNAP_PX > 0 && SNAP_PX <= 0.01 && SNAP_ZOOM > 0 && SNAP_ZOOM <= 1e-4);
+  const container = { x: 0, y: 0, scale: { set(v) { this.x = v; }, x: 1 } };
+  const cam = new Camera(container);
+  cam.setMapSize(640, 480);
+  cam.setViewSize(320, 240);
+  cam.focusOn(400, 300, 2);
+  let landedAt = -1;
+  for (let i = 0; i < 15 * 10; i++) {
+    const [x, y, z] = [container.x, container.y, container.scale.x];
+    cam.update(1 / 15);
+    if (container.x === x && container.y === y && container.scale.x === z) { landedAt = i; break; }
+  }
+  assert.ok(landedAt >= 0, 'the camera never stopped writing the world');
+  assert.ok(landedAt < 15 * 3, `landed after ${landedAt} ticks; expected within 3 s`);
+  for (let i = 0; i < 150; i++) {
+    const [x, y, z] = [container.x, container.y, container.scale.x];
+    cam.update(1 / 15);
+    assert.equal(container.x, x); assert.equal(container.y, y); assert.equal(container.scale.x, z);
+  }
+});

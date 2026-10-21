@@ -10,6 +10,21 @@ import { effectiveFrames, smoothingFactor } from './frameRate';
  *  wall time whatever the ticker's rate (the reduced path runs it at 15). */
 export const LERP_SPEED = 0.08;
 
+/** How close the lerp has to get before it snaps to the target. An
+ *  exponential lerp never arrives: after a pan it keeps writing the world's
+ *  position by a millionth of a pixel a tick for seconds, invisible under
+ *  roundPixels but a change the floor renders every tick (renderOnChange.ts).
+ *  Below a thousandth of a pixel (a millionth in zoom) the next frame is the
+ *  same pixels, so land there. */
+export const SNAP_PX = 1e-3;
+export const SNAP_ZOOM = 1e-6;
+
+/** One lerp step toward `target`, landing exactly once within `snap`. */
+function approach(current: number, target: number, k: number, snap: number): number {
+  const d = target - current;
+  return Math.abs(d) < snap ? target : current + d * k;
+}
+
 export class Camera {
   private container: Container;
   private currentX = 0;
@@ -77,9 +92,9 @@ export class Camera {
 
   update(dt: number): void {
     const k = smoothingFactor(LERP_SPEED, dt);
-    this.currentX += (this.targetX - this.currentX) * k;
-    this.currentY += (this.targetY - this.currentY) * k;
-    this.currentZoom += (this.targetZoom - this.currentZoom) * k;
+    this.currentX = approach(this.currentX, this.targetX, k, SNAP_PX);
+    this.currentY = approach(this.currentY, this.targetY, k, SNAP_PX);
+    this.currentZoom = approach(this.currentZoom, this.targetZoom, k, SNAP_ZOOM);
 
     if (this.nudgeDuration > 0) {
       this.nudgeElapsed += dt;
