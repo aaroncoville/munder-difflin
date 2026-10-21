@@ -336,6 +336,9 @@ export interface HarnessConfig {
    *  software GPU or with OS reduced motion; 'full' / 'reduced' force it.
    *  Mirrors src/main/config.ts. */
   officeMotion?: 'auto' | 'full' | 'reduced';
+  /** Floor performance samples in the hive log (dev builds always sample).
+   *  Mirrors src/main/config.ts. */
+  officeDiagnostics?: boolean;
   /** Per-CLI-provider local/self-hosted base URL (Ollama/LM Studio/vLLM, …) for the
    *  OpenCode/Crush/pi/qwen engines; applied at spawn. API KEYS are NOT stored here —
    *  they live write-only in the secret broker. */
@@ -791,6 +794,11 @@ const api = {
   hiveBoard: (): Promise<string> => ipcRenderer.invoke('hive:board'),
   hiveTasks: (): Promise<unknown> => ipcRenderer.invoke('hive:tasks'),
   hiveLog: (n?: number): Promise<unknown[]> => ipcRenderer.invoke('hive:log', n ?? 200),
+  /** Append a floor performance sample to the hive log. Main accepts kind
+   *  'floor-perf' only, size-capped (shared/floorPerfEvent.ts); anything else
+   *  is dropped, not an error. */
+  hiveLogEvent: (event: Record<string, unknown>): Promise<boolean> =>
+    ipcRenderer.invoke('hive:logEvent', event).then((ok) => ok === true, () => false),
   hiveMemory: (id: string): Promise<string> => ipcRenderer.invoke('hive:memory', id),
   hiveInbox: (id: string): Promise<HiveMessage[]> => ipcRenderer.invoke('hive:inbox', id),
   /** Voice read-layer: recent message CONTENT (inbox/outbox bodies), REDACTED in

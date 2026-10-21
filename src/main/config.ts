@@ -351,6 +351,11 @@ export interface HarnessConfig {
    *  'full' / 'reduced' force either way. (Mirrored in preload + renderer
    *  config; decided in src/renderer/src/scene/office/officeMotion.ts.) */
   officeMotion?: 'auto' | 'full' | 'reduced';
+  /** Office floor performance samples (kind 'floor-perf') in the hive log,
+   *  every 15 s then every 5 min: renders/s, ticks/s, what queued a redraw.
+   *  Dev builds sample regardless. Mirrored in preload + renderer config;
+   *  read in src/renderer/src/scene/office/floorPerf.ts. Default off. */
+  officeDiagnostics?: boolean;
   /** Per-CLI-provider local/self-hosted base URL (Ollama/LM Studio/vLLM, …) for the
    *  OpenCode/Crush/pi/qwen engines; applied at spawn (config-injection or proxy
    *  upstream). API KEYS are NOT stored here — they live write-only in the secret
@@ -490,6 +495,7 @@ const DEFAULTS: HarnessConfig = {
   officeTheme: 'office',
   terminalRenderer: 'auto',
   officeMotion: 'auto',
+  officeDiagnostics: false,
   slackEnabled: false,
   slackSigningSecret: undefined,
   slackBotToken: undefined,

@@ -23,6 +23,7 @@ import {
 } from './config';
 import { listDir, readFileText, readFileBinary, writeFileText, statAbs, expandTilde } from './fs';
 import { normalizeWeekly, weeklyDelayMs } from '../shared/weeklySchedule';
+import { acceptFloorPerfEvent } from '../shared/floorPerfEvent';
 import {
   getBranch, getStatus, getLog, getBranches, getAheadBehind, isRepo, getDiff, mainRepoRoot,
   addWorktree, removeWorktree, worktreeHasUnintegratedWork, worktreeIsGcSafe,
@@ -3635,6 +3636,14 @@ ipcMain.handle('hive:setAgentHold', (_evt, id: unknown, hold: unknown) => {
 ipcMain.handle('hive:board', () => hive.board());
 ipcMain.handle('hive:tasks', () => hive.tasks());
 ipcMain.handle('hive:log', (_evt, n: unknown) => hive.logTail(typeof n === 'number' ? n : 200));
+// The renderer's one write into the hive log: a floor performance sample
+// (renderer/scene/office/floorPerf.ts). Kind-whitelisted and size-capped in
+// shared/floorPerfEvent.ts; a refused payload is dropped and reported false.
+ipcMain.handle('hive:logEvent', (_evt, raw: unknown) => {
+  const event = acceptFloorPerfEvent(raw);
+  if (!event) return false;
+  try { hive.appendLog(event); return true; } catch { return false; }
+});
 ipcMain.handle('hive:memory', (_evt, id: unknown) => (typeof id === 'string' ? hive.memory(id) : ''));
 ipcMain.handle('hive:inbox', (_evt, id: unknown) => (typeof id === 'string' ? hive.inbox(id) : []));
 // Voice read-layer: recent message CONTENT (inbox/outbox bodies), REDACTED
