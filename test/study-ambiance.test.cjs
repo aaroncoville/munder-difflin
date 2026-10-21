@@ -521,13 +521,15 @@ function stagePixi() {
       this.ticker = { maxFPS: 0, add: (fn) => record.ticks.push(fn), remove: () => {} };
       record.apps.push(this);
     }
-    // Pixi's sizing, enough of it to tell: the backing store is the logical
-    // size times the resolution, and the CSS size stays the logical size only
-    // with autoDensity — without it the element takes the backing size.
+    // Pixi 8's sizing, enough of it to tell (AbstractRenderer, ViewSystem):
+    // renderer.width/height are the LOGICAL size (the view texture's frame),
+    // canvas.width/height the backing pixels (logical x resolution), and the
+    // element's CSS size is the logical size only with autoDensity — without
+    // it the element takes the backing size.
     async init(options) {
       this.options = options; record.inits.push(options);
       const res = options.resolution ?? 1;
-      this.renderer = { name: 'canvas', resolution: res, width: options.width * res, height: options.height * res };
+      this.renderer = { name: 'canvas', resolution: res, width: options.width, height: options.height };
       this.canvas.width = options.width * res; this.canvas.height = options.height * res;
       const css = options.autoDensity ? { w: options.width, h: options.height } : { w: this.canvas.width, h: this.canvas.height };
       this.canvas.style.width = `${css.w}px`; this.canvas.style.height = `${css.h}px`;
@@ -626,7 +628,8 @@ test('a lit room: one Application, capped and at the reduced resolution, the CSS
     assert.equal(app.ticker.maxFPS, 6, 'the reduced cap');
     assert.equal(app.options.resolution, 0.5, 'the reduced resolution');
     assert.equal(app.options.autoDensity, true, 'autoDensity keeps the CSS size at the logical size');
-    assert.deepEqual([app.renderer.width, app.renderer.height], [320, 180], 'the backing store is half the panel');
+    assert.deepEqual([app.renderer.width, app.renderer.height], [640, 360], 'the logical size is the panel');
+    assert.deepEqual([app.canvas.width, app.canvas.height], [320, 180], 'the backing store is half the panel');
     assert.deepEqual([app.canvas.style.width, app.canvas.style.height], ['640px', '360px'], 'the CSS size is still the panel');
     assert.equal(h.record.ticks.length, 1);
     const motes = app.stage.children.filter((g) => g.label === 'mote');
@@ -646,7 +649,8 @@ test('the full path keeps the uncapped layer at device pixels', async () => {
     assert.equal(app.ticker.maxFPS, 0);
     assert.equal(app.options.resolution, 2);
     assert.equal(app.options.autoDensity, true);
-    assert.deepEqual([app.renderer.width, app.renderer.height], [1280, 720], 'device pixels');
+    assert.deepEqual([app.renderer.width, app.renderer.height], [640, 360], 'logical');
+    assert.deepEqual([app.canvas.width, app.canvas.height], [1280, 720], 'device pixels');
     assert.deepEqual([app.canvas.style.width, app.canvas.style.height], ['640px', '360px']);
   } finally { h.unmount(); }
 });
