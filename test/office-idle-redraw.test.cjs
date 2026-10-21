@@ -369,3 +369,28 @@ test('a working agent sits down typing when it reaches its desk, and a café sea
   c.setActive(true);
   assert.equal(c.getAnimation(), 'type');
 });
+
+test('the camera lands after a resize in fit mode and the real render group goes quiet', () => {
+  const sc = scene({ askCount: 0 });
+  sc.c.sitAtDesk(true);
+  sc.c.setActive(false);
+  sc.run(60);
+  assert.equal(sc.run(30), 0, 'quiet before the resize');
+  sc.camera.setViewSize(480, 360);   // fit mode: new targets for x, y and zoom
+  const before = { x: sc.world.x, y: sc.world.y, z: sc.world.scale.x };
+  let landedAt = -1;
+  for (let i = 0; i < 150; i++) {
+    const [x, y, z] = [sc.world.x, sc.world.y, sc.world.scale.x];
+    const dirty = sc.run(1);
+    if (!dirty) { landedAt = i; break; }
+    assert.ok(x !== sc.world.x || y !== sc.world.y || z !== sc.world.scale.x, 'a dirty tick must come from the camera moving');
+  }
+  assert.ok(landedAt > 0, 'the resize must move the world');
+  assert.ok(landedAt < 45, `landed after ${landedAt} ticks; expected within 3 s`);
+  assert.notDeepEqual({ x: sc.world.x, y: sc.world.y, z: sc.world.scale.x }, before);
+  // Fit: the 160x160 map centred in 480x360 at zoom min(480/160, 360/160) = 2.25.
+  assert.equal(sc.world.scale.x, 2.25);
+  assert.equal(sc.world.x, (480 - 160 * 2.25) / 2);
+  assert.equal(sc.world.y, 0);
+  assert.equal(sc.run(150), 0, 'landed: nothing queued for ten seconds');
+});

@@ -194,7 +194,7 @@ test('the floor rolls the chat through perTickChance and lerps through smoothing
 // position by a millionth of a pixel a tick for seconds — invisible under
 // roundPixels, but a change the floor renders every tick (renderOnChange.ts).
 // Within SNAP_PX / SNAP_ZOOM of the target it lands exactly and stops writing.
-test('the camera lands on its target and stops moving, within a couple of seconds', () => {
+test('the camera converges monotonically, snaps within the threshold, lands on the clamped target and stops', () => {
   const { SNAP_PX, SNAP_ZOOM } = loadTs('src/renderer/src/scene/office/Camera.ts');
   assert.ok(SNAP_PX > 0 && SNAP_PX <= 0.01 && SNAP_ZOOM > 0 && SNAP_ZOOM <= 1e-4);
   const container = { x: 0, y: 0, scale: { set(v) { this.x = v; }, x: 1 } };
@@ -202,14 +202,36 @@ test('the camera lands on its target and stops moving, within a couple of second
   cam.setMapSize(640, 480);
   cam.setViewSize(320, 240);
   cam.focusOn(400, 300, 2);
+  // Camera space: focusOn(400, 300, zoom 2) on a 640x480 map in a 320x240 view
+  // (min zoom 0.5). World space, after the edge clamp: x = 160 - 400*2 = -640
+  // (within [320-1280, 0]), y = 120 - 300*2 = -480 (within [240-960, 0]).
+  const target = { x: 400, y: 300, zoom: 2 };
+  const world = { x: -640, y: -480, zoom: 2 };
   let landedAt = -1;
+  let lastGap = { x: Infinity, y: Infinity, zoom: Infinity };
+  let lastStep = null;
   for (let i = 0; i < 15 * 10; i++) {
-    const [x, y, z] = [container.x, container.y, container.scale.x];
+    const was = { x: cam.currentX, y: cam.currentY, zoom: cam.currentZoom };
+    const prev = [container.x, container.y, container.scale.x];
     cam.update(1 / 15);
-    if (container.x === x && container.y === y && container.scale.x === z) { landedAt = i; break; }
+    const gap = { x: Math.abs(target.x - cam.currentX), y: Math.abs(target.y - cam.currentY), zoom: Math.abs(target.zoom - cam.currentZoom) };
+    // Monotonic: every tick is at least as close as the last, on every axis.
+    assert.ok(gap.x <= lastGap.x && gap.y <= lastGap.y && gap.zoom <= lastGap.zoom, `tick ${i} moved away from the target`);
+    if (cam.currentX !== was.x || cam.currentY !== was.y || cam.currentZoom !== was.zoom) {
+      lastStep = { x: Math.abs(target.x - was.x), y: Math.abs(target.y - was.y), zoom: Math.abs(target.zoom - was.zoom) };
+    }
+    lastGap = gap;
+    if (container.x === prev[0] && container.y === prev[1] && container.scale.x === prev[2]) { landedAt = i; break; }
   }
-  assert.ok(landedAt >= 0, 'the camera never stopped writing the world');
+  assert.ok(landedAt > 0, 'the camera must move at all before it lands');
   assert.ok(landedAt < 15 * 3, `landed after ${landedAt} ticks; expected within 3 s`);
+  // Landed means ON the target, exactly, after a last step from inside the
+  // snap threshold — not a lerp that merely stopped changing.
+  assert.equal(cam.currentX, target.x); assert.equal(cam.currentY, target.y); assert.equal(cam.currentZoom, target.zoom);
+  assert.equal(container.x, world.x); assert.equal(container.y, world.y); assert.equal(container.scale.x, world.zoom);
+  assert.ok(lastStep && lastStep.x < SNAP_PX && lastStep.y < SNAP_PX && lastStep.zoom < SNAP_ZOOM,
+    `the final step must be a snap from within the threshold, was ${JSON.stringify(lastStep)}`);
+  assert.ok(lastStep.x > 0 || lastStep.y > 0 || lastStep.zoom > 0, 'the final step must close a real gap');
   for (let i = 0; i < 150; i++) {
     const [x, y, z] = [container.x, container.y, container.scale.x];
     cam.update(1 / 15);
