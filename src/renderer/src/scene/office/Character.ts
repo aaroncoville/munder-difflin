@@ -4,6 +4,7 @@ import { findPath } from './pathfinding';
 import type { TiledMapRenderer } from './TiledMapRenderer';
 import { ThoughtBubble } from './ThoughtBubble';
 import { colors } from '@/design/tokens';
+import { ambientBeat, ambientBeatTime, ambientClock } from './ambientBeat';
 
 // Adapted from shahar061/the-office (office/characters/Character.ts).
 // Differences: keyed by our dynamic agentId (not a fixed role); seat tile +
@@ -29,6 +30,9 @@ export type StatusGlyph = 'none' | 'blocked' | 'success' | 'compacting' | 'loopi
  *    actively working (isActiveStatus). Parked at the desk between tasks the
  *    halo holds a steady value — the pulse's midpoint — so the setters, which
  *    compare first, queue nothing.
+ *  - A parked cup steams on the shared ambient beat (ambientBeat.ts), not
+ *    every tick, and goes cold after CUP_STEAM_S: drawn once more without
+ *    steam, then left alone.
  */
 
 /** Statuses in which the agent is doing work right now, as opposed to parked
@@ -46,6 +50,9 @@ export const GLOW_PULSE_SCALE_RANGE = 0.15;
 /** The halo while the agent is parked: the pulse's midpoint, held. */
 export const GLOW_STEADY_ALPHA = GLOW_PULSE_MIN_ALPHA + GLOW_PULSE_ALPHA_RANGE / 2;
 export const GLOW_STEADY_SCALE = GLOW_PULSE_MIN_SCALE + GLOW_PULSE_SCALE_RANGE / 2;
+
+/** How long a cup parked on a desk steams before it is drawn cold. */
+export const CUP_STEAM_S = 90;
 
 function lerp(a: number, b: number, t: number): number {
   const tt = Math.min(Math.max(t, 0), 1);
@@ -87,6 +94,8 @@ const SEAT_BACK_CROP = 2;
 // then sits at its desk for DESK_REST_SECONDS, and repeats. Working agents skip
 // this entirely (they stay seated via sitAtDesk).
 const IDLE_LINGER_SECONDS = 30;
+/** `cupBeat` once a parked cup has been drawn cold (deskCupBeat). */
+const COLD_CUP = -2;
 const DESK_REST_SECONDS = 30;
 
 // Nameplate. Small and thinly outlined on purpose: a dozen of these on screen
@@ -187,6 +196,12 @@ export class Character {
    *  layer so it survives the agent walking away). */
   private deskCup: Graphics;
   private deskCupOn = false;
+  /** The ambient clock when the cup was parked: its steam runs CUP_STEAM_S
+   *  from here. */
+  private cupPlacedAt = 0;
+  /** The ambient beat the cup was last drawn on; -1 = needs drawing, COLD =
+   *  drawn without steam, final. */
+  private cupBeat = -1;
   private cupSpot: { x: number; y: number } | null = null;
   private waterT = -1;                // -1 = not watering
   private waterDur = 0;
@@ -554,8 +569,20 @@ export class Character {
     if (!this.cupSpot) return;
     this.deskCupOn = on;
     this.deskCup.visible = on;
-    if (on) this.drawCup(this.deskCup, 0, 0);
-    else this.deskCup.clear();
+    if (on) {
+      this.cupPlacedAt = ambientClock();
+      this.cupBeat = -1; // the next updateFx draws it, steam and all
+      this.drawCup(this.deskCup, 0, 0);
+    } else {
+      this.deskCup.clear();
+    }
+  }
+
+  /** The beat to draw the parked cup for: the shared ambient beat while it
+   *  steams, COLD_CUP once it has sat CUP_STEAM_S. The cup is redrawn only
+   *  when this changes. */
+  private deskCupBeat(): number {
+    return ambientClock() - this.cupPlacedAt >= CUP_STEAM_S ? COLD_CUP : ambientBeat();
   }
 
   hasCupOnDesk(): boolean {
@@ -761,14 +788,23 @@ export class Character {
     this.steamT += dt;
 
     // ── Desk cup (world-anchored, persists while the agent roams) ───────────
+    // Redrawn on the shared ambient beat while it steams, once more cold, and
+    // then left alone: a Graphics redraw is a change the floor has to render.
     if (this.deskCupOn && this.cupSpot) {
-      this.deskCup.clear();
-      this.drawCup(this.deskCup, 0, 0);
-      // two staggered steam pixels drifting up and fading
-      for (let i = 0; i < 2; i++) {
-        const ph = (this.steamT * 0.7 + i * 0.5) % 1;
-        this.deskCup.rect(1 + i * 2, -5 - Math.round(ph * 5), 1, 1)
-          .fill({ color: 0xffffff, alpha: 0.5 * (1 - ph) });
+      const beat = this.deskCupBeat();
+      if (beat !== this.cupBeat) {
+        this.cupBeat = beat;
+        this.deskCup.clear();
+        this.drawCup(this.deskCup, 0, 0);
+        if (beat !== COLD_CUP) {
+          // two staggered steam pixels drifting up and fading
+          const t = ambientBeatTime() - this.cupPlacedAt;
+          for (let i = 0; i < 2; i++) {
+            const ph = (t * 0.7 + i * 0.5) % 1;
+            this.deskCup.rect(1 + i * 2, -5 - Math.round(ph * 5), 1, 1)
+              .fill({ color: 0xffffff, alpha: 0.5 * (1 - ph) });
+          }
+        }
       }
     }
 

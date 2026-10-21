@@ -146,3 +146,25 @@ test('working, the halo pulses: a change on every tick, within the pulse range',
   assert.equal(run(s, c, 60), 0);
   assert.ok(Math.abs(g.alpha - GLOW_STEADY_ALPHA) < 1e-9);
 });
+
+test('a parked cup steams on the shared 4 Hz beat, then goes cold and is left alone', () => {
+  beat.resetAmbientClock();
+  const s = stage();
+  const c = character(s);
+  c.sitAtDesk(true);
+  c.setActive(false);
+  run(s, c, 30);
+  c.setCupSpot({ x: 40, y: 40 });
+  c.setCupOnDesk(true);
+  const steaming = run(s, c, 150); // 10 s
+  assert.ok(steaming >= 39 && steaming <= 42, `steam at 4 Hz: ~40 redraws in 10 s, got ${steaming} (was 150)`);
+  // Run the clock to just short of cold, then over it.
+  const left = CUP_STEAM_S - 10 - 1;
+  for (let i = 0; i < left * 15; i++) { beat.advanceAmbientClock(DT); c.update(DT); settle(s); }
+  const cooling = run(s, c, 45); // the last second of steam + the cold frame
+  assert.ok(cooling >= 4 && cooling <= 6, `the last steam frames and one cold draw, got ${cooling}`);
+  assert.equal(run(s, c, 150), 0, 'a cold cup must queue nothing');
+  c.setCupOnDesk(false);
+  assert.equal(run(s, c, 1), 1, 'clearing the cup is a change');
+  assert.equal(run(s, c, 30), 0);
+});
