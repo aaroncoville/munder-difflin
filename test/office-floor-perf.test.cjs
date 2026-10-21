@@ -203,8 +203,21 @@ test('describeContainer: constructor, an identifier-like label, two ancestors; n
   assert.equal(perf.describeContainer(named), 'Text < Container#world < Container', 'a label with a space is a name, not a class');
   const pathy = { constructor: { name: 'Sprite' }, label: '/Users/someone/project', parent: null };
   assert.equal(perf.describeContainer(pathy), 'Sprite');
+  // The cap is on the whole key, prefix included: the queue's name never
+  // pushes a key past MAX_CULPRIT_CHARS.
   const long = { constructor: { name: 'X'.repeat(200) }, label: null, parent: null };
-  assert.equal(perf.describeContainer(long).length, perf.MAX_CULPRIT_CHARS);
+  assert.equal(perf.culpritKey('xform', long).length, perf.MAX_CULPRIT_CHARS);
+  assert.equal(perf.culpritKey('view', long).length, perf.MAX_CULPRIT_CHARS);
+  assert.ok(perf.culpritKey('xform', long).startsWith('xform: XXX'));
+  const counts = new Map();
+  perf.countCulprits({
+    structureDidChange: false,
+    childrenToUpdate: { 1: { index: 1, list: [long] } },
+    childrenRenderablesToUpdate: { index: 1, list: [long] },
+    renderGroupChildren: []
+  }, counts);
+  for (const { what } of perf.topCulprits(counts)) assert.ok(what.length <= perf.MAX_CULPRIT_CHARS, `key of ${what.length} chars in a sample`);
+  assert.equal(counts.size, 2, 'xform and view keys for the same container stay distinct');
 });
 
 test('summarizeCast: fixed keys, unknown statuses fold into other, nothing else is kept', () => {

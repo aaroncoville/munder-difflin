@@ -45,7 +45,8 @@ export const LATE_SAMPLE_EVERY_MS = 300_000;
 export const TOP_CULPRITS = 5;
 /** Distinct culprits tracked per window; the rest fold into 'other'. */
 export const MAX_CULPRITS = 64;
-/** The longest culprit description a sample carries. */
+/** The longest culprit key a sample carries, prefix ('xform: ', 'view: ')
+ *  included. */
 export const MAX_CULPRIT_CHARS = 96;
 /** A container label worth reporting: a short identifier, not a name. */
 export const LABEL_RE = /^[a-z][a-z0-9_-]{0,23}$/i;
@@ -109,7 +110,8 @@ export interface RenderGroupQueues {
 /** `Graphics#halo < Container < Container`: the constructor name, its label
  *  when it has one of its own that looks like an identifier (LABEL_RE — a
  *  label can be anything, and a nameplate's would be a name), and up to
- *  `depth` ancestors. Never longer than MAX_CULPRIT_CHARS. */
+ *  `depth` ancestors. The length cap is applied to the complete culprit key
+ *  (culpritKey), prefix included. */
 export function describeContainer(c: ContainerLike, depth = 2): string {
   const name = (n: ContainerLike) => {
     const ctor = n.constructor?.name ?? 'Container';
@@ -119,7 +121,13 @@ export function describeContainer(c: ContainerLike, depth = 2): string {
   const parts = [name(c)];
   let p = c.parent;
   for (let i = 0; i < depth && p; i++) { parts.push(name(p)); p = p.parent; }
-  return parts.join(' < ').slice(0, MAX_CULPRIT_CHARS);
+  return parts.join(' < ');
+}
+
+/** The key a queued container is counted under: the queue it sits in and
+ *  its description, cut to MAX_CULPRIT_CHARS as a whole. */
+export function culpritKey(queue: 'xform' | 'view', c: ContainerLike): string {
+  return `${queue}: ${describeContainer(c)}`.slice(0, MAX_CULPRIT_CHARS);
 }
 
 /** One character's state, as the floor hands it over: no id, no name. */
@@ -164,10 +172,10 @@ export function countCulprits(group: RenderGroupQueues, into: Map<string, number
   if (group.structureDidChange) { bump('structure'); any = true; }
   for (const depth in group.childrenToUpdate) {
     const q = group.childrenToUpdate[depth];
-    for (let i = 0; i < q.index; i++) { bump('xform: ' + describeContainer(q.list[i])); any = true; }
+    for (let i = 0; i < q.index; i++) { bump(culpritKey('xform', q.list[i])); any = true; }
   }
   const r = group.childrenRenderablesToUpdate;
-  for (let i = 0; i < r.index; i++) { bump('view: ' + describeContainer(r.list[i])); any = true; }
+  for (let i = 0; i < r.index; i++) { bump(culpritKey('view', r.list[i])); any = true; }
   for (const child of group.renderGroupChildren) any = countCulprits(child, into) || any;
   return any;
 }
