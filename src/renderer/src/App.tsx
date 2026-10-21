@@ -29,6 +29,7 @@ import { Icon } from '@/components/Icon';
 import { SidebarSplitter } from '@/components/SidebarSplitter';
 import { acquireTerminal, applyTerminalRendererPref, notifyThemeChangeAll } from '@/components/terminalPool';
 import { applyOfficeMotionPref } from '@/scene/office/officeMotion';
+import { setFloorDiagnosticsPref } from '@/scene/office/floorPerf';
 import { applyWindowVisibility, seedWindowVisibility } from '@/scene/windowShown';
 import { FullscreenTerminal } from '@/components/FullscreenTerminal';
 import { TaskDetailOverlay } from '@/components/TaskDetailOverlay';
@@ -124,6 +125,9 @@ export function App() {
       applyTerminalRendererPref(c.terminalRenderer);
       // Same for the office floor's motion budget; OfficeFloor subscribes.
       applyOfficeMotionPref(c.officeMotion);
+      // And whether the floor writes performance samples to the hive log
+      // (floorPerf.ts); read when a scene builds.
+      setFloorDiagnosticsPref(c.officeDiagnostics);
       // Mirror the triggers so Settings → Connections and the Command Center's
       // Triggers tab read one list, not two copies that drift — whichever surface
       // saves calls these same setters and the other repaints. No extra IPC: main
@@ -155,6 +159,7 @@ export function App() {
     setConfig(c);
     applyTerminalRendererPref(c.terminalRenderer);
     applyOfficeMotionPref(c.officeMotion);
+    setFloorDiagnosticsPref(c.officeDiagnostics);
   }), []);
 
   // Quit warning subscription

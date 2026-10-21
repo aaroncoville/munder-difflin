@@ -24,6 +24,7 @@ import { chooseRenderer, describeRendererChoice, type PixiRendererPreference } f
 import { createRenderOnChange, sceneChangedSinceRender } from './renderOnChange';
 import { resetAmbientClock } from './ambientBeat';
 import { createAskBoard } from './askBoard';
+import { createFloorPerf, floorPerfEnabled, type FloorPerf } from './floorPerf';
 import { useWindowShown } from '@/scene/windowShown';
 import { webglRendererInfo } from '@/components/terminalRenderer';
 import { loadTexture } from './textureCache';
@@ -367,8 +368,28 @@ export function OfficeFloor() {
       // tick as before. LOW priority, like the plugin's, so it runs after the
       // simulation tick below.
       app.ticker.remove(app.render, app);
+      // The floor-perf diagnostic (floorPerf.ts): off, nothing is installed
+      // and the paint pays a null check per render; on, a counting callback
+      // at priority -10 and a sample to the hive log every 15 s.
+      let perf: FloorPerf | null = null;
+      if (floorPerfEnabled(!!import.meta.env.DEV)) {
+        perf = createFloorPerf({
+          app,
+          characters: () => {
+            const agents = useStore.getState().agents;
+            return [...runtimes].map(([id, rt]) => ({
+              id,
+              status: agents.find((a) => a.id === id)?.status ?? 'unknown',
+              active: rt.character.isActive(),
+              seated: rt.character.isSittingAtDesk()
+            }));
+          },
+          log: (sample) => { void window.cth.hiveLogEvent(sample as unknown as Record<string, unknown>); }
+        });
+        (app as any).__perf = perf;
+      }
       const paint = createRenderOnChange({
-        render: () => app.render(),
+        render: () => { app.render(); perf?.onRender(); },
         changed: () => sceneChangedSinceRender(app.stage.renderGroup),
         decision: () => gateRef.current?.decision ?? motion
       });
@@ -1886,6 +1907,7 @@ export function OfficeFloor() {
         try { (a as any).__unsub?.(); } catch { /* noop */ }
         try { (a as any).__offMessage?.(); } catch { /* noop */ }
         try { clearInterval((a as any).__taskBoardPoll); } catch { /* noop */ }
+        try { (a as any).__perf?.dispose(); } catch { /* noop */ }
         gateRef.current?.detach();
         safeDestroy(a);
         // The atlases outlive the scene (textureCache.ts); the tiles cut from
