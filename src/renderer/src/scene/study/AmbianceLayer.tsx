@@ -331,10 +331,21 @@ export function AmbianceLayer({ room, view }: AmbianceLayerProps): JSX.Element |
             return { g, hearth };
           });
 
+          // Each mote is its own Graphics, drawn once; a tick only moves it.
+          // The dust used to be one Graphics cleared and refilled with every
+          // mote on every tick — a geometry rebuild per room per frame, which
+          // on a software GPU is work on top of the raster it forces.
           const motes: Mote[] = seedMotes(seedFor(room.id), MOTE_CAP, view);
-          const dust = new PIXI.Graphics();
-          dust.blendMode = 'add';
-          application.stage.addChild(dust);
+          const specks = motes.map((m) => {
+            const g = new PIXI.Graphics();
+            g.label = 'mote';
+            g.circle(0, 0, m.r).fill({ color: CANDLE, alpha: 1 });
+            g.alpha = m.a;
+            g.blendMode = 'add';
+            g.position.set(m.x, m.y);
+            application.stage.addChild(g);
+            return g;
+          });
 
           let t = 0;
           application.ticker.add((tick: { deltaMS: number }) => {
@@ -349,8 +360,7 @@ export function AmbianceLayer({ room, view }: AmbianceLayerProps): JSX.Element |
               g.scale.set(hearth ? 0.96 + f * 0.06 : 0.9 + f * 0.18);
             }
             driftMotes(motes, tick.deltaMS, view);
-            dust.clear();
-            for (const m of motes) dust.circle(m.x, m.y, m.r).fill({ color: CANDLE, alpha: m.a });
+            for (let i = 0; i < motes.length; i++) specks[i].position.set(motes[i].x, motes[i].y);
           });
         }
       );
