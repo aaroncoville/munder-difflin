@@ -192,7 +192,12 @@ test('the office floor pauses on it next to document.hidden; the study ambiance 
   assert.match(floor, /const paused = !!fullscreenAgentId \|\| ideOpen \|\| docHidden \|\| !windowShown;/,
     'a minimised window must stop the ticker like a hidden document does');
 
+  // The study's visibility hook lives with the attention hooks now
+  // (scene/attention.ts); the ambiance layer and the Study both read it.
+  const attention = strip(read('src/renderer/src/scene/attention.ts'));
+  assert.match(attention, /setVisible\(!document\.hidden && getWindowShown\(\)\)/);
+  assert.match(attention, /subscribeWindowShown\(read\)/, 'the hook must re-read when main reports a change');
   const study = strip(read('src/renderer/src/scene/study/AmbianceLayer.tsx'));
-  assert.match(study, /setVisible\(!document\.hidden && getWindowShown\(\)\)/);
-  assert.match(study, /subscribeWindowShown\(read\)/, 'the layer must re-read when main reports a change');
+  assert.match(study, /import \{ usePageVisible, useWindowAttended \} from '@\/scene\/attention';/);
+  assert.match(study, /const visible = usePageVisible\(\);/);
 });
