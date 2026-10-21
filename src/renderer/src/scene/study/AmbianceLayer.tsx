@@ -34,10 +34,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { webglRendererInfo } from '@/components/terminalRenderer';
 import { chooseRenderer, describeRendererChoice } from '@/scene/office/officeRenderer';
-import { getWindowShown, subscribeWindowShown } from '@/scene/windowShown';
+import { currentOfficeMotion } from '@/scene/office/officeMotion';
+import { createFloorPerf, floorPerfEnabled, type FloorPerf } from '@/scene/office/floorPerf';
+import { usePageVisible, useWindowAttended } from '@/scene/attention';
 import type { Room } from './roomManifest';
 import {
-  HEARTH_SPREAD, MOTE_CAP, ambianceEnabled, driftMotes, flicker, glowRings, glowsFor,
+  HEARTH_SPREAD, MOTE_CAP, ambianceEnabled, ambianceMotion, driftMotes, flicker, glowRings, glowsFor,
   hearthFlicker, seedFor, seedMotes, type Mote
 } from './ambiance';
 
@@ -84,18 +86,6 @@ export function useReducedMotion(): boolean {
 
 /** Is anybody looking? document.hidden, and main's word on whether the
  *  window is minimised, which document.hidden does not cover on WSLg. */
-function usePageVisible(): boolean {
-  const [visible, setVisible] = useState(true);
-  useEffect(() => {
-    if (typeof document === 'undefined') return;
-    const read = (): void => setVisible(!document.hidden && getWindowShown());
-    read();
-    document.addEventListener('visibilitychange', read);
-    const unsubscribe = subscribeWindowShown(read);
-    return () => { document.removeEventListener('visibilitychange', read); unsubscribe(); };
-  }, []);
-  return visible;
-}
 
 /**
  * Start the pixi build-out, and let it fail.
@@ -238,7 +228,8 @@ export function AmbianceLayer({ room, view }: AmbianceLayerProps): JSX.Element |
   const hostRef = useRef<HTMLDivElement | null>(null);
   const reducedMotion = useReducedMotion();
   const visible = usePageVisible();
-  const run = ambianceEnabled({ reducedMotion, visible });
+  const attended = useWindowAttended();
+  const run = ambianceEnabled({ reducedMotion, visible, attended });
 
   useEffect(() => {
     const host = hostRef.current;
@@ -249,6 +240,9 @@ export function AmbianceLayer({ room, view }: AmbianceLayerProps): JSX.Element |
     // Held outside the async body so cleanup can reach whatever exists by the
     // time it runs, however far the load got.
     let held: { release: () => void } | null = null;
+    // The floor-perf sampler (office/floorPerf.ts), if one is installed: its
+    // ticker callback dies with the Application, its timer and rAF loop here.
+    let perf: FloorPerf | null = null;
 
     startAmbiance(async () => {
       const PIXI = await import('pixi.js');
@@ -261,6 +255,11 @@ export function AmbianceLayer({ room, view }: AmbianceLayerProps): JSX.Element |
           // before which it cannot, so it is the step the guard runs. An
           // unmount landing in here is held until the line below.
           const renderer = studyRenderer();
+          // Six frames a second at 1x on a software GPU (ambianceMotion):
+          // each frame is a full Canvas2D rasterisation of this panel-sized
+          // layer, and uncapped at device pixels it was the whole renderer's
+          // idle load on WSLg. A real GPU keeps today's uncapped layer.
+          const motion = ambianceMotion(currentOfficeMotion().mode, window.devicePixelRatio || 1);
           const wanted = await owned.initialize(() => application.init({
             preference: renderer.preference,
             width: Math.round(view.w),
@@ -268,13 +267,28 @@ export function AmbianceLayer({ room, view }: AmbianceLayerProps): JSX.Element |
             backgroundAlpha: 0,
             antialias: true,
             autoDensity: true,
-            resolution: window.devicePixelRatio || 1
+            resolution: motion.resolution
           }));
           // Unmounted while pixi was initialising: it has just been destroyed,
           // now that destroying it is possible, and there is nothing to parent
           // into a detached node.
           if (!wanted) return;
           logStudyRenderer(application.renderer?.name ?? renderer.preference, renderer);
+          application.ticker.maxFPS = motion.maxFPS;
+          // The floor-perf diagnostic, one sampler per room: renders/s,
+          // ticks/s and what queued them, to the hive log. The TickerPlugin's
+          // render comes off the ticker and goes back on wrapped, so a render
+          // is counted as a render.
+          if (floorPerfEnabled()) {
+            const sampler = createFloorPerf({
+              app: application,
+              tags: { scene: 'study', room: room.id, maxFPS: motion.maxFPS },
+              log: (sample) => { void window.cth.hiveLogEvent(sample as unknown as Record<string, unknown>); }
+            });
+            perf = sampler;
+            application.ticker.remove(application.render, application);
+            application.ticker.add(() => { application.render(); sampler.onRender(); }, undefined, PIXI.UPDATE_PRIORITY.LOW);
+          }
 
           // Input belongs to the DOM. 'none' is pixi's own opt-out, on top of the
           // host's `pointer-events: none` — the canvas must be invisible to the
@@ -344,6 +358,8 @@ export function AmbianceLayer({ room, view }: AmbianceLayerProps): JSX.Element |
 
     return () => {
       alive = false;
+      perf?.dispose();
+      perf = null;
       held?.release();
       held = null;
     };

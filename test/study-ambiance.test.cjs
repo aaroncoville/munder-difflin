@@ -64,10 +64,11 @@ test('a candle flickers — inside a band, and never steadily', () => {
 });
 
 test('the layer is off when it must be off', () => {
-  assert.equal(A.ambianceEnabled({ reducedMotion: true, visible: true }), false);
-  assert.equal(A.ambianceEnabled({ reducedMotion: false, visible: false }), false);
-  assert.equal(A.ambianceEnabled({ reducedMotion: true, visible: false }), false);
-  assert.equal(A.ambianceEnabled({ reducedMotion: false, visible: true }), true);
+  assert.equal(A.ambianceEnabled({ reducedMotion: true, visible: true, attended: true }), false);
+  assert.equal(A.ambianceEnabled({ reducedMotion: false, visible: false, attended: true }), false);
+  assert.equal(A.ambianceEnabled({ reducedMotion: true, visible: false, attended: true }), false);
+  assert.equal(A.ambianceEnabled({ reducedMotion: false, visible: true, attended: false }), false, 'unattended: the candles go out');
+  assert.equal(A.ambianceEnabled({ reducedMotion: false, visible: true, attended: true }), true);
 });
 
 test('the ambiance slot is filled, and is still not clickable', () => {
@@ -476,4 +477,35 @@ test('a glow knows whether it is a flame or a fire, and the cap still caps', () 
   const drawn = A.glowsFor(many);
   assert.equal(drawn.length, A.GLOW_CAP, 'classifying the lights lost the cap on them');
   assert.equal(drawn.some((g) => g.hearth), false, 'a light past the cap was drawn anyway');
+});
+
+// The layer's frame cap and resolution come from the office's motion decision:
+// on a software GPU (or with the OS asking for less motion) six frames a second
+// at 1x, where each frame is a full Canvas2D raster of a panel-sized layer; a
+// real GPU keeps the uncapped layer at device pixels it has always had.
+test('ambianceMotion: six frames a second at 1x on the reduced path, uncapped at dpr on the full one', () => {
+  const A = loadTs('src/renderer/src/scene/study/ambiance.ts');
+  assert.equal(A.AMBIANCE_REDUCED_FPS, 6);
+  assert.deepEqual(A.ambianceMotion('reduced', 2), { maxFPS: 6, resolution: 1 });
+  assert.deepEqual(A.ambianceMotion('full', 2), { maxFPS: 0, resolution: 2 });
+  assert.deepEqual(A.ambianceMotion('full', 0), { maxFPS: 0, resolution: 1 });
+});
+
+test('the layer applies the motion decision, is gated on attention, and samples floor-perf', () => {
+  const src = read('src/renderer/src/scene/study/AmbianceLayer.tsx');
+  assert.match(src, /const attended = useWindowAttended\(\);/);
+  assert.match(src, /ambianceEnabled\(\{ reducedMotion, visible, attended \}\)/);
+  assert.match(src, /const motion = ambianceMotion\(currentOfficeMotion\(\)\.mode, window\.devicePixelRatio \|\| 1\);/);
+  assert.match(src, /resolution: motion\.resolution/);
+  assert.doesNotMatch(src, /resolution: window\.devicePixelRatio/, 'the layer must not pin itself to device pixels');
+  assert.match(src, /application\.ticker\.maxFPS = motion\.maxFPS;/);
+  assert.match(src, /createFloorPerf\(\{\s*app: application,\s*tags: \{ scene: 'study', room: room\.id, maxFPS: motion\.maxFPS \}/);
+  assert.match(src, /perf\?\.dispose\(\);/, 'the sampler must be disposed with the layer');
+});
+
+test('the Study holds its desks still when nobody is watching, not only under reduced motion', () => {
+  const src = read('src/renderer/src/scene/study/StudyScene.tsx');
+  assert.match(src, /const awake = visible && attended;/);
+  assert.match(src, /still=\{reducedMotion \|\| !awake\}/);
+  assert.doesNotMatch(src, /still=\{reducedMotion\}/);
 });

@@ -61,6 +61,7 @@ import { bookFloat, clearBeside, deskPile } from './deskPile';
 import { TURN_SRC } from './bookTurns';
 import { SpineBook } from './SpineBook';
 import { BookTurn } from './BookTurn';
+import { usePageVisible, useWindowAttended } from '@/scene/attention';
 import { TurnMattes, matteId } from './TurnMattes';
 import { bookSlot, type ArchivedThing } from './shelfBooks';
 import { SpeechScroll } from './SpeechScroll';
@@ -920,6 +921,14 @@ export function StudyScene(): JSX.Element {
    *  set off. The sighting is a ref rather than state: it is what the NEXT poll
    *  is compared against, and nothing is drawn from it. */
   const reducedMotion = useReducedMotion();
+  // Nobody watching — the window hidden or minimised, or unfocused past the
+  // grace (scene/attention.ts) — holds the desks still like reduced motion
+  // does: the page-turn clips pause on their first frame, which is the
+  // painting. Focus starts them again. Flights are left to reducedMotion
+  // alone: a grounded sky would relaunch late and out of nowhere on focus.
+  const visible = usePageVisible();
+  const attended = useWindowAttended();
+  const awake = visible && attended;
   const [flights, setFlights] = useState<readonly Flight[]>([]);
   const seenRef = useRef<Seen | null>(null);
   useEffect(() => {
@@ -1037,7 +1046,7 @@ export function StudyScene(): JSX.Element {
             spine={spine}
             lights={lights}
             turn={turn}
-            still={reducedMotion}
+            still={reducedMotion || !awake}
             binding={room.binding}
             raised={lookingAt === agent.id}
             onLook={(looking: boolean) =>
