@@ -354,6 +354,11 @@ test('a working agent sits down typing when it reaches its desk, and a café sea
   const c = new Character({ agentId: 'b', displayName: 'B', mapRenderer: map, frames, seatTile: { x: 2, y: 2 }, spawnTile: { x: 5, y: 5 }, glowColor: 0xff0000 });
   c.show(s);
   c.setActive(true);
+  // Born at (5,5), away from the desk: a café seat right here, while active.
+  c.sitInPlace('down');
+  assert.equal(c.isSittingAtDesk(), false, 'this is not the home desk');
+  assert.equal(c.getAnimation(), 'idle', 'a café seat is a break, not work');
+  assert.equal(avatar(c).textures.length, 1);
   c.sitAtDesk(true);
   assert.equal(c.getAnimation(), 'walk', 'away from the desk: walk there first');
   for (let i = 0; i < 300 && !c.isSittingAtDesk(); i++) { beat.advanceAmbientClock(DT); c.update(DT); }
