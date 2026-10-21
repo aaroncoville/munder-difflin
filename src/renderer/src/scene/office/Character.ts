@@ -361,13 +361,15 @@ export class Character {
   /** Snap into a seated pose facing `dir` at the current tile. Shared by the
    *  home desk (applySit) and any café seat (sitInPlace). */
   private applySitPose(dir: Direction): void {
-    this.state = 'idle';
+    // Working at the home desk types; everywhere else a seat is a still pose.
+    const anim = this.seatedAnimation();
+    this.state = anim;
     this.pendingWork = null;
     this.pendingSit = false;
     this.path = [];
     this.sitting = true;
     this.direction = dir;
-    this.sprite.setAnimation('idle', dir);
+    this.sprite.setAnimation(anim, dir);
     // Slide toward the desk so the agent tucks in instead of floating in the
     // aisle, then crop the legs so they read as seated (no standing legs).
     let dx = 0, dy = 0;
@@ -530,7 +532,23 @@ export class Character {
    *  The floor sets this on every status change; the halo pulses and the desk
    *  monitor animates only while it is on. */
   setActive(active: boolean): void {
+    if (active === this.active) return;
     this.active = active;
+    // Already in the chair: switch between typing and the still pose now,
+    // rather than on the next sit.
+    if (this.sitting && this.isSittingAtDesk()) {
+      const anim = this.seatedAnimation();
+      this.state = anim;
+      this.sprite.setAnimation(anim, this.direction);
+    }
+  }
+
+  /** The animation for a seat: 'type' when actively working at the HOME desk
+   *  (a café seat is never work), the one-frame 'idle' pose otherwise. */
+  private seatedAnimation(): 'type' | 'idle' {
+    const t = this.getTilePosition();
+    const atHome = t.x === this.deskTile.x && t.y === this.deskTile.y;
+    return this.active && atHome ? 'type' : 'idle';
   }
 
   isActive(): boolean {

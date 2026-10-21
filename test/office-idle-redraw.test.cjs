@@ -298,3 +298,42 @@ test('a parked scene with an open ask queues nothing: still halo, still monitor,
   assert.equal(sc.run(150), 0, 'ten seconds parked: nothing queued');
   assert.equal(sc.board.paints, paintsBefore, 'the board was not repainted');
 });
+
+test('a working scene animates — the avatar types, the board pulses on the beat — and settles again when parked', () => {
+  const sc = scene({ askCount: 2 });
+  sc.c.sitAtDesk(true);
+  sc.c.setActive(true);
+  sc.run(45);
+  assert.equal(sc.c.getAnimation(), 'type', 'working at the home desk types');
+  assert.equal(avatar(sc.c).textures.length, 4, 'the typing cycle, not the one-frame pose');
+  assert.equal(avatar(sc.c).playing, true);
+  const paints0 = sc.board.paints;
+  const dirty = sc.run(150);
+  assert.equal(dirty, 150, 'the halo pulse alone is a change every tick');
+  const boardPaints = sc.board.paints - paints0;
+  assert.ok(boardPaints >= 39 && boardPaints <= 41, `the board repaints on the 4 Hz beat, got ${boardPaints} in 10 s`);
+  // Parked again, already in the chair: the pose switches now, and the
+  // scene is quiet within a tick or two.
+  sc.c.setActive(false);
+  assert.equal(sc.c.getAnimation(), 'idle');
+  assert.equal(avatar(sc.c).textures.length, 1);
+  sc.run(2);
+  assert.equal(sc.run(150), 0, 'parked after working: nothing queued');
+  assert.equal(sc.board.frame, STILL_FRAME);
+});
+
+test('a working agent sits down typing when it reaches its desk, and a café seat is never typing', () => {
+  const s = stage();
+  const c = new Character({ agentId: 'b', displayName: 'B', mapRenderer: map, frames, seatTile: { x: 2, y: 2 }, spawnTile: { x: 5, y: 5 }, glowColor: 0xff0000 });
+  c.show(s);
+  c.setActive(true);
+  c.sitAtDesk(true);
+  assert.equal(c.getAnimation(), 'walk', 'away from the desk: walk there first');
+  for (let i = 0; i < 300 && !c.isSittingAtDesk(); i++) { beat.advanceAmbientClock(DT); c.update(DT); }
+  assert.equal(c.isSittingAtDesk(), true, 'never arrived');
+  assert.equal(c.getAnimation(), 'type', 'arrived working: typing');
+  c.setActive(false);
+  assert.equal(c.getAnimation(), 'idle');
+  c.setActive(true);
+  assert.equal(c.getAnimation(), 'type');
+});
