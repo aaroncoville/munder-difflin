@@ -62,14 +62,18 @@ function harness(a, extra = {}) {
 
 test('the gate: the setting or a dev build; off by default', () => {
   perf.setFloorDiagnosticsPref(undefined);
+  perf.setFloorDiagnosticsDev(false);
   assert.equal(perf.floorDiagnosticsPref(), false);
-  assert.equal(perf.floorPerfEnabled(false), false, 'production, setting off: nothing');
-  assert.equal(perf.floorPerfEnabled(true), true, 'a dev build samples regardless');
+  assert.equal(perf.floorPerfEnabled(), false, 'production, setting off: nothing');
+  perf.setFloorDiagnosticsDev(true);
+  assert.equal(perf.floorPerfEnabled(), true, 'a dev build samples regardless');
+  perf.setFloorDiagnosticsDev(false);
   assert.equal(perf.setFloorDiagnosticsPref(true), true);
-  assert.equal(perf.floorPerfEnabled(false), true, 'the setting turns it on in production');
+  assert.equal(perf.floorPerfEnabled(), true, 'the setting turns it on in production');
   assert.equal(perf.setFloorDiagnosticsPref(true), false, 'unchanged');
   assert.equal(perf.setFloorDiagnosticsPref('yes'), true, 'junk is off');
   assert.equal(perf.floorDiagnosticsPref(), false);
+  assert.equal(perf.floorPerfEnabled(), false);
 });
 
 test('installed: one counting callback after the simulation and before the paint, and a rAF loop', () => {
@@ -227,4 +231,19 @@ test('a sink that throws does not stop the sampler', () => {
   assert.equal(calls, 2);
   assert.equal(h.timers.length, 1, 're-armed after the throw');
   h.p.dispose();
+});
+
+test('a sampler without a cast carries its tags on every sample', () => {
+  const a = app();
+  let t = 0; const logged = [];
+  const p = perf.createFloorPerf({
+    app: a, tags: { scene: 'study', room: 'library', maxFPS: 6 }, log: (s) => logged.push(s),
+    now: () => t, schedule: () => ({}), cancel: () => {}, requestFrame: () => ({}), cancelFrame: () => {},
+    doc: { visibilityState: 'visible', hasFocus: () => true }
+  });
+  t = 15_000;
+  const s = p.sample();
+  assert.deepEqual(s.characters, []);
+  assert.deepEqual(s.tags, { scene: 'study', room: 'library', maxFPS: 6 });
+  p.dispose();
 });

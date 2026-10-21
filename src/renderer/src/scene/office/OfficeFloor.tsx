@@ -372,7 +372,7 @@ export function OfficeFloor() {
       // and the paint pays a null check per render; on, a counting callback
       // at priority -10 and a sample to the hive log every 15 s.
       let perf: FloorPerf | null = null;
-      if (floorPerfEnabled(!!import.meta.env.DEV)) {
+      if (floorPerfEnabled()) {
         perf = createFloorPerf({
           app,
           characters: () => {

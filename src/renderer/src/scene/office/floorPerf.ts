@@ -25,8 +25,8 @@
  * not fill log.jsonl.
  *
  * Gate: config `officeDiagnostics: true` (mirrored by App.tsx like the other
- * office settings) OR a dev build (import.meta.env.DEV, passed in by the
- * floor), since the question it answers comes up on the dev build first.
+ * office settings) OR a dev build (import.meta.env.DEV, recorded once by
+ * App.tsx), since the question it answers comes up on the dev build first.
  */
 import { FLOOR_PERF_KIND } from '@shared/floorPerfEvent';
 
@@ -48,6 +48,7 @@ export function sampleIntervalMs(n: number): number {
 /* ─── The gate ──────────────────────────────────────────────────────────── */
 
 let pref = false;
+let dev = false;
 
 /** Record the `officeDiagnostics` setting; returns true when it changed. */
 export function setFloorDiagnosticsPref(next: boolean | undefined): boolean {
@@ -61,10 +62,14 @@ export function floorDiagnosticsPref(): boolean {
   return pref;
 }
 
-/** Whether to install the diagnostic on a scene: the setting, or a dev build
- *  (`dev` is import.meta.env.DEV, passed in by the floor so this module loads
- *  under node). */
-export function floorPerfEnabled(dev: boolean): boolean {
+/** Record whether this is a dev build (import.meta.env.DEV, set once by
+ *  App.tsx: `import.meta` cannot appear in a module the node tests load). */
+export function setFloorDiagnosticsDev(isDev: boolean): void {
+  dev = isDev === true;
+}
+
+/** Whether to install the diagnostic on a scene: the setting, or a dev build. */
+export function floorPerfEnabled(): boolean {
   return pref || dev;
 }
 
@@ -166,11 +171,15 @@ export interface FloorPerfSample {
   tickerRunning: boolean;
   characters: FloorPerfCharacter[];
   culprits: Array<{ what: string; ticks: number }>;
+  tags?: Record<string, string | number | boolean>;
 }
 
 export interface FloorPerfOptions {
   app: FloorPerfApp;
-  characters: () => FloorPerfCharacter[];
+  /** The cast on this canvas; a layer with none (the Study's ambiance) omits it. */
+  characters?: () => FloorPerfCharacter[];
+  /** Carried on every sample as-is: which scene, which room, which cap. */
+  tags?: Record<string, string | number | boolean>;
   /** Where samples go: the hive log, through window.cth.hiveLogEvent. */
   log: (sample: FloorPerfSample) => void;
   /** Injectable for tests. */
@@ -236,8 +245,9 @@ export function createFloorPerf(opts: FloorPerfOptions): FloorPerf {
       visibility: doc.visibilityState,
       focus: doc.hasFocus(),
       tickerRunning: opts.app.ticker.started,
-      characters: opts.characters(),
-      culprits: topCulprits(culprits)
+      characters: opts.characters?.() ?? [],
+      culprits: topCulprits(culprits),
+      ...(opts.tags ? { tags: opts.tags } : {})
     };
     ticks = 0; dirtyTicks = 0; renders = 0; frames = 0;
     culprits = new Map();

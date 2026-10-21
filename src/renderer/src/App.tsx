@@ -29,7 +29,11 @@ import { Icon } from '@/components/Icon';
 import { SidebarSplitter } from '@/components/SidebarSplitter';
 import { acquireTerminal, applyTerminalRendererPref, notifyThemeChangeAll } from '@/components/terminalPool';
 import { applyOfficeMotionPref } from '@/scene/office/officeMotion';
-import { setFloorDiagnosticsPref } from '@/scene/office/floorPerf';
+import { setFloorDiagnosticsDev, setFloorDiagnosticsPref } from '@/scene/office/floorPerf';
+
+// A dev build always samples floor performance (floorPerf.ts); the flag is
+// recorded here because import.meta cannot appear in a module the tests load.
+setFloorDiagnosticsDev(!!import.meta.env.DEV);
 import { applyWindowVisibility, seedWindowVisibility } from '@/scene/windowShown';
 import { FullscreenTerminal } from '@/components/FullscreenTerminal';
 import { TaskDetailOverlay } from '@/components/TaskDetailOverlay';
