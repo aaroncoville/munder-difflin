@@ -13,7 +13,7 @@
  * frame while nobody is, redrawn once when the count or the mode changes.
  */
 import type { Graphics } from 'pixi.js';
-import { STILL_FRAME, ambientFrame } from './ambientBeat';
+import { STILL_FRAME, ambientBeatTime, ambientFrame } from './ambientBeat';
 
 /** The pulse's alpha range around the board's frame while questions wait. */
 export const ASK_PULSE_MIN_ALPHA = 0.35;
@@ -58,6 +58,49 @@ export function paintAskBoard(g: Graphics, askCount: number, pulseT: number | nu
     ? ASK_STEADY_ALPHA
     : ASK_PULSE_MIN_ALPHA + ASK_PULSE_ALPHA_RANGE * (0.5 + 0.5 * Math.sin(pulseT * 4));
   g.rect(-2, -10, 34, 26).stroke({ color: 0xcdb4e8, width: 2, alpha: a });
+}
+
+export interface AskBoardOptions {
+  /** The board's Graphics, already on the stage. */
+  graphics: Graphics;
+  /** Whether any agent is actively working right now (Character.isActive). */
+  floorActive: () => boolean;
+}
+
+export interface AskBoard {
+  /** How many questions the board shows. */
+  readonly count: number;
+  /** The ledger's new count. A change repaints at once, whatever the frame. */
+  setCount(n: number): void;
+  /** Called every tick: repaints only when the frame changes. */
+  draw(): void;
+}
+
+/** The board's controller, as the floor drives it: `draw()` on every tick,
+ *  `setCount()` from each ledger poll. Repaints only when the frame
+ *  (askBoardFrame) or the count changes, so a waiting question costs one
+ *  paint while nobody works and four a second while someone does. */
+export function createAskBoard(opts: AskBoardOptions): AskBoard {
+  let count = 0;
+  // The frame last painted; NaN forces the next draw to paint.
+  let painted = NaN;
+  const draw = (): void => {
+    const frame = askBoardFrame(count, opts.floorActive());
+    if (frame === painted) return;
+    painted = frame;
+    paintAskBoard(opts.graphics, count, frame === STILL_FRAME ? null : ambientBeatTime());
+  };
+  draw();
+  return {
+    get count() { return count; },
+    setCount(n) {
+      if (n === count) return;
+      count = n;
+      painted = NaN;
+      draw();
+    },
+    draw
+  };
 }
 
 export { STILL_FRAME };

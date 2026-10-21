@@ -201,18 +201,22 @@ test('a blocked agent redraws its "!" on each blink, not every tick', () => {
  * held the floor at 15 renders/s with every avatar parked. And a working
  * agent never typed: applySitPose always chose the one-frame idle pose. The
  * harness below ticks a scene the way OfficeFloor does — beat, camera,
- * character, monitor, board — and pins the ceiling: parked, with an open ask,
- * nothing is queued; working, the avatar types and the effects run. */
+ * character, monitor, board — through the production units the floor uses
+ * (createAskBoard, resetAmbientClock) and pins the ceiling: parked, with an
+ * open ask, nothing is queued; a count change is one frame; working, the
+ * avatar types and the effects run. */
 
 const { Camera } = loadTs('src/renderer/src/scene/office/Camera.ts');
 const { DeskScreen } = loadTs('src/renderer/src/scene/office/DeskScreen.ts');
 const {
-  askBoardFrame, paintAskBoard, STILL_FRAME, ASK_STEADY_ALPHA, ASK_PULSE_MIN_ALPHA, ASK_PULSE_ALPHA_RANGE
+  createAskBoard, askBoardFrame, paintAskBoard, STILL_FRAME, ASK_STEADY_ALPHA, ASK_PULSE_MIN_ALPHA, ASK_PULSE_ALPHA_RANGE
 } = loadTs('src/renderer/src/scene/office/askBoard.ts');
 
 /** The avatar's AnimatedSprite, for the frames it is playing. */
 const avatar = (c) => c.sprite.container.children.find((ch) => ch instanceof PIXI.AnimatedSprite);
 
+/** A scene as the floor builds it, with the clock started over for it. The
+ *  camera is in fit mode (no focusOn), as the floor's is at rest. */
 function scene({ askCount = 2 } = {}) {
   beat.resetAmbientClock();
   const s = stage();
@@ -229,17 +233,8 @@ function scene({ askCount = 2 } = {}) {
   let paints = 0;
   const clear = askG.clear.bind(askG);
   askG.clear = () => { paints += 1; return clear(); };
-  const board = {
-    askCount, frame: NaN,
-    draw() {
-      const f = askBoardFrame(this.askCount, c.isActive());
-      if (f === this.frame) return;
-      this.frame = f;
-      paintAskBoard(askG, this.askCount, f === STILL_FRAME ? null : beat.ambientBeatTime());
-    },
-    get paints() { return paints; }
-  };
-  board.draw();
+  const board = createAskBoard({ graphics: askG, floorActive: () => c.isActive() });
+  board.setCount(askCount);
   // One tick, in the floor's order; returns whether the stage had a change.
   const tick = () => {
     beat.advanceAmbientClock(DT);
@@ -253,7 +248,7 @@ function scene({ askCount = 2 } = {}) {
     return dirty;
   };
   const run = (n) => { let d = 0; for (let i = 0; i < n; i++) if (tick()) d += 1; return d; };
-  return { s, c, screen, board, camera, run };
+  return { s, world, c, screen, board, camera, run, get paints() { return paints; } };
 }
 
 test('ask board frames: the beat only while questions wait AND someone is working', () => {
@@ -284,6 +279,16 @@ test('paintAskBoard: a frame is a function of the count and the pulse time', () 
   for (const a of strokes) assert.ok(a >= ASK_PULSE_MIN_ALPHA - 1e-12 && a <= ASK_PULSE_MIN_ALPHA + ASK_PULSE_ALPHA_RANGE + 1e-12);
 });
 
+test('a scene starts the ambient clock over, whatever the last scene left it at', () => {
+  beat.resetAmbientClock();
+  beat.advanceAmbientClock(7.3);
+  assert.equal(beat.ambientBeat(), 29);
+  const sc = scene();
+  assert.equal(beat.ambientBeat(), 0, 'the scene must start at beat 0');
+  assert.equal(beat.ambientClock(), 0);
+  assert.equal(sc.board.frame, undefined, 'the controller keeps its frame to itself');
+});
+
 test('a parked scene with an open ask queues nothing: still halo, still monitor, held board, settled camera', () => {
   const sc = scene({ askCount: 2 });
   sc.c.sitAtDesk(true);
@@ -293,10 +298,31 @@ test('a parked scene with an open ask queues nothing: still halo, still monitor,
   assert.equal(sc.c.getAnimation(), 'idle', 'parked: the one-frame seated pose');
   assert.equal(avatar(sc.c).textures.length, 1);
   assert.equal(sc.screen.container.visible, true, 'the monitor is lit while seated');
-  assert.equal(sc.board.frame, STILL_FRAME, 'the ask board holds its attention frame');
-  const paintsBefore = sc.board.paints;
+  assert.equal(sc.board.count, 2);
+  const paintsBefore = sc.paints;
   assert.equal(sc.run(150), 0, 'ten seconds parked: nothing queued');
-  assert.equal(sc.board.paints, paintsBefore, 'the board was not repainted');
+  assert.equal(sc.paints, paintsBefore, 'the board was not repainted');
+});
+
+test('a count change while parked is exactly one frame, then silence; the same count again is nothing', () => {
+  const sc = scene({ askCount: 2 });
+  sc.c.sitAtDesk(true);
+  sc.c.setActive(false);
+  sc.run(45);
+  assert.equal(sc.run(30), 0, 'quiet before the ledger moves');
+  const paints0 = sc.paints;
+  sc.board.setCount(3);           // the ledger poll: a third question
+  assert.equal(sc.board.count, 3);
+  assert.equal(sc.paints, paints0 + 1, 'the count change repaints at once');
+  assert.equal(sc.run(1), 1, 'that repaint is one frame to render');
+  assert.equal(sc.run(150), 0, 'and then nothing, for as long as the question waits');
+  sc.board.setCount(3);           // the next poll, same count
+  assert.equal(sc.paints, paints0 + 1, 'the same count is not a repaint');
+  assert.equal(sc.run(30), 0);
+  sc.board.setCount(0);           // answered
+  assert.equal(sc.paints, paints0 + 2);
+  assert.equal(sc.run(1), 1);
+  assert.equal(sc.run(60), 0);
 });
 
 test('a working scene animates — the avatar types, the board pulses on the beat — and settles again when parked', () => {
@@ -307,10 +333,10 @@ test('a working scene animates — the avatar types, the board pulses on the bea
   assert.equal(sc.c.getAnimation(), 'type', 'working at the home desk types');
   assert.equal(avatar(sc.c).textures.length, 4, 'the typing cycle, not the one-frame pose');
   assert.equal(avatar(sc.c).playing, true);
-  const paints0 = sc.board.paints;
+  const paints0 = sc.paints;
   const dirty = sc.run(150);
   assert.equal(dirty, 150, 'the halo pulse alone is a change every tick');
-  const boardPaints = sc.board.paints - paints0;
+  const boardPaints = sc.paints - paints0;
   assert.ok(boardPaints >= 39 && boardPaints <= 41, `the board repaints on the 4 Hz beat, got ${boardPaints} in 10 s`);
   // Parked again, already in the chair: the pose switches now, and the
   // scene is quiet within a tick or two.
@@ -318,8 +344,9 @@ test('a working scene animates — the avatar types, the board pulses on the bea
   assert.equal(sc.c.getAnimation(), 'idle');
   assert.equal(avatar(sc.c).textures.length, 1);
   sc.run(2);
+  const paintsHeld = sc.paints;
   assert.equal(sc.run(150), 0, 'parked after working: nothing queued');
-  assert.equal(sc.board.frame, STILL_FRAME);
+  assert.equal(sc.paints, paintsHeld, 'the board holds while nobody works');
 });
 
 test('a working agent sits down typing when it reaches its desk, and a café seat is never typing', () => {

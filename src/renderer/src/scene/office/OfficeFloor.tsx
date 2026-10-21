@@ -22,8 +22,8 @@ import {
 } from './officeMotion';
 import { chooseRenderer, describeRendererChoice, type PixiRendererPreference } from './officeRenderer';
 import { createRenderOnChange, sceneChangedSinceRender } from './renderOnChange';
-import { ambientBeatTime, resetAmbientClock } from './ambientBeat';
-import { askBoardFrame, paintAskBoard, STILL_FRAME } from './askBoard';
+import { resetAmbientClock } from './ambientBeat';
+import { createAskBoard } from './askBoard';
 import { useWindowShown } from '@/scene/windowShown';
 import { webglRendererInfo } from '@/components/terminalRenderer';
 import { loadTexture } from './textureCache';
@@ -1279,24 +1279,17 @@ export function OfficeFloor() {
         st.requestCommandCenterTab('human');
       });
       charLayer.addChild(askG);
-      let askCount = 0;
-      // The frame the board last drew (askBoardFrame); NaN forces a redraw.
-      let askFrame = NaN;
-      const floorActive = (): boolean => {
-        for (const rt of runtimes.values()) if (rt.character.isActive()) return true;
-        return false;
-      };
-      // Repaint only when the board's frame changes: the attention pulse
-      // steps on the ambient beat while someone is working, and holds while
-      // nobody is (askBoard.ts) — a Graphics rebuild is a change the floor has
-      // to render, and a question usually waits for a while.
-      const drawAskBoard = (): void => {
-        const frame = askBoardFrame(askCount, floorActive());
-        if (frame === askFrame) return;
-        askFrame = frame;
-        paintAskBoard(askG, askCount, frame === STILL_FRAME ? null : ambientBeatTime());
-      };
-      drawAskBoard();
+      // Repaints only when its frame changes: the attention pulse steps on
+      // the ambient beat while someone is working, and holds while nobody is
+      // (askBoard.ts) — a Graphics rebuild is a change the floor has to
+      // render, and a question usually waits for a while.
+      const askBoard = createAskBoard({
+        graphics: askG,
+        floorActive: () => {
+          for (const rt of runtimes.values()) if (rt.character.isActive()) return true;
+          return false;
+        }
+      });
 
       // ─── Board choreography: every ledger move is ACTED on the floor ───────
       // Michael walks over and pins fresh cards; an assigned worker walks to
@@ -1403,7 +1396,7 @@ export function OfficeFloor() {
           }
         }
         // the ASK ME board pulses for attention while questions wait
-        drawAskBoard();
+        askBoard.draw();
         // global watchdog: if anything has been in flight too long, hard-sync
         moveWatchdog += dt;
         if (moveWatchdog > 30 && busyActors.size > 0) {
@@ -1443,11 +1436,7 @@ export function OfficeFloor() {
             && Array.isArray(t?.humanQA)
             && t!.humanQA!.some((e) => e && typeof e.q === 'string' && !e.a)
           ).length;
-          if (newAsk !== askCount) {
-            askCount = newAsk;
-            askFrame = NaN;
-            drawAskBoard();
-          }
+          askBoard.setCount(newAsk);
           if (firstPoll) {
             // cold start: no theatre, just show the truth
             firstPoll = false;
