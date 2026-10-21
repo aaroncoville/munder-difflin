@@ -33,8 +33,18 @@ const SCREEN = { x: 3, y: 5, w: 25, h: 12 };
  *  nothing visible (Math.round already stepped the lines at ~3 Hz) and,
  *  because the beat is shared, every monitor on the floor redraws on the same
  *  ticks: at most four draws a second for all of them together, rather than
- *  fifteen for any one. */
+ *  fifteen for any one.
+ *
+ *  And only while the owner is working. The animation is there so the PC
+ *  visibly works when its owner does; an agent parked at the desk between
+ *  tasks — the god running the floor, a worker waiting on a reply — got the
+ *  same four redraws a second for a monitor nobody was typing at, which on a
+ *  software GPU is four full rasterisations of the floor. Still, the screen
+ *  stays lit and shows the animation's first frame, drawn once. */
 export const SCREEN_BEAT_S = BEAT_S;
+/** The `drawnBeat` of a lit screen holding its still frame. Below any real
+ *  beat and the "never drawn" marker, so the next animated beat redraws. */
+const STILL = -2;
 
 export class DeskScreen {
   /** Advance the shared animation clock. The floor calls this once per tick,
@@ -86,13 +96,15 @@ export class DeskScreen {
   }
 
   /** Redraw the screen-life frame if the shared beat moved since the last
-   *  one. Between beats the Graphics is left alone, so nothing is queued. */
-  update(): void {
+   *  one. Between beats the Graphics is left alone, so nothing is queued.
+   *  `animate` false (the owner is seated but not working) draws the first
+   *  frame once and then leaves the Graphics alone until it is true again. */
+  update(animate = true): void {
     if (!this.on) return;
-    const beat = ambientBeat();
+    const beat = animate ? ambientBeat() : STILL;
     if (beat === this.drawnBeat) return;
     this.drawnBeat = beat;
-    const t = Math.max(0, beat * SCREEN_BEAT_S - this.onAt);
+    const t = animate ? Math.max(0, beat * SCREEN_BEAT_S - this.onAt) : 0;
     const g = this.anim;
     g.clear();
     // Two faint "output" lines scrolling up the desktop, wrapping around —

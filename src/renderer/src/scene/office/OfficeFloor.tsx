@@ -6,7 +6,7 @@ import 'pixi.js/unsafe-eval';
 import { useStore, type Agent } from '@/store/store';
 import { TiledMapRenderer } from './TiledMapRenderer';
 import { Camera } from './Camera';
-import { Character, paintCup } from './Character';
+import { Character, isActiveStatus, paintCup } from './Character';
 import { DeskScreen } from './DeskScreen';
 import { MessageEnvelope, type MessageAct } from './MessageEnvelope';
 import { hexToNumber, DEFAULT_CHARACTER } from './cast';
@@ -1127,10 +1127,11 @@ export function OfficeFloor() {
               rt.character.startWandering();
             }
           }
-          // The monitor lights up whenever its owner is in the chair.
+          // The monitor lights up whenever its owner is in the chair, and
+          // its screen-life runs while the owner works.
           if (rt.screen) {
             rt.screen.setOn(rt.character.isSittingAtDesk());
-            rt.screen.update();
+            rt.screen.update(rt.character.isActive());
           }
         }
       };
@@ -1629,6 +1630,10 @@ export function OfficeFloor() {
         // A thought cloud above the head shows what the agent is doing RIGHT NOW
         // (its live `action`, e.g. "edit App.tsx"). Working → sit at the desk;
         // blocked → walk to the door and flash "!"; done/idle → wander.
+        // Working is also what lets the halo pulse and the monitor animate
+        // (Character.ts): parked at the desk, both hold still, and the floor
+        // has nothing to redraw.
+        c.setActive(isActiveStatus(agent.status));
         switch (agent.status) {
           case 'working':
           case 'thinking':

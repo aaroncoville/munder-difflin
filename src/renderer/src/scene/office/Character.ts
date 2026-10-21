@@ -14,6 +14,39 @@ import { colors } from '@/design/tokens';
 export type CharacterAnimation = 'idle' | 'walk' | 'type' | 'read';
 export type StatusGlyph = 'none' | 'blocked' | 'success' | 'compacting' | 'looping';
 
+/* ─── Ambient effects and the idle floor ─────────────────────────────────────
+ *
+ * The floor draws only when something changed (renderOnChange.ts), and on a
+ * software GPU every draw is a full Canvas2D rasterisation of the scene. So a
+ * character's ambient effects — the focus halo's pulse, the steam off a cup
+ * parked on the desk, a status glyph's blink — decide what an idle floor
+ * costs: each used to write a new alpha, scale or Graphics frame on every
+ * tick, and the god, who sits at his desk with the halo on for as long as the
+ * app runs, kept a 15 fps floor rasterising fifteen times a second with
+ * nobody doing anything (measured at ~2 cores on WSLg). The rules:
+ *
+ *  - The halo pulses, and the desk monitor animates, only while the agent is
+ *    actively working (isActiveStatus). Parked at the desk between tasks the
+ *    halo holds a steady value — the pulse's midpoint — so the setters, which
+ *    compare first, queue nothing.
+ */
+
+/** Statuses in which the agent is doing work right now, as opposed to parked
+ *  at the desk (idle, waiting, success) or away from it. */
+export function isActiveStatus(status: string | undefined): boolean {
+  return status === 'working' || status === 'thinking' || status === 'compacting';
+}
+
+/** The halo's pulse: alpha GLOW_PULSE_MIN_ALPHA..+GLOW_PULSE_ALPHA_RANGE and
+ *  scale GLOW_PULSE_MIN_SCALE..+GLOW_PULSE_SCALE_RANGE over a 1.2 s period. */
+export const GLOW_PULSE_MIN_ALPHA = 0.18;
+export const GLOW_PULSE_ALPHA_RANGE = 0.27;
+export const GLOW_PULSE_MIN_SCALE = 0.95;
+export const GLOW_PULSE_SCALE_RANGE = 0.15;
+/** The halo while the agent is parked: the pulse's midpoint, held. */
+export const GLOW_STEADY_ALPHA = GLOW_PULSE_MIN_ALPHA + GLOW_PULSE_ALPHA_RANGE / 2;
+export const GLOW_STEADY_SCALE = GLOW_PULSE_MIN_SCALE + GLOW_PULSE_SCALE_RANGE / 2;
+
 function lerp(a: number, b: number, t: number): number {
   const tt = Math.min(Math.max(t, 0), 1);
   return a + (b - a) * tt;
@@ -134,6 +167,9 @@ export class Character {
   private workGlow: Graphics;
   private workGlowElapsed = 0;
   private glowOn = false;
+  /** Actively working (isActiveStatus): the halo pulses and the desk monitor
+   *  animates. Off, both hold still. */
+  private active = false;
 
   private overlay: Graphics;
   private statusGlyph: StatusGlyph = 'none';
@@ -453,6 +489,17 @@ export class Character {
     if (glyph === 'none') this.overlay.clear();
   }
 
+  /** Whether the agent is doing work right now (isActiveStatus on its status).
+   *  The floor sets this on every status change; the halo pulses and the desk
+   *  monitor animates only while it is on. */
+  setActive(active: boolean): void {
+    this.active = active;
+  }
+
+  isActive(): boolean {
+    return this.active;
+  }
+
   // ── Cheer ──────────────────────────────────────────────────────────────────
 
   /** Celebrate finished work: a couple of happy hops under a confetti burst.
@@ -655,11 +702,17 @@ export class Character {
     this.workGlow.x = this.px;
     this.workGlow.y = this.py - ts / 2;
     this.workGlow.zIndex = this.py - 1;
-    if (this.glowOn) {
+    if (this.glowOn && this.active) {
       this.workGlowElapsed += dt;
       const phase = (Math.sin((this.workGlowElapsed * Math.PI) / 0.6) + 1) / 2;
-      this.workGlow.alpha = (0.18 + 0.27 * phase) * this.sprite.container.alpha;
-      this.workGlow.scale.set(0.95 + 0.15 * phase);
+      this.workGlow.alpha = (GLOW_PULSE_MIN_ALPHA + GLOW_PULSE_ALPHA_RANGE * phase) * this.sprite.container.alpha;
+      this.workGlow.scale.set(GLOW_PULSE_MIN_SCALE + GLOW_PULSE_SCALE_RANGE * phase);
+    } else if (this.glowOn) {
+      // Parked with the halo on (the god at his desk): hold it. The same
+      // value every tick queues nothing — Pixi's setters compare first.
+      this.workGlowElapsed = 0;
+      this.workGlow.alpha = GLOW_STEADY_ALPHA * this.sprite.container.alpha;
+      this.workGlow.scale.set(GLOW_STEADY_SCALE);
     } else {
       this.workGlow.alpha = 0;
       this.workGlowElapsed = 0;

@@ -102,6 +102,21 @@ test('the floor advances the beat once per tick, before any screen, and screens 
   const body = src.slice(i, src.indexOf('for (const [id, rt] of runtimes)', i));
   assert.match(body, /DeskScreen\.advance\(dt\);/, 'the beat must advance before the loop over screens');
   assert.equal((src.match(/DeskScreen\.advance\(/g) ?? []).length, 1, 'advance once per tick, not once per screen');
-  assert.match(src, /rt\.screen\.update\(\);/);
+  assert.match(src, /rt\.screen\.update\(rt\.character\.isActive\(\)\);/, 'the screen animates only while its owner is working');
   assert.doesNotMatch(src, /rt\.screen\.update\(dt\)/);
+});
+
+test('a lit screen whose owner is not working draws its still frame once, then nothing until work resumes', () => {
+  const a = screen();
+  a.s.setOn(true);
+  tick(60, () => a.s.update(false));
+  assert.equal(a.redraws, 1, 'parked: the still frame, drawn once');
+  tick(30, () => a.s.update(true));
+  assert.ok(a.redraws >= 8 && a.redraws <= 10, `working: ~8 redraws in 2 s at 4 Hz, got ${a.redraws - 1}`);
+  const atPause = a.redraws;
+  tick(60, () => a.s.update(false));
+  assert.equal(a.redraws, atPause + 1, 'parked again: one still frame, then nothing');
+  a.s.setOn(false);
+  tick(30, () => a.s.update(false));
+  assert.equal(a.redraws, atPause + 2, 'cutting the screen clears it once');
 });
