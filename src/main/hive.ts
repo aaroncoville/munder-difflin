@@ -44,6 +44,7 @@ import { preferredAgentRole } from '../shared/agentRole';
 import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde } from './fs';
 import { codexTrustEntry } from '../shared/codexTrust';
+import { withCodexWritableRoots } from '../shared/codexWritableRoots';
 import { resolveGodName } from '../shared/godIdentity';
 import { appendSession } from './codexActivity';
 
@@ -906,7 +907,16 @@ export class HiveManager {
           if (desc.kind === 'hooks') {
             if (desc.shim === 'agy') this.installAgyHooks();
             else if (desc.shim === 'codex') {
-              env.CODEX_HOME = this.installCodexHooks(dir, meta.cwd, meta.id);
+              // Auto mode keeps codex's OS sandbox (`-a never -s workspace-write`,
+              // agentProvider.ts). workspace-write only covers cwd, so the agent
+              // folder (inbox/.done, memory.md, outbox) and the shared hive root
+              // (research deliverables, the board for god) are added as extra
+              // writable roots. Harmless outside auto mode. They go to BOTH places
+              // Codex reads them: config.toml, which is all an app server attached
+              // with --remote honours, and --add-dir for a local TUI
+              // (withCodexRemoteArgs drops it when --remote is added).
+              const writableRoots = this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs);
+              env.CODEX_HOME = this.installCodexHooks(dir, meta.cwd, meta.id, writableRoots);
               // Codex refuses to run hooks from a config dir without persisted
               // "hook trust" (normally an interactive gate). Our hook config is
               // hive-authored inside an isolated CODEX_HOME, so we bypass that gate
@@ -916,12 +926,7 @@ export class HiveManager {
               // (codexHookTrust.ts); this flag keeps the local fallback unattended.
               // Must precede the positional prompt.
               preArgs.push('--dangerously-bypass-hook-trust');
-              // Auto mode keeps codex's OS sandbox (`-a never -s workspace-write`,
-              // agentProvider.ts). workspace-write only covers cwd, so the agent
-              // folder (inbox/.done, memory.md, outbox) and the shared hive root
-              // (research deliverables, the board for god) are added as extra
-              // writable roots. Harmless outside auto mode.
-              for (const d of this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs)) preArgs.push('--add-dir', d);
+              for (const d of writableRoots) preArgs.push('--add-dir', d);
             }
             else if (desc.shim === 'pi') {
               // Pi (earendil-works) has a rich pi.on(event) lifecycle. We drop a
@@ -2257,7 +2262,7 @@ export class HiveManager {
    *  ~/.codex/auth.json is linked in and their config.toml is copied + extended
    *  (login + model/provider/trust settings still apply).
    *  Returns the CODEX_HOME path for the caller to put in the worker's env. */
-  private installCodexHooks(dir: string, cwd: string, agentId: string): string {
+  private installCodexHooks(dir: string, cwd: string, agentId: string, writableRoots: string[] = []): string {
     const home = join(dir, '.codex');
     try {
       // Establish the home BEFORE anything is written into it. Codex derives its
@@ -2356,6 +2361,7 @@ export class HiveManager {
       let trusted = cwd;
       try { trusted = realpathSync(cwd); } catch { /* not on disk yet — best spelling we have */ }
       config += codexTrustEntry(trusted);
+      config = withCodexWritableRoots(config, writableRoots);
       writeFileSync(join(home, 'config.toml'), config, 'utf8');
 
       // Keep each worker's CODEX_HOME isolated while putting its rollout data
