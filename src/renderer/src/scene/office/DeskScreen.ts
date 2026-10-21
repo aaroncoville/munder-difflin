@@ -1,6 +1,7 @@
 import { Container, Graphics, Sprite } from 'pixi.js';
 import type { TiledMapRenderer } from './TiledMapRenderer';
 import type { MonitorConfig } from './themeRegistry';
+import { BEAT_S, advanceAmbientClock, ambientBeat, ambientClock } from './ambientBeat';
 
 // The office tileset ships every desk PC twice: a dark, switched-off monitor
 // (gids 365/366 + 381/382 — what the map paints) and the SAME monitor with a
@@ -24,25 +25,25 @@ const DEFAULT_ON_GIDS: ReadonlyArray<readonly [number, number, number]> = [
  *  blue desktop is drawn in the tile art. The animation stays inside it. */
 const SCREEN = { x: 3, y: 5, w: 25, h: 12 };
 
-/** The screen-life animation steps on a shared 4 Hz beat. It was drawn afresh
- *  every tick, which on the reduced path (renderOnChange.ts) meant a Graphics
- *  redraw — a change to render — fifteen times a second per lit monitor, for
- *  lines that only move a pixel ~3 times a second and a cursor that blinks
- *  twice. Stepping the clock at 4 Hz loses nothing visible (Math.round already
- *  stepped the lines at ~3 Hz) and, because the beat is shared, every monitor
- *  on the floor redraws on the same ticks: at most four draws a second for all
- *  of them together, rather than fifteen for any one. */
-export const SCREEN_BEAT_S = 0.25;
-let clock = 0;
+/** The screen-life animation steps on the floor's shared 4 Hz beat
+ *  (ambientBeat.ts). It was drawn afresh every tick, which on the reduced path
+ *  (renderOnChange.ts) meant a Graphics redraw — a change to render — fifteen
+ *  times a second per lit monitor, for lines that only move a pixel ~3 times
+ *  a second and a cursor that blinks twice. Stepping the clock at 4 Hz loses
+ *  nothing visible (Math.round already stepped the lines at ~3 Hz) and,
+ *  because the beat is shared, every monitor on the floor redraws on the same
+ *  ticks: at most four draws a second for all of them together, rather than
+ *  fifteen for any one. */
+export const SCREEN_BEAT_S = BEAT_S;
 
 export class DeskScreen {
   /** Advance the shared animation clock. The floor calls this once per tick,
    *  before it updates any screen. */
   static advance(dt: number): void {
-    clock += dt;
+    advanceAmbientClock(dt);
   }
   /** For tests: the shared clock, in seconds. */
-  static get clock(): number { return clock; }
+  static get clock(): number { return ambientClock(); }
 
   readonly container = new Container();
   private anim = new Graphics();
@@ -80,7 +81,7 @@ export class DeskScreen {
     if (on === this.on) return;
     this.on = on;
     this.container.visible = on;
-    if (on) { this.onAt = clock; this.drawnBeat = -1; }
+    if (on) { this.onAt = ambientClock(); this.drawnBeat = -1; }
     else this.anim.clear();
   }
 
@@ -88,7 +89,7 @@ export class DeskScreen {
    *  one. Between beats the Graphics is left alone, so nothing is queued. */
   update(): void {
     if (!this.on) return;
-    const beat = Math.floor(clock / SCREEN_BEAT_S);
+    const beat = ambientBeat();
     if (beat === this.drawnBeat) return;
     this.drawnBeat = beat;
     const t = Math.max(0, beat * SCREEN_BEAT_S - this.onAt);
