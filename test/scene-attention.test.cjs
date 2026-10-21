@@ -26,8 +26,10 @@ test('useWindowAttended: focused is attended; blurred becomes unattended after t
     const { useWindowAttended } = loadTs('src/renderer/src/scene/attention.ts');
     let seen;
     const Probe = () => { seen = useWindowAttended(30_000); return null; };
+    // mount() runs the effects once; running them again would register a
+    // second closure whose timer the mount-time cleanups cannot see.
     const m = mount(Probe, {});
-    m.runEffects?.(); m.render?.();
+    m.render?.();
     assert.equal(seen, true, 'focused at mount');
     assert.equal(timers.length, 0, 'no timer while focused');
     focused = false; now += 10; listeners.get('blur')(); m.render?.();
@@ -39,6 +41,12 @@ test('useWindowAttended: focused is attended; blurred becomes unattended after t
     focused = true; listeners.get('focus')(); m.render?.();
     assert.equal(seen, true, 'focus restores attention at once');
     assert.equal(timers.length, 0);
+    // Unmount mid-grace: the timer and both listeners go with the hook.
+    focused = false; listeners.get('blur')();
+    assert.equal(timers.length, 1);
+    for (const fn of m.cleanups) fn && fn();
+    assert.equal(timers.length, 0, 'the grace timer outlived the hook');
+    assert.equal(listeners.size, 0, 'a listener outlived the hook');
   } finally {
     globalThis.setTimeout = real.setTimeout; globalThis.clearTimeout = real.clearTimeout;
     globalThis.window = real.window; globalThis.document = real.document; Date.now = real.now;
