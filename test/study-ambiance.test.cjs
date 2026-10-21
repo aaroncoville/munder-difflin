@@ -521,7 +521,17 @@ function stagePixi() {
       this.ticker = { maxFPS: 0, add: (fn) => record.ticks.push(fn), remove: () => {} };
       record.apps.push(this);
     }
-    async init(options) { this.options = options; record.inits.push(options); }
+    // Pixi's sizing, enough of it to tell: the backing store is the logical
+    // size times the resolution, and the CSS size stays the logical size only
+    // with autoDensity — without it the element takes the backing size.
+    async init(options) {
+      this.options = options; record.inits.push(options);
+      const res = options.resolution ?? 1;
+      this.renderer = { name: 'canvas', resolution: res, width: options.width * res, height: options.height * res };
+      this.canvas.width = options.width * res; this.canvas.height = options.height * res;
+      const css = options.autoDensity ? { w: options.width, h: options.height } : { w: this.canvas.width, h: this.canvas.height };
+      this.canvas.style.width = `${css.w}px`; this.canvas.style.height = `${css.h}px`;
+    }
     destroy() { this.dead = true; record.destroyed += 1; }
   }
   return { record, module: { __esModule: true, Application, Graphics, UPDATE_PRIORITY: { LOW: -25 } } };
@@ -615,7 +625,9 @@ test('a lit room: one Application, capped and at the reduced resolution, the CSS
     const [app] = h.live();
     assert.equal(app.ticker.maxFPS, 6, 'the reduced cap');
     assert.equal(app.options.resolution, 0.5, 'the reduced resolution');
-    assert.deepEqual([app.options.width, app.options.height], [640, 360], 'the CSS size is the panel');
+    assert.equal(app.options.autoDensity, true, 'autoDensity keeps the CSS size at the logical size');
+    assert.deepEqual([app.renderer.width, app.renderer.height], [320, 180], 'the backing store is half the panel');
+    assert.deepEqual([app.canvas.style.width, app.canvas.style.height], ['640px', '360px'], 'the CSS size is still the panel');
     assert.equal(h.record.ticks.length, 1);
     const motes = app.stage.children.filter((g) => g.label === 'mote');
     assert.equal(motes.length, 24, 'one Graphics per mote');
@@ -633,6 +645,9 @@ test('the full path keeps the uncapped layer at device pixels', async () => {
     const [app] = h.live();
     assert.equal(app.ticker.maxFPS, 0);
     assert.equal(app.options.resolution, 2);
+    assert.equal(app.options.autoDensity, true);
+    assert.deepEqual([app.renderer.width, app.renderer.height], [1280, 720], 'device pixels');
+    assert.deepEqual([app.canvas.style.width, app.canvas.style.height], ['640px', '360px']);
   } finally { h.unmount(); }
 });
 
