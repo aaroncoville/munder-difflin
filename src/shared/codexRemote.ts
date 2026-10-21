@@ -87,8 +87,21 @@ export function codexRemoteEndpoint(shortHome: string): string {
 
 /** Global options must precede `resume`, so prepend the endpoint in all cases. */
 export function withCodexRemoteArgs(args: string[], endpoint: string): string[] {
-  if (args.includes('--remote')) return args;
-  return ['--remote', endpoint, ...args];
+  // Codex exits at once on `--add-dir` under `--remote`; the same roots reach the
+  // app server through its config.toml (codexWritableRoots.ts).
+  const kept = withoutAddDirArgs(args);
+  if (kept.includes('--remote')) return kept;
+  return ['--remote', endpoint, ...kept];
+}
+
+function withoutAddDirArgs(args: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--add-dir') { i++; continue; }
+    if (args[i].startsWith('--add-dir=')) continue;
+    out.push(args[i]);
+  }
+  return out;
 }
 
 /** Establish the Codex home for one agent and return it, or null when this

@@ -60,3 +60,17 @@ test('remote endpoint precedes both fresh and resumed Codex invocations', () => 
     ['--remote', endpoint, 'resume']
   );
 });
+
+test('no --add-dir survives next to --remote', () => {
+  // Codex exits at once with "--add-dir is not supported with --remote"; the
+  // same roots reach the server through its config.toml instead.
+  const endpoint = 'unix:///tmp/munder-codex/a/app-server-control/app-server-control.sock';
+  assert.deepEqual(
+    withCodexRemoteArgs(['--add-dir', '/hive/agents/a', '-a', 'never', '--add-dir=/hive', 'hello'], endpoint),
+    ['--remote', endpoint, '-a', 'never', 'hello']
+  );
+  assert.deepEqual(
+    withCodexRemoteArgs(['--remote', endpoint, '--add-dir', '/hive', 'resume'], endpoint),
+    ['--remote', endpoint, 'resume']
+  );
+});
