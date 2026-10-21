@@ -168,3 +168,28 @@ test('a parked cup steams on the shared 4 Hz beat, then goes cold and is left al
   assert.equal(run(s, c, 1), 1, 'clearing the cup is a change');
   assert.equal(run(s, c, 30), 0);
 });
+
+test('status glyph frames: the blocked "!" blinks at 2.5 Hz, the looping ring steps at 8 Hz', () => {
+  const changes = (glyph, seconds) => {
+    let last = statusGlyphFrame(glyph, 0), n = 0;
+    for (let i = 1; i <= seconds * 15; i++) { const f = statusGlyphFrame(glyph, i * DT); if (f !== last) { n += 1; last = f; } }
+    return n;
+  };
+  assert.ok(changes('blocked', 10) >= 24 && changes('blocked', 10) <= 26, `blocked: ${changes('blocked', 10)} changes in 10 s`);
+  assert.ok(changes('looping', 10) >= 78 && changes('looping', 10) <= 81, `looping: ${changes('looping', 10)} changes in 10 s`);
+  assert.equal(statusGlyphFrame('none', 3), -1);
+  assert.deepEqual([0, 0.39, 0.4, 0.79, 0.8].map((t) => statusGlyphFrame('blocked', t)), [0, 0, 1, 1, 0]);
+});
+
+test('a blocked agent redraws its "!" on each blink, not every tick', () => {
+  beat.resetAmbientClock();
+  const s = stage();
+  const c = character(s);
+  run(s, c, 30);
+  c.setStatusGlyph('blocked');
+  const dirty = run(s, c, 150);
+  assert.ok(dirty >= 25 && dirty <= 27, `~25 redraws in 10 s at 2.5 Hz, got ${dirty} (was 150)`);
+  c.setStatusGlyph('none');
+  assert.equal(run(s, c, 1), 1, 'clearing the glyph is a change');
+  assert.equal(run(s, c, 30), 0);
+});

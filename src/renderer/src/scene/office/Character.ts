@@ -33,6 +33,8 @@ export type StatusGlyph = 'none' | 'blocked' | 'success' | 'compacting' | 'loopi
  *  - A parked cup steams on the shared ambient beat (ambientBeat.ts), not
  *    every tick, and goes cold after CUP_STEAM_S: drawn once more without
  *    steam, then left alone.
+ *  - A status glyph redraws only when its frame changes (statusGlyphFrame):
+ *    the blocked "!" on each blink, the looping ring on each step.
  */
 
 /** Statuses in which the agent is doing work right now, as opposed to parked
@@ -53,6 +55,23 @@ export const GLOW_STEADY_SCALE = GLOW_PULSE_MIN_SCALE + GLOW_PULSE_SCALE_RANGE /
 
 /** How long a cup parked on a desk steams before it is drawn cold. */
 export const CUP_STEAM_S = 90;
+
+/** Which frame a status glyph shows at `elapsed` seconds since it was set.
+ *  The glyph is redrawn only when this changes, so the number of distinct
+ *  frames a second is the number of redraws a second: 2.5 for the blocked
+ *  "!" (a 0.4 s blink), 8 for the looping ring (one step per dot), and a few
+ *  sizes each for the success sparkle and the compacting box. */
+export function statusGlyphFrame(glyph: StatusGlyph, elapsed: number): number {
+  switch (glyph) {
+    case 'blocked': return Math.floor(elapsed / 0.4) % 2;
+    // 0..4: the sparkle's half-size in half pixels above 2 (s = 2 + frame / 2).
+    case 'success': return Math.round(((Math.sin(elapsed * 18) + 1) / 2) * 4);
+    // 0..6: the box's half-size in half pixels above 2 (s = 2 + frame / 2).
+    case 'compacting': return Math.round(((Math.sin(elapsed * 6) + 1) / 2) * 6);
+    case 'looping': return Math.floor(elapsed * 8) % 4;
+    default: return -1;
+  }
+}
 
 function lerp(a: number, b: number, t: number): number {
   const tt = Math.min(Math.max(t, 0), 1);
@@ -183,6 +202,8 @@ export class Character {
   private overlay: Graphics;
   private statusGlyph: StatusGlyph = 'none';
   private glyphElapsed = 0;
+  /** The glyph frame last drawn (statusGlyphFrame); -1 = nothing drawn. */
+  private glyphFrame = -1;
   private onClick?: (agentId: string) => void;
 
   // ── Office-life effects (cheer / coffee / watering) ────────────────────────
@@ -501,6 +522,7 @@ export class Character {
     if (glyph === this.statusGlyph) return;
     this.statusGlyph = glyph;
     this.glyphElapsed = 0;
+    this.glyphFrame = -1;
     if (glyph === 'none') this.overlay.clear();
   }
 
@@ -909,30 +931,34 @@ export class Character {
   private updateStatusGlyph(dt: number): void {
     if (this.statusGlyph === 'none') return;
     this.glyphElapsed += dt;
+    // brief 4-point sparkle, auto-clears after 0.9s
+    if (this.statusGlyph === 'success' && this.glyphElapsed > 0.9) { this.setStatusGlyph('none'); return; }
+    // Redraw only when the frame changes: a Graphics redraw is a change the
+    // floor has to render, and a blocked agent blinks at the door for as long
+    // as it takes the human to notice.
+    const frame = statusGlyphFrame(this.statusGlyph, this.glyphElapsed);
+    if (frame === this.glyphFrame) return;
+    this.glyphFrame = frame;
     const g = this.overlay;
     g.clear();
     const yTop = -34; // just above the 32px sprite
     if (this.statusGlyph === 'blocked') {
       // pulsing "!" — blink ~2.5Hz
-      if (Math.floor(this.glyphElapsed / 0.4) % 2 === 0) {
+      if (frame === 0) {
         g.rect(-1, yTop, 2, 5).fill(0xff6b6b);
         g.rect(-1, yTop + 6, 2, 2).fill(0xff6b6b);
       }
     } else if (this.statusGlyph === 'success') {
-      // brief 4-point sparkle, auto-clears after 0.9s
-      const p = (Math.sin(this.glyphElapsed * 18) + 1) / 2;
-      const s = 2 + p * 2;
+      const s = 2 + frame / 2;
       g.rect(-0.5, yTop - s, 1, s * 2).fill(0xffd93d);
       g.rect(-s, yTop - 0.5, s * 2, 1).fill(0xffd93d);
-      if (this.glyphElapsed > 0.9) this.setStatusGlyph('none');
     } else if (this.statusGlyph === 'compacting') {
       // #5C — violet box that rhythmically "packs down" (boxing up context).
-      const p = (Math.sin(this.glyphElapsed * 6) + 1) / 2; // 0..1
-      const s = 2 + p * 3;
+      const s = 2 + frame / 2;
       g.rect(-s, yTop - s, s * 2, s * 2).fill(0x9b7ede);
     } else if (this.statusGlyph === 'looping') {
       // #5C — orange 4-dot warning ring with one lit dot spinning around it.
-      const idx = Math.floor(this.glyphElapsed * 8) % 4;
+      const idx = frame;
       const pts: [number, number][] = [[-3, yTop - 3], [3, yTop - 3], [3, yTop + 3], [-3, yTop + 3]];
       for (let i = 0; i < 4; i++) {
         const [x, y] = pts[i];
