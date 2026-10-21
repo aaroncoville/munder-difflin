@@ -22,6 +22,7 @@ import {
 } from './officeMotion';
 import { chooseRenderer, describeRendererChoice, type PixiRendererPreference } from './officeRenderer';
 import { createRenderOnChange, sceneChangedSinceRender } from './renderOnChange';
+import { resetAmbientClock } from './ambientBeat';
 import { useWindowShown } from '@/scene/windowShown';
 import { webglRendererInfo } from '@/components/terminalRenderer';
 import { loadTexture } from './textureCache';
@@ -314,6 +315,9 @@ export function OfficeFloor() {
 
     const runtimes = new Map<string, Runtime>();
     const seatClaims = new Set<number>();
+    // A fresh scene starts the ambient beat over (ambientBeat.ts): a rebuilt
+    // floor does not inherit the phase of the one it replaces.
+    resetAmbientClock();
     // In-flight message envelopes (sender desk → recipient desk). Capped so a
     // broadcast doesn't bury the floor in paper.
     const envelopes: MessageEnvelope[] = [];

@@ -1,7 +1,7 @@
 import { Container, Graphics, Sprite } from 'pixi.js';
 import type { TiledMapRenderer } from './TiledMapRenderer';
 import type { MonitorConfig } from './themeRegistry';
-import { BEAT_S, advanceAmbientClock, ambientBeat, ambientClock } from './ambientBeat';
+import { BEAT_S, advanceAmbientClock, ambientClock, ambientFrame, STILL_FRAME } from './ambientBeat';
 
 // The office tileset ships every desk PC twice: a dark, switched-off monitor
 // (gids 365/366 + 381/382 — what the map paints) and the SAME monitor with a
@@ -42,9 +42,6 @@ const SCREEN = { x: 3, y: 5, w: 25, h: 12 };
  *  software GPU is four full rasterisations of the floor. Still, the screen
  *  stays lit and shows the animation's first frame, drawn once. */
 export const SCREEN_BEAT_S = BEAT_S;
-/** The `drawnBeat` of a lit screen holding its still frame. Below any real
- *  beat and the "never drawn" marker, so the next animated beat redraws. */
-const STILL = -2;
 
 export class DeskScreen {
   /** Advance the shared animation clock. The floor calls this once per tick,
@@ -101,10 +98,10 @@ export class DeskScreen {
    *  frame once and then leaves the Graphics alone until it is true again. */
   update(animate = true): void {
     if (!this.on) return;
-    const beat = animate ? ambientBeat() : STILL;
+    const beat = ambientFrame(animate);
     if (beat === this.drawnBeat) return;
     this.drawnBeat = beat;
-    const t = animate ? Math.max(0, beat * SCREEN_BEAT_S - this.onAt) : 0;
+    const t = beat === STILL_FRAME ? 0 : Math.max(0, beat * SCREEN_BEAT_S - this.onAt);
     const g = this.anim;
     g.clear();
     // Two faint "output" lines scrolling up the desktop, wrapping around —

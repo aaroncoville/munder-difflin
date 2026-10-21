@@ -18,7 +18,7 @@ const { DeskScreen, SCREEN_BEAT_S } = loadTs('src/renderer/src/scene/office/Desk
 
 const DT = 1 / 15;
 
-test('the beat is 4 Hz: a step function of the clock, so reads within a beat agree', () => {
+test('the beat is 4 Hz: a step function of the clock, exact at the beat boundaries', () => {
   beat.resetAmbientClock();
   assert.equal(beat.BEATS_PER_SECOND, 4);
   assert.equal(beat.BEAT_S, 0.25);
@@ -28,23 +28,52 @@ test('the beat is 4 Hz: a step function of the clock, so reads within a beat agr
   for (let i = 0; i < 150; i++) {
     beat.advanceAmbientClock(DT);
     const b = beat.ambientBeat();
-    assert.equal(b, Math.floor(beat.ambientClock() / 0.25));
+    assert.ok(Number.isInteger(b));
     assert.equal(beat.ambientBeatTime(), b * 0.25, 'beat time is the start of the beat');
-    assert.ok(beat.ambientBeatTime() <= beat.ambientClock());
+    assert.ok(beat.ambientBeatTime() <= beat.ambientClock() + 1e-9);
+    assert.ok(beat.ambientClock() - beat.ambientBeatTime() < 0.25, 'the remainder stays inside the beat');
     seen.add(b);
   }
-  assert.ok(Math.abs(beat.ambientClock() - 10) < 1e-9);
-  // 10 s at 4 Hz: beats 0..39 or 0..40 depending on float accumulation.
-  assert.ok(seen.size >= 40 && seen.size <= 41, `${seen.size} distinct beats in 10 s`);
+  // 150 ticks of 1/15 s sum to 9.999999999999984 as floats; the beat must
+  // not be left one short at the ten-second mark.
+  assert.equal(beat.ambientBeat(), 40, 'beat 40 after exactly ten simulated seconds');
+  assert.ok(Math.abs(beat.ambientClock() - 10) < 1e-9, `clock ${beat.ambientClock()}`);
+  assert.equal(seen.size, 41, 'beats 0..40 in 10 s');
 });
 
-test('the clock only moves when advanced, and reset starts it over', () => {
+test('the clock only moves when advanced, ignores a non-positive dt, and reset starts it over', () => {
   beat.resetAmbientClock();
   for (let i = 0; i < 20; i++) assert.equal(beat.ambientBeat(), 0);
+  beat.advanceAmbientClock(0);
+  beat.advanceAmbientClock(-1);
+  beat.advanceAmbientClock(NaN);
+  assert.equal(beat.ambientClock(), 0);
   beat.advanceAmbientClock(1);
   assert.equal(beat.ambientBeat(), 4);
+  assert.equal(beat.ambientClock(), 1);
   beat.resetAmbientClock();
   assert.equal(beat.ambientClock(), 0);
+  assert.equal(beat.ambientBeat(), 0);
+});
+
+test('ambientFrame: the beat while animating, STILL_FRAME while holding, below any beat', () => {
+  beat.resetAmbientClock();
+  assert.ok(beat.STILL_FRAME < -1, 'below the "never drawn" marker');
+  assert.equal(beat.ambientFrame(false), beat.STILL_FRAME);
+  assert.equal(beat.ambientFrame(true), 0);
+  beat.advanceAmbientClock(0.5);
+  assert.equal(beat.ambientFrame(true), 2);
+  assert.equal(beat.ambientFrame(false), beat.STILL_FRAME);
+});
+
+test('the floor starts the clock over for every scene it builds', () => {
+  const fs = require('node:fs'); const path = require('node:path');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/src/scene/office/OfficeFloor.tsx'), 'utf8');
+  const i = src.indexOf('const runtimes = new Map<string, Runtime>();');
+  assert.ok(i > 0);
+  const near = src.slice(i, i + 600);
+  assert.match(near, /resetAmbientClock\(\);/, 'reset must sit with the scene setup, once per build');
+  assert.equal((src.match(/resetAmbientClock\(/g) ?? []).length, 1);
 });
 
 test('DeskScreen steps on the shared beat, not a clock of its own', () => {
