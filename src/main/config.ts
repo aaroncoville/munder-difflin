@@ -280,6 +280,10 @@ export interface HarnessConfig {
    *  — idle-based, never wall-clock, so an actively-working worker is never reaped.
    *  Default 20. */
   workerIdleTimeoutMinutes?: number;
+  /** A worker waiting on a job it launched is not idle, but once its terminal has
+   *  been silent for this many times the idle timeout it is reaped anyway.
+   *  Default 3. */
+  workerIdleCeilingMultiplier?: number;
   /** Registered integrations (Phase 2) — labeled REST endpoints workers reach through
    *  the loopback secret broker. METADATA ONLY: each record carries a `secretRef`
    *  handle, never the secret value (secrets live encrypted in a separate file via
@@ -462,6 +466,7 @@ const DEFAULTS: HarnessConfig = {
   mcpDefaults: defaultMcpDefaults(),
   maxConcurrentWorkers: 4,
   workerIdleTimeoutMinutes: 20,
+  workerIdleCeilingMultiplier: 3,
   integrations: [],
   defaultWorkerTokenCap: 0, // 0 = unlimited (human directive: NO per-worker cap)
   semanticMemory: true,

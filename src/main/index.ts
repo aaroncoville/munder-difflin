@@ -70,6 +70,7 @@ import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WakeSkipLog, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
+import { shouldReapIdle, workerHasLiveJob } from './workerIdleJobs';
 import {
   CODEX_ACTIVITY_TTL_MS,
   CodexHomes,
@@ -386,6 +387,8 @@ interface WorkerRec {
   /** Per-worker TOTAL-token cap from the spawn-request (overrides the config
    *  default). 0/undefined = no per-request cap. P4 plumbing — unlimited today. */
   tokenCap?: number;
+  /** When a job the worker launched was last seen alive (see workerIdleJobs). */
+  jobSeenAt?: number;
 }
 /** Live ephemeral workers by id. Populated by the spawn-request watcher; consulted
  *  by teardownPty so a finished/crashed/reaped worker's worktree is PRESERVED (not
@@ -5047,6 +5050,7 @@ async function ephemeralWorkerTick(): Promise<void> {
     const cfg = readConfig();
     const maxWorkers = Math.max(1, cfg.maxConcurrentWorkers ?? 4);
     const idleTimeoutMs = Math.max(1, cfg.workerIdleTimeoutMinutes ?? 20) * 60_000;
+    const idleCeilingMs = Math.max(1, cfg.workerIdleCeilingMultiplier ?? 3) * idleTimeoutMs;
     // Per-worker token cap. 0 = UNLIMITED (the default — wired but never throttles
     // unless a positive cap is set per-request or via defaultWorkerTokenCap).
     const defaultTokenCap = typeof cfg.defaultWorkerTokenCap === 'number' && cfg.defaultWorkerTokenCap > 0
@@ -5122,7 +5126,9 @@ async function ephemeralWorkerTick(): Promise<void> {
       }
       const idleMs = ptyManager.idleFor(workerId);
       if (idleMs === undefined) continue; // PTY already gone; teardownPty cleans up
-      if (idleMs > idleTimeoutMs) {
+      // Silent but waiting on a job it launched (a long test run) is not idle.
+      const hasLiveJob = (): boolean => workerHasLiveJob(ptyManager.list().find((p) => p.id === workerId)?.pid);
+      if (shouldReapIdle(rec, { ptyIdleMs: idleMs, limitMs: idleTimeoutMs, ceilingMs: idleCeilingMs, now: Date.now(), hasLiveJob })) {
         rec.releasing = true;
         console.warn(`[worker] reaping idle ${workerId} (${Math.round(idleMs / 60000)}min idle)`);
         informGod(

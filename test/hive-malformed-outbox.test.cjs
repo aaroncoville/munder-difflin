@@ -96,7 +96,9 @@ test('irreparable structural JSON is logged and quarantined', async (t) => {
   const filename = 'structural.json';
   writeOutbox(outbox, filename, '{"to":"god","body":');
 
-  assert.equal(hive.routeOnce(), 0);
+  // First read leaves it for its sender to finish; the retry drops it.
+  assert.equal(hive.routeOnce(1_000_000), 0);
+  assert.equal(hive.routeOnce(1_002_000), 0);
   assert.equal(hive.inbox('god-1').length, 0);
   assert.equal(fs.existsSync(path.join(outbox, filename)), false);
   assert.equal(fs.existsSync(path.join(outbox, '.sent', `bad-${filename}`)), true);
@@ -126,7 +128,8 @@ test('an irreparable poison file does not block a valid file in the same pass', 
   writeOutbox(outbox, 'a-poison.json', '{"to":"god","body":');
   writeOutbox(outbox, 'b-good.json', JSON.stringify({ to: 'god', act: 'inform', body: 'still routed' }));
 
-  assert.equal(hive.routeOnce(), 1);
+  assert.equal(hive.routeOnce(1_000_000), 1);
+  assert.equal(hive.routeOnce(1_002_000), 0);
   assert.equal(hive.inbox('god-1').length, 1);
   assert.equal(hive.inbox('god-1')[0].body, 'still routed');
   assert.equal(fs.existsSync(path.join(outbox, '.sent', 'bad-a-poison.json')), true);
