@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 
@@ -53,10 +54,35 @@ test('no roots leaves the config untouched', () => {
   assert.equal(withCodexWritableRoots('model = "m"\n', []), 'model = "m"\n');
 });
 
+test('a table the user wrote in dotted form is left alone, with a warning', () => {
+  // Without a [sandbox_workspace_write] header there is nothing to add the key
+  // under, and appending one would declare a table TOML already has.
+  const user = 'sandbox_workspace_write.network_access = true\n\n[features]\nx = true\n';
+  const warned = [];
+  const out = withCodexWritableRoots(user, ['/hive'], (m) => warned.push(m));
+  assert.equal(out, user);
+  assert.equal(warned.length, 1);
+  assert.match(warned[0], /sandbox_workspace_write/);
+});
+
+test('a table the user wrote inline is left alone, with a warning', () => {
+  const user = 'sandbox_workspace_write = { network_access = true }\n';
+  const warned = [];
+  const out = withCodexWritableRoots(user, ['/hive'], (m) => warned.push(m));
+  assert.equal(out, user);
+  assert.equal(warned.length, 1);
+});
+
+test('a dotted key of the same name inside another table is not mistaken for ours', () => {
+  const user = '[profiles.fast]\nsandbox_workspace_write.network_access = true\n';
+  const warned = [];
+  const out = withCodexWritableRoots(user, ['/hive'], (m) => warned.push(m));
+  assert.deepEqual(warned, []);
+  assert.match(out, /\n\[sandbox_workspace_write\]\nwritable_roots = \["\/hive"\]\n$/);
+});
+
 test('codex spawn prep writes the agent folder and hive root into its own config', async (t) => {
-  // Short /tmp root for the same reason as the directory-trust tests: the
-  // agent's Codex home lands under this fake $HOME and must fit a socket path.
-  const home = fs.realpathSync(fs.mkdtempSync('/tmp/mdcw-'));
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mdcw-')));
   const fakeHome = path.join(home, 'h');
   fs.mkdirSync(path.join(fakeHome, '.codex'), { recursive: true });
   const realHome = process.env.HOME;
