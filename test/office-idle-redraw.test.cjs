@@ -193,3 +193,108 @@ test('a blocked agent redraws its "!" on each blink, not every tick', () => {
   assert.equal(run(s, c, 1), 1, 'clearing the glyph is a change');
   assert.equal(run(s, c, 30), 0);
 });
+
+/* ─── Round 2: the whole idle scene, not one character ─────────────────────
+ *
+ * The ASK ME board's attention pulse was rebuilt every tick while a question
+ * waited for the human, which on a live floor is nearly always, so it alone
+ * held the floor at 15 renders/s with every avatar parked. And a working
+ * agent never typed: applySitPose always chose the one-frame idle pose. The
+ * harness below ticks a scene the way OfficeFloor does — beat, camera,
+ * character, monitor, board — and pins the ceiling: parked, with an open ask,
+ * nothing is queued; working, the avatar types and the effects run. */
+
+const { Camera } = loadTs('src/renderer/src/scene/office/Camera.ts');
+const { DeskScreen } = loadTs('src/renderer/src/scene/office/DeskScreen.ts');
+const {
+  askBoardFrame, paintAskBoard, STILL_FRAME, ASK_STEADY_ALPHA, ASK_PULSE_MIN_ALPHA, ASK_PULSE_ALPHA_RANGE
+} = loadTs('src/renderer/src/scene/office/askBoard.ts');
+
+/** The avatar's AnimatedSprite, for the frames it is playing. */
+const avatar = (c) => c.sprite.container.children.find((ch) => ch instanceof PIXI.AnimatedSprite);
+
+function scene({ askCount = 2 } = {}) {
+  beat.resetAmbientClock();
+  const s = stage();
+  const world = new PIXI.Container();
+  s.addChild(world);
+  const camera = new Camera(world);
+  camera.setMapSize(map.width * TS, map.height * TS);
+  camera.setViewSize(320, 240);
+  const c = character(world);
+  const screen = new DeskScreen({ tileSize: TS, textureForGid: () => null }, { x: 2, y: 0 });
+  world.addChild(screen.container);
+  const askG = new PIXI.Graphics();
+  world.addChild(askG);
+  let paints = 0;
+  const clear = askG.clear.bind(askG);
+  askG.clear = () => { paints += 1; return clear(); };
+  const board = {
+    askCount, frame: NaN,
+    draw() {
+      const f = askBoardFrame(this.askCount, c.isActive());
+      if (f === this.frame) return;
+      this.frame = f;
+      paintAskBoard(askG, this.askCount, f === STILL_FRAME ? null : beat.ambientBeatTime());
+    },
+    get paints() { return paints; }
+  };
+  board.draw();
+  // One tick, in the floor's order; returns whether the stage had a change.
+  const tick = () => {
+    beat.advanceAmbientClock(DT);
+    camera.update(DT);
+    c.update(DT);
+    screen.setOn(c.isSittingAtDesk());
+    screen.update(c.isActive());
+    board.draw();
+    const dirty = sceneChangedSinceRender(s.renderGroup);
+    settle(s);
+    return dirty;
+  };
+  const run = (n) => { let d = 0; for (let i = 0; i < n; i++) if (tick()) d += 1; return d; };
+  return { s, c, screen, board, camera, run };
+}
+
+test('ask board frames: the beat only while questions wait AND someone is working', () => {
+  beat.resetAmbientClock();
+  beat.advanceAmbientClock(0.5);
+  assert.equal(askBoardFrame(0, false), STILL_FRAME);
+  assert.equal(askBoardFrame(0, true), STILL_FRAME, 'no questions, no pulse');
+  assert.equal(askBoardFrame(3, false), STILL_FRAME, 'nobody working: hold the attention frame');
+  assert.equal(askBoardFrame(3, true), 2);
+  assert.ok(Math.abs(ASK_STEADY_ALPHA - (ASK_PULSE_MIN_ALPHA + ASK_PULSE_ALPHA_RANGE / 2)) < 1e-12);
+});
+
+test('paintAskBoard: a frame is a function of the count and the pulse time', () => {
+  const g = new PIXI.Graphics();
+  const strokes = [];
+  const stroke = g.stroke.bind(g);
+  g.stroke = (style) => { strokes.push(style.alpha); return stroke(style); };
+  paintAskBoard(g, 0, null);
+  assert.equal(strokes.length, 0, 'no questions: no attention ring');
+  paintAskBoard(g, 2, null);
+  assert.equal(strokes.length, 1);
+  assert.ok(Math.abs(strokes[0] - ASK_STEADY_ALPHA) < 1e-12, 'held: the steady alpha');
+  paintAskBoard(g, 2, 0);
+  paintAskBoard(g, 2, 0.25);
+  paintAskBoard(g, 2, 0);
+  assert.equal(strokes[1], strokes[3], 'same pulse time, same frame');
+  assert.notEqual(strokes[1], strokes[2]);
+  for (const a of strokes) assert.ok(a >= ASK_PULSE_MIN_ALPHA - 1e-12 && a <= ASK_PULSE_MIN_ALPHA + ASK_PULSE_ALPHA_RANGE + 1e-12);
+});
+
+test('a parked scene with an open ask queues nothing: still halo, still monitor, held board, settled camera', () => {
+  const sc = scene({ askCount: 2 });
+  sc.c.sitAtDesk(true);
+  sc.c.setActive(false);
+  sc.run(45); // fade-in, seat slide, camera lerp
+  assert.equal(sc.c.isSittingAtDesk(), true);
+  assert.equal(sc.c.getAnimation(), 'idle', 'parked: the one-frame seated pose');
+  assert.equal(avatar(sc.c).textures.length, 1);
+  assert.equal(sc.screen.container.visible, true, 'the monitor is lit while seated');
+  assert.equal(sc.board.frame, STILL_FRAME, 'the ask board holds its attention frame');
+  const paintsBefore = sc.board.paints;
+  assert.equal(sc.run(150), 0, 'ten seconds parked: nothing queued');
+  assert.equal(sc.board.paints, paintsBefore, 'the board was not repainted');
+});

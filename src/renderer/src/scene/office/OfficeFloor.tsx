@@ -22,7 +22,8 @@ import {
 } from './officeMotion';
 import { chooseRenderer, describeRendererChoice, type PixiRendererPreference } from './officeRenderer';
 import { createRenderOnChange, sceneChangedSinceRender } from './renderOnChange';
-import { resetAmbientClock } from './ambientBeat';
+import { ambientBeatTime, resetAmbientClock } from './ambientBeat';
+import { askBoardFrame, paintAskBoard, STILL_FRAME } from './askBoard';
 import { useWindowShown } from '@/scene/windowShown';
 import { webglRendererInfo } from '@/components/terminalRenderer';
 import { loadTexture } from './textureCache';
@@ -1279,32 +1280,23 @@ export function OfficeFloor() {
       });
       charLayer.addChild(askG);
       let askCount = 0;
-      let askPulse = 0;
-      const drawAskBoard = (pulse: number): void => {
-        askG.clear();
-        // lilac-framed board with a big "?" identity
-        askG.rect(0, -8, 30, 22).fill(0x5b4a6b);
-        askG.rect(1, -7, 28, 3).fill(0xcdb4e8);
-        askG.rect(1, -4, 28, 17).fill(0xc9b083);
-        if (askCount === 0) {
-          // quiet: a faint "?" watermark
-          askG.rect(13, -1, 4, 2).fill({ color: 0x8a755f, alpha: 0.8 });
-          askG.rect(15, 1, 2, 4).fill({ color: 0x8a755f, alpha: 0.8 });
-          askG.rect(15, 7, 2, 2).fill({ color: 0x8a755f, alpha: 0.8 });
-        } else {
-          const n = Math.min(askCount, 8);
-          for (let i = 0; i < n; i++) {
-            const x = 3 + (i % 4) * 7;
-            const y = -2 + Math.floor(i / 4) * 6;
-            askG.rect(x, y, 5, 4).fill(0xcdb4e8);
-            askG.rect(x + 2, y, 1, 1).fill(0x4a3b52);
-          }
-          // attention pulse around the frame while questions wait
-          const a = 0.35 + 0.3 * Math.sin(pulse * 4);
-          askG.rect(-2, -10, 34, 26).stroke({ color: 0xcdb4e8, width: 2, alpha: a });
-        }
+      // The frame the board last drew (askBoardFrame); NaN forces a redraw.
+      let askFrame = NaN;
+      const floorActive = (): boolean => {
+        for (const rt of runtimes.values()) if (rt.character.isActive()) return true;
+        return false;
       };
-      drawAskBoard(0);
+      // Repaint only when the board's frame changes: the attention pulse
+      // steps on the ambient beat while someone is working, and holds while
+      // nobody is (askBoard.ts) — a Graphics rebuild is a change the floor has
+      // to render, and a question usually waits for a while.
+      const drawAskBoard = (): void => {
+        const frame = askBoardFrame(askCount, floorActive());
+        if (frame === askFrame) return;
+        askFrame = frame;
+        paintAskBoard(askG, askCount, frame === STILL_FRAME ? null : ambientBeatTime());
+      };
+      drawAskBoard();
 
       // ─── Board choreography: every ledger move is ACTED on the floor ───────
       // Michael walks over and pins fresh cards; an assigned worker walks to
@@ -1411,8 +1403,7 @@ export function OfficeFloor() {
           }
         }
         // the ASK ME board pulses for attention while questions wait
-        askPulse += dt;
-        if (askCount > 0) drawAskBoard(askPulse);
+        drawAskBoard();
         // global watchdog: if anything has been in flight too long, hard-sync
         moveWatchdog += dt;
         if (moveWatchdog > 30 && busyActors.size > 0) {
@@ -1454,7 +1445,8 @@ export function OfficeFloor() {
           ).length;
           if (newAsk !== askCount) {
             askCount = newAsk;
-            drawAskBoard(askPulse);
+            askFrame = NaN;
+            drawAskBoard();
           }
           if (firstPoll) {
             // cold start: no theatre, just show the truth
