@@ -227,16 +227,27 @@ export function ambianceEnabled(
  *  motes drift at a few px/s, so six frames a second still reads as a lit room;
  *  sixty was ten times the work for the same picture. */
 export const AMBIANCE_REDUCED_FPS = 6;
+/** The layer's backing resolution on the reduced path: half a device pixel
+ *  per CSS pixel. The layer is transparent, panel-sized and drawn once per
+ *  frame in full — on a software GPU its cost is its pixels — and what it
+ *  holds is soft: glows that are stacked translucent rings and motes a pixel
+ *  or two across, which the browser's upscale blurs no more than the glow
+ *  already is. autoDensity keeps the CSS size, so nothing moves. Measured on
+ *  WSLg at 1440x873 with eight rooms up: eight uncapped 1x layers 2.06 cores,
+ *  the same layers at 6 fps 0.79; halving the resolution quarters the pixels
+ *  each of those frames rasterises. */
+export const AMBIANCE_REDUCED_RESOLUTION = 0.5;
 
 /** The ticker cap and canvas resolution for the layer, from the office's
  *  motion decision (officeMotion.ts): 'full' is today's behaviour, uncapped at
  *  the device pixel ratio; 'reduced' — a software GPU, or the OS asking for
- *  reduced motion — is AMBIANCE_REDUCED_FPS at 1x, where each frame is a
- *  full Canvas2D rasterisation of a panel-sized transparent layer. */
+ *  reduced motion — is AMBIANCE_REDUCED_FPS at AMBIANCE_REDUCED_RESOLUTION,
+ *  where each frame is a full Canvas2D rasterisation of a panel-sized
+ *  transparent layer. */
 export function ambianceMotion(
   mode: 'full' | 'reduced',
   devicePixelRatio: number
 ): { maxFPS: number; resolution: number } {
-  if (mode === 'reduced') return { maxFPS: AMBIANCE_REDUCED_FPS, resolution: 1 };
+  if (mode === 'reduced') return { maxFPS: AMBIANCE_REDUCED_FPS, resolution: AMBIANCE_REDUCED_RESOLUTION };
   return { maxFPS: 0, resolution: devicePixelRatio || 1 };
 }

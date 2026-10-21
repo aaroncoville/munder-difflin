@@ -483,10 +483,11 @@ test('a glow knows whether it is a flame or a fire, and the cap still caps', () 
 // on a software GPU (or with the OS asking for less motion) six frames a second
 // at 1x, where each frame is a full Canvas2D raster of a panel-sized layer; a
 // real GPU keeps the uncapped layer at device pixels it has always had.
-test('ambianceMotion: six frames a second at 1x on the reduced path, uncapped at dpr on the full one', () => {
+test('ambianceMotion: six frames a second at half resolution on the reduced path, uncapped at dpr on the full one', () => {
   const A = loadTs('src/renderer/src/scene/study/ambiance.ts');
   assert.equal(A.AMBIANCE_REDUCED_FPS, 6);
-  assert.deepEqual(A.ambianceMotion('reduced', 2), { maxFPS: 6, resolution: 1 });
+  assert.equal(A.AMBIANCE_REDUCED_RESOLUTION, 0.5);
+  assert.deepEqual(A.ambianceMotion('reduced', 2), { maxFPS: 6, resolution: 0.5 });
   assert.deepEqual(A.ambianceMotion('full', 2), { maxFPS: 0, resolution: 2 });
   assert.deepEqual(A.ambianceMotion('full', 0), { maxFPS: 0, resolution: 1 });
 });
