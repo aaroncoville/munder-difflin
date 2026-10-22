@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron';
 import type { AgentProvider } from '../shared/agentProvider';
 import type { HireManifest } from '../shared/hire';
+import { WINDOW_VISIBILITY_CHANNEL, WINDOW_VISIBILITY_GET_CHANNEL, type WindowVisibility } from '../shared/windowVisibility';
 export type { HireManifest } from '../shared/hire';
 import type { IntegrationRecord, IntegrationTemplate } from '../shared/integrations';
 export type { IntegrationRecord, IntegrationTemplate } from '../shared/integrations';
@@ -328,6 +329,16 @@ export interface HarnessConfig {
   tvShowOffices?: boolean;
   /** Active office map/cast theme (honored only when tvShowOffices is on). */
   officeTheme?: 'office' | 'friends' | 'brooklyn99' | 'siliconvalley' | 'got' | 'hogwarts';
+  /** Terminal painter: 'auto' = WebGL on a real GPU, DOM on a software GPU;
+   *  'dom' / 'webgl' force it. Mirrors src/main/config.ts. */
+  terminalRenderer?: 'auto' | 'dom' | 'webgl';
+  /** Office floor motion: 'auto' = full on a real GPU, 15 fps at 1x on a
+   *  software GPU or with OS reduced motion; 'full' / 'reduced' force it.
+   *  Mirrors src/main/config.ts. */
+  officeMotion?: 'auto' | 'full' | 'reduced';
+  /** Floor performance samples in the hive log (dev builds always sample).
+   *  Mirrors src/main/config.ts. */
+  officeDiagnostics?: boolean;
   /** Per-CLI-provider local/self-hosted base URL (Ollama/LM Studio/vLLM, …) for the
    *  OpenCode/Crush/pi/qwen engines; applied at spawn. API KEYS are NOT stored here —
    *  they live write-only in the secret broker. */
@@ -598,8 +609,12 @@ const api = {
    *  into — the renderer stores that, not the raw `~/…` the user typed. */
   spawnPty: (opts: SpawnPtyOptions): Promise<{ ok: boolean; error?: string; cwd?: string; worktreePath?: string; resumeNotFound?: boolean; resumed?: boolean; seedPrompt?: string }> =>
     ipcRenderer.invoke('pty:spawn', opts),
-  writePty: (id: string, data: string): Promise<{ ok: boolean; error?: string }> =>
-    ipcRenderer.invoke('pty:write', id, data),
+  /** `source` is 'user' ONLY from the terminal's keystroke handler; every
+   *  automated write (terminal query replies, seeded prompts, inbox nudges,
+   *  dropped paths) leaves it at 'auto', so main can tell a PTY a person has
+   *  used from one only the harness has touched. */
+  writePty: (id: string, data: string, source: 'user' | 'auto' = 'auto'): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('pty:write', id, data, source),
   resizePty: (id: string, cols: number, rows: number): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke('pty:resize', id, cols, rows),
   redrawPty: (id: string): Promise<{ ok: boolean; error?: string }> =>
@@ -779,6 +794,11 @@ const api = {
   hiveBoard: (): Promise<string> => ipcRenderer.invoke('hive:board'),
   hiveTasks: (): Promise<unknown> => ipcRenderer.invoke('hive:tasks'),
   hiveLog: (n?: number): Promise<unknown[]> => ipcRenderer.invoke('hive:log', n ?? 200),
+  /** Append a floor performance sample to the hive log. Main accepts kind
+   *  'floor-perf' only, size-capped (shared/floorPerfEvent.ts); anything else
+   *  is dropped, not an error. */
+  hiveLogEvent: (event: Record<string, unknown>): Promise<boolean> =>
+    ipcRenderer.invoke('hive:logEvent', event).then((ok) => ok === true, () => false),
   hiveMemory: (id: string): Promise<string> => ipcRenderer.invoke('hive:memory', id),
   hiveInbox: (id: string): Promise<HiveMessage[]> => ipcRenderer.invoke('hive:inbox', id),
   /** Voice read-layer: recent message CONTENT (inbox/outbox bodies), REDACTED in
@@ -977,6 +997,19 @@ const api = {
     ipcRenderer.on('config:changed', listener);
     return () => ipcRenderer.removeListener('config:changed', listener);
   },
+
+  // ─── Window visibility ───────────────────────────────────────────────────
+  /** Fired by main when this window is minimised/restored or hidden/shown —
+   *  document.hidden does not flip for a minimised window on WSLg. */
+  onWindowVisibility: (cb: (v: WindowVisibility) => void): (() => void) => {
+    const listener = (_e: IpcRendererEvent, v: WindowVisibility) => cb(v);
+    ipcRenderer.on(WINDOW_VISIBILITY_CHANNEL, listener);
+    return () => ipcRenderer.removeListener(WINDOW_VISIBILITY_CHANNEL, listener);
+  },
+  /** This window's state right now, for a renderer that loaded while the
+   *  window was already minimised. */
+  getWindowVisibility: (): Promise<WindowVisibility> =>
+    ipcRenderer.invoke(WINDOW_VISIBILITY_GET_CHANNEL),
 
   // ─── Quit confirmation ───────────────────────────────────────────────────
   onCloseRequested: (cb: (info: { ptyCount: number }) => void): (() => void) => {

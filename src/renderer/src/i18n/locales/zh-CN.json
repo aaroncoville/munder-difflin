@@ -247,7 +247,17 @@
       "resetStartOver": "重置并重新开始",
       "arabicTerminal": "终端中的阿拉伯语 / RTL 文本",
       "arabicTerminalDesc": "用浏览器的文本引擎渲染终端，让阿拉伯语正确连写并从右向左阅读（xterm 自身没有双向文本支持）。关闭则使用 GPU 渲染器：更快，但无法处理从右向左的文本。对已打开和新开的终端同时生效。",
-      "arabicTerminalFollowsLanguage": "当前跟随应用语言。在此切换即可覆盖，两个方向都可以——你的选择会保留，即使之后再更改语言。"
+      "arabicTerminalFollowsLanguage": "当前跟随应用语言。在此切换即可覆盖，两个方向都可以——你的选择会保留，即使之后再更改语言。",
+      "terminalRenderer": "终端渲染器",
+      "terminalRendererDesc": "自动模式在有真实 GPU 时使用 GPU 渲染器；当 WebGL 由软件模拟（WSL2、虚拟机）时改用浏览器文本引擎，因为那时 GPU 渲染器只会白白消耗 CPU。手动选择可强制使用其一。对已打开和新开的终端同时生效。",
+      "terminalRendererAuto": "自动（检测 GPU）",
+      "terminalRendererDom": "文本引擎（DOM）",
+      "terminalRendererWebgl": "GPU（WebGL）",
+      "officeMotion": "办公室楼层动画",
+      "officeMotionDesc": "自动模式在有真实 GPU 时完整播放楼层动画；当 WebGL 由软件模拟（WSL2、虚拟机）或系统要求减少动态效果时，降至 15 fps、1x 分辨率；精简模式还会在窗口失去焦点 30 秒且没有智能体活动时暂停楼层。手动选择可强制使用其一。",
+      "officeMotionAuto": "自动（检测 GPU）",
+      "officeMotionFull": "完整",
+      "officeMotionReduced": "精简（15 fps，1x）"
     },
     "agentsModels": {
       "defaultModel": "默认智能体模型",

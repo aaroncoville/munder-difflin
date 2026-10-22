@@ -64,10 +64,11 @@ test('a candle flickers — inside a band, and never steadily', () => {
 });
 
 test('the layer is off when it must be off', () => {
-  assert.equal(A.ambianceEnabled({ reducedMotion: true, visible: true }), false);
-  assert.equal(A.ambianceEnabled({ reducedMotion: false, visible: false }), false);
-  assert.equal(A.ambianceEnabled({ reducedMotion: true, visible: false }), false);
-  assert.equal(A.ambianceEnabled({ reducedMotion: false, visible: true }), true);
+  assert.equal(A.ambianceEnabled({ reducedMotion: true, visible: true, attended: true }), false);
+  assert.equal(A.ambianceEnabled({ reducedMotion: false, visible: false, attended: true }), false);
+  assert.equal(A.ambianceEnabled({ reducedMotion: true, visible: false, attended: true }), false);
+  assert.equal(A.ambianceEnabled({ reducedMotion: false, visible: true, attended: false }), false, 'unattended: the candles go out');
+  assert.equal(A.ambianceEnabled({ reducedMotion: false, visible: true, attended: true }), true);
 });
 
 test('the ambiance slot is filled, and is still not clickable', () => {
@@ -391,7 +392,7 @@ async function paint(room, view) {
     for (let i = 0; i < 8; i++) await new Promise((r) => setImmediate(r));
     return {
       record,
-      glows: record.graphics.filter((g) => g.positioned),
+      glows: record.graphics.filter((g) => g.positioned && g.label !== 'mote'),
       tick: record.ticks[0],
       stop: () => cleanups.forEach((fn) => fn && fn())
     };
@@ -476,4 +477,256 @@ test('a glow knows whether it is a flame or a fire, and the cap still caps', () 
   const drawn = A.glowsFor(many);
   assert.equal(drawn.length, A.GLOW_CAP, 'classifying the lights lost the cap on them');
   assert.equal(drawn.some((g) => g.hearth), false, 'a light past the cap was drawn anyway');
+});
+
+// The layer's frame cap and resolution come from the office's motion decision:
+// on a software GPU (or with the OS asking for less motion) six frames a second
+// at 1x, where each frame is a full Canvas2D raster of a panel-sized layer; a
+// real GPU keeps the uncapped layer at device pixels it has always had.
+test('ambianceMotion: six frames a second at half resolution on the reduced path, uncapped at dpr on the full one', () => {
+  const A = loadTs('src/renderer/src/scene/study/ambiance.ts');
+  assert.equal(A.AMBIANCE_REDUCED_FPS, 6);
+  assert.equal(A.AMBIANCE_REDUCED_RESOLUTION, 0.5);
+  assert.deepEqual(A.ambianceMotion('reduced', 2), { maxFPS: 6, resolution: 0.5 });
+  assert.deepEqual(A.ambianceMotion('full', 2), { maxFPS: 0, resolution: 2 });
+  assert.deepEqual(A.ambianceMotion('full', 0), { maxFPS: 0, resolution: 1 });
+});
+
+/* ─── Behaviour: caps, attention and teardown, driven through the real layer
+ *
+ * The stand-in pixi above is extended with a ticker that remembers its cap
+ * and a destroy count; a fake window and document carry focus, visibility
+ * and listeners; timers are captured. The host runs every effect it is asked
+ * to, so `settle()` does what React does: re-run the layer's effect (cleanup
+ * first) only when the layer's render changed between on and off. */
+
+function stagePixi() {
+  const record = { apps: [], ticks: [], inits: [], destroyed: 0, geometry: 0 };
+  class Graphics {
+    constructor() {
+      this.alpha = 1; this.blendMode = null; this.label = null;
+      this.position = { set: (x, y) => { this.x = x; this.y = y; } };
+      this.scale = { set: (v) => { this.factor = v; } };
+    }
+    circle() { record.geometry += 1; return this; }
+    fill() { record.geometry += 1; return this; }
+    clear() { record.geometry += 1; return this; }
+  }
+  class Application {
+    constructor() {
+      const children = [];
+      this.stage = { eventMode: null, children, addChild: (c) => children.push(c) };
+      this.canvas = { style: {} };
+      this.render = () => {};
+      this.ticker = { maxFPS: 0, add: (fn) => record.ticks.push(fn), remove: () => {} };
+      record.apps.push(this);
+    }
+    // Pixi 8's sizing, enough of it to tell (AbstractRenderer, ViewSystem):
+    // renderer.width/height are the LOGICAL size (the view texture's frame),
+    // canvas.width/height the backing pixels (logical x resolution), and the
+    // element's CSS size is the logical size only with autoDensity — without
+    // it the element takes the backing size.
+    async init(options) {
+      this.options = options; record.inits.push(options);
+      const res = options.resolution ?? 1;
+      this.renderer = { name: 'canvas', resolution: res, width: options.width, height: options.height };
+      this.canvas.width = options.width * res; this.canvas.height = options.height * res;
+      const css = options.autoDensity ? { w: options.width, h: options.height } : { w: this.canvas.width, h: this.canvas.height };
+      this.canvas.style.width = `${css.w}px`; this.canvas.style.height = `${css.h}px`;
+    }
+    destroy() { this.dead = true; record.destroyed += 1; }
+  }
+  return { record, module: { __esModule: true, Application, Graphics, UPDATE_PRIORITY: { LOW: -25 } } };
+}
+
+/** Mount the real layer in a fake browser; returns the controls. */
+async function house(room, view, { focused = true, hidden = false, shown = true, reduced = false, mode = 'reduced' } = {}) {
+  const { record, module } = stagePixi();
+  const pixi = require.resolve('pixi.js');
+  const hadPixi = require.cache[pixi];
+  require.cache[pixi] = { id: pixi, filename: pixi, loaded: true, exports: module };
+  const listeners = new Map();
+  const win = {
+    devicePixelRatio: 2,
+    matchMedia: () => ({ matches: reduced, addEventListener() {}, removeEventListener() {} }),
+    addEventListener: (t, fn) => listeners.set('window:' + t, fn),
+    removeEventListener: (t) => listeners.delete('window:' + t),
+    cth: { hiveLogEvent: async () => true }
+  };
+  const doc = {
+    get hidden() { return hidden; },
+    hasFocus: () => focused,
+    addEventListener: (t, fn) => listeners.set('document:' + t, fn),
+    removeEventListener: (t) => listeners.delete('document:' + t)
+  };
+  const timers = [];
+  const real = { setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout, window: globalThis.window, document: globalThis.document, now: Date.now };
+  let now = 1_000_000;
+  globalThis.setTimeout = (fn, ms) => { const h = { fn, ms }; timers.push(h); return h; };
+  globalThis.clearTimeout = (h) => { const k = timers.indexOf(h); if (k >= 0) timers.splice(k, 1); };
+  globalThis.window = win; globalThis.document = doc; Date.now = () => now;
+  const shownMod = loadTs('src/renderer/src/scene/windowShown.ts');
+  // Through the path main's minimise/restore IPC takes, which notifies.
+  shownMod.resetWindowShown();
+  shownMod.applyWindowVisibility({ shown });
+  // The reduced path unless a test says otherwise: node's WebGL probe says
+  // 'unknown', which 'auto' treats as hardware.
+  const { setOfficeMotionPref } = loadTs('src/renderer/src/scene/office/officeMotion.ts');
+  setOfficeMotionPref(mode);
+  const settleTurns = async () => { for (let i = 0; i < 8; i++) await new Promise((r) => setImmediate(r)); };
+  let layer;
+  try {
+    const { AmbianceLayer } = loadTs('src/renderer/src/scene/study/AmbianceLayer.tsx');
+    // trackDeps: only the effect whose deps changed re-runs, as in React —
+    // the attention and visibility hooks keep their listeners and timers
+    // across the layer going on and off. The host cannot attach refs, so the
+    // host element is handed over and the main effect gets its real first
+    // run through a render + runEffects (its deps include the ref-less run).
+    layer = mount(AmbianceLayer, { room, view }, { trackDeps: true, deferEffects: true });
+    if (layer.tree) layer.tree.props.ref.current = { appendChild() {} };
+    layer.runEffects();
+    await settleTurns();
+  } catch (e) { restore(); throw e; }
+  function restore() {
+    globalThis.setTimeout = real.setTimeout; globalThis.clearTimeout = real.clearTimeout;
+    globalThis.window = real.window; globalThis.document = real.document; Date.now = real.now;
+    if (hadPixi) require.cache[pixi] = hadPixi; else delete require.cache[pixi];
+    shownMod.resetWindowShown();
+    setOfficeMotionPref('auto');
+  }
+  /** Re-render and let the host re-run only the effects whose deps changed. */
+  const settle = async () => {
+    layer.render();
+    if (layer.tree) layer.tree.props.ref.current = { appendChild() {} };
+    layer.runEffects();
+    await settleTurns();
+  };
+  const live = () => record.apps.filter((a) => !a.dead);
+  return {
+    record, timers, listeners,
+    live, on: () => layer.tree !== null,
+    async blur() { focused = false; now += 1; listeners.get('window:blur')?.(); await settle(); },
+    async focus() { focused = true; listeners.get('window:focus')?.(); await settle(); },
+    async elapse(ms) { now += ms; for (const h of timers.splice(0)) h.fn(); await settle(); },
+    async hide() { hidden = true; listeners.get('document:visibilitychange')?.(); await settle(); },
+    async show() { hidden = false; listeners.get('document:visibilitychange')?.(); await settle(); },
+    async minimise() { shownMod.applyWindowVisibility({ shown: false }); await settle(); },
+    async restoreWindow() { shownMod.applyWindowVisibility({ shown: true }); await settle(); },
+    unmount() { layer.unmount(); restore(); }
+  };
+}
+
+const A_ROOM = { id: 'library', lightPoints: [{ x: 0.2, y: 0.3, kind: 'candle' }, { x: 0.7, y: 0.4, kind: 'candle' }], binding: 'cloth' };
+const A_VIEW = { x: 0, y: 0, w: 640, h: 360 };
+
+test('a lit room: one Application, capped and at the reduced resolution, the CSS size kept; a tick moves motes without rebuilding geometry', async () => {
+  const h = await house(A_ROOM, A_VIEW);
+  try {
+    assert.equal(h.on(), true);
+    assert.equal(h.live().length, 1, 'one Application for the room');
+    const [app] = h.live();
+    assert.equal(app.ticker.maxFPS, 6, 'the reduced cap');
+    assert.equal(app.options.resolution, 0.5, 'the reduced resolution');
+    assert.equal(app.options.autoDensity, true, 'autoDensity keeps the CSS size at the logical size');
+    assert.deepEqual([app.renderer.width, app.renderer.height], [640, 360], 'the logical size is the panel');
+    assert.deepEqual([app.canvas.width, app.canvas.height], [320, 180], 'the backing store is half the panel');
+    assert.deepEqual([app.canvas.style.width, app.canvas.style.height], ['640px', '360px'], 'the CSS size is still the panel');
+    assert.equal(h.record.ticks.length, 1);
+    const motes = app.stage.children.filter((g) => g.label === 'mote');
+    assert.equal(motes.length, 24, 'one Graphics per mote');
+    const before = h.record.geometry;
+    const was = motes.map((m) => [m.x, m.y]);
+    for (let i = 0; i < 30; i++) h.record.ticks[0]({ deltaMS: 1000 / 6 });
+    assert.equal(h.record.geometry, before, 'thirty ticks rebuilt no geometry (no clear/circle/fill)');
+    assert.ok(motes.some((m, i) => m.x !== was[i][0] || m.y !== was[i][1]), 'the motes moved');
+  } finally { h.unmount(); }
+});
+
+test('the full path keeps the uncapped layer at device pixels', async () => {
+  const h = await house(A_ROOM, A_VIEW, { mode: 'full' });
+  try {
+    const [app] = h.live();
+    assert.equal(app.ticker.maxFPS, 0);
+    assert.equal(app.options.resolution, 2);
+    assert.equal(app.options.autoDensity, true);
+    assert.deepEqual([app.renderer.width, app.renderer.height], [640, 360], 'logical');
+    assert.deepEqual([app.canvas.width, app.canvas.height], [1280, 720], 'device pixels');
+    assert.deepEqual([app.canvas.style.width, app.canvas.style.height], ['640px', '360px']);
+  } finally { h.unmount(); }
+});
+
+test('unattended: the layer goes out after the grace and relights on focus, one destroy and one rebuild', async () => {
+  const h = await house(A_ROOM, A_VIEW);
+  try {
+    assert.equal(h.live().length, 1);
+    await h.blur();
+    assert.equal(h.on(), true, 'inside the grace the candles stay lit');
+    assert.equal(h.timers.length, 1, 'the grace timer is armed');
+    await h.elapse(30_000);
+    assert.equal(h.on(), false, 'grace over: off');
+    assert.equal(h.live().length, 0, 'the Application was destroyed');
+    assert.equal(h.record.destroyed, 1);
+    assert.equal(h.timers.length, 0, 'no timer left running while off');
+    await h.focus();
+    assert.equal(h.on(), true, 'focus relights the room');
+    assert.equal(h.live().length, 1, 'exactly one new Application');
+    assert.equal(h.record.apps.length, 2);
+    assert.equal(h.live()[0].ticker.maxFPS, 6, 'the rebuilt layer is capped too');
+  } finally { h.unmount(); }
+});
+
+test('hidden or minimised: off at once, back when shown, no leak either way', async () => {
+  const h = await house(A_ROOM, A_VIEW);
+  try {
+    await h.hide();
+    assert.equal(h.on(), false); assert.equal(h.live().length, 0);
+    await h.show();
+    assert.equal(h.on(), true); assert.equal(h.live().length, 1);
+    await h.minimise();
+    assert.equal(h.on(), false, 'a minimised window (main says so) is not shown'); assert.equal(h.live().length, 0);
+    await h.restoreWindow();
+    assert.equal(h.on(), true); assert.equal(h.live().length, 1);
+    assert.equal(h.record.destroyed, 2);
+    assert.equal(h.record.apps.length, 3);
+  } finally { h.unmount(); }
+});
+
+test('unmounting while paused leaves nothing behind: no Application, no timer, no listener', async () => {
+  const h = await house(A_ROOM, A_VIEW);
+  await h.blur();
+  await h.elapse(30_000);
+  assert.equal(h.live().length, 0);
+  h.unmount();
+  assert.equal(h.live().length, 0);
+  assert.equal(h.timers.length, 0, 'a timer outlived the layer');
+  assert.equal(h.listeners.size, 0, `listeners outlived the layer: ${[...h.listeners.keys()].join(', ')}`);
+});
+
+test('with diagnostics on, the layer runs a floor-perf sampler that dies with the layer', async () => {
+  const perf = loadTs('src/renderer/src/scene/office/floorPerf.ts');
+  perf.setFloorDiagnosticsPref(true);
+  const h = await house(A_ROOM, A_VIEW);
+  try {
+    assert.equal(h.record.ticks.length, 3, 'the ambiance tick, the counting callback and the wrapped render');
+    const sampler = h.timers.filter((x) => x.ms === 15_000);
+    assert.equal(sampler.length, 1, 'one sample timer, fifteen seconds');
+    h.unmount();
+    assert.equal(h.timers.filter((x) => x.ms === 15_000).length, 0, 'the sampler timer outlived the layer');
+  } finally { perf.setFloorDiagnosticsPref(false); }
+});
+
+test('unmounting while lit destroys the Application exactly once', async () => {
+  const h = await house(A_ROOM, A_VIEW);
+  assert.equal(h.live().length, 1);
+  h.unmount();
+  assert.equal(h.record.destroyed, 1);
+  assert.equal(h.timers.length, 0);
+  assert.equal(h.listeners.size, 0);
+});
+
+test('the Study holds its desks still when nobody is watching, not only under reduced motion', () => {
+  const src = read('src/renderer/src/scene/study/StudyScene.tsx');
+  assert.match(src, /const awake = visible && attended;/);
+  assert.match(src, /still=\{reducedMotion \|\| !awake\}/);
+  assert.doesNotMatch(src, /still=\{reducedMotion\}/);
 });

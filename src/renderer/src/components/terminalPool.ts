@@ -22,6 +22,9 @@ import { arabicJoinRanges } from '@/terminal/arabicJoiner';
 import { attachArabicSpacingFix } from '@/terminal/arabicSpacingFix';
 import { isArabicTerminalEnabled } from '@/terminal/arabicSetting';
 import {
+  setTerminalRendererPref, wantsWebglRenderer, type TerminalRendererPref
+} from './terminalRenderer';
+import {
   classifyPathToken, isPathToken, stripPathToken, terminalLinkSpans, type PathAction
 } from '@shared/terminalPaths';
 import {
@@ -40,6 +43,7 @@ import {
 } from './terminalAutomation';
 import { sanitizeTerminalSelection } from './terminalSelection';
 import { terminalKeySequence } from './terminalKeys';
+import { attachInputSourceTracker, feedPaste } from './terminalInputSource';
 import '@xterm/xterm/css/xterm.css';
 
 export interface TerminalEntry {
@@ -159,6 +163,12 @@ export function acquireTerminal(ptyId: string, theme?: ThemeMap, fontSize = 14):
   term.loadAddon(new Unicode11Addon());
   term.unicode.activeVersion = '11';
   registerMarkdownLinkProvider(term, ptyId);
+  // Tells a person's keystrokes and pastes apart from the terminal's own
+  // replies to a CLI's startup probes, for the write source (see onData).
+  // The host also hears the browser's own `paste` event (native Ctrl/Cmd+V goes
+  // to xterm's textarea inside it and bubbles up), so a plain-text paste with
+  // bracketed-paste mode off is a person's too.
+  const inputSource = attachInputSourceTracker(term, host);
   // NOTE: don't open() yet — xterm needs its host connected to the document to
   // measure correctly. We open on first attach (see attachTerminal).
 
@@ -248,11 +258,14 @@ export function acquireTerminal(ptyId: string, theme?: ThemeMap, fontSize = 14):
    *  preload), so this degrades to the previous behaviour rather than to nothing. */
   const pasteClipboard = (): void => {
     if (entry.exited) return;
+    // feedPaste arms the 'user' flag only once there is text to paste and the
+    // terminal is still alive, so an empty clipboard (or a terminal that died
+    // during the async read) never latches the flag onto the CLI's next reply.
     try {
       const text = window.cth.readClipboardSync?.();
-      if (typeof text === 'string') { if (text) term.paste(text); return; }
+      if (typeof text === 'string') { feedPaste(inputSource, term, text, entry.exited); return; }
     } catch { /* fall through to the async path */ }
-    void window.cth.readClipboard().then((t) => { if (t) term.paste(t); });
+    void window.cth.readClipboard().then((t) => { feedPaste(inputSource, term, t, entry.exited); });
   };
   term.attachCustomKeyEventHandler((ev) => {
     if (ev.type !== 'keydown') return true;
@@ -264,7 +277,8 @@ export function acquireTerminal(ptyId: string, theme?: ThemeMap, fontSize = 14):
     // below already use.
     const seq = terminalKeySequence(ev);
     if (seq !== null) {
-      if (!entry.exited) window.cth.writePty(ptyId, seq);
+      // A keydown writing its own sequence bypasses onData: it is a person.
+      if (!entry.exited) window.cth.writePty(ptyId, seq, 'user');
       ev.preventDefault();
       return false;
     }
@@ -347,7 +361,10 @@ export function acquireTerminal(ptyId: string, theme?: ThemeMap, fontSize = 14):
   // path resets it too.
   term.onData((data) => {
     if (entry.exited) return;
-    window.cth.writePty(ptyId, data);
+    // 'user' for a keystroke or a paste, 'auto' for the terminal's own replies
+    // to a CLI's startup probes (see terminalInputSource.ts): main uses it to
+    // tell a PTY somebody has used from one that died on launch (spawnRetry.ts).
+    window.cth.writePty(ptyId, data, inputSource.consume(data));
     // A lone Escape or Ctrl-C closes interactive pickers. Arrow-key escape
     // sequences must NOT clear the block while the user navigates a picker.
     if (data === '\x1b' || data === '\x03') {
@@ -598,6 +615,12 @@ function leaseWebglRenderer(entry: TerminalEntry): void {
   // (xterm.js has no bidi: xtermjs/xterm.js#701). Skipping the lease IS the
   // feature, not a fallback.
   if (isArabicTerminalEnabled()) return;
+  // Software GPU (SwiftShader on WSL2/WSLg, llvmpipe in a VM) or the user's
+  // 'dom' setting: the DOM renderer is the cheap one there, so skipping the
+  // lease is the point. terminalRenderer.ts owns the probe and logs the skip
+  // once. xterm paints with its DOM renderer whenever no addon is loaded, which
+  // is the same path every fallback above already takes.
+  if (!wantsWebglRenderer()) return;
   try {
     const webgl = new WebglAddon();
     webgl.onContextLoss(() => {
@@ -750,6 +773,42 @@ export function notifyArabicTerminalChangeAll(): void {
   }
   console.log(`[terminal] arabic -> ${want ? 'on' : 'off'}: `
     + `${changed.length}/${open.length} open terminal(s) switched`);
+}
+
+/** Apply the `terminalRenderer` setting (App.tsx mirrors it from config on load
+ *  and on every save) and, when it changed, move the open terminals over.
+ *
+ *  Same shape as the Arabic switch above: upgrade in place, never rebuild, since
+ *  the scrollback lives only in xterm's buffer. Dropping to the DOM renderer
+ *  releases the lease on every open terminal. Going the other way re-leases
+ *  only the terminals that are ON SCREEN (host in the document) — an off-screen
+ *  one gets its lease on the next attach, as always, so a change of setting can
+ *  never blow Chromium's live-context cap. */
+export function applyTerminalRendererPref(pref: TerminalRendererPref | undefined): void {
+  if (!setTerminalRendererPref(pref)) return;
+  notifyTerminalRendererChangeAll();
+}
+
+export function notifyTerminalRendererChangeAll(): void {
+  const want = wantsWebglRenderer();
+  const open = [...pool.values()].filter((e) => e.opened && !e.exited);
+  let switched = 0;
+  for (const entry of open) {
+    if (!want && entry.webgl) {
+      releaseWebglRenderer(entry);
+      repaintTerminalAfterRendererLoss(entry);
+      switched++;
+    } else if (want && !entry.webgl && entry.host.isConnected) {
+      leaseWebglRenderer(entry);
+      if (entry.webgl) {
+        entry.needsRendererRepaint = true;
+        repaintTerminalAfterRendererLoss(entry);
+        switched++;
+      }
+    }
+  }
+  console.log(`[terminal] renderer -> ${want ? 'webgl' : 'dom'}: `
+    + `${switched}/${open.length} open terminal(s) switched`);
 }
 
 /** Re-parent a pty's terminal into `container`, opening xterm on first attach. */

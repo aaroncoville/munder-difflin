@@ -144,6 +144,16 @@ export function isContextUnavailableError(err: unknown): boolean {
   return false;
 }
 
+/** Whether a renderer has a WebGL context to lose at all. Pixi's canvas
+ *  renderer (officeRenderer.ts) draws through Canvas2D: no context-loss event
+ *  ever fires on its canvas, no GPU process restart can take it away, and
+ *  neither recovery path below applies. The name is what AbstractRenderer
+ *  reports ('webgl' | 'webgpu' | 'canvas'); only WebGL raises
+ *  `webglcontextlost`, which is the one event the loss path listens for. */
+export function usesWebglContext(renderer: { name?: string } | null | undefined): boolean {
+  return renderer?.name === 'webgl';
+}
+
 export type InitFailurePlan =
   /** Wait `delayMs`, then build the scene again from scratch. */
   | { action: 'retry'; delayMs: number; attempt: number }
@@ -157,8 +167,16 @@ export type InitFailurePlan =
 export function planInitFailure(
   err: unknown,
   attemptsUsed: number,
-  opts: { maxRetries?: number; delayMs?: number } = {}
+  opts: {
+    maxRetries?: number;
+    delayMs?: number;
+    /** The renderer init was asked for. The canvas renderer has no context to
+     *  wait for, so a failure there is a real failure, not a GPU process
+     *  restart: report it instead of retrying into the same error. */
+    renderer?: 'webgl' | 'canvas';
+  } = {}
 ): InitFailurePlan {
+  if (opts.renderer === 'canvas') return { action: 'report' };
   if (!isContextUnavailableError(err)) return { action: 'report' };
   const max = opts.maxRetries ?? DEFAULT_MAX_INIT_RETRIES;
   if (attemptsUsed >= max) return { action: 'give-up' };
@@ -177,6 +195,13 @@ export function planInitFailure(
  *
  *  Kept here, next to the loss policy, and exported so the component asks this
  *  question rather than re-deriving it from two booleans at the call site. */
-export function shouldRunTicker(state: { paused: boolean; contextLost: boolean }): boolean {
-  return !state.paused && !state.contextLost;
+export function shouldRunTicker(state: {
+  paused: boolean;
+  contextLost: boolean;
+  /** The reduced-motion path's "nobody is watching" pause: window unfocused
+   *  past the grace with no agent state change (see officeMotion.ts). Optional
+   *  so the two gates above keep their meaning and their callers unchanged. */
+  unattended?: boolean;
+}): boolean {
+  return !state.paused && !state.contextLost && !state.unattended;
 }

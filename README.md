@@ -427,6 +427,27 @@ npm run typecheck  # type-check the node (main/preload) and web (renderer) proje
 > If `node-pty` fails to load after an Electron upgrade, re-run `npm install` (the `postinstall` hook
 > runs `electron-rebuild` against the current Electron ABI).
 
+### Performance on WSL / software GPU
+
+On a machine with no usable GPU (WSL2/WSLg, most VMs) Chromium backs WebGL with SwiftShader, a
+software rasterizer, and the WebGL terminal renderer then costs several CPU cores just to paint
+idle terminals. The renderer probes WebGL once per window (`WEBGL_debug_renderer_info`) and, when
+the unmasked renderer string names a software backend (SwiftShader, llvmpipe, softpipe, "software",
+"Mesa OffScreen", WARP / "Microsoft Basic Render Driver"), keeps xterm on its DOM renderer and logs `[terminal] webgl renderer skipped:
+software GPU (…)` once. The `terminalRenderer` setting (Settings → General → Terminal renderer, or
+`config.json`) controls this: `auto` (default) follows the probe, `dom` always uses the text engine,
+`webgl` always leases the GPU renderer. Unknown renderers count as hardware, so Macs are unchanged.
+The office floor follows the same probe through the `officeMotion` setting (Settings → General →
+Office floor motion): `auto` (default) animates fully on a real GPU and, on a software GPU or when the
+OS asks for reduced motion, caps the Pixi ticker at 15 fps, renders the canvas at 1x instead of ≥2x
+device pixels, and stops the ticker once the window has sat unfocused for 30 s or is minimised.
+`full` and `reduced` force either path; on WSLg the reduced path cuts the floor's rasterisation
+roughly sixteenfold (frames × pixels per second). On a software GPU the floor and the study's
+ambiance layer are built on Pixi's Canvas2D renderer instead of WebGL, so none of their drawing
+reaches the GPU process at all (the console logs `[office] pixi renderer: canvas (reduced, software
+GPU)` when the floor builds). On the reduced path the floor is also only redrawn when something on
+it changed, so an idle floor draws a few times a second at most and a still one not at all.
+
 ## Architecture
 
 Two data planes feed one renderer: a **terminal plane** that owns the PTYs, the filesystem and git,

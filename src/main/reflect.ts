@@ -54,6 +54,46 @@ const TRANSCRIPT_RACE_ATTEMPTS = 2;
  *  same file every tick for zero additional shrink. Manual (onlyId) condenses
  *  bypass this, same as they bypass the size/section trigger. */
 const NOT_SMALLER_BACKOFF_GROWTH = 1.1;
+/** Consecutive identical 'summarize-failed' aborts (same agent, same error
+ *  text, file not materially larger) before the autonomous scan stops
+ *  spending a hidden session on that file every tick. Each tick's attempt is
+ *  a hidden `claude` spawn — CPU on a loaded machine plus a model call — and
+ *  a failure that repeats verbatim (transcript never written, trust dialog,
+ *  model unavailable) is not going to come out differently next tick. From
+ *  here the wait doubles per further identical failure, capped below; the
+ *  streak ends on any other outcome, a manual condense, or the file growing
+ *  past NOT_SMALLER_BACKOFF_GROWTH of the size it failed at. */
+const SUMMARIZE_BACKOFF_AFTER = 2;
+/** Ceiling on that wait: 6 h. */
+const SUMMARIZE_BACKOFF_CAP_MS = 6 * 60 * 60 * 1000;
+/** A file that grew by at least max(25%, 16 KiB) past the size it failed at
+ *  is a materially different condense (a new eviction payload) and gets a
+ *  fresh streak. A trickle of growth is not: god's memory.md gains a few
+ *  hundred bytes an hour, which must not reopen the spend every tick. */
+const STREAK_RESET_GROWTH_RATIO = 0.25;
+const STREAK_RESET_GROWTH_BYTES = 16 * 1024;
+/** Failures that have nothing to do with the file's content: a different
+ *  payload cannot change them, so growth never resets their streak. A small
+ *  explicit list, each entry one way the hidden session fails before, or
+ *  regardless of, the prompt: */
+const CONTENT_INDEPENDENT_FAILURES: readonly RegExp[] = [
+  /trust dialog/i,                              // workspace-trust dialog blocked the session
+  /transcript file was never written/i,         // transcript saving off; the CLI never got that far
+  /empty prompt/i,                              // hiddenClaude refused before spawning
+  /cwd does not exist/i,                        // hiddenClaude refused before spawning
+  /\bENOENT\b|\bEACCES\b|\bEPERM\b/,            // node-pty spawn error codes
+  /no such file or directory/i,                 // execvp / posix_spawn: executable not found
+  /permission denied/i,                         // execvp / posix_spawn: executable not runnable
+  /executable not found|command not found/i     // resolver / shell wording for the same
+];
+function isContentIndependentFailure(detail: string): boolean {
+  return CONTENT_INDEPENDENT_FAILURES.some((re) => re.test(detail));
+}
+
+/** The hidden session answered, but not in the frame the prompt asked for.
+ *  Told apart from a session that produced nothing because it is logged as
+ *  its own abort class ('bad-framing') and never opens a backoff window. */
+class BadFramingError extends Error {}
 
 /** The fixed region headings of the bounded memory shape (the stable contract). */
 const PINNED_HEADING = '## 📌 Durable facts (pinned — never condensed)';
@@ -171,20 +211,32 @@ export class MemoryReflector {
    *  autonomous scan (NOT_SMALLER_BACKOFF_GROWTH) until the file has grown
    *  past it by a meaningful margin; cleared on a successful condense. */
   private notSmallerAt = new Map<string, number>();
+  /** agentId -> the running streak of identical 'summarize-failed' aborts: the
+   *  error text, how many ticks in a row produced it, the file size at the
+   *  last one, and the time before which the autonomous scan leaves the file
+   *  alone (SUMMARIZE_BACKOFF_AFTER / SUMMARIZE_BACKOFF_CAP_MS). */
+  private summarizeFailures = new Map<string, {
+    detail: string; count: number; bytes: number; notBefore: number;
+    /** Growth never resets this streak (CONTENT_INDEPENDENT_FAILURES). */
+    contentIndependent: boolean;
+  }>();
 
   /**
    * @param getHome      Lazily resolve harnessHome so reflection follows config.
    * @param getCommand   The base `claude` command (only its binary name is used).
    * @param getMemoryEnv Extra env (the shared MemPalace path) merged into the call.
    * @param getSettings  Reflect tunables (interval + thresholds), read each tick.
-   * @param appendLog    Sink for `condense`/`condense-abort` events (hive log.jsonl).
+   * @param appendLog    Sink for `condense`/`condense-abort`/`condense-backoff`
+   *                     events (hive log.jsonl).
+   * @param now          Clock, injectable so the backoff schedule is testable.
    */
   constructor(
     private getHome: () => string | null,
     private getCommand: () => string,
     private getMemoryEnv: () => Record<string, string>,
     private getSettings: () => ReflectSettings,
-    private appendLog: (event: Record<string, unknown>) => void
+    private appendLog: (event: Record<string, unknown>) => void,
+    private now: () => number = Date.now
   ) {}
 
   // — lifecycle (mirrors MemoryManager) —
@@ -239,6 +291,26 @@ export class MemoryReflector {
             if (typeof failedAt === 'number' && bytes < failedAt * NOT_SMALLER_BACKOFF_GROWTH) {
               results.push({ id, condensed: false, reason: 'not-smaller-backoff', oldBytes: bytes });
               continue;
+            }
+            // Inside a summarize backoff window, and the file has not grown
+            // enough to be a different case: no hidden session this tick. The
+            // one `condense-backoff` line was written when the window opened.
+            const hold = this.summarizeFailures.get(id);
+            if (hold) {
+              const grownEnough = bytes - hold.bytes >=
+                Math.max(hold.bytes * STREAK_RESET_GROWTH_RATIO, STREAK_RESET_GROWTH_BYTES);
+              if (grownEnough && !hold.contentIndependent) {
+                // Grown materially past the size it failed at: a different
+                // case, so the streak starts over — a failure now counts as
+                // the first. Whatever the streak's state: one failure so far
+                // (no window yet), a window still open, or one already expired.
+                // Not for a failure the content cannot change (trust dialog,
+                // transcript never written): that streak holds through growth.
+                this.summarizeFailures.delete(id);
+              } else if (this.now() < hold.notBefore) {
+                results.push({ id, condensed: false, reason: 'summarize-backoff', oldBytes: bytes });
+                continue;
+              }
             }
           }
           text = readFileSync(mem, 'utf8');
@@ -309,9 +381,22 @@ export class MemoryReflector {
     try {
       summary = await this.summarize(home, parsed.condensed, evict, parsed.pinned, maxCondensedBytes);
     } catch (e) {
-      this.logAbort(id, 'summarize-failed', String(e));
+      const detail = String(e);
+      if (e instanceof BadFramingError) {
+        // A response that exists but does not follow the frame IS a response:
+        // the hidden session works, the model just answered badly, so the
+        // no-response streak ends here and no backoff window opens.
+        this.logAbort(id, 'bad-framing', detail);
+        this.summarizeFailures.delete(id);
+        return { id, condensed: false, reason: 'bad-framing', oldBytes };
+      }
+      this.logAbort(id, 'summarize-failed', detail);
+      this.backOffSummarize(id, detail, oldBytes, s);
       return { id, condensed: false, reason: 'summarize-failed', oldBytes };
     }
+    // A response came back: whatever happens to it below, the streak of
+    // identical summarize failures is over.
+    this.summarizeFailures.delete(id);
     // Defense-in-depth beyond the prompt contract: a "## " line echoed from the
     // material being summarized would otherwise be re-parsed as a NEW section
     // boundary on the next load, corrupting the 3-region structure (the root
@@ -362,6 +447,32 @@ export class MemoryReflector {
     catch { /* best-effort */ }
   }
 
+  /** Extend (or start) an agent's streak of identical summarize failures and,
+   *  once it reaches SUMMARIZE_BACKOFF_AFTER, open a backoff window for the
+   *  autonomous scan: one interval, doubling per further identical failure,
+   *  capped at SUMMARIZE_BACKOFF_CAP_MS. Exactly one `condense-backoff` line
+   *  per window, so the log shows the decision rather than a skip per tick. */
+  private backOffSummarize(id: string, detail: string, oldBytes: number, s: ReflectSettings): void {
+    const prev = this.summarizeFailures.get(id);
+    const count = prev && prev.detail === detail ? prev.count + 1 : 1;
+    const entry = {
+      detail, count, bytes: oldBytes, notBefore: 0,
+      contentIndependent: isContentIndependentFailure(detail)
+    };
+    if (count >= SUMMARIZE_BACKOFF_AFTER) {
+      const interval = Math.max(60_000, s.intervalMs);
+      const backoffMs = Math.min(SUMMARIZE_BACKOFF_CAP_MS, interval * 2 ** (count - SUMMARIZE_BACKOFF_AFTER));
+      entry.notBefore = this.now() + backoffMs;
+      try {
+        this.appendLog({
+          kind: 'condense-backoff', agentId: id, reason: 'summarize-failed', detail,
+          failures: count, backoffMs, oldBytes
+        });
+      } catch { /* best-effort */ }
+    }
+    this.summarizeFailures.set(id, entry);
+  }
+
   // — the headless LLM call (the only non-deterministic step) —
 
   private async summarize(
@@ -410,7 +521,7 @@ export class MemoryReflector {
 
       if (result.ok && result.text) {
         const parsed = parseSummary(result.text);
-        if (!parsed) throw new Error('condense: response contained no parseable summary');
+        if (!parsed) throw new BadFramingError('condense: response contained no parseable summary');
         return parsed;
       }
 

@@ -341,6 +341,25 @@ export interface HarnessConfig {
    *  `tvShowOffices` is on; otherwise the office theme is used. Unbuilt show
    *  themes fall back to 'office' in the loader. */
   officeTheme?: 'office' | 'friends' | 'brooklyn99' | 'siliconvalley' | 'got' | 'hogwarts';
+  /** Which painter xterm uses for terminals. 'auto' (default) leases the WebGL
+   *  renderer only when the renderer process finds a real GPU behind WebGL;
+   *  on a software GPU (SwiftShader/llvmpipe — WSL2, VMs) it keeps the DOM
+   *  renderer, which is far cheaper there. 'dom' / 'webgl' force either way.
+   *  (Mirrored in preload + renderer config; decided in
+   *  src/renderer/src/components/terminalRenderer.ts.) */
+  terminalRenderer?: 'auto' | 'dom' | 'webgl';
+  /** How hard the office floor animates. 'auto' (default) runs the Pixi scene
+   *  at full frame rate and >=2x resolution on a real GPU, and drops to 15 fps
+   *  at 1x (plus a pause once the window has been unfocused for 30 s with no
+   *  agent activity) on a software GPU or when the OS prefers reduced motion.
+   *  'full' / 'reduced' force either way. (Mirrored in preload + renderer
+   *  config; decided in src/renderer/src/scene/office/officeMotion.ts.) */
+  officeMotion?: 'auto' | 'full' | 'reduced';
+  /** Office floor performance samples (kind 'floor-perf') in the hive log,
+   *  every 15 s then every 5 min: renders/s, ticks/s, what queued a redraw.
+   *  Dev builds sample regardless. Mirrored in preload + renderer config;
+   *  read in src/renderer/src/scene/office/floorPerf.ts. Default off. */
+  officeDiagnostics?: boolean;
   /** Per-CLI-provider local/self-hosted base URL (Ollama/LM Studio/vLLM, …) for the
    *  OpenCode/Crush/pi/qwen engines; applied at spawn (config-injection or proxy
    *  upstream). API KEYS are NOT stored here — they live write-only in the secret
@@ -479,6 +498,9 @@ const DEFAULTS: HarnessConfig = {
   multiWindow: true,
   tvShowOffices: false,
   officeTheme: 'office',
+  terminalRenderer: 'auto',
+  officeMotion: 'auto',
+  officeDiagnostics: false,
   slackEnabled: false,
   slackSigningSecret: undefined,
   slackBotToken: undefined,

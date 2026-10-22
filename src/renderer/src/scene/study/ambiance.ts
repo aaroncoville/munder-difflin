@@ -211,9 +211,43 @@ export function glowsFor(points: readonly LightPoint[]): Glow[] {
  * the system for less movement has asked for this exactly. Hidden is a pause:
  * a document nobody is looking at should not be animating, and a background tab
  * that keeps a pixi ticker alive is a battery complaint waiting to be filed.
+ * Unattended is the same pause for a window that is on screen but has not had
+ * focus for a while (scene/attention.ts): on a software GPU every frame of
+ * candlelight is CPU, and a room nobody is looking at burns no candles. Focus
+ * lights them again at once.
  */
 export function ambianceEnabled(
-  state: { reducedMotion: boolean; visible: boolean }
+  state: { reducedMotion: boolean; visible: boolean; attended: boolean }
 ): boolean {
-  return !state.reducedMotion && state.visible;
+  return !state.reducedMotion && state.visible && state.attended;
+}
+
+/** The frame cap for candlelight and dust on the reduced path. A flame's
+ *  flicker is two slow sines (flicker above, periods ~0.9 s and ~2 s) and the
+ *  motes drift at a few px/s, so six frames a second still reads as a lit room;
+ *  sixty was ten times the work for the same picture. */
+export const AMBIANCE_REDUCED_FPS = 6;
+/** The layer's backing resolution on the reduced path: half a device pixel
+ *  per CSS pixel. The layer is transparent, panel-sized and drawn once per
+ *  frame in full — on a software GPU its cost is its pixels — and what it
+ *  holds is soft: glows that are stacked translucent rings and motes a pixel
+ *  or two across, which the browser's upscale blurs no more than the glow
+ *  already is. autoDensity keeps the CSS size, so nothing moves. Measured on
+ *  WSLg at 1440x873 with eight rooms up: eight uncapped 1x layers 2.06 cores,
+ *  the same layers at 6 fps 0.79; halving the resolution quarters the pixels
+ *  each of those frames rasterises. */
+export const AMBIANCE_REDUCED_RESOLUTION = 0.5;
+
+/** The ticker cap and canvas resolution for the layer, from the office's
+ *  motion decision (officeMotion.ts): 'full' is today's behaviour, uncapped at
+ *  the device pixel ratio; 'reduced' — a software GPU, or the OS asking for
+ *  reduced motion — is AMBIANCE_REDUCED_FPS at AMBIANCE_REDUCED_RESOLUTION,
+ *  where each frame is a full Canvas2D rasterisation of a panel-sized
+ *  transparent layer. */
+export function ambianceMotion(
+  mode: 'full' | 'reduced',
+  devicePixelRatio: number
+): { maxFPS: number; resolution: number } {
+  if (mode === 'reduced') return { maxFPS: AMBIANCE_REDUCED_FPS, resolution: AMBIANCE_REDUCED_RESOLUTION };
+  return { maxFPS: 0, resolution: devicePixelRatio || 1 };
 }

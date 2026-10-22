@@ -46,13 +46,28 @@ export interface PtyExitInfo {
   tail?: string;
   command?: string;
   cwd?: string;
+  /** ms between the spawn and the exit — a death inside the first couple of
+   *  seconds is a launch that never got going, not a session that failed. */
+  uptimeMs?: number;
+  /** True when a PERSON typed into the PTY before it exited (a `write` with
+   *  source 'user' — the renderer's xterm keystroke path). Automation (OSC/DEC
+   *  replies, seeded prompts, inbox nudges) writes with source 'auto' and
+   *  never sets it. */
+  hadInput?: boolean;
 }
+
+/** Who a write comes from. Only 'user' marks the session as in use by a person. */
+export type PtyWriteSource = 'user' | 'auto';
 
 interface PtySession {
   id: string;
   proc: pty.IPty;
   cwd: string;
   command: string;
+  /** Epoch ms of the spawn, for the exit handler's uptime. */
+  spawnedAt: number;
+  /** Set by a write() with source 'user': a person has typed into this PTY. */
+  hadInput: boolean;
   /** The window (webContents) that spawned this PTY and should receive its
    *  output. Multi-window: each floor owns its own terminals, so `pty:data:<id>`
    *  / `pty:exit:<id>` route ONLY here — never broadcast — so one floor's stream
@@ -340,8 +355,33 @@ export class PtyManager {
 
   /** The default/fallback output sink — set to the PRIMARY window. Used only for
    *  sessions with no recorded owner; owned sessions route to their owner. */
-  attachWebContents(wc: WebContents) {
+  attachWebContents(wc: WebContents | null) {
     this.webContents = wc;
+  }
+
+  /** The sink an owner-less session's output goes to (see safeSend) — what a
+   *  relaunch notification for such a session must target as well. Null once
+   *  that window is destroyed: a stale sink is no sink. */
+  attachedWebContents(): WebContents | null {
+    const wc = this.webContents;
+    return wc && !wc.isDestroyed() ? wc : null;
+  }
+
+  /** The environment a spawn with these options hands its child: the
+   *  inherited env minus the parent Claude session's identity, the user-shell
+   *  PATH (plus the hive runtime), the app's defaults, then the per-agent
+   *  values. Public so a caller that must look where THIS child will look
+   *  (resume seeding into its config dir) sees exactly the child's env. */
+  envFor(opts: Pick<SpawnOptions, 'env'>): Record<string, string> {
+    // Build a user-shell PATH so child can resolve subprocess deps. Cached
+    // for the session (shellEnv.userShellPath, fenced against rc-file noise) —
+    // the interactive-shell launch it replaces cost ~1s of main-thread freeze
+    // on EVERY spawn.
+    const userPath = withHiveRuntimeFallback(
+      process.platform === 'win32' ? (process.env.PATH || '') : userShellPath(),
+      opts.env?.HIVE_ROOT
+    );
+    return buildPtyEnv(process.env, userPath, opts.env);
   }
 
   /** Count live PTYs owned by a given window — used to scope a floor's
@@ -562,14 +602,7 @@ export class PtyManager {
     }
     const resolved = this.resolveCommand(opts.command).path;
     try {
-      // Build a user-shell PATH so child can resolve subprocess deps. Cached
-      // for the session (shellEnv.userShellPath, fenced against rc-file noise) —
-      // the interactive-shell launch it replaces cost ~1s of main-thread freeze
-      // on EVERY spawn.
-      const userPath = withHiveRuntimeFallback(
-        process.platform === 'win32' ? (process.env.PATH || '') : userShellPath(),
-        opts.env?.HIVE_ROOT
-      );
+      const env = this.envFor(opts);
 
       // On Windows, .cmd/.bat files (and extensionless shims) cannot be executed
       // directly by CreateProcess — only .exe/.com can. Two ways out, in order of
@@ -669,7 +702,7 @@ export class PtyManager {
         // Inherited env minus the parent Claude session's identity markers,
         // then the app's defaults and locale, then per-agent values — see
         // ptyEnv.ts for why the strip exists and why it is prefix-based.
-        env: buildPtyEnv(process.env, userPath, opts.env)
+        env
       });
 
       // Capture THIS session object so the proc's callbacks can tell whether the
@@ -685,6 +718,8 @@ export class PtyManager {
         proc,
         cwd: opts.cwd,
         command: resolved,
+        spawnedAt: Date.now(),
+        hadInput: false,
         lastOutputAt: Date.now(),
         hasOutput: false,
         tail: '',
@@ -724,7 +759,9 @@ export class PtyManager {
             signal,
             tail: session.tail,
             command: session.command,
-            cwd: session.cwd
+            cwd: session.cwd,
+            uptimeMs: Math.max(0, Date.now() - session.spawnedAt),
+            hadInput: session.hadInput
           });
         } catch { /* never throw out of onExit */ }
       });
@@ -735,11 +772,14 @@ export class PtyManager {
     }
   }
 
-  write(id: string, data: string): { ok: boolean; error?: string } {
+  /** `source` defaults to 'auto': only the renderer's keystroke path says
+   *  'user', so a new automation caller can never count as a person. */
+  write(id: string, data: string, source: PtyWriteSource = 'auto'): { ok: boolean; error?: string } {
     const s = this.sessions.get(id);
     if (!s) return { ok: false, error: `no pty: ${id}` };
     try {
       s.proc.write(data);
+      if (source === 'user') s.hadInput = true;
       return { ok: true };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
