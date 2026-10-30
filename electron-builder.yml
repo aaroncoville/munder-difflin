@@ -130,6 +130,12 @@ mac:
       arch: [universal]
     - target: zip
       arch: [universal]
+  # node-pty ships one binary per arch (prebuilds/darwin-<arch>/), and
+  # @electron/rebuild leaves a copy of the host-arch build in
+  # bin/<platform>-<arch>-<abi>/. Those files are byte-identical in the x64 and
+  # arm64 halves of a universal build, which @electron/universal rejects unless
+  # they are listed here; they are already single-arch, so copy them as-is.
+  x64ArchFiles: "Contents/Resources/app.asar.unpacked/node_modules/node-pty/{bin,prebuilds}/**"
   artifactName: Munder-Difflin-${version}-mac-${arch}.${ext}
 
 dmg:
