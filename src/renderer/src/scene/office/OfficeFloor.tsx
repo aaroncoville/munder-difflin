@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Application, Container, Graphics, Ticker, Texture } from 'pixi.js';
+import { Application, Container, Graphics, Ticker, UPDATE_PRIORITY } from 'pixi.js';
 // PixiJS uses new Function() internally, blocked by Electron CSP — this patches it.
 import 'pixi.js/unsafe-eval';
 import { useStore, type Agent } from '@/store/store';
 import { TiledMapRenderer } from './TiledMapRenderer';
 import { Camera } from './Camera';
-import { Character, paintCup } from './Character';
+import { Character, isActiveStatus, paintCup } from './Character';
 import { DeskScreen } from './DeskScreen';
 import { MessageEnvelope, type MessageAct } from './MessageEnvelope';
 import { hexToNumber, DEFAULT_CHARACTER } from './cast';
@@ -14,9 +14,21 @@ import { pickSoloLine, pickExchange, type BreakSpot } from './cafeteriaLines';
 import { colors } from '@/design/tokens';
 import { loadTheme, resolveThemeMap, themeTilesetUrls } from './themeLoader';
 import {
-  installContextLossRecovery, planInitFailure, shouldRunTicker, DEFAULT_MAX_INIT_RETRIES
+  installContextLossRecovery, planInitFailure, shouldRunTicker, usesWebglContext, DEFAULT_MAX_INIT_RETRIES
 } from './glRecovery';
 import { planFloorRelease } from './floorRelease';
+import {
+  createOfficeMotionGate, currentOfficeMotion, REDUCED_MOTION_MEDIA_QUERY, type OfficeMotionGate
+} from './officeMotion';
+import { chooseRenderer, describeRendererChoice, type PixiRendererPreference } from './officeRenderer';
+import { createRenderOnChange, sceneChangedSinceRender } from './renderOnChange';
+import { resetAmbientClock } from './ambientBeat';
+import { createAskBoard } from './askBoard';
+import { createFloorPerf, floorPerfEnabled, type FloorPerf } from './floorPerf';
+import { useWindowShown } from '@/scene/windowShown';
+import { webglRendererInfo } from '@/components/terminalRenderer';
+import { loadTexture } from './textureCache';
+import { perTickChance } from './frameRate';
 import type { Tile, Facing, ErrandKind, ErrandSpot } from './themeRegistry';
 
 // The map, tileset atlases, desk-claim order, errand spots, coffee-economy
@@ -129,21 +141,10 @@ const CHEER_KEYS = [
   'office.cheer.6'
 ] as const;
 
-/** Load a texture via an <img> element. Unlike Pixi's Assets.load(), this
- *  handles extension-less data: URLs (Vite inlines small assets like the a5
- *  tileset as base64), which the Assets resolver fails to type-detect. */
-function loadTexture(url: string): Promise<Texture> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => {
-      const tex = Texture.from(img);
-      tex.source.scaleMode = 'nearest';
-      resolve(tex);
-    };
-    img.onerror = () => reject(new Error('failed to load ' + url.slice(0, 40)));
-    img.src = url;
-  });
-}
+/** Chance, per 60 Hz frame, that a café-goer strikes up a chat with a
+ *  table-mate. Rolled through perTickChance so it is the same chance per
+ *  SECOND at 15 fps as at 60 (frameRate.ts). */
+const CAFE_CHAT_CHANCE_PER_FRAME = 0.004;
 
 /** What the agent is doing right now, for the thought cloud. Prefer the live
  *  `action` (e.g. "edit App.tsx", "bash npm test"), fall back to the prompt we
@@ -228,7 +229,10 @@ export function OfficeFloor() {
     document.addEventListener('visibilitychange', onVis);
     return () => document.removeEventListener('visibilitychange', onVis);
   }, []);
-  const paused = !!fullscreenAgentId || ideOpen || docHidden;
+  // document.hidden never flips for a minimised window on WSLg; main reports
+  // minimise/restore and hide/show itself (shared/windowVisibility.ts).
+  const windowShown = useWindowShown();
+  const paused = !!fullscreenAgentId || ideOpen || docHidden || !windowShown;
   // Whether the scene has been torn down because it stayed covered. Deliberately
   // state and not a ref: it is a dependency of the mount effect below, so
   // flipping it is what performs the teardown and the later rebuild, through the
@@ -248,13 +252,54 @@ export function OfficeFloor() {
   // Read inside init(), which finishes asynchronously and would otherwise start a
   // ticker the effect below had already been asked to stop.
   const pausedRef = useRef(paused);
-  useEffect(() => {
-    pausedRef.current = paused;
+
+  // How hard the floor animates. 'full' is today's behaviour; 'reduced' caps the
+  // ticker at 15 fps and renders at 1x, which is what a software GPU (SwiftShader
+  // on WSL2/WSLg) needs to stop eating cores — see officeMotion.ts. The gate owns
+  // the inputs (the setting App.tsx mirrors from config, the OS reduced-motion
+  // hint, window focus) and applies a change to the
+  // LIVE application — maxFPS on the ticker, resolution through renderer.resize
+  // — rather than rebuilding the scene, which would reload the theme and walk
+  // the whole cast back in through the door over a settings change. The one
+  // exception is the renderer kind, which only init can set.
+  //
+  // On the reduced path the gate also reports the floor UNATTENDED once the
+  // window has sat unfocused for UNATTENDED_GRACE_MS; focus clears it at once.
+  // What the agents are doing is not an input: a busy floor's store changes
+  // for as long as anyone works, and used to keep an unfocused window drawing.
+  // 'full' never does this — a real GPU keeps today's behaviour, blur included.
+  const gateRef = useRef<OfficeMotionGate | null>(null);
+  // Start or stop the live ticker from the three gates. Reads refs only, so the
+  // identity the gate captures on mount is as good as any later one.
+  const syncTicker = () => {
     const ticker = appRef.current?.ticker;
     if (!ticker) return; // app.init() hasn't created it yet — init() applies it
     // Uncovering the floor is not a reason to draw into a context that is gone.
-    if (shouldRunTicker({ paused, contextLost: contextLostRef.current })) ticker.start();
+    const run = shouldRunTicker({
+      paused: pausedRef.current,
+      contextLost: contextLostRef.current,
+      unattended: gateRef.current?.unattended ?? false
+    });
+    if (run) ticker.start();
     else ticker.stop();
+  };
+  useEffect(() => {
+    const gate = createOfficeMotionGate({
+      target: window,
+      hasFocus: () => document.hasFocus(),
+      reducedMotionQuery: window.matchMedia?.(REDUCED_MOTION_MEDIA_QUERY) ?? null,
+      onUnattendedChange: syncTicker,
+      // The renderer kind (canvas/WebGL, officeRenderer.ts) is fixed at init;
+      // a mode change that wants the other kind rebuilds through the one mount
+      // path, like a context loss does.
+      onRendererKindChange: () => setGlGeneration((n) => n + 1)
+    });
+    gateRef.current = gate;
+    return () => { gate.dispose(); gateRef.current = null; };
+  }, []);
+  useEffect(() => {
+    pausedRef.current = paused;
+    syncTicker();
   }, [paused]);
 
   useEffect(() => {
@@ -272,30 +317,87 @@ export function OfficeFloor() {
 
     const runtimes = new Map<string, Runtime>();
     const seatClaims = new Set<number>();
+    // A fresh scene starts the ambient beat over (ambientBeat.ts): a rebuilt
+    // floor does not inherit the phase of the one it replaces.
+    resetAmbientClock();
     // In-flight message envelopes (sender desk → recipient desk). Capped so a
     // broadcast doesn't bury the floor in paper.
     const envelopes: MessageEnvelope[] = [];
     const MAX_ENVELOPES = 16;
 
+    // Which renderer this build asked for; read by the failure planner below.
+    let preference: PixiRendererPreference | undefined;
+
     const init = async () => {
       // Load the active theme bundle (falls back to 'office' on a bad/absent bundle).
       const theme = await loadTheme(officeTheme);
+      // Setting × GPU probe × OS hint → frame cap and resolution (officeMotion.ts).
+      const motion = gateRef.current?.decision ?? currentOfficeMotion();
+      // Canvas2D on a software GPU or the reduced path, WebGL otherwise
+      // (officeRenderer.ts): on SwiftShader every GL draw is CPU work in the
+      // GPU process; Canvas2D keeps it on this thread with no context to lose.
+      const renderer = chooseRenderer(motion.mode, webglRendererInfo().classification);
+      preference = renderer.preference;
       await app.init({
+        preference: renderer.preference,
         background: hexNum(theme.palette.background),
-        antialias: false,
+        antialias: motion.antialias,
         roundPixels: true,
-        // resolution: 1 let the OS/browser upscale the canvas on scaled and
-        // HiDPI displays (125–150% is the Windows laptop default), blurring
-        // everything — worst of all the bubble text, which is small to begin
-        // with. Render at the real device pixel density instead, floored at 2
-        // so the half-scale-supersampled bubble text stays legible even at
-        // 100% scaling. autoDensity keeps the canvas CSS size in logical px.
-        resolution: Math.max(window.devicePixelRatio || 1, 2),
+        // On the full path, resolution: 1 let the OS/browser upscale the canvas
+        // on scaled and HiDPI displays (125–150% is the Windows laptop default),
+        // blurring everything — worst of all the bubble text, which is small to
+        // begin with. So it renders at the real device pixel density, floored
+        // at 2 so the half-scale-supersampled bubble text stays legible even at
+        // 100% scaling (fullMotionResolution). The reduced path renders at 1x:
+        // on a software GPU every device pixel is CPU, and the pixel-art
+        // sprites do not mind. autoDensity keeps the canvas CSS size in logical
+        // px either way.
+        resolution: motion.resolution,
         autoDensity: true,
         width: host.clientWidth || 800,
         height: host.clientHeight || 600,
       });
       if (mountIdRef.current !== mountId) { safeDestroy(app); return; }
+      console.info(describeRendererChoice('office', app.renderer.name, motion.mode, renderer));
+      // 0 is Pixi's own "uncapped"; the reduced path sets REDUCED_MOTION_MAX_FPS.
+      app.ticker.maxFPS = motion.maxFPS;
+      // The TickerPlugin draws every tick. Take that over: on the reduced path
+      // the ticker still advances the simulation at 15 fps, but the stage is
+      // only drawn when Pixi has queued a change for it, or the canvas was
+      // cleared by a resize (renderOnChange.ts). The full path draws every
+      // tick as before. LOW priority, like the plugin's, so it runs after the
+      // simulation tick below.
+      app.ticker.remove(app.render, app);
+      // The floor-perf diagnostic (floorPerf.ts): off, nothing is installed
+      // and the paint pays a null check per render; on, a counting callback
+      // at priority -10 and a sample to the hive log every 15 s.
+      let perf: FloorPerf | null = null;
+      if (floorPerfEnabled()) {
+        perf = createFloorPerf({
+          app,
+          // Statuses and flags only — no ids, no names: the sample goes to
+          // the hive's log.
+          cast: () => {
+            const agents = useStore.getState().agents;
+            return [...runtimes].map(([id, rt]) => ({
+              status: agents.find((a) => a.id === id)?.status ?? 'unknown',
+              active: rt.character.isActive(),
+              seated: rt.character.isSittingAtDesk()
+            }));
+          },
+          log: (sample) => { void window.cth.hiveLogEvent(sample as unknown as Record<string, unknown>); }
+        });
+        (app as any).__perf = perf;
+      }
+      // The render callback is chosen once: diagnostics off, the plain
+      // render; on, the counted one. Nothing per render when off.
+      const paint = createRenderOnChange({
+        render: perf ? () => { app.render(); perf.onRender(); } : () => app.render(),
+        changed: () => sceneChangedSinceRender(app.stage.renderGroup),
+        decision: () => gateRef.current?.decision ?? motion
+      });
+      app.renderer.on('resize', paint.invalidate);
+      app.ticker.add((tk: Ticker) => { paint.step(tk.lastTime); }, undefined, UPDATE_PRIORITY.LOW);
       while (host.firstChild) host.removeChild(host.firstChild);
       host.appendChild(app.canvas);
 
@@ -303,8 +405,9 @@ export function OfficeFloor() {
       // startup), so it is the one Chromium evicts once enough xterm terminals —
       // each of which takes a context via @xterm/addon-webgl — are open. Pixi
       // reports nothing when that happens: the floor just goes blank forever.
-      // Rebuild instead. See glRecovery.ts.
-      (app as any).__glRecovery = installContextLossRecovery(app.canvas, {
+      // Rebuild instead. See glRecovery.ts. The canvas renderer has no context
+      // to lose, so it gets no listener either.
+      if (usesWebglContext(app.renderer)) (app as any).__glRecovery = installContextLossRecovery(app.canvas, {
         // Stop the ticker before the browser can bill us for another frame.
         // Guarded on mountId like the rest: a torn-down scene's canvas must not
         // reach in and stop a ticker that now belongs to its replacement.
@@ -330,6 +433,7 @@ export function OfficeFloor() {
       app.stage.addChild(world);
 
       const mapRenderer = new TiledMapRenderer(resolveThemeMap(theme), tilesetTextures);
+      (app as any).__releaseTextures = () => mapRenderer.releaseTextures();
       world.addChild(mapRenderer.getContainer());
       const charLayer = mapRenderer.getCharacterContainer();
       const tileCount = mapRenderer.getContainer().children.reduce(
@@ -815,7 +919,7 @@ export function OfficeFloor() {
               emitQuip(id, rt, b.spotIdx);
             }
             // Occasionally strike up a chat with a table-mate who arrived too.
-            else if (Math.random() < 0.004) maybePairChat(id, rt, b.spotIdx);
+            else if (Math.random() < perTickChance(CAFE_CHAT_CHANCE_PER_FRAME, dt)) maybePairChat(id, rt, b.spotIdx);
           }
           b.timer -= dt;
           if (b.timer <= 0) endBreak(id, rt);
@@ -1037,6 +1141,8 @@ export function OfficeFloor() {
 
       // ─── Coffee delivery + desk screens, every frame ───────────────────────
       const updateDeskLife = (dt: number): void => {
+        // One shared beat for every monitor's screen-life (DeskScreen.ts).
+        DeskScreen.advance(dt);
         for (const [id, rt] of runtimes) {
           // Park the carried coffee the moment its courier is seated at home —
           // then, if there's still nothing to do, get up and wander off (the
@@ -1050,10 +1156,11 @@ export function OfficeFloor() {
               rt.character.startWandering();
             }
           }
-          // The monitor lights up whenever its owner is in the chair.
+          // The monitor lights up whenever its owner is in the chair, and
+          // its screen-life runs while the owner works.
           if (rt.screen) {
             rt.screen.setOn(rt.character.isSittingAtDesk());
-            rt.screen.update(dt);
+            rt.screen.update(rt.character.isActive());
           }
         }
       };
@@ -1196,33 +1303,17 @@ export function OfficeFloor() {
         st.requestCommandCenterTab('human');
       });
       charLayer.addChild(askG);
-      let askCount = 0;
-      let askPulse = 0;
-      const drawAskBoard = (pulse: number): void => {
-        askG.clear();
-        // lilac-framed board with a big "?" identity
-        askG.rect(0, -8, 30, 22).fill(0x5b4a6b);
-        askG.rect(1, -7, 28, 3).fill(0xcdb4e8);
-        askG.rect(1, -4, 28, 17).fill(0xc9b083);
-        if (askCount === 0) {
-          // quiet: a faint "?" watermark
-          askG.rect(13, -1, 4, 2).fill({ color: 0x8a755f, alpha: 0.8 });
-          askG.rect(15, 1, 2, 4).fill({ color: 0x8a755f, alpha: 0.8 });
-          askG.rect(15, 7, 2, 2).fill({ color: 0x8a755f, alpha: 0.8 });
-        } else {
-          const n = Math.min(askCount, 8);
-          for (let i = 0; i < n; i++) {
-            const x = 3 + (i % 4) * 7;
-            const y = -2 + Math.floor(i / 4) * 6;
-            askG.rect(x, y, 5, 4).fill(0xcdb4e8);
-            askG.rect(x + 2, y, 1, 1).fill(0x4a3b52);
-          }
-          // attention pulse around the frame while questions wait
-          const a = 0.35 + 0.3 * Math.sin(pulse * 4);
-          askG.rect(-2, -10, 34, 26).stroke({ color: 0xcdb4e8, width: 2, alpha: a });
+      // Repaints only when its frame changes: the attention pulse steps on
+      // the ambient beat while someone is working, and holds while nobody is
+      // (askBoard.ts) — a Graphics rebuild is a change the floor has to
+      // render, and a question usually waits for a while.
+      const askBoard = createAskBoard({
+        graphics: askG,
+        floorActive: () => {
+          for (const rt of runtimes.values()) if (rt.character.isActive()) return true;
+          return false;
         }
-      };
-      drawAskBoard(0);
+      });
 
       // ─── Board choreography: every ledger move is ACTED on the floor ───────
       // Michael walks over and pins fresh cards; an assigned worker walks to
@@ -1329,8 +1420,7 @@ export function OfficeFloor() {
           }
         }
         // the ASK ME board pulses for attention while questions wait
-        askPulse += dt;
-        if (askCount > 0) drawAskBoard(askPulse);
+        askBoard.draw();
         // global watchdog: if anything has been in flight too long, hard-sync
         moveWatchdog += dt;
         if (moveWatchdog > 30 && busyActors.size > 0) {
@@ -1370,10 +1460,7 @@ export function OfficeFloor() {
             && Array.isArray(t?.humanQA)
             && t!.humanQA!.some((e) => e && typeof e.q === 'string' && !e.a)
           ).length;
-          if (newAsk !== askCount) {
-            askCount = newAsk;
-            drawAskBoard(askPulse);
-          }
+          askBoard.setCount(newAsk);
           if (firstPoll) {
             // cold start: no theatre, just show the truth
             firstPoll = false;
@@ -1552,6 +1639,10 @@ export function OfficeFloor() {
         // A thought cloud above the head shows what the agent is doing RIGHT NOW
         // (its live `action`, e.g. "edit App.tsx"). Working → sit at the desk;
         // blocked → walk to the door and flash "!"; done/idle → wander.
+        // Working is also what lets the halo pulse and the monitor animate
+        // (Character.ts): parked at the desk, both hold still, and the floor
+        // has nothing to redraw.
+        c.setActive(isActiveStatus(agent.status));
         switch (agent.status) {
           case 'working':
           case 'thinking':
@@ -1756,7 +1847,11 @@ export function OfficeFloor() {
       // Reaching this point means init() returned a context, so whatever loss
       // brought us here is over.
       contextLostRef.current = false;
-      if (pausedRef.current) app.ticker.stop();
+      // From here on the gate applies setting / OS-hint changes to THIS app live.
+      gateRef.current?.attach(app);
+      if (!shouldRunTicker({ paused: pausedRef.current, contextLost: false, unattended: gateRef.current?.unattended ?? false })) {
+        app.ticker.stop();
+      }
 
       const resize = new ResizeObserver((entries) => {
         for (const e of entries) {
@@ -1774,7 +1869,7 @@ export function OfficeFloor() {
 
     init().catch((err) => {
       if (mountIdRef.current !== mountId) return;
-      const plan = planInitFailure(err, initRetriesRef.current);
+      const plan = planInitFailure(err, initRetriesRef.current, { renderer: preference });
 
       // Pixi could not get a context — usually the GPU process restarting under
       // us — and reports that as "this browser does not support WebGL". Retry
@@ -1815,7 +1910,12 @@ export function OfficeFloor() {
         try { (a as any).__unsub?.(); } catch { /* noop */ }
         try { (a as any).__offMessage?.(); } catch { /* noop */ }
         try { clearInterval((a as any).__taskBoardPoll); } catch { /* noop */ }
+        try { (a as any).__perf?.dispose(); } catch { /* noop */ }
+        gateRef.current?.detach();
         safeDestroy(a);
+        // The atlases outlive the scene (textureCache.ts); the tiles cut from
+        // them must not.
+        try { (a as any).__releaseTextures?.(); } catch { /* noop */ }
       }
       appRef.current = null;
       while (host.firstChild) host.removeChild(host.firstChild);

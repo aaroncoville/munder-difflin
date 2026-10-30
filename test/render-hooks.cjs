@@ -84,18 +84,31 @@ seed('react-i18next', {
 /** Mount `Component` with `props`. Each call gets its own hook slots — mounting
  *  twice is a genuine REMOUNT, which is how the settings panel behaves when the
  *  user switches sections. */
-function mount(Component, props) {
+function mount(Component, props, { trackDeps = false, deferEffects = false } = {}) {
   const slots = [];
   let idx = 0;
   let effects = [];
   let tree = null;
+  // deferEffects: render but do not run the effects yet, so a test can attach
+  // a ref the way React would have before the first effect — then call
+  // runEffects() itself.
+  // trackDeps: what React does with an effect's deps — on `runEffects()`
+  // re-run (cleanup first) only the effects whose deps changed since they
+  // last ran, so a component with several effects can be driven through
+  // state changes without every effect starting over each time. Off by
+  // default: the tests written against "run them all once" keep that.
+  const effectSlots = [];
+  let effIdx = 0;
   const host = {
     useState(init) {
       const i = idx++;
       if (!(i in slots)) slots[i] = typeof init === 'function' ? init() : init;
       return [slots[i], (v) => { slots[i] = typeof v === 'function' ? v(slots[i]) : v; }];
     },
-    useEffect(fn) { effects.push(fn); },
+    useEffect(fn, deps) {
+      if (!trackDeps) { effects.push(fn); return; }
+      effects.push({ i: effIdx++, fn, deps });
+    },
     useRef(init) {
       const i = idx++;
       if (!(i in slots)) slots[i] = { current: init };
@@ -105,16 +118,32 @@ function mount(Component, props) {
   const render = () => {
     HOST = host;
     idx = 0;
+    effIdx = 0;
     effects = [];
     try { tree = Component(props); } finally { HOST = null; }
     return tree;
   };
+  const changed = (prev, deps) =>
+    !prev || !deps || !prev.deps || deps.length !== prev.deps.length || deps.some((d, k) => !Object.is(d, prev.deps[k]));
   // Mount effects run once, after the first render — deps are ignored because
-  // nothing here re-renders on its own.
-  const runEffects = () => effects.map((fn) => fn());
+  // nothing here re-renders on its own (unless trackDeps, above).
+  const runEffects = () => {
+    if (!trackDeps) return effects.map((fn) => fn());
+    for (const e of effects) {
+      const prev = effectSlots[e.i];
+      if (!changed(prev, e.deps)) continue;
+      if (prev && typeof prev.cleanup === 'function') prev.cleanup();
+      effectSlots[e.i] = { deps: e.deps, cleanup: e.fn() };
+    }
+    return effectSlots.map((e) => e && e.cleanup);
+  };
+  /** trackDeps only: run every live cleanup, as React does on unmount. */
+  const unmount = () => {
+    for (const e of effectSlots.splice(0)) if (e && typeof e.cleanup === 'function') e.cleanup();
+  };
   render();
-  const cleanups = runEffects();
-  return { render, runEffects, get tree() { return tree; }, cleanups };
+  const cleanups = deferEffects ? [] : runEffects();
+  return { render, runEffects, unmount, get tree() { return tree; }, cleanups };
 }
 
 /** Every element in the tree, each paired with the nearest ancestor that

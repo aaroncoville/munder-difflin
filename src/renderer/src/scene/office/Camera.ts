@@ -1,11 +1,29 @@
 import { Container } from 'pixi.js';
+import { effectiveFrames, smoothingFactor } from './frameRate';
 
 // Simplified port of shahar061/the-office (office/engine/camera.ts).
 // Phase targeting is dropped (we have no project phases); kept: fit-to-screen,
 // map-edge clamping, smooth lerp, a manual focus(), and nudgeToward() used to
 // pan toward the selected agent.
 
-const LERP_SPEED = 0.08;
+/** Per 60 Hz frame. Applied through smoothingFactor so a pan takes the same
+ *  wall time whatever the ticker's rate (the reduced path runs it at 15). */
+export const LERP_SPEED = 0.08;
+
+/** How close the lerp has to get before it snaps to the target. An
+ *  exponential lerp never arrives: after a pan it keeps writing the world's
+ *  position by a millionth of a pixel a tick for seconds, invisible under
+ *  roundPixels but a change the floor renders every tick (renderOnChange.ts).
+ *  Below a thousandth of a pixel (a millionth in zoom) the next frame is the
+ *  same pixels, so land there. */
+export const SNAP_PX = 1e-3;
+export const SNAP_ZOOM = 1e-6;
+
+/** One lerp step toward `target`, landing exactly once within `snap`. */
+function approach(current: number, target: number, k: number, snap: number): number {
+  const d = target - current;
+  return Math.abs(d) < snap ? target : current + d * k;
+}
 
 export class Camera {
   private container: Container;
@@ -73,16 +91,23 @@ export class Camera {
   }
 
   update(dt: number): void {
-    this.currentX += (this.targetX - this.currentX) * LERP_SPEED;
-    this.currentY += (this.targetY - this.currentY) * LERP_SPEED;
-    this.currentZoom += (this.targetZoom - this.currentZoom) * LERP_SPEED;
+    const k = smoothingFactor(LERP_SPEED, dt);
+    this.currentX = approach(this.currentX, this.targetX, k, SNAP_PX);
+    this.currentY = approach(this.currentY, this.targetY, k, SNAP_PX);
+    this.currentZoom = approach(this.currentZoom, this.targetZoom, k, SNAP_ZOOM);
 
     if (this.nudgeDuration > 0) {
       this.nudgeElapsed += dt;
       const t = Math.min(this.nudgeElapsed / this.nudgeDuration, 1);
       const ease = 1 - t;
-      this.currentX += this.nudgeOffsetX * ease;
-      this.currentY += this.nudgeOffsetY * ease;
+      // The offset was tuned as a per-60Hz-frame push against the lerp above,
+      // which eats part of every push before the next lands. Over a longer
+      // tick, apply what that many per-frame pushes would have left standing
+      // (effectiveFrames), so the nudge covers the same ground per second at
+      // any ticker rate — and exactly today's at 60.
+      const push = ease * effectiveFrames(LERP_SPEED, dt);
+      this.currentX += this.nudgeOffsetX * push;
+      this.currentY += this.nudgeOffsetY * push;
       if (t >= 1) {
         this.nudgeDuration = 0;
         this.nudgeOffsetX = 0;
@@ -90,21 +115,27 @@ export class Camera {
       }
     }
 
-    this.container.scale.set(this.currentZoom);
-    this.container.x = this.viewWidth / 2 - this.currentX * this.currentZoom;
-    this.container.y = this.viewHeight / 2 - this.currentY * this.currentZoom;
+    // Clamp in locals and assign once. Pixi queues a container for the next
+    // render on every write that changes a value, so writing the unclamped
+    // position and then the clamped one marked the world changed on every
+    // tick of a camera that had long settled (renderOnChange.ts).
+    let x = this.viewWidth / 2 - this.currentX * this.currentZoom;
+    let y = this.viewHeight / 2 - this.currentY * this.currentZoom;
 
     const scaledW = this.mapWidth * this.currentZoom;
     const scaledH = this.mapHeight * this.currentZoom;
     if (scaledW <= this.viewWidth) {
-      this.container.x = (this.viewWidth - scaledW) / 2;
+      x = (this.viewWidth - scaledW) / 2;
     } else {
-      this.container.x = Math.min(0, Math.max(this.viewWidth - scaledW, this.container.x));
+      x = Math.min(0, Math.max(this.viewWidth - scaledW, x));
     }
     if (scaledH <= this.viewHeight) {
-      this.container.y = (this.viewHeight - scaledH) / 2;
+      y = (this.viewHeight - scaledH) / 2;
     } else {
-      this.container.y = Math.min(0, Math.max(this.viewHeight - scaledH, this.container.y));
+      y = Math.min(0, Math.max(this.viewHeight - scaledH, y));
     }
+    this.container.scale.set(this.currentZoom);
+    this.container.x = x;
+    this.container.y = y;
   }
 }

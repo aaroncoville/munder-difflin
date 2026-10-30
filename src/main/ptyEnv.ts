@@ -43,6 +43,54 @@ const CLAUDE_CONFIG_KEEP = new Set([
   'CLAUDE_CODE_USE_VERTEX'
 ]);
 
+/**
+ * The inherited markers that describe the PARENT Claude session rather than
+ * configure the CLI: the ones the comment above names (session id, pid,
+ * messaging socket and token, effort, execpath, entrypoint) plus the nesting
+ * flags themselves. This is the explicit DENYLIST used for hidden sessions
+ * (hiddenClaude.ts), where everything else under the CLAUDE_* prefix must
+ * survive: an operator's backend selection (Foundry, Bedrock, Vertex, Mantle,
+ * the Anthropic-on-AWS variants), the SKIP_*_AUTH switches that go with it,
+ * the config dir, the remote-control session name prefix, telemetry and
+ * tmpdir choices. buildPtyEnv's agent-PTY behaviour (prefix-wide strip with
+ * a short keep-list) is a different rule and is left as it is.
+ *
+ * CLAUDE_CODE_SKIP_PROMPT_HISTORY is an operator choice, yet it is on this
+ * list: a hidden session's whole output is its transcript, so with the flag
+ * in force the session cannot work at all. The operator's intent is honoured
+ * the other way round — hiddenClaude.ts deletes the transcript as soon as it
+ * has read it when the inherited env carried the flag.
+ */
+export const CLAUDE_SESSION_MARKERS = new Set([
+  'CLAUDECODE',
+  'CLAUDE_CODE_CHILD_SESSION',
+  'CLAUDE_CODE_SESSION_ID',
+  'CLAUDE_SESSION_ID',
+  'CLAUDE_CODE_SESSION_ATTENDED',
+  'CLAUDE_CODE_SKIP_PROMPT_HISTORY',
+  'CLAUDE_CODE_ENTRYPOINT',
+  'CLAUDE_CODE_EXECPATH',
+  'CLAUDE_PID',
+  'CLAUDE_EFFORT',
+  'CLAUDE_CODE_MESSAGING_SOCKET',
+  'CLAUDE_CODE_MESSAGING_TOKEN',
+  'CLAUDE_CODE_SSE_PORT',
+  'CLAUDE_CODE_HOST_HTTP_PROXY_PORT',
+  'CLAUDE_CODE_HOST_SOCKS_PROXY_PORT'
+]);
+
+/** `env` minus CLAUDE_SESSION_MARKERS, undefined values dropped. The input is
+ *  not modified. */
+export function stripClaudeSessionMarkers(env: NodeJS.ProcessEnv): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (v === undefined) continue;
+    if (CLAUDE_SESSION_MARKERS.has(k)) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
 export function buildPtyEnv(
   parentEnv: NodeJS.ProcessEnv,
   userPath: string,

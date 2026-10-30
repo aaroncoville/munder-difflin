@@ -40,8 +40,8 @@ function legacyProjectKey(cwd: string): string {
  *  our own stale copies forever. When neither exists we return the CURRENT
  *  spelling, because callers that go on to create the directory must create the
  *  one Claude Code will actually read. */
-export function projectDir(cwd: string): string {
-  const root = path.join(os.homedir(), '.claude/projects');
+export function projectDir(cwd: string, env: NodeJS.ProcessEnv = process.env): string {
+  const root = projectsRoot(env);
   const current = path.join(root, projectKey(cwd));
   if (existsSync(current)) return current;
   // For cwd '/' the legacy key is the empty string, and path.join(root, '')
@@ -53,6 +53,31 @@ export function projectDir(cwd: string): string {
   if (!legacyKey) return current;
   const legacy = path.join(root, legacyKey);
   return existsSync(legacy) ? legacy : current;
+}
+
+/** The directory Claude Code keeps its state in: $CLAUDE_CONFIG_DIR when the
+ *  operator exported one, else `<home>/.claude`, where home is the HOME the
+ *  CLI in question runs with and only then this process's. `env` is that
+ *  CLI's environment — a hidden session's spawn env, for one — not
+ *  necessarily this process's. */
+export function claudeConfigDir(env: NodeJS.ProcessEnv = process.env): string {
+  const home = env.HOME?.trim() || os.homedir();
+  const configured = env.CLAUDE_CONFIG_DIR?.trim();
+  if (!configured) return path.join(home, '.claude');
+  return configured.replace(/^~(?=[\\/]|$)/, home);
+}
+
+function projectsRoot(env: NodeJS.ProcessEnv): string {
+  return path.join(claudeConfigDir(env), 'projects');
+}
+
+/** Where a NEW session with this cwd writes its transcript: the CURRENT key
+ *  under the config dir the session runs with, always. The legacy fallback in
+ *  projectDir exists for reading transcripts written before the key changed;
+ *  a session started now never writes there, even when both directories
+ *  exist, so a reader looking for a session it just started must not either. */
+export function newSessionProjectDir(cwd: string, env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(projectsRoot(env), projectKey(cwd));
 }
 
 /** Ensure session `<sessionId>.jsonl` exists in `cwd`'s Claude project dir so a
@@ -72,15 +97,17 @@ export function projectDir(cwd: string): string {
  *  crafted id like `../../x` would otherwise traverse out of the project dirs). */
 const VALID_SESSION_ID = /^[A-Za-z0-9_-]+$/;
 
-export function seedSessionTranscript(cwd: string, sessionId: string): boolean {
+export function seedSessionTranscript(cwd: string, sessionId: string, env: NodeJS.ProcessEnv = process.env): boolean {
   try {
     if (!sessionId || !VALID_SESSION_ID.test(sessionId)) return false;
-    const target = path.join(projectDir(cwd), `${sessionId}.jsonl`);
+    const target = path.join(projectDir(cwd, env), `${sessionId}.jsonl`);
     if (existsSync(target)) return true;
-    const projectsRoot = path.join(os.homedir(), '.claude/projects');
-    if (!existsSync(projectsRoot)) return false;
-    for (const dir of readdirSync(projectsRoot)) {
-      const candidate = path.join(projectsRoot, dir, `${sessionId}.jsonl`);
+    // The same root projectDir resolves under (CLAUDE_CONFIG_DIR, else
+    // <home>/.claude): a transcript the CLI wrote is only ever there.
+    const root = projectsRoot(env);
+    if (!existsSync(root)) return false;
+    for (const dir of readdirSync(root)) {
+      const candidate = path.join(root, dir, `${sessionId}.jsonl`);
       if (existsSync(candidate)) {
         mkdirSync(path.dirname(target), { recursive: true });
         cpSync(candidate, target);
@@ -100,14 +127,14 @@ export function seedSessionTranscript(cwd: string, sessionId: string): boolean {
  *  every `~/.claude/projects/<dir>/<sessionId>.jsonl`; if more than one matches
  *  (shouldn't — session ids are unique UUIDs) the most-recently-modified wins.
  *  Returns the cwd string, or null if not found / unreadable / no cwd record. */
-export function resolveSessionCwd(sessionId: string): string | null {
+export function resolveSessionCwd(sessionId: string, env: NodeJS.ProcessEnv = process.env): string | null {
   try {
     if (!sessionId || !VALID_SESSION_ID.test(sessionId)) return null;
-    const projectsRoot = path.join(os.homedir(), '.claude/projects');
-    if (!existsSync(projectsRoot)) return null;
+    const root = projectsRoot(env);
+    if (!existsSync(root)) return null;
     let best: { file: string; mtime: number } | null = null;
-    for (const dir of readdirSync(projectsRoot)) {
-      const candidate = path.join(projectsRoot, dir, `${sessionId}.jsonl`);
+    for (const dir of readdirSync(root)) {
+      const candidate = path.join(root, dir, `${sessionId}.jsonl`);
       try {
         const st = statSync(candidate);
         if (!best || st.mtimeMs > best.mtime) best = { file: candidate, mtime: st.mtimeMs };

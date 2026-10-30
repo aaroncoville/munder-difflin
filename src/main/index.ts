@@ -10,6 +10,8 @@ import { join, resolve, sep, basename, dirname, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 import { request as httpsRequest } from 'node:https';
 import { PtyManager, type SpawnOptions } from './pty';
+import { installWindowVisibility, registerWindowVisibilityQuery } from './windowVisibility';
+import { SpawnRetrier } from './spawnRetry';
 import { resolveCommand as resolveCliCommand, isSafeCommandName } from './shellEnv';
 import { initAutoUpdater, abortPendingRestart } from './updater';
 import { askToConfirmQuit } from './quitRequest';
@@ -21,6 +23,7 @@ import {
 } from './config';
 import { listDir, readFileText, readFileBinary, writeFileText, statAbs, expandTilde } from './fs';
 import { normalizeWeekly, weeklyDelayMs } from '../shared/weeklySchedule';
+import { acceptFloorPerfEvent } from '../shared/floorPerfEvent';
 import {
   getBranch, getStatus, getLog, getBranches, getAheadBehind, isRepo, getDiff, mainRepoRoot,
   addWorktree, removeWorktree, worktreeHasUnintegratedWork, worktreeIsGcSafe,
@@ -474,6 +477,8 @@ function teardownPty(id: string): void {
   // 0) Revoke this id's broker capability (if any). Idempotent + harmless for a
   //    non-worker PTY; ensures a dead worker's token can never reach an integration.
   try { integrationBroker.revoke(id); } catch { /* best-effort */ }
+  // A torn-down id has nothing left to retry (and a pending retry must not fire).
+  spawnRetrier.forget(id);
   // 1) Archive the agent — retained + flagged; only live-PTY agents are active.
   const agentId = ptyToAgent.get(id);
   if (agentId) {
@@ -617,6 +622,17 @@ function removeWorkerScratch(workerId: string): void {
 // SAME pty/window (no user click). Provider-agnostic. Idempotent by construction: the
 // relaunch carries `noAutoInstall`, so the installer can never fire (let alone loop) a
 // second time — a binary that's somehow still missing just spawns and exits normally.
+const spawnRetrier = new SpawnRetrier({
+  spawn: (opts, owner) => ptyManager.spawn(opts, owner as Electron.WebContents | null),
+  isLive: (id) => ptyManager.list().some((p) => p.id === id),
+  attachedWebContents: () => ptyManager.attachedWebContents(),
+  liveWebContents: () => liveWebContents(),
+  attachWebContents: (wc) => ptyManager.attachWebContents(wc as Electron.WebContents),
+  teardown: (id) => teardownPty(id),
+  log: (event) => { try { hive.appendLog(event); } catch { /* best-effort */ } },
+  afterSpawn: () => syncKeepAwake(),
+  warn: (message) => console.warn(message)
+});
 ptyManager.setExitHandler((id, exitCode, info) => {
   // Record an ABNORMAL death before teardown — teardownPty drops the
   // pty->agent mapping, so after it runs we can no longer say WHOSE process
@@ -653,6 +669,18 @@ ptyManager.setExitHandler((id, exitCode, info) => {
     // Non-zero exit = install failed; leave its honest manual-fix message on screen.
     analytics.track('agent_install_finished', { provider, rung: pending.rung, outcome: 'install_failed' });
   }
+  // A launch that died before it got going (exec failure, or any non-zero exit
+  // within the first two seconds, not ended by a person) is re-run ONCE after
+  // a short delay, as-is, into the same pty/window — before the teardown below
+  // would archive the agent (spawnRetry.ts). The 2026-10-20 case: god's
+  // `claude` exec'd into "Permission denied" 444 ms after the app-start spawn
+  // while the CLI's npm package was being reinstalled; archiving god took the
+  // whole floor down, and the next app start spawned fine. Explicit kills never
+  // reach this handler (pty.ts drops the session before the exit fires), so
+  // only natural deaths are retried.
+  if (spawnRetrier.onExit(id, ptyToAgent.get(id) ?? id, {
+    exitCode, signal: info?.signal, uptimeMs: info?.uptimeMs, tail: info?.tail, hadInput: info?.hadInput
+  })) return;
   teardownPty(id);
 });
 
@@ -2371,6 +2399,10 @@ ipcMain.handle('hire:openFile', async () => {
  * window — cascades its position, and on close stops only its OWN terminals
  * while the app keeps running.
  */
+// A renderer asks for its window's state when it subscribes, so one that
+// loads while the window is already minimised starts paused.
+registerWindowVisibilityQuery(ipcMain, (sender) => BrowserWindow.fromWebContents(sender as Electron.WebContents));
+
 function createWindow(opts: { floor?: boolean } = {}): BrowserWindow {
   const isFloor = opts.floor === true;
 
@@ -2418,6 +2450,10 @@ function createWindow(opts: { floor?: boolean } = {}): BrowserWindow {
   // primary. The primary is also seeded synchronously so boot events route now.
   win.on('focus', () => { mainWindow = win; });
   if (!isFloor) mainWindow = win;
+  // Tell the renderer when the window is minimised or hidden: document.hidden
+  // never flips for a minimised window on WSLg, and the office floor kept
+  // drawing at full cost behind it (shared/windowVisibility.ts).
+  installWindowVisibility(win);
 
   // Permission gate for the renderer (our own trusted, local content). The only
   // permission we constrain is microphone capture: it's allowed ONLY while a mic
@@ -2534,6 +2570,10 @@ function createWindow(opts: { floor?: boolean } = {}): BrowserWindow {
       mainWindow = null;
       for (const w of allWindows) { if (!w.isDestroyed()) { mainWindow = w; break; } }
     }
+    // The PTY manager's default sink (owner-less sessions' output, and the
+    // relaunch notification a launch-failure retry sends) must not point at
+    // a dead window: re-point it at whichever window is live, or clear it.
+    if (ptyManager.attachedWebContents() === null) ptyManager.attachWebContents(liveWebContents());
     syncKeepAwake();
   });
 
@@ -2942,7 +2982,9 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     const explicitSid = typeof opts.resumeSessionId === 'string' ? opts.resumeSessionId.trim() : '';
     const sid = explicitSid || (opts.resume === true ? hive.lastSession(opts.hive.id) : undefined);
     if (sid && !args.includes('--resume')) {
-      if (seedSessionTranscript(opts.cwd, sid)) {
+      // Seed where THIS child will look: its own merged env decides the config
+      // dir (CLAUDE_CONFIG_DIR, HOME) the CLI resolves transcripts under.
+      if (seedSessionTranscript(opts.cwd, sid, ptyManager.envFor(opts))) {
         args.push('--resume', sid);
         didResume = true;
       } else if (explicitSid) {
@@ -3119,6 +3161,10 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   const res = ptyManager.spawn(opts, owner);
   if (res.ok) analytics.track('agent_spawned', { provider });
   else analytics.track('agent_spawn_failed', { provider, reason: spawnFailReason(res.error) });
+  // Everything above has settled into `opts` (flags, env, cwd, resume), so this
+  // is what a launch-failure retry re-runs — not spawnAgentCore, whose
+  // provisioning steps are not all repeatable.
+  if (res.ok) spawnRetrier.spawned(opts.id, opts, owner);
   syncKeepAwake(); // arm the power-save blocker while ≥1 agent PTY is alive (#18)
   // Hand the resolved worktree path back to the renderer so it can persist it on
   // the agent (only set when isolation actually provisioned a worktree above).
@@ -3129,13 +3175,15 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // record matches what the registry and the PTY actually used.
   return { ...res, cwd: opts.cwd, ...(worktreePath ? { worktreePath } : {}), ...(resumeNotFound ? { resumeNotFound: true } : {}), ...(didResume ? { resumed: true } : {}), ...(seedPrompt ? { seedPrompt } : {}) };
 }
-ipcMain.handle('pty:write', (_evt, id: string, data: string) => {
+ipcMain.handle('pty:write', (_evt, id: string, data: string, source?: unknown) => {
   if (typeof id !== 'string' || typeof data !== 'string') return { ok: false, error: 'invalid args' };
   // The renderer's queued inbox nudge: when it should open a new Codex thread,
   // that is typed instead. The renderer's own Enter, a tick later, either
   // submits the `/new` or lands on an empty line; neither sends anything.
   if (isInboxNudge(data) && openNewCodexThread(id)) return { ok: true };
-  return ptyManager.write(id, data);
+  // Only the xterm keystroke path says 'user'; everything else (terminal
+  // query replies, seeded prompts, inbox automation) is 'auto' by default.
+  return ptyManager.write(id, data, source === 'user' ? 'user' : 'auto');
 });
 ipcMain.handle('pty:resize', (_evt, id: string, cols: number, rows: number) => {
   if (typeof id !== 'string' || typeof cols !== 'number' || typeof rows !== 'number') return { ok: false, error: 'invalid args' };
@@ -3593,6 +3641,14 @@ ipcMain.handle('hive:setAgentHold', (_evt, id: unknown, hold: unknown) => {
 ipcMain.handle('hive:board', () => hive.board());
 ipcMain.handle('hive:tasks', () => hive.tasks());
 ipcMain.handle('hive:log', (_evt, n: unknown) => hive.logTail(typeof n === 'number' ? n : 200));
+// The renderer's one write into the hive log: a floor performance sample
+// (renderer/scene/office/floorPerf.ts). Kind-whitelisted and size-capped in
+// shared/floorPerfEvent.ts; a refused payload is dropped and reported false.
+ipcMain.handle('hive:logEvent', (_evt, raw: unknown) => {
+  const event = acceptFloorPerfEvent(raw);
+  if (!event) return false;
+  try { hive.appendLog(event); return true; } catch { return false; }
+});
 ipcMain.handle('hive:memory', (_evt, id: unknown) => (typeof id === 'string' ? hive.memory(id) : ''));
 ipcMain.handle('hive:inbox', (_evt, id: unknown) => (typeof id === 'string' ? hive.inbox(id) : []));
 // Voice read-layer: recent message CONTENT (inbox/outbox bodies), REDACTED

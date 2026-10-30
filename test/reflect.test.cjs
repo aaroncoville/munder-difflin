@@ -273,7 +273,8 @@ test('repro: unparseable response aborts cleanly, no wasted retry', async () => 
   const reflector = makeReflector({ MemoryReflector }, home, { recentKeep: 1 });
   const [result] = await reflector.reflectNow('a1');
   assert.equal(result.condensed, false);
-  assert.equal(result.reason, 'summarize-failed');
+  // A response that exists but cannot be framed is its own abort class.
+  assert.equal(result.reason, 'bad-framing');
   assert.equal(calls.length, 1);
   assert.equal(fs.readFileSync(mem, 'utf8'), before);
 });

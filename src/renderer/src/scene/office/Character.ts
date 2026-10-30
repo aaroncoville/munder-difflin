@@ -4,6 +4,7 @@ import { findPath } from './pathfinding';
 import type { TiledMapRenderer } from './TiledMapRenderer';
 import { ThoughtBubble } from './ThoughtBubble';
 import { colors } from '@/design/tokens';
+import { ambientBeat, ambientBeatTime, ambientClock } from './ambientBeat';
 
 // Adapted from shahar061/the-office (office/characters/Character.ts).
 // Differences: keyed by our dynamic agentId (not a fixed role); seat tile +
@@ -13,6 +14,64 @@ import { colors } from '@/design/tokens';
 
 export type CharacterAnimation = 'idle' | 'walk' | 'type' | 'read';
 export type StatusGlyph = 'none' | 'blocked' | 'success' | 'compacting' | 'looping';
+
+/* ─── Ambient effects and the idle floor ─────────────────────────────────────
+ *
+ * The floor draws only when something changed (renderOnChange.ts), and on a
+ * software GPU every draw is a full Canvas2D rasterisation of the scene. So a
+ * character's ambient effects — the focus halo's pulse, the steam off a cup
+ * parked on the desk, a status glyph's blink — decide what an idle floor
+ * costs: each used to write a new alpha, scale or Graphics frame on every
+ * tick, and the god, who sits at his desk with the halo on for as long as the
+ * app runs, kept a 15 fps floor rasterising fifteen times a second with
+ * nobody doing anything (measured at ~2 cores on WSLg). The rules:
+ *
+ *  - The halo pulses, and the desk monitor animates, only while the agent is
+ *    actively working (isActiveStatus). Parked at the desk between tasks the
+ *    halo holds a steady value — the pulse's midpoint — so the setters, which
+ *    compare first, queue nothing.
+ *  - A parked cup steams on the shared ambient beat (ambientBeat.ts), not
+ *    every tick, and goes cold after CUP_STEAM_S: drawn once more without
+ *    steam, then left alone.
+ *  - A status glyph redraws only when its frame changes (statusGlyphFrame):
+ *    the blocked "!" on each blink, the looping ring on each step.
+ */
+
+/** Statuses in which the agent is doing work right now, as opposed to parked
+ *  at the desk (idle, waiting, success) or away from it. */
+export function isActiveStatus(status: string | undefined): boolean {
+  return status === 'working' || status === 'thinking' || status === 'compacting';
+}
+
+/** The halo's pulse: alpha GLOW_PULSE_MIN_ALPHA..+GLOW_PULSE_ALPHA_RANGE and
+ *  scale GLOW_PULSE_MIN_SCALE..+GLOW_PULSE_SCALE_RANGE over a 1.2 s period. */
+export const GLOW_PULSE_MIN_ALPHA = 0.18;
+export const GLOW_PULSE_ALPHA_RANGE = 0.27;
+export const GLOW_PULSE_MIN_SCALE = 0.95;
+export const GLOW_PULSE_SCALE_RANGE = 0.15;
+/** The halo while the agent is parked: the pulse's midpoint, held. */
+export const GLOW_STEADY_ALPHA = GLOW_PULSE_MIN_ALPHA + GLOW_PULSE_ALPHA_RANGE / 2;
+export const GLOW_STEADY_SCALE = GLOW_PULSE_MIN_SCALE + GLOW_PULSE_SCALE_RANGE / 2;
+
+/** How long a cup parked on a desk steams before it is drawn cold. */
+export const CUP_STEAM_S = 90;
+
+/** Which frame a status glyph shows at `elapsed` seconds since it was set.
+ *  The glyph is redrawn only when this changes, so the number of distinct
+ *  frames a second is the number of redraws a second: 2.5 for the blocked
+ *  "!" (a 0.4 s blink), 8 for the looping ring (one step per dot), and a few
+ *  sizes each for the success sparkle and the compacting box. */
+export function statusGlyphFrame(glyph: StatusGlyph, elapsed: number): number {
+  switch (glyph) {
+    case 'blocked': return Math.floor(elapsed / 0.4) % 2;
+    // 0..4: the sparkle's half-size in half pixels above 2 (s = 2 + frame / 2).
+    case 'success': return Math.round(((Math.sin(elapsed * 18) + 1) / 2) * 4);
+    // 0..6: the box's half-size in half pixels above 2 (s = 2 + frame / 2).
+    case 'compacting': return Math.round(((Math.sin(elapsed * 6) + 1) / 2) * 6);
+    case 'looping': return Math.floor(elapsed * 8) % 4;
+    default: return -1;
+  }
+}
 
 function lerp(a: number, b: number, t: number): number {
   const tt = Math.min(Math.max(t, 0), 1);
@@ -54,6 +113,8 @@ const SEAT_BACK_CROP = 2;
 // then sits at its desk for DESK_REST_SECONDS, and repeats. Working agents skip
 // this entirely (they stay seated via sitAtDesk).
 const IDLE_LINGER_SECONDS = 30;
+/** `cupBeat` once a parked cup has been drawn cold (deskCupBeat). */
+const COLD_CUP = -2;
 const DESK_REST_SECONDS = 30;
 
 // Nameplate. Small and thinly outlined on purpose: a dozen of these on screen
@@ -134,10 +195,15 @@ export class Character {
   private workGlow: Graphics;
   private workGlowElapsed = 0;
   private glowOn = false;
+  /** Actively working (isActiveStatus): the halo pulses and the desk monitor
+   *  animates. Off, both hold still. */
+  private active = false;
 
   private overlay: Graphics;
   private statusGlyph: StatusGlyph = 'none';
   private glyphElapsed = 0;
+  /** The glyph frame last drawn (statusGlyphFrame); -1 = nothing drawn. */
+  private glyphFrame = -1;
   private onClick?: (agentId: string) => void;
 
   // ── Office-life effects (cheer / coffee / watering) ────────────────────────
@@ -151,6 +217,12 @@ export class Character {
    *  layer so it survives the agent walking away). */
   private deskCup: Graphics;
   private deskCupOn = false;
+  /** The ambient clock when the cup was parked: its steam runs CUP_STEAM_S
+   *  from here. */
+  private cupPlacedAt = 0;
+  /** The ambient beat the cup was last drawn on; -1 = needs drawing, COLD =
+   *  drawn without steam, final. */
+  private cupBeat = -1;
   private cupSpot: { x: number; y: number } | null = null;
   private waterT = -1;                // -1 = not watering
   private waterDur = 0;
@@ -289,13 +361,15 @@ export class Character {
   /** Snap into a seated pose facing `dir` at the current tile. Shared by the
    *  home desk (applySit) and any café seat (sitInPlace). */
   private applySitPose(dir: Direction): void {
-    this.state = 'idle';
+    // Working at the home desk types; everywhere else a seat is a still pose.
+    const anim = this.seatedAnimation();
+    this.state = anim;
     this.pendingWork = null;
     this.pendingSit = false;
     this.path = [];
     this.sitting = true;
     this.direction = dir;
-    this.sprite.setAnimation('idle', dir);
+    this.sprite.setAnimation(anim, dir);
     // Slide toward the desk so the agent tucks in instead of floating in the
     // aisle, then crop the legs so they read as seated (no standing legs).
     let dx = 0, dy = 0;
@@ -450,7 +524,35 @@ export class Character {
     if (glyph === this.statusGlyph) return;
     this.statusGlyph = glyph;
     this.glyphElapsed = 0;
+    this.glyphFrame = -1;
     if (glyph === 'none') this.overlay.clear();
+  }
+
+  /** Whether the agent is doing work right now (isActiveStatus on its status).
+   *  The floor sets this on every status change; the halo pulses and the desk
+   *  monitor animates only while it is on. */
+  setActive(active: boolean): void {
+    if (active === this.active) return;
+    this.active = active;
+    // Already in the chair: switch between typing and the still pose now,
+    // rather than on the next sit.
+    if (this.sitting && this.isSittingAtDesk()) {
+      const anim = this.seatedAnimation();
+      this.state = anim;
+      this.sprite.setAnimation(anim, this.direction);
+    }
+  }
+
+  /** The animation for a seat: 'type' when actively working at the HOME desk
+   *  (a café seat is never work), the one-frame 'idle' pose otherwise. */
+  private seatedAnimation(): 'type' | 'idle' {
+    const t = this.getTilePosition();
+    const atHome = t.x === this.deskTile.x && t.y === this.deskTile.y;
+    return this.active && atHome ? 'type' : 'idle';
+  }
+
+  isActive(): boolean {
+    return this.active;
   }
 
   // ── Cheer ──────────────────────────────────────────────────────────────────
@@ -507,8 +609,20 @@ export class Character {
     if (!this.cupSpot) return;
     this.deskCupOn = on;
     this.deskCup.visible = on;
-    if (on) this.drawCup(this.deskCup, 0, 0);
-    else this.deskCup.clear();
+    if (on) {
+      this.cupPlacedAt = ambientClock();
+      this.cupBeat = -1; // the next updateFx draws it, steam and all
+      this.drawCup(this.deskCup, 0, 0);
+    } else {
+      this.deskCup.clear();
+    }
+  }
+
+  /** The beat to draw the parked cup for: the shared ambient beat while it
+   *  steams, COLD_CUP once it has sat CUP_STEAM_S. The cup is redrawn only
+   *  when this changes. */
+  private deskCupBeat(): number {
+    return ambientClock() - this.cupPlacedAt >= CUP_STEAM_S ? COLD_CUP : ambientBeat();
   }
 
   hasCupOnDesk(): boolean {
@@ -655,11 +769,17 @@ export class Character {
     this.workGlow.x = this.px;
     this.workGlow.y = this.py - ts / 2;
     this.workGlow.zIndex = this.py - 1;
-    if (this.glowOn) {
+    if (this.glowOn && this.active) {
       this.workGlowElapsed += dt;
       const phase = (Math.sin((this.workGlowElapsed * Math.PI) / 0.6) + 1) / 2;
-      this.workGlow.alpha = (0.18 + 0.27 * phase) * this.sprite.container.alpha;
-      this.workGlow.scale.set(0.95 + 0.15 * phase);
+      this.workGlow.alpha = (GLOW_PULSE_MIN_ALPHA + GLOW_PULSE_ALPHA_RANGE * phase) * this.sprite.container.alpha;
+      this.workGlow.scale.set(GLOW_PULSE_MIN_SCALE + GLOW_PULSE_SCALE_RANGE * phase);
+    } else if (this.glowOn) {
+      // Parked with the halo on (the god at his desk): hold it. The same
+      // value every tick queues nothing — Pixi's setters compare first.
+      this.workGlowElapsed = 0;
+      this.workGlow.alpha = GLOW_STEADY_ALPHA * this.sprite.container.alpha;
+      this.workGlow.scale.set(GLOW_STEADY_SCALE);
     } else {
       this.workGlow.alpha = 0;
       this.workGlowElapsed = 0;
@@ -708,14 +828,23 @@ export class Character {
     this.steamT += dt;
 
     // ── Desk cup (world-anchored, persists while the agent roams) ───────────
+    // Redrawn on the shared ambient beat while it steams, once more cold, and
+    // then left alone: a Graphics redraw is a change the floor has to render.
     if (this.deskCupOn && this.cupSpot) {
-      this.deskCup.clear();
-      this.drawCup(this.deskCup, 0, 0);
-      // two staggered steam pixels drifting up and fading
-      for (let i = 0; i < 2; i++) {
-        const ph = (this.steamT * 0.7 + i * 0.5) % 1;
-        this.deskCup.rect(1 + i * 2, -5 - Math.round(ph * 5), 1, 1)
-          .fill({ color: 0xffffff, alpha: 0.5 * (1 - ph) });
+      const beat = this.deskCupBeat();
+      if (beat !== this.cupBeat) {
+        this.cupBeat = beat;
+        this.deskCup.clear();
+        this.drawCup(this.deskCup, 0, 0);
+        if (beat !== COLD_CUP) {
+          // two staggered steam pixels drifting up and fading
+          const t = ambientBeatTime() - this.cupPlacedAt;
+          for (let i = 0; i < 2; i++) {
+            const ph = (t * 0.7 + i * 0.5) % 1;
+            this.deskCup.rect(1 + i * 2, -5 - Math.round(ph * 5), 1, 1)
+              .fill({ color: 0xffffff, alpha: 0.5 * (1 - ph) });
+          }
+        }
       }
     }
 
@@ -820,30 +949,34 @@ export class Character {
   private updateStatusGlyph(dt: number): void {
     if (this.statusGlyph === 'none') return;
     this.glyphElapsed += dt;
+    // brief 4-point sparkle, auto-clears after 0.9s
+    if (this.statusGlyph === 'success' && this.glyphElapsed > 0.9) { this.setStatusGlyph('none'); return; }
+    // Redraw only when the frame changes: a Graphics redraw is a change the
+    // floor has to render, and a blocked agent blinks at the door for as long
+    // as it takes the human to notice.
+    const frame = statusGlyphFrame(this.statusGlyph, this.glyphElapsed);
+    if (frame === this.glyphFrame) return;
+    this.glyphFrame = frame;
     const g = this.overlay;
     g.clear();
     const yTop = -34; // just above the 32px sprite
     if (this.statusGlyph === 'blocked') {
       // pulsing "!" — blink ~2.5Hz
-      if (Math.floor(this.glyphElapsed / 0.4) % 2 === 0) {
+      if (frame === 0) {
         g.rect(-1, yTop, 2, 5).fill(0xff6b6b);
         g.rect(-1, yTop + 6, 2, 2).fill(0xff6b6b);
       }
     } else if (this.statusGlyph === 'success') {
-      // brief 4-point sparkle, auto-clears after 0.9s
-      const p = (Math.sin(this.glyphElapsed * 18) + 1) / 2;
-      const s = 2 + p * 2;
+      const s = 2 + frame / 2;
       g.rect(-0.5, yTop - s, 1, s * 2).fill(0xffd93d);
       g.rect(-s, yTop - 0.5, s * 2, 1).fill(0xffd93d);
-      if (this.glyphElapsed > 0.9) this.setStatusGlyph('none');
     } else if (this.statusGlyph === 'compacting') {
       // #5C — violet box that rhythmically "packs down" (boxing up context).
-      const p = (Math.sin(this.glyphElapsed * 6) + 1) / 2; // 0..1
-      const s = 2 + p * 3;
+      const s = 2 + frame / 2;
       g.rect(-s, yTop - s, s * 2, s * 2).fill(0x9b7ede);
     } else if (this.statusGlyph === 'looping') {
       // #5C — orange 4-dot warning ring with one lit dot spinning around it.
-      const idx = Math.floor(this.glyphElapsed * 8) % 4;
+      const idx = frame;
       const pts: [number, number][] = [[-3, yTop - 3], [3, yTop - 3], [3, yTop + 3], [-3, yTop + 3]];
       for (let i = 0; i < 4; i++) {
         const [x, y] = pts[i];

@@ -27,7 +27,14 @@ import { PixelPanel } from '@/components/PixelPanel';
 import { PixelButton } from '@/components/PixelButton';
 import { Icon } from '@/components/Icon';
 import { SidebarSplitter } from '@/components/SidebarSplitter';
-import { acquireTerminal, notifyThemeChangeAll } from '@/components/terminalPool';
+import { acquireTerminal, applyTerminalRendererPref, notifyThemeChangeAll } from '@/components/terminalPool';
+import { applyOfficeMotionPref } from '@/scene/office/officeMotion';
+import { setFloorDiagnosticsDev, setFloorDiagnosticsPref } from '@/scene/office/floorPerf';
+
+// A dev build always samples floor performance (floorPerf.ts); the flag is
+// recorded here because import.meta cannot appear in a module the tests load.
+setFloorDiagnosticsDev(!!import.meta.env.DEV);
+import { applyWindowVisibility, seedWindowVisibility } from '@/scene/windowShown';
 import { FullscreenTerminal } from '@/components/FullscreenTerminal';
 import { TaskDetailOverlay } from '@/components/TaskDetailOverlay';
 import { IdePanel } from '@/ide/IdePanel';
@@ -117,6 +124,14 @@ export function App() {
       // Mirror the active office theme so OfficeFloor renders it (gated on the
       // tvShowOffices flag; off = always the office). Settings keeps this synced.
       useStore.getState().setOfficeTheme(c.tvShowOffices ? (c.officeTheme ?? 'office') : 'office');
+      // Mirror the terminal painter setting into the pool, which decides on
+      // attach (synchronously, so it cannot read config itself).
+      applyTerminalRendererPref(c.terminalRenderer);
+      // Same for the office floor's motion budget; OfficeFloor subscribes.
+      applyOfficeMotionPref(c.officeMotion);
+      // And whether the floor writes performance samples to the hive log
+      // (floorPerf.ts); read when a scene builds.
+      setFloorDiagnosticsPref(c.officeDiagnostics);
       // Mirror the triggers so Settings → Connections and the Command Center's
       // Triggers tab read one list, not two copies that drift — whichever surface
       // saves calls these same setters and the other repaints. No extra IPC: main
@@ -144,10 +159,24 @@ export function App() {
 
   // Config subscription — the copy loaded above would otherwise go stale the
   // moment anything saves a setting.
-  useEffect(() => window.cth.onConfigChanged(setConfig), []);
+  useEffect(() => window.cth.onConfigChanged((c) => {
+    setConfig(c);
+    applyTerminalRendererPref(c.terminalRenderer);
+    applyOfficeMotionPref(c.officeMotion);
+    setFloorDiagnosticsPref(c.officeDiagnostics);
+  }), []);
 
   // Quit warning subscription
   useEffect(() => window.cth.onCloseRequested((info) => setQuitWarn(info)), []);
+
+  // Window minimised/restored, from main — the floor pauses on it. Subscribe
+  // first, then ask for the state now: a renderer that loaded while the
+  // window was already minimised would otherwise wait for a transition.
+  useEffect(() => {
+    const off = window.cth.onWindowVisibility(applyWindowVisibility);
+    window.cth.getWindowVisibility().then(seedWindowVisibility).catch(() => { /* main gone */ });
+    return off;
+  }, []);
 
   // Shareable hires: a validated manifest arriving via the munderdifflin://
   // deep link (or file import) pre-fills the Add-Agent modal. Never spawns by itself.
