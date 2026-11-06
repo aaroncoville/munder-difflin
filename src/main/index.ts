@@ -75,6 +75,7 @@ import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WakeSkipLog, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
 import { shouldReapIdle, workerHasLiveJob } from './workerIdleJobs';
 import { afterWorkerDone } from './workerDoneGrace';
+import { noticeDelivered, stopFailedAgain, stopRetryDue, stuckWorkerNotice, type StopRetry } from './workerStopRetry';
 import { describeUnpushed, unpushedWorkerBranches } from './workerUnpushed';
 import {
   CODEX_ACTIVITY_TTL_MS,
@@ -414,6 +415,7 @@ interface WorkerRec {
   /** When a job the worker launched was last seen alive (see workerIdleJobs). */
   jobSeenAt?: number;
   stopFailed?: boolean;   // a kill failed: the tick retries it, and nothing is torn down around a live process
+  stopRetry?: StopRetry;  // when the tick next retries that kill
 }
 /** Live ephemeral workers by id. Populated by the spawn-request watcher; consulted
  *  by teardownPty so a finished/crashed/reaped worker's worktree is PRESERVED (not
@@ -558,7 +560,7 @@ function teardownPty(id: string): void {
  *  controller uses this to surface every terminal failure AND to carry the Slack
  *  {channel,thread_ts} so god can post a 'couldn't complete' reply — closing the
  *  Slack loop (the success path is the worker replying in-thread itself). */
-function informGod(subject: string, body: string, slack?: { channel: string; thread_ts: string }): void {
+function informGod(subject: string, body: string, slack?: { channel: string; thread_ts: string }): boolean {
   try {
     const slackLine = slack
       // The bundled-node launcher, spelled as an ABSOLUTE PATH — NOT bare `node`
@@ -568,8 +570,10 @@ function informGod(subject: string, body: string, slack?: { channel: string; thr
       ? `\n\n[SLACK] Close the loop — post a reply to channel ${slack.channel} thread ${slack.thread_ts} via:\n  "${hive.nodeCommand()}" "${slackReplyScriptPath()}" --channel ${slack.channel} --thread ${slack.thread_ts} --text "<your message>"`
       : '';
     hive.send({ to: 'god', act: 'inform', subject, body: body + slackLine }, 'ephemeral-worker');
+    return true;
   } catch (e) {
     console.error('[worker] informGod failed:', e);
+    return false;
   }
 }
 
@@ -4921,9 +4925,16 @@ function stopWorker(workerId: string): void {
   }
   if (stopped) {
     teardownPty(workerId);
-  } else if (rec && !rec.stopFailed) {
+  } else if (rec) {
+    if (!rec.stopFailed) hive.appendLog({ kind: 'worker-kill-failed', workerId, pid: session?.pid, code: 'kill-failed' });
     rec.stopFailed = true;
-    hive.appendLog({ kind: 'worker-kill-failed', workerId, pid: session?.pid, code: 'kill-failed' });
+    const now = Date.now();
+    const { retry, notify } = stopFailedAgain(rec.stopRetry, now);
+    rec.stopRetry = retry;
+    if (notify) {
+      const n = stuckWorkerNotice(workerId, session?.pid, retry, now);
+      if (informGod(n.subject, n.body)) rec.stopRetry = noticeDelivered(retry, now);
+    }
   }
 }
 
@@ -5164,7 +5175,7 @@ async function ephemeralWorkerTick(): Promise<void> {
     //     kept mailing dead agents (seen live 2026-08-16 with worker-business/
     //     worker-qa/worker-bizreview). A double teardown is a harmless no-op.
     for (const [workerId, rec] of [...liveWorkers]) {
-      if (rec.stopFailed) stopWorker(workerId);
+      if (rec.stopFailed && (stopRetryDue(rec.stopRetry, Date.now()) || !ptyManager.list().some((p) => p.id === workerId))) stopWorker(workerId);
       if (rec.releasing) continue;
       const doneAt = workerDoneAt(workerId, rec.spawnedAt);
       const afterDone = doneAt === null ? null : afterWorkerDone(join(hive.root() ?? '', 'agents', workerId, 'inbox'), hive.registry()?.godId ?? 'god', doneAt, Date.now());

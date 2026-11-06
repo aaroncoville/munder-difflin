@@ -19,8 +19,10 @@ const loadTs = require('./load-ts.cjs');
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { RegistryUnreadable } = loadTs('src/main/messageTarget.ts');
 const { workerExitEvent } = loadTs('src/main/workerExitLog.ts');
+const stopRetry = loadTs('src/main/workerStopRetry.ts');
+const { PtyManager } = loadTs('src/main/pty.ts');
 
-const FUNCTIONS = ['processSpawnRequest', 'archiveRequest', 'spawnRequestsDir', 'teardownPty', 'stopWorker', 'workerDoneAt', 'ephemeralWorkerTick'];
+const FUNCTIONS = ['informGod', 'processSpawnRequest', 'archiveRequest', 'spawnRequestsDir', 'teardownPty', 'stopWorker', 'workerDoneAt', 'ephemeralWorkerTick'];
 
 function live() {
   const source = fs.readFileSync(path.resolve(__dirname, '..', 'src/main/index.ts'), 'utf8');
@@ -55,10 +57,16 @@ async function setup(t, { kill } = {}) {
   const ptyToAgent = new Map();
   let killResult = kill ?? (() => ({ ok: true }));
   let good;
+  // Frozen, so a test can land one millisecond either side of a deadline.
+  const clockStart = Date.now();
+  let clockOffset = 0;
+  class ClockDate extends Date {
+    static now() { return clockStart + clockOffset; }
+  }
   const context = {
     hive, RegistryUnreadable, liveWorkers, worktreePaths, worktreeOrigins: new Map(), ptyToAgent, preservedWorktrees: new Map(),
-    workerTickRunning: false, lastGcSweepAt: Date.now(), GC_SWEEP_MS: 60_000, workerExitEvent,
-    console: { log() {}, warn() {}, error() {} }, Date, Number, JSON, String, Math, Set, Map, Object, Array,
+    workerTickRunning: false, lastGcSweepAt: Date.now(), GC_SWEEP_MS: 60_000, workerExitEvent, ...stopRetry,
+    console: { log() {}, warn() {}, error() {} }, Date: ClockDate, Number, JSON, String, Math, Set, Map, Object, Array,
     readFileSync: fs.readFileSync, existsSync: fs.existsSync, mkdirSync: fs.mkdirSync, renameSync: fs.renameSync, unlinkSync: fs.unlinkSync,
     statSync: fs.statSync, readdirSync: fs.readdirSync,
     join: path.join, basename: path.basename, isAbsolute: path.isAbsolute,
@@ -94,12 +102,17 @@ async function setup(t, { kill } = {}) {
     },
     workerDoneAtStub: null, workerTokensUsed: () => 0, shouldReapIdle: () => false, workerHasLiveJob: () => false,
     afterWorkerDone: () => null, describeUnpushed: () => '', unpushedWorkerBranches: async () => [], spawnRequestsDirStub: null,
-    informGod: (subject, body) => { try { hive.send({ to: 'god', act: 'inform', subject, body }, 'ephemeral-worker'); calls.informed.push(subject); } catch { /* as informGod does */ } }
+  };
+  const send = hive.send.bind(hive);
+  hive.send = (message, from) => {
+    const sent = send(message, from);
+    if (from === 'ephemeral-worker') calls.informed.push(message.subject);
+    return sent;
   };
   const fns = vm.runInNewContext(live(), context);
   const repair = () => fs.writeFileSync(registry, good);
   const rows = (kind) => hive.logTail(500).filter((e) => e.kind === kind);
-  return { hive, home, file, queue, calls, liveWorkers, ptyToAgent, worktreePaths, sessions, repair, rows, fns, agents: path.join(hive.root(), 'agents'), setKill: (fn) => { killResult = fn; }, run: () => fns.processSpawnRequest(file) };
+  return { hive, home, file, queue, calls, liveWorkers, ptyToAgent, worktreePaths, sessions, repair, rows, fns, agents: path.join(hive.root(), 'agents'), setKill: (fn) => { killResult = fn; }, advance: (ms) => { clockOffset += ms; }, run: () => fns.processSpawnRequest(file) };
 }
 
 const inFailed = (f) => fs.readdirSync(path.join(f.queue, '.failed'));
@@ -304,13 +317,16 @@ test('the worker tick retries the stop, without a new log row each time, and tea
   await f.run();
   const after = f.calls.killAttempts;
 
+  f.advance(stopRetry.STOP_RETRY_MAX_MS);
   await f.fns.ephemeralWorkerTick();
+  f.advance(stopRetry.STOP_RETRY_MAX_MS);
   await f.fns.ephemeralWorkerTick();
   assert.equal(f.calls.killAttempts, after + 2, 'it is retried');
   assert.equal(f.rows('worker-kill-failed').length, 1, 'one row, not one per tick');
   assert.ok(f.liveWorkers.has(ID));
 
   f.setKill(() => ({ ok: true }));
+  f.advance(stopRetry.STOP_RETRY_MAX_MS);
   await f.fns.ephemeralWorkerTick();
   assert.equal(f.liveWorkers.has(ID), false);
   assert.deepEqual(f.calls.revoked, [ID]);
@@ -327,4 +343,133 @@ test('a session already gone counts as stopped, so the retry cannot run forever'
   await f.fns.ephemeralWorkerTick();
   assert.equal(f.liveWorkers.has(ID), false);
   assert.deepEqual(f.calls.revoked, [ID]);
+});
+
+// ---- a kill that keeps failing ----
+
+const stuckNotices = (f) => f.calls.informed.filter((subject) => subject.includes('could not be stopped'));
+
+test('retries back off instead of running on every tick', async (t) => {
+  const f = await setup(t, { kill: STUCK });
+  await f.run();
+  const first = f.calls.killAttempts;
+
+  await f.fns.ephemeralWorkerTick();
+  f.advance(stopRetry.STOP_RETRY_FIRST_MS - 1);
+  await f.fns.ephemeralWorkerTick();
+  assert.equal(f.calls.killAttempts, first, 'not before the first delay is up');
+
+  f.advance(1);
+  await f.fns.ephemeralWorkerTick();
+  assert.equal(f.calls.killAttempts, first + 1);
+
+  f.advance(stopRetry.STOP_RETRY_FIRST_MS * 2 - 1);
+  await f.fns.ephemeralWorkerTick();
+  assert.equal(f.calls.killAttempts, first + 1, 'the second delay is twice the first');
+
+  f.advance(1);
+  await f.fns.ephemeralWorkerTick();
+  assert.equal(f.calls.killAttempts, first + 2);
+});
+
+test('retries never give up, because the record is all that can still stop the worker', async (t) => {
+  const f = await setup(t, { kill: STUCK });
+  await f.run();
+  for (let i = 0; i < 100; i += 1) {
+    f.advance(stopRetry.STOP_RETRY_MAX_MS);
+    await f.fns.ephemeralWorkerTick();
+  }
+  assert.equal(f.calls.killAttempts, 101);
+  assert.ok(f.liveWorkers.has(ID));
+  assert.equal(f.ptyToAgent.get(ID), ID);
+  assert.equal(f.rows('worker-kill-failed').length, 1);
+
+  f.setKill(() => ({ ok: true }));
+  f.advance(stopRetry.STOP_RETRY_MAX_MS);
+  await f.fns.ephemeralWorkerTick();
+  assert.equal(f.liveWorkers.has(ID), false);
+});
+
+test('a session that goes away is torn down on the next tick, without waiting out the delay', async (t) => {
+  const f = await setup(t, { kill: STUCK });
+  await f.run();
+  for (let i = 0; i < 8; i += 1) {
+    f.advance(stopRetry.STOP_RETRY_MAX_MS);
+    await f.fns.ephemeralWorkerTick();
+  }
+  f.sessions.clear();
+  await f.fns.ephemeralWorkerTick();
+  assert.equal(f.liveWorkers.has(ID), false);
+  assert.deepEqual(f.calls.revoked, [ID]);
+});
+
+test('god hears once per notice period while a worker stays stuck, and not after it stops', async (t) => {
+  const f = await setup(t, { kill: STUCK });
+  await f.run();
+  f.repair(); // the failure under test here is the kill; a notice needs a readable roster to land
+  const tickAfter = async (ms) => { f.advance(ms); await f.fns.ephemeralWorkerTick(); };
+
+  await tickAfter(stopRetry.STUCK_NOTICE_EVERY_MS - 1);
+  assert.equal(stuckNotices(f).length, 0, 'a brief failure is not news');
+
+  await tickAfter(stopRetry.STOP_RETRY_MAX_MS);
+  assert.equal(stuckNotices(f).length, 1);
+  const [notice] = f.hive.inbox('god-1').filter((m) => m.subject.includes('could not be stopped'));
+  assert.match(notice.subject, new RegExp(ID));
+  assert.match(notice.body, /4242/, 'names the pid to deal with');
+  assert.match(notice.body, /slot/, 'says what it is costing');
+
+  await tickAfter(stopRetry.STOP_RETRY_MAX_MS);
+  assert.equal(stuckNotices(f).length, 1, 'not on every attempt');
+
+  await tickAfter(stopRetry.STUCK_NOTICE_EVERY_MS);
+  assert.equal(stuckNotices(f).length, 2, 'again after another period');
+
+  f.setKill(() => ({ ok: true }));
+  await tickAfter(stopRetry.STOP_RETRY_MAX_MS);
+  await tickAfter(stopRetry.STUCK_NOTICE_EVERY_MS);
+  assert.equal(stuckNotices(f).length, 2, 'nothing once it has stopped');
+});
+
+test('a notice that could not be sent is sent on the next attempt after the registry is repaired', async (t) => {
+  const f = await setup(t, { kill: STUCK });
+  await f.run(); // leaves the registry unreadable
+  const tickAfter = async (ms) => { f.advance(ms); await f.fns.ephemeralWorkerTick(); };
+  const landed = () => f.hive.inbox('god-1').filter((m) => m.subject.includes('could not be stopped')).length;
+
+  await tickAfter(stopRetry.STUCK_NOTICE_EVERY_MS);
+  await tickAfter(stopRetry.STOP_RETRY_MAX_MS);
+  assert.equal(stuckNotices(f).length, 0, 'the notice cannot land while the registry is unreadable');
+
+  f.repair();
+  assert.equal(landed(), 0);
+  await tickAfter(stopRetry.STOP_RETRY_MAX_MS);
+  assert.equal(landed(), 1, 'the failed send must not use up the notice period');
+
+  await tickAfter(stopRetry.STOP_RETRY_MAX_MS);
+  assert.equal(landed(), 1, 'once delivered, the next is a full period away');
+
+  await tickAfter(stopRetry.STUCK_NOTICE_EVERY_MS);
+  assert.equal(landed(), 2);
+});
+
+test('retrying a failed kill schedules no sweep timer, and a kill that works schedules one', (t) => {
+  // The retry only runs after a kill reported failure. If that path scheduled the
+  // process-group sweep, the timers would pile up with every attempt.
+  const scheduled = t.mock.method(globalThis, 'setTimeout', () => ({ unref() {} }));
+  const mgr = new PtyManager();
+  let works = false;
+  const proc = { pid: 999_999, kill() { if (!works) throw new Error('EPERM'); } };
+  mgr.sessions.set('w', { id: 'w', proc });
+
+  for (let i = 0; i < 5; i += 1) assert.equal(mgr.kill('w').ok, false);
+  assert.equal(scheduled.mock.callCount(), 0);
+  assert.ok(mgr.sessions.has('w'), 'still there to retry');
+
+  works = true;
+  assert.equal(mgr.kill('w').ok, true);
+  assert.equal(scheduled.mock.callCount(), 1);
+  assert.equal(mgr.sessions.has('w'), false, 'so a later retry finds nothing to kill');
+  assert.equal(mgr.kill('w').ok, false);
+  assert.equal(scheduled.mock.callCount(), 1);
 });
