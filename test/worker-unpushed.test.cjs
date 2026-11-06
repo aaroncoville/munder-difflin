@@ -97,6 +97,33 @@ test('a worktree directly under the worker\'s worktree is scanned too', async (t
   assert.deepEqual(found.map((b) => [b.branch, b.worktree]), [['agent/w2', nested]]);
 });
 
+// A submodule is detached by construction and its remote refs may never have been
+// fetched, so without this every release would report it as unpushed work.
+test('a submodule inside the worktree is not scanned, while a nested worktree beside it still is', async (t) => {
+  const { root, repo, commit, addWorktree } = fixture(t);
+  const lib = path.join(root, 'lib');
+  execFileSync('git', ['init', '-q', '-b', 'main', lib], { env: GIT_ENV });
+  commit(lib, 'lib');
+  const wt = addWorktree('w', '-b', 'agent/w');
+  git(wt, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'sub');
+  git(wt, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '-m', 'add submodule');
+  git(wt, 'push', '-q', '-u', 'origin', 'agent/w');
+  const sub = path.join(wt, 'sub');
+  assert.ok(fs.statSync(path.join(sub, '.git')).isFile(), 'the fixture is a real submodule: .git is a file');
+  // As in a real submodule: nothing fetched, and the superproject's base is no ref here.
+  git(sub, 'checkout', '-q', '--detach');
+  git(sub, 'branch', '-q', '-D', 'main');
+  git(sub, 'remote', 'remove', 'origin');
+  assert.equal(git(sub, 'branch', '-r', '--contains', 'HEAD'), '');
+  assert.deepEqual(await unpushedWorkerBranches(wt, 'main'), [], 'detached, on no known remote, and still not the worker\'s branch');
+
+  const nested = path.join(wt, 'second');
+  git(repo, 'worktree', 'add', '-q', '-b', 'agent/w2', nested, 'HEAD');
+  assert.ok(fs.statSync(path.join(nested, '.git')).isFile(), 'a linked worktree has a .git file too, so that cannot be the test');
+  commit(nested, 'nested work');
+  assert.deepEqual((await unpushedWorkerBranches(wt, 'main')).map((b) => b.worktree), [nested]);
+});
+
 test('no worktree, or one already gone, has nothing to report', async (t) => {
   const { root } = fixture(t);
   assert.deepEqual(await unpushedWorkerBranches(undefined, 'main'), []);

@@ -57,8 +57,8 @@ async function scanCheckout(dir: string, baseBranch: string, timeoutMs: number):
   return inBase === null ? { worktree: dir, branch, tip, upstream: null } : undefined;
 }
 
-/** Branches in a worker's app-created worktree, and in worktrees directly under
- *  it, whose commits exist on no remote: ahead of an upstream, or with no upstream
+/** Branches in a worker's app-created worktree, and in worktrees (not submodules)
+ *  directly under it, whose commits exist on no remote: ahead of an upstream, or with no upstream
  *  and a tip no remote branch contains (a detached HEAD included). A worktree the
  *  worker made anywhere else is not found. Null when git could not answer. Reads
  *  remote-tracking refs only, so it never touches the network. */
@@ -74,6 +74,13 @@ export async function unpushedWorkerBranches(
   } catch { return null; }
   const found: UnpushedBranch[] = [];
   for (const dir of dirs) {
+    // A submodule is detached by construction and is not the worker's branch. A .git
+    // file cannot identify one, because a linked worktree has a .git file as well.
+    if (dir !== worktree) {
+      const superproject = await git(dir, ['rev-parse', '--show-superproject-working-tree'], timeoutMs);
+      if (superproject === null) return null;
+      if (superproject) continue;
+    }
     const result = await scanCheckout(dir, baseBranch, timeoutMs);
     if (result === null) return null;
     if (result) found.push(result);
