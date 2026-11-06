@@ -525,6 +525,21 @@ test('a folder that only resembles a stamped leftover survives', async () => {
   assert.equal(fs.readFileSync(path.join(wt, '.node_modules.a-file'), 'utf8'), 'a plain file\n');
 });
 
+test('a link at a leftover path is not a leftover, even one to a folder with a valid stamp', async (t) => {
+  const { repo, wtRoot } = makeHarness();
+  fs.mkdirSync(path.join(repo, 'node_modules', 'pkg'), { recursive: true });
+  const wt = addWorktree(repo, wtRoot, 'agent-link');
+  const [leftover] = await crashedSetup(t, repo, wt);
+  const stamped = path.join(wtRoot, 'stamped-elsewhere');
+  fs.renameSync(path.join(wt, leftover), stamped);
+  fs.symlinkSync(stamped, path.join(wt, '.node_modules.a-link'));
+
+  assert.deepEqual(await linkWorktreeDeps(repo, wt), { ok: true, skipped: false });
+
+  assert.equal(fs.lstatSync(path.join(wt, '.node_modules.a-link')).isSymbolicLink(), true, 'setup did not create this link, so it is not setup\'s to remove');
+  assert.equal(fs.existsSync(stamped), true);
+});
+
 test('the finished node_modules carries no staging stamp', async () => {
   const { repo, wtRoot } = makeHarness();
   fs.mkdirSync(path.join(repo, 'node_modules', 'pkg'), { recursive: true });
