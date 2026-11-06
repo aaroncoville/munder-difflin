@@ -9,12 +9,15 @@
  *   uninstall" without it. So every clean install reaches that error, and `dist`
  *   existing is not enough, because an interrupted extraction leaves `dist` too.
  * - node-pty: its install script compiles the binding where no prebuild ships, and
- *   recent npm versions block scripts not covered by `allowScripts`, with only a
- *   warning.
+ *   recent npm versions skip dependency scripts not approved through `allowScripts`
+ *   in package.json or the `allow-scripts` config, with only a warning. Only the
+ *   binding is restored. node-pty's postinstall, which copies conpty.dll on Windows,
+ *   is not: Windows ships a prebuild, so this step would not fire there anyway.
  *
  * Each step runs the package's own script and only when its output is missing, so
  * a normal install does nothing here and this file downloads nothing itself.
- * A failed step fails the install, as it would have if npm had run the script.
+ * A failed step fails the install. To install without the Electron download, such
+ * as offline, set ELECTRON_SKIP_BINARY_DOWNLOAD, which electron 43 no longer reads.
  */
 const { spawnSync } = require('node:child_process');
 const { existsSync, readFileSync } = require('node:fs');
@@ -35,37 +38,49 @@ function ptyBindingIsPresent(dir, platform, arch) {
   );
 }
 
-function pendingSteps({ root, platform, arch }) {
+function pendingSteps({ root, platform, arch, env = process.env, log = console.log }) {
   const steps = [];
 
   const electron = join(root, 'node_modules', 'electron');
   if (existsSync(electron) && !electronIsInstalled(electron)) {
-    steps.push({ name: 'electron', cwd: electron, command: process.execPath, args: ['install.js'], shell: false });
+    if (env.ELECTRON_SKIP_BINARY_DOWNLOAD) {
+      log('[ensure-native-install] ELECTRON_SKIP_BINARY_DOWNLOAD is set; not downloading Electron');
+    } else {
+      steps.push({ name: 'electron', cwd: electron, command: process.execPath, args: ['install.js'], shell: false });
+    }
   }
 
   const pty = join(root, 'node_modules', 'node-pty');
   if (existsSync(pty) && !ptyBindingIsPresent(pty, platform, arch)) {
-    const { scripts } = JSON.parse(readFileSync(join(pty, 'package.json'), 'utf8'));
-    steps.push({ name: 'node-pty', cwd: pty, command: scripts.install, args: [], shell: true });
+    const { scripts = {} } = JSON.parse(readFileSync(join(pty, 'package.json'), 'utf8'));
+    if (scripts.install) {
+      steps.push({ name: 'node-pty', cwd: pty, command: scripts.install, args: [], shell: true });
+    }
   }
 
   return steps;
 }
 
+/** Runs one step and returns its exit code. */
+function runStep(step, log) {
+  const result = spawnSync(step.command, step.args, { cwd: step.cwd, shell: step.shell, stdio: 'inherit' });
+  if (result.status === 0) return 0;
+  const reason = result.error ? `: ${result.error.message}` : '';
+  log(`[ensure-native-install] ${step.name} install script failed${reason}`);
+  return result.status || 1;
+}
+
 /** Runs the pending steps in order and returns the exit code for the process. */
-function ensureNativeInstall({ root, platform, arch, log = console.log }) {
-  for (const step of pendingSteps({ root, platform, arch })) {
+function ensureNativeInstall({ root, platform, arch, env = process.env, log = console.log }) {
+  for (const step of pendingSteps({ root, platform, arch, env, log })) {
     log(`[ensure-native-install] ${step.name} was not installed; running its install script`);
-    const result = spawnSync(step.command, step.args, { cwd: step.cwd, shell: step.shell, stdio: 'inherit' });
-    if (result.status !== 0) {
-      log(`[ensure-native-install] ${step.name} install script failed`);
-      return result.status || 1;
-    }
+    const status = runStep(step, log);
+    if (status !== 0) return status;
   }
   return 0;
 }
 
-module.exports = { pendingSteps, ensureNativeInstall };
+module.exports = { pendingSteps, ensureNativeInstall, runStep };
 
 if (require.main === module) {
   process.exitCode = ensureNativeInstall({

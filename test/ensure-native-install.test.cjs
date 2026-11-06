@@ -6,7 +6,10 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { pendingSteps, ensureNativeInstall } = require('../tools/ensure-native-install.cjs');
+const { pendingSteps, ensureNativeInstall, runStep } = require('../tools/ensure-native-install.cjs');
+
+// These tests choose this per call; a value in the developer's shell must not change them.
+delete process.env.ELECTRON_SKIP_BINARY_DOWNLOAD;
 
 const DARWIN = { platform: 'darwin', arch: 'arm64' };
 const WINDOWS = { platform: 'win32', arch: 'x64' };
@@ -152,6 +155,49 @@ test('a failed step stops the install with that exit code and names the package'
   assert.equal(ensureNativeInstall({ root, ...DARWIN, log: (line) => lines.push(line) }), 7);
   assert.equal(fs.existsSync(path.join(root, 'node_modules/node-pty/ran-pty')), false, 'later steps must not run');
   assert.match(lines.at(-1), /electron.*failed/);
+});
+
+test('ELECTRON_SKIP_BINARY_DOWNLOAD skips only the Electron step and says so', (t) => {
+  const root = fakeTree(t);
+  electronPackage(root);
+  ptyPackage(root);
+  const lines = [];
+  const env = { ELECTRON_SKIP_BINARY_DOWNLOAD: '1' };
+  assert.equal(ensureNativeInstall({ root, ...DARWIN, env, log: (line) => lines.push(line) }), 0);
+  assert.equal(fs.existsSync(path.join(root, 'node_modules/electron/ran-electron')), false);
+  assert.equal(fs.existsSync(path.join(root, 'node_modules/node-pty/ran-pty')), true);
+  assert.match(lines[0], /ELECTRON_SKIP_BINARY_DOWNLOAD/);
+});
+
+test('an empty ELECTRON_SKIP_BINARY_DOWNLOAD does not skip the download', (t) => {
+  const root = fakeTree(t);
+  electronPackage(root);
+  const env = { ELECTRON_SKIP_BINARY_DOWNLOAD: '' };
+  assert.deepEqual(names(pendingSteps({ root, ...DARWIN, env })), ['electron']);
+});
+
+test('ELECTRON_SKIP_BINARY_DOWNLOAD logs nothing when Electron is already installed', (t) => {
+  const root = fakeTree(t);
+  installedElectron(root);
+  const lines = [];
+  const env = { ELECTRON_SKIP_BINARY_DOWNLOAD: '1' };
+  assert.deepEqual(pendingSteps({ root, ...DARWIN, env, log: (line) => lines.push(line) }), []);
+  assert.deepEqual(lines, []);
+});
+
+test('a node-pty package with no install script has no step to run', (t) => {
+  const root = fakeTree(t);
+  installedElectron(root);
+  write(root, 'node_modules/node-pty/package.json', JSON.stringify({ name: 'node-pty' }));
+  assert.deepEqual(pendingSteps({ root, ...DARWIN }), []);
+});
+
+test('a step that cannot start fails and logs why', (t) => {
+  const root = fakeTree(t);
+  const lines = [];
+  const step = { name: 'electron', cwd: path.join(root, 'absent'), command: process.execPath, args: [], shell: false };
+  assert.equal(runStep(step, (line) => lines.push(line)), 1);
+  assert.match(lines.at(-1), /electron.*failed.*ENOENT/);
 });
 
 test('postinstall restores the native packages before electron-rebuild runs', () => {
