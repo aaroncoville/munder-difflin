@@ -67,6 +67,45 @@ export const SUITE_MANY_FILES = 20;
 /** node flags that take their value as the next argument (so that value is not a test file). */
 const NODE_VALUE_FLAGS = new Set(['--test-name-pattern', '--test-skip-pattern', '--test-reporter', '--test-reporter-destination', '--test-concurrency', '--test-timeout', '--test-shard', '--import', '--require', '-r', '--loader', '--experimental-loader', '--env-file', '--conditions', '-C', '--input-type']);
 
+const VITEST_VALUE_FLAGS = new Set(['--config', '-c', '--dir', '--root', '-r', '--project', '--reporter', '--mode', '--outputFile', '--testNamePattern', '-t']);
+const MAKE_VALUE_FLAGS = new Set(['-C', '-f', '-o', '-W', '-I']);
+const BUILD_SCRIPT = /^(build|compile|dist|package)([-_.][^/]*)?\.(sh|bash)$/i;
+const SUITE_SCRIPT = /^((run[-_.])?tests?|ci)([-_.][^/]*)?\.(sh|bash)$/i;
+
+function classifyScript(file: string): HeavyClass | null {
+  const name = file.replace(/\\/g, '/').split('/').pop()!;
+  if (BUILD_SCRIPT.test(name)) return { heavy: true, kind: 'build', why: name };
+  if (SUITE_SCRIPT.test(name)) return { heavy: true, kind: 'suite', why: name };
+  return null;
+}
+
+/** Positional arguments, leaving out the values of the flags in `valueFlags`. */
+function positionals(args: string[], valueFlags: Set<string>): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i].startsWith('-')) { if (valueFlags.has(args[i])) i++; continue; }
+    out.push(args[i]);
+  }
+  return out;
+}
+
+function classifyMake(args: string[]): HeavyClass {
+  const targets = positionals(args, MAKE_VALUE_FLAGS).filter((a) => !a.includes('=') && !/^\d+$/.test(a));
+  if (targets.some((t) => t === 'test' || t === 'tests' || t === 'check')) return { heavy: true, kind: 'suite', why: 'make test' };
+  if (!targets.length || targets.some((t) => t === 'all' || t === 'build' || t === 'dist' || t === 'release')) return { heavy: true, kind: 'build', why: 'make' };
+  return { heavy: false };
+}
+
+function classifyCargo(args: string[]): HeavyClass {
+  if (args.includes('--help') || args.includes('-h')) return { heavy: false };
+  const sub = args.find((a) => !a.startsWith('-') && !a.startsWith('+'));
+  if (sub === 'build' || sub === 'b' || sub === 'check' || sub === 'c' || sub === 'clippy' || sub === 'run' || sub === 'r') return { heavy: true, kind: 'build', why: `cargo ${sub}` };
+  if (sub === 'test' || sub === 't') return { heavy: true, kind: 'suite', why: 'cargo test' };
+  if (sub === 'bench') return { heavy: true, kind: 'bench', why: 'cargo bench' };
+  if (sub === 'install') return { heavy: true, kind: 'install', why: 'cargo install' };
+  return { heavy: false };
+}
+
 /** Strip the prefixes that do not change what runs: VAR=x, env [-u X]..., timeout N, nice, cd x. */
 function leading(ws: string[]): string[] {
   let i = 0;
@@ -106,10 +145,16 @@ function classifyWords(ws0: string[], depth: number): HeavyClass {
   const args = ws.slice(1);
   // One level of a shell wrapper: bash -c "...", cmd /c ..., powershell -Command ...
   if (WRAPPERS.has(bin) && depth === 0) {
-    const k = args.findIndex((a) => /^(-c|\/\/?c|\/\/?k|-command)$/i.test(a));
+    // -c also comes bundled with other flags, as in the login shell's -lc.
+    const k = args.findIndex((a) => /^(-[a-z]*c|\/\/?c|\/\/?k|-command)$/i.test(a));
     if (k >= 0) return classifyCommand(args.slice(k + 1).join(' '), depth + 1);
-    return { heavy: false };
+    const script = args.find((a) => !a.startsWith('-'));
+    return (script && classifyScript(script)) || { heavy: false };
   }
+  const script = classifyScript(ws[0]);
+  if (script) return script;
+  if (bin === 'make' || bin === 'gmake') return classifyMake(args);
+  if (bin === 'cargo') return classifyCargo(args);
   if (bin === 'dotnet') return classifyDotnet(args);
   if (bin === 'npm' || bin === 'pnpm' || bin === 'yarn') {
     const sub = args.find((a) => !a.startsWith('-')) ?? (bin === 'yarn' ? 'install' : '');
@@ -121,14 +166,17 @@ function classifyWords(ws0: string[], depth: number): HeavyClass {
       if (/^(build|dist)(:.*)?$/.test(script)) return { heavy: true, kind: 'build', why: `${bin} run ${script}` };
       if (/^test(:.*)?$/.test(script)) return { heavy: true, kind: 'suite', why: `${bin} run ${script}` };
     }
+    // yarn and pnpm run a package script by its bare name.
+    if (bin !== 'npm' && /^(build|dist)(:.*)?$/.test(sub)) return { heavy: true, kind: 'build', why: `${bin} ${sub}` };
+    if (bin !== 'npm' && /^test(:.*)?$/.test(sub)) return { heavy: true, kind: 'suite', why: `${bin} ${sub}` };
     return { heavy: false };
   }
-  if (bin === 'npx') return classifyWords(args.filter((a) => !a.startsWith('-')), depth);
+  if (bin === 'npx') { const at = args.findIndex((a) => !a.startsWith('-')); return at < 0 ? { heavy: false } : classifyWords(args.slice(at), depth); }
   if (bin === 'electron-rebuild' || bin === 'node-gyp') return { heavy: true, kind: 'install', why: bin };
   if (bin === 'electron-builder') return { heavy: true, kind: 'build', why: bin };
   if (bin === 'electron-vite' && args.includes('build')) return { heavy: true, kind: 'build', why: 'electron-vite build' };
   if (bin === 'vitest') {
-    const files = args.filter((a) => !a.startsWith('-') && a !== 'run');
+    const files = positionals(args, VITEST_VALUE_FLAGS).filter((a) => a !== 'run');
     return files.length ? { heavy: false } : { heavy: true, kind: 'suite', why: 'vitest (all)' };
   }
   if (bin === 'node' || bin === 'electron') {
@@ -154,8 +202,15 @@ function classifyWords(ws0: string[], depth: number): HeavyClass {
 
 /** Classify a command line: heavy if any segment it runs is heavy. */
 export function classifyCommand(cmd: string, depth = 0): HeavyClass {
-  for (const seg of segments(cmd)) {
+  // A heredoc body is text, not commands, however much it looks like them.
+  const text = cmd.replace(/<<-?\s*['"]?(\w+)['"]?[^\n]*\n[\s\S]*?\n\s*\1\b/g, '');
+  for (const seg of segments(text)) {
     const c = classifyWords(words(seg.replace(/\s&$/, '')), depth);
+    if (c.heavy) return c;
+  }
+  // $(...) and backticks run outside single quotes, wherever they sit in the line.
+  for (const m of text.replace(/'[^']*'/g, "''").matchAll(/\$\(([^()]*)\)|`([^`]*)`/g)) {
+    const c = classifyCommand(m[1] ?? m[2], depth);
     if (c.heavy) return c;
   }
   return { heavy: false };

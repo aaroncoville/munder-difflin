@@ -30,6 +30,20 @@ const LIGHT = [
   'npx tsc --noEmit -p tsconfig.node.json', 'vitest run src/a.test.ts', 'node scripts/release-markers.cjs node_modules resources/models',
   'git log --oneline -3', 'ls node_modules', 'node -e "console.log(1)"', 'npm view electron version', ''
 ];
+const WRAPPED_HEAVY = [
+  ['bash -lc "npm test"', 'suite'], ['zsh -lc "dotnet build"', 'build'], ['bash -ic "npm ci"', 'install'], ['bash -l -c "npm test"', 'suite'],
+  ['yarn build', 'build'], ['pnpm build', 'build'], ['yarn dist:mac', 'build'], ['pnpm test:unit', 'suite'],
+  ['make', 'build'], ['make all', 'build'], ['make -j8 build', 'build'], ['make -j 8 test', 'suite'], ['make -C sub check', 'suite'], ['make CC=clang test', 'suite'],
+  ['cargo build --release', 'build'], ['cargo +nightly check', 'build'], ['cargo run', 'build'], ['cargo clippy', 'build'], ['cargo test', 'suite'], ['cargo bench', 'bench'], ['cargo install ripgrep', 'install'],
+  ['./build.sh', 'build'], ['bash build.sh', 'build'], ['sh -x scripts/compile.sh', 'build'], ['scripts/ci.sh', 'suite'], ['./test.sh', 'suite'], ['./run-tests.sh', 'suite'],
+  ['npx vitest --config vitest.config.ts run', 'suite'], ['npx vitest run --reporter dot', 'suite'],
+  ['result=$(npm test)', 'suite'], ['echo "$(dotnet build)"', 'build'], ['x=`npm ci`', 'install']
+];
+const WRAPPED_LIGHT = [
+  'bash -lc "ls"', 'bash other.sh', './deploy.sh', 'yarn lint', 'pnpm lint', 'make clean', 'make -C sub lint', 'cargo fmt', 'cargo --version', 'cargo add serde', 'cargo test --help',
+  'npx vitest run src/a.test.ts --reporter dot', 'x=$(git rev-parse HEAD)', "grep '$(npm ci)' notes.txt",
+  'git commit -m "$(cat <<\'EOF\'\nfix npm test\nnpm ci\nEOF\n)"', "cat > notes.txt <<'EOF'\nnpm test\nEOF"
+];
 const DOTNET_HEAVY = [
   ['dotnet build', 'build'], ['dotnet build src/Game.sln -c Release', 'build'], ['dotnet.exe build', 'build'], ['/usr/local/share/dotnet/dotnet build', 'build'],
   ['dotnet publish -c Release', 'build'], ['dotnet pack', 'build'], ['dotnet restore', 'install'],
@@ -55,6 +69,18 @@ test('every heavy command in the corpus is heavy, with its kind', () => {
 
 test('light work stays light: single test files, echo/grep/commit text, typecheck, one vitest file', () => {
   for (const cmd of LIGHT) assert.equal(classifyCommand(cmd).heavy, false, cmd);
+});
+
+test('login-shell wrappers, script shorthand, make, cargo, build scripts and substitutions are heavy', () => {
+  for (const [cmd, kind] of WRAPPED_HEAVY) {
+    const c = classifyCommand(cmd);
+    assert.equal(c.heavy, true, cmd);
+    assert.equal(c.kind, kind, cmd);
+  }
+});
+
+test('their light neighbours stay light, including text inside heredocs and single quotes', () => {
+  for (const cmd of WRAPPED_LIGHT) assert.equal(classifyCommand(cmd).heavy, false, cmd);
 });
 
 test('dotnet build, test, run, publish, pack and restore are heavy, with their kinds', () => {
