@@ -64,14 +64,15 @@ export function isKnownTarget(agents: Record<string, unknown>, to: unknown, agen
 }
 
 /**
- * Why a new agent cannot have the id `id`, or null if it can. An agent already on `agents` keeps its id. A new one
- * cannot take a name the app uses, or one that a disk ignoring case or form would make the same folder as another's.
+ * Why an agent cannot have the id `id`, or null if it can. No agent can have a name the app uses, even one already on
+ * `agents`, because restoring it would give it a workspace to act under that name. Otherwise an agent on `agents` keeps
+ * its id, and a new one cannot take one that a disk ignoring case or form would make the same folder as another's.
  */
 export function newRosterIdRefusal(agents: Record<string, unknown>, id: unknown, isGod = false): string | null {
   if (!isFolderName(id) || UNSTABLE_FOLDER_NAME.test(id)) return 'it cannot be a folder name';
-  if (Object.prototype.hasOwnProperty.call(agents, id)) return null;
   const key = folderKey(id);
   if (isAppSender(id) || key === 'broadcast' || key === 'human' || (key === 'god' && !isGod)) return 'that name is reserved';
+  if (Object.prototype.hasOwnProperty.call(agents, id)) return null;
   const twin = Object.keys(agents).find((other) => folderKey(other) === key);
   return twin === undefined ? null : `an agent named ${shortTarget(twin)} already has that folder`;
 }

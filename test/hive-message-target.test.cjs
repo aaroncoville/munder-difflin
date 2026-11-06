@@ -577,6 +577,25 @@ for (const id of ['heartbeat', 'HEARTBEAT', 'system', 'webhook']) {
   });
 }
 
+// A legacy entry could otherwise be restored, get a workspace, and go on acting under the app's name.
+for (const id of ['heartbeat', 'HEARTBEAT', 'broadcast', 'human']) {
+  test(`a legacy roster entry named ${id} is refused provisioning, before its workspace is touched`, async (t) => {
+    const f = await floor(t);
+    addRosterEntry(f.hive, id);
+    await assert.rejects(f.hive.ensureAgent({ id, name: 'x', provider: 'claude', cwd: f.home }), /reserved/);
+    assert.equal(fs.existsSync(path.join(f.agents, id)), false);
+  });
+}
+
+test('an agent already on the roster with an ordinary name, and god, keep their ids when restored', async (t) => {
+  const f = await floor(t);
+  await f.hive.ensureAgent({ id: 'worker-1', name: 'Helper', provider: 'claude', cwd: f.home });
+  await f.hive.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: f.home, isGod: true });
+  addRosterEntry(f.hive, 'god');
+  await f.hive.ensureAgent({ id: 'god', name: 'Boss', provider: 'claude', cwd: f.home, isGod: true });
+  assert.equal(f.hive.registry().agents.god.isGod, true);
+});
+
 test('agents on the roster still send, including an archived one and god', async (t) => {
   const f = await floor(t);
   f.hive.setArchived('worker-2', true);
