@@ -90,6 +90,15 @@ test('a call rejected at the permission prompt, which gets no PostToolUse, is fr
   assert.equal(lock.snapshot().length, 0);
 });
 
+test('a rejected call is also freed when the agent goes idle at its prompt, but a permission prompt frees nothing', async (t) => {
+  const { lock, fire } = await server(t);
+  fire('a1', 'PreToolUse', 'npm test');
+  fire('a1', 'Notification', undefined, { notification_type: 'permission_prompt' });
+  assert.equal(lock.snapshot().length, 1);
+  fire('a1', 'Notification', undefined, { notification_type: 'idle_prompt' });
+  assert.equal(lock.snapshot().length, 0);
+});
+
 test('an interrupted call, which gets no Stop either, is freed by the next prompt', async (t) => {
   const { lock, fire } = await server(t);
   fire('a1', 'PreToolUse', 'npm test');

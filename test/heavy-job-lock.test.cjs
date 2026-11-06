@@ -178,18 +178,21 @@ test('the PTY root process itself does not count as the job, even when its argum
   const procs = [{ pid: 10, parentPid: 1, commandLine: 'claude "please run npm test"' }];
   const x = lock(1, { roots: () => [{ agentId: 'a', pid: 10 }], probe: async () => procs });
   x.l.acquire('a', H, 'npm test', 'c1', false);
-  for (let i = 0; i < HEAVY_SCAN_MISSES; i++) await x.l.scan();
-  assert.equal(x.l.snapshot().length, 0);
+  await x.l.scan();
+  assert.equal(x.l.status().holders[0].started, false);
 });
 
-test('the process check runs only while something is held, and watches a foreground call that lost its PostToolUse', async () => {
+test('the process check runs only while something is held, and frees a started foreground call that lost its PostToolUse', async () => {
   let probes = 0;
-  const x = lock(1, { roots: () => [{ agentId: 'a', pid: 10 }], probe: async () => { probes++; return []; } });
+  let procs = [{ pid: 11, parentPid: 10, commandLine: 'npm ci' }];
+  const x = lock(1, { roots: () => [{ agentId: 'a', pid: 10 }], probe: async () => { probes++; return procs; } });
   assert.equal(x.timers.length, 0, 'nothing held: no timer');
   x.l.acquire('a', H, 'npm ci', '1', false);
   assert.equal(x.timers.length, 1, 'armed while held');
   await x.l.scan();
   assert.equal(probes, 1);
+  procs = [];
+  await x.l.scan();
   assert.equal(x.l.snapshot().length, 1, 'one empty scan is not enough');
   await x.l.scan();
   assert.equal(x.l.snapshot().length, 0);
@@ -370,4 +373,51 @@ test('two overlapping calls with the same id hold the slot until both have finis
   assert.equal(x.l.snapshot().length, 1, 'the second is still running');
   x.l.callDone('a', 'cmd:npm test');
   assert.equal(x.l.snapshot().length, 0);
+});
+
+// A call waiting at a permission prompt has no process, and nothing reports the prompt's answer.
+test('a call still waiting for approval keeps its slot past any number of empty scans, then runs counted', async () => {
+  let procs = [{ pid: 10, parentPid: 1, commandLine: 'claude' }];
+  const x = lock(1, { roots: () => [{ agentId: 'a', pid: 10 }], probe: async () => procs });
+  x.l.acquire('a', H, 'npm test', 'c1', false);
+  assert.equal(x.l.status().holders[0].started, false);
+  for (let i = 0; i < HEAVY_SCAN_MISSES + 3; i++) await x.l.scan();
+  assert.equal(x.l.snapshot().length, 1, 'the prompt may still be open');
+  assert.equal(take(x, 'b').allow, false, 'so its slot is not reassigned');
+  procs = [...procs, { pid: 11, parentPid: 10, commandLine: "/bin/zsh -c eval 'npm test'" }];
+  await x.l.scan();
+  assert.equal(x.l.status().holders[0].started, true, 'approved, and seen running');
+  assert.deepEqual(x.told, []);
+  procs = procs.filter((p) => p.pid !== 11);
+  for (let i = 0; i < HEAVY_SCAN_MISSES; i++) await x.l.scan();
+  assert.equal(x.l.snapshot().length, 0, 'seen running, then gone: its PostToolUse was lost');
+  assert.deepEqual(x.told.map((t) => t.agentId), ['b']);
+});
+
+test('one running call does not let empty scans free a second call that has not started', async () => {
+  let procs = [{ pid: 11, parentPid: 10, commandLine: 'npm test' }];
+  const x = lock(1, { roots: () => [{ agentId: 'a', pid: 10 }], probe: async () => procs });
+  x.l.acquire('a', H, 'npm test', 'c1', false);
+  x.l.acquire('a', { heavy: true, kind: 'build', why: 'dotnet build' }, 'dotnet build', 'c2', false);
+  await x.l.scan();
+  x.l.callDone('a', 'c1');
+  procs = [];
+  for (let i = 0; i < HEAVY_SCAN_MISSES + 1; i++) await x.l.scan();
+  assert.equal(x.l.snapshot().length, 1);
+});
+
+test('a job recognised by its label counts as started even when its command text is not in the listing', async () => {
+  const x = lock(1, { roots: () => [{ agentId: 'a', pid: 10 }], probe: async () => [{ pid: 11, parentPid: 10, commandLine: 'npm test' }] });
+  x.l.acquire('a', H, 'FOO=1 npm test --silent', 'c1', false);
+  await x.l.scan();
+  assert.equal(x.l.status().holders[0].started, true);
+});
+
+test('a never-started call the agent abandoned is freed by the TTL', async () => {
+  const x = lock(1, { roots: () => [{ agentId: 'a', pid: 10 }], probe: async () => [] });
+  x.l.acquire('a', H, 'npm test', 'c1', false);
+  x.tick(HEAVY_TTL_MS);
+  await x.l.scan();
+  assert.equal(x.l.snapshot().length, 0);
+  assert.equal(x.logs.at(-1).reason, 'ttl');
 });

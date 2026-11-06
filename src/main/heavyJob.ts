@@ -185,7 +185,13 @@ export function heavyLimit(v: unknown): HeavyLimit {
   return Number.isInteger(n) && n >= 1 ? Math.min(16, n) : HEAVY_DEFAULT_LIMIT;
 }
 
-export interface HeavyCall { count: number; command: string; why?: string }
+export interface HeavyCall {
+  count: number;
+  command: string;
+  why?: string;
+  /** Seen in a process listing. Until then it may be waiting at a permission prompt. */
+  seen: boolean;
+}
 
 export interface HeavyHolder {
   agentId: string;
@@ -235,7 +241,7 @@ type ReleaseReason = 'posttool' | 'turn-end' | 'process-exit' | 'pty-exit' | 'tt
 function addCall(calls: Map<string, HeavyCall>, callId: string, command: string, cls: HeavyClass): Map<string, HeavyCall> {
   const call = calls.get(callId);
   if (call) call.count++;
-  else calls.set(callId, { count: 1, command: command.slice(0, COMMAND_KEEP), why: cls.why });
+  else calls.set(callId, { count: 1, command: command.slice(0, COMMAND_KEEP), why: cls.why, seen: false });
   return calls;
 }
 const clock = (ms: number): string => `${new Date(ms).toISOString().slice(11, 19)}Z`;
@@ -256,9 +262,9 @@ export class HeavyJobLock {
   }
 
   /** The current holders. Expired ones are released first. */
-  snapshot(): Array<{ agentId: string; kind: HeavyKind; job: string; since: string; background: boolean }> {
+  snapshot(): Array<{ agentId: string; kind: HeavyKind; job: string; since: string; background: boolean; started: boolean }> {
     this.expire();
-    return [...this.holders.values()].map((h) => ({ agentId: h.agentId, kind: h.kind, job: h.label, since: new Date(h.since).toISOString(), background: h.background }));
+    return [...this.holders.values()].map((h) => ({ agentId: h.agentId, kind: h.kind, job: h.label, since: new Date(h.since).toISOString(), background: h.background, started: [...h.calls.values()].every((c) => c.seen) }));
   }
 
   /** Who is waiting, and which slots are set aside for whom. */
@@ -403,7 +409,10 @@ export class HeavyJobLock {
   }
 
   /** One watcher tick: expiry for everyone, and a process check for any call that may not get a
-   *  PostToolUse. A job counts as still running when a descendant of the agent's PTY classifies as
+   *  PostToolUse. No listing can free a call that has never been seen running: it may be waiting at
+   *  a permission prompt, which comes after PreToolUse and reports nothing, and an approval arriving
+   *  after its slot went to someone else would run uncounted. Such a call is freed by its
+   *  PostToolUse, the turn ending, the PTY exiting or the TTL. A job counts as still running when a descendant of the agent's PTY classifies as
    *  heavy or carries the command the agent ran, since the shell wrapper keeps that text even when
    *  the process doing the work looks like `node x/y.mjs`. The PTY root is left out: its arguments
    *  can quote the command without running it. A failed probe is no evidence either way. */
@@ -429,6 +438,10 @@ export class HeavyJobLock {
     for (const h of watched) {
       if (!this.holders.has(h.agentId)) continue;
       const lines = under.get(h.agentId) ?? [];
+      for (const c of h.calls.values()) {
+        if (!c.seen) c.seen = lines.some((l) => (!!c.command && l.includes(c.command)) || (!!c.why && classifyCommand(l).why === c.why));
+      }
+      if ([...h.calls.values()].some((c) => !c.seen)) { h.misses = 0; continue; }
       if (lines.some((l) => classifyCommand(l).heavy || [...h.commands].some((c) => c && l.includes(c)))) { h.misses = 0; continue; }
       h.misses++;
       if (h.misses >= HEAVY_SCAN_MISSES) this.release(h.agentId, 'process-exit');
@@ -440,7 +453,7 @@ export class HeavyJobLock {
 
 // — the hook boundary —
 
-interface HeavyHookPayload { tool_name?: string; tool_input?: unknown; tool_use_id?: unknown }
+interface HeavyHookPayload { tool_name?: string; tool_input?: unknown; tool_use_id?: unknown; notification_type?: string }
 
 /** The id that pairs a call's PreToolUse with its PostToolUse: the provider's tool-use id when it
  *  sends one, else the command itself (identical in both hooks). */
@@ -464,6 +477,7 @@ export function gateHeavyCall(lock: HeavyJobLock, agentId: string, p: HeavyHookP
 export function settleHeavyCall(lock: HeavyJobLock, agentId: string, event: string, p: HeavyHookPayload): void {
   if (event === 'PostToolUse' || event === 'PostToolUseFailure') lock.callDone(agentId, heavyCallId(p));
   else if (event === 'Stop' || event === 'UserPromptSubmit') lock.turnOver(agentId);
+  else if (event === 'Notification' && (p.notification_type === 'idle' || p.notification_type === 'idle_prompt')) lock.turnOver(agentId);
 }
 
 /** What a queued agent is told when its slot comes free. */
