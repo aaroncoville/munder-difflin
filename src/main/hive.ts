@@ -1070,16 +1070,16 @@ export class HiveManager {
     const next = role.trim();
     if (!next) return { ok: false, error: 'empty role' };
     try {
+      const owner = this.checkAgentId(id);
       const reg = this.registry();
-      const agent = reg.agents[id];
-      if (!agent) return { ok: false, error: 'unknown agent' };
+      const agent = reg.agents[owner];
       if (agent.role === next) return { ok: true };
       agent.role = next;
       agent.lastSeen = Date.now();
       this.writeJson(join(root, 'registry.json'), reg);
-      writeFileSync(join(this.agentDir(id), 'identity.md'), this.identityText(agent), 'utf8');
-      this.appendLog({ kind: 'role', agentId: id, role: next });
-      this.commit(`hive: role ${id}`);
+      writeFileSync(join(this.agentDir(owner), 'identity.md'), this.identityText(agent), 'utf8');
+      this.appendLog({ kind: 'role', agentId: owner, role: next });
+      this.commit(`hive: role ${owner}`);
       return { ok: true };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -2162,6 +2162,20 @@ export class HiveManager {
   checkAgentId(id: unknown): string {
     return agentFolderId(this.registry().agents, this.registry().godId, join(this.root() ?? '', 'agents'), id);
   }
+  /** The agents a read naming no agent covers: the roster, not whatever folders exist. A folder with no entry can hold
+   *  anything, so it is left out and logged, once per folder since the voice layer reads often. */
+  private rosterOwners(agentsDir: string): string[] {
+    const agents = this.registry().agents;
+    const folders = readdirSync(agentsDir);
+    for (const name of folders) {
+      if (name.startsWith('.') || Object.prototype.hasOwnProperty.call(agents, name) || this.skippedVoiceFolders.has(name)) continue;
+      this.skippedVoiceFolders.add(name);
+      this.appendLog({ kind: 'voice-folder-skipped', folder: shortTarget(name) });
+    }
+    return Object.keys(agents).filter((id) => isRosterId(agents, id) && folders.includes(id)).sort();
+  }
+  private readonly skippedVoiceFolders = new Set<string>();
+
   /** The options of a voiceMessages call from IPC, with any agent checked. */
   checkedVoiceOptions(opts: unknown): { agentId?: string; id?: string; limit?: number; includeArchived?: boolean } {
     if (!opts || typeof opts !== 'object') return {};
@@ -2240,7 +2254,7 @@ export class HiveManager {
     try {
       owners = onlyAgent
         ? (this.callerDir(onlyAgent) === null ? [] : [this.checkAgentId(onlyAgent)])
-        : readdirSync(agentsDir).filter((id) => !id.startsWith('.') && existsSync(this.agentDir(id)));
+        : this.rosterOwners(agentsDir);
     } catch {
       return [];
     }

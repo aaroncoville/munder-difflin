@@ -11,10 +11,12 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const vm = require('node:vm');
+const ts = require('typescript');
 const loadTs = require('./load-ts.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
-const { AgentIdError } = loadTs('src/main/messageTarget.ts');
+const { AgentIdError, shortTarget } = loadTs('src/main/messageTarget.ts');
 
 async function floor(t) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-caller-ids-'));
@@ -121,14 +123,6 @@ test('a voice lookup with no agent still lists everyone', async (t) => {
   assert.ok(bodies.includes('for god'));
 });
 
-test('the app handlers check caller ids before reading', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.ts'), 'utf8')
-    .split('\n').filter((line) => !line.trim().startsWith('//')).join('\n');
-  assert.match(source, /'hive:memory', \(_evt, id: unknown\) => hive\.memory\(hive\.checkAgentId\(id\)\)/);
-  assert.match(source, /'hive:inbox', \(_evt, id: unknown\) => hive\.inbox\(hive\.checkAgentId\(id\)\)/);
-  assert.match(source, /'hive:messages', \(_evt, opts: unknown\) =>\s*hive\.voiceMessages\(hive\.checkedVoiceOptions\(opts\)\)/);
-});
-
 test('the voice options check refuses a bad agent and passes the rest through', async (t) => {
   const { hive } = await floor(t);
   assert.throws(() => hive.checkedVoiceOptions({ agentId: '../../outside' }), AgentIdError);
@@ -160,4 +154,179 @@ test('the stop drain reads nothing for a refused id, and still works for a roste
   assert.deepEqual(inOutside(), untouched, 'no cursor is written there');
   assert.equal(typeof hive.drainForStop('worker-1').block, 'boolean');
   assert.equal(fs.readFileSync(path.join(hive.root(), 'agents', 'worker-1', 'inbox', 'to-worker.json'), 'utf8'), before);
+});
+
+// ---- the real IPC handlers, taken from index.ts, against a real HiveManager ----
+
+function liveHandlers(hive) {
+  const source = fs.readFileSync(path.resolve(__dirname, '..', 'src/main/index.ts'), 'utf8');
+  const ast = ts.createSourceFile('index.ts', source, ts.ScriptTarget.ES2022, true);
+  const handlers = {};
+  for (const channel of ['hive:memory', 'hive:inbox', 'hive:messages', 'hive:patchAgentRole']) {
+    const node = ast.statements.find((n) => ts.isExpressionStatement(n) && n.getText(ast).startsWith(`ipcMain.handle('${channel}'`));
+    assert.ok(node, `${channel} is registered at the top level of index.ts`);
+    const js = ts.transpileModule(node.getText(ast), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+    vm.runInNewContext(js, { hive, ipcMain: { handle: (name, fn) => { handlers[name] = fn; } } });
+  }
+  // What the renderer receives from a handler that throws.
+  const invoke = async (channel, ...args) => {
+    try {
+      return { value: await handlers[channel]({}, ...args) };
+    } catch (e) {
+      return { thrown: e, wire: `Error invoking remote method '${channel}': ${e}` };
+    }
+  };
+  return invoke;
+}
+
+for (const [label, id, code] of [
+  ['a traversal', '../../outside', 'invalid'],
+  ['an absolute path', '/etc', 'invalid'],
+  ['a value that is not text', 7, 'invalid'],
+  ['an unknown id', 'nobody', 'unknown'],
+  ['one of the app\'s names', 'heartbeat', 'reserved'],
+  ['a folder not on the roster', 'stray', 'unknown']
+]) {
+  for (const [channel, args] of [['hive:memory', [id]], ['hive:inbox', [id]], ['hive:messages', [{ agentId: id }]]]) {
+    test(`${channel} refuses ${label}, and only the code and the short id cross to the renderer`, async (t) => {
+      const { hive, home } = await floor(t);
+      const { thrown, wire, value } = await liveHandlers(hive)(channel, ...args);
+      assert.equal(value, undefined, 'it answered instead of refusing');
+      assert.equal(thrown.name, 'AgentIdError');
+      assert.equal(thrown.code, code);
+      assert.equal(wire, `Error invoking remote method '${channel}': AgentIdError: Agent id ${shortTarget(id)} refused (${code})`, 'nothing else may cross');
+      assert.equal(wire.includes(home), false, `a path crossed to the renderer: ${wire}`);
+      assert.equal(wire.includes('SECRET'), false);
+    });
+  }
+}
+
+test('the handlers answer for a real agent', async (t) => {
+  const { hive } = await floor(t);
+  const invoke = liveHandlers(hive);
+  assert.match((await invoke('hive:memory', 'worker-1')).value, /WORKER-NOTE/);
+  assert.deepEqual((await invoke('hive:inbox', 'WORKER-1')).value.map((m) => m.id), ['to-worker']);
+  assert.ok((await invoke('hive:messages', { agentId: 'worker-1' })).value.some((m) => m.body === 'for worker'));
+});
+
+function addRosterEntry(hive, id) {
+  const file = path.join(hive.root(), 'registry.json');
+  const reg = JSON.parse(fs.readFileSync(file, 'utf8'));
+  reg.agents[id] = { id, name: 'Legacy', provider: 'claude', cwd: '.', role: 'old' };
+  fs.writeFileSync(file, JSON.stringify(reg));
+}
+
+// A malformed or imported registry is exactly what these checks must survive.
+for (const via of ['the handler', 'the method']) {
+  test(`a role edit through ${via} cannot write outside the agents folder through a registry key`, async (t) => {
+    const { hive, home } = await floor(t);
+    addRosterEntry(hive, '../../outside');
+    const identity = path.join(home, 'outside', 'identity.md');
+    fs.writeFileSync(identity, 'SENTINEL');
+    const before = fs.readFileSync(path.join(hive.root(), 'registry.json'), 'utf8');
+
+    const result = via === 'the handler'
+      ? (await liveHandlers(hive)('hive:patchAgentRole', '../../outside', 'attacker-role')).value
+      : hive.patchAgentRole('../../outside', 'attacker-role');
+
+    assert.equal(fs.readFileSync(identity, 'utf8'), 'SENTINEL', 'the write left the agents folder');
+    assert.equal(result.ok, false);
+    assert.match(result.error, /refused \(invalid\)/);
+    assert.equal(result.error.includes(home), false);
+    assert.equal(fs.readFileSync(path.join(hive.root(), 'registry.json'), 'utf8'), before, 'nothing half-applied');
+  });
+}
+
+test('a role edit refuses a roster entry whose exact folder is missing, leaving the roster as it was', async (t) => {
+  const { hive } = await floor(t);
+  addRosterEntry(hive, 'no-folder-agent');
+  const result = hive.patchAgentRole('no-folder-agent', 'new');
+  assert.equal(result.ok, false);
+  assert.match(result.error, /refused \(no-folder\)/);
+  assert.equal(hive.registry().agents['no-folder-agent'].role, 'old');
+});
+
+test('a role edit in another case changes the real agent and adds no second key', async (t) => {
+  const { hive, agents } = await floor(t);
+  const keys = Object.keys(hive.registry().agents);
+  assert.deepEqual(await liveHandlers(hive)('hive:patchAgentRole', 'WORKER-1', 'new role').then((r) => ({ ...r.value })), { ok: true });
+  assert.equal(hive.registry().agents['worker-1'].role, 'new role');
+  assert.deepEqual(Object.keys(hive.registry().agents), keys);
+  assert.match(fs.readFileSync(path.join(agents, 'worker-1', 'identity.md'), 'utf8'), /new role/);
+});
+
+// A disk that ignores case would hide a write through the wrong spelling, so this
+// uses two names that fold together but stay separate folders.
+test('a role edit by a near spelling writes the real agent\'s folder, not a folder from that spelling', async (t) => {
+  const { hive, agents, home } = await floor(t);
+  await hive.ensureAgent({ id: 'i', name: 'I', provider: 'claude', cwd: home });
+  assert.deepEqual({ ...hive.patchAgentRole('\u0131', 'new role') }, { ok: true });
+  assert.match(fs.readFileSync(path.join(agents, 'i', 'identity.md'), 'utf8'), /new role/);
+  assert.equal(fs.readdirSync(agents).includes('\u0131'), false);
+});
+
+// ---- a voice read with no agent named ----
+
+function strayMessage(agents, folder, id, body) {
+  fs.mkdirSync(path.join(agents, folder, 'inbox'), { recursive: true });
+  fs.writeFileSync(path.join(agents, folder, 'inbox', `${id}.json`), JSON.stringify({ id, body, from: 'x', to: 'y', act: 'inform', subject: 's' }));
+}
+
+test('a voice read naming no agent does not show a folder that has no roster entry', async (t) => {
+  const { hive, agents } = await floor(t);
+  strayMessage(agents, 'stray', 'stray-msg', 'PRIVATE STRAY BODY');
+  const invoke = liveHandlers(hive);
+  for (const opts of [{}, { limit: 40 }, { id: 'stray-msg' }, { id: 'stray-msg', includeArchived: false }]) {
+    const { value } = await invoke('hive:messages', opts);
+    assert.deepEqual(value.filter((m) => m.body === 'PRIVATE STRAY BODY'), [], `visible through ${JSON.stringify(opts)}`);
+    assert.deepEqual(value.filter((m) => m.owner === 'stray'), []);
+  }
+  assert.deepEqual((await invoke('hive:messages', { id: 'stolen' })).value, [], 'the folder from setup is hidden too');
+});
+
+test('a folder a voice read skips is logged once, not on every read, and a dot folder not at all', async (t) => {
+  const { hive, agents } = await floor(t);
+  fs.mkdirSync(path.join(agents, '.hidden'));
+  hive.voiceMessages();
+  hive.voiceMessages({ limit: 1 });
+  const rows = hive.logTail(500).filter((r) => r.kind === 'voice-folder-skipped');
+  assert.deepEqual(rows.map((r) => r.folder), ['"stray"']);
+});
+
+test('a stale folder folding onto a live id stays hidden while that agent stays visible', async (t) => {
+  const { hive, agents, home } = await floor(t);
+  await hive.ensureAgent({ id: 'i', name: 'I', provider: 'claude', cwd: home });
+  const stale = 'ı';
+  strayMessage(agents, stale, 'stale-msg', 'STALE BODY');
+  strayMessage(agents, 'i', 'real-msg', 'REAL BODY');
+  if (!fs.readdirSync(agents).includes(stale) || !fs.readdirSync(agents).includes('i')) t.skip('this disk merges the two names');
+  const bodies = hive.voiceMessages().map((m) => m.body);
+  assert.equal(bodies.includes('STALE BODY'), false);
+  assert.equal(bodies.includes('REAL BODY'), true);
+});
+
+test('a voice read still shows active and archived agents on the roster, with a retained folder', async (t) => {
+  const { hive } = await floor(t);
+  hive.setArchived('worker-1', true);
+  const owners = new Set(hive.voiceMessages().map((m) => m.owner));
+  assert.equal(owners.has('worker-1'), true, 'an archived agent is still on the roster');
+  assert.equal(owners.has('god-1'), true);
+});
+
+test('a roster spelling that only reaches a folder through a disk ignoring case is not read', async (t) => {
+  const { hive, agents } = await floor(t);
+  strayMessage(agents, 'stray', 'near-msg', 'NEAR BODY');
+  addRosterEntry(hive, 'STRAY');
+  assert.equal(hive.voiceMessages().map((m) => m.body).includes('NEAR BODY'), false);
+  assert.equal(hive.voiceMessages({ id: 'near-msg' }).length, 0);
+});
+
+test('a roster entry named after an app sender or missing its folder is not read', async (t) => {
+  const { hive, agents } = await floor(t);
+  addRosterEntry(hive, 'heartbeat');
+  strayMessage(agents, 'heartbeat', 'alias-msg', 'ALIAS BODY');
+  addRosterEntry(hive, 'no-folder-agent');
+  const bodies = hive.voiceMessages().map((m) => m.body);
+  assert.equal(bodies.includes('ALIAS BODY'), false);
+  assert.ok(bodies.length > 0);
 });
