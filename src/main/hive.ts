@@ -45,7 +45,7 @@ import { preferredAgentRole } from '../shared/agentRole';
 import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde } from './fs';
 import { refreshMineIgnoresOnce } from './hiveMineIgnore';
-import { hasExactFolder, isAppSender, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, rosterIdFor, shortTarget } from './messageTarget';
+import { hasExactFolder, isAppSender, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, rosterIdFor, shadowsRosterId, shortTarget } from './messageTarget';
 import { codexTrustEntry } from '../shared/codexTrust';
 import { withCodexWritableRoots } from '../shared/codexWritableRoots';
 import { resolveGodName } from '../shared/godIdentity';
@@ -1699,6 +1699,10 @@ export class HiveManager {
     };
   }
 
+  private agentsDir(): string {
+    return join(this.root() ?? '', 'agents');
+  }
+
   /** Atomically deliver a message into a recipient agent's inbox.
    *  Returns false when the recipient has no inbox, so the caller can bounce and
    *  log the drop rather than let the message vanish. */
@@ -1734,7 +1738,7 @@ export class HiveManager {
   /** Inject a message directly (used by the orchestrator / UI / tests). */
   send(partial: Partial<HiveMessage>, from = 'system'): HiveMessage {
     const msg = this.normalize(partial, from);
-    if (!this.routeMessage(msg) && !isKnownTarget(this.registry().agents, msg.to)) this.reportRefusedSend(msg);
+    if (!this.routeMessage(msg) && !isKnownTarget(this.registry().agents, msg.to, this.agentsDir())) this.reportRefusedSend(msg);
     this.commit(`hive: msg ${msg.from}→${msg.to} (${msg.act})`);
     return msg;
   }
@@ -1744,14 +1748,14 @@ export class HiveManager {
   private routeMessage(msg: HiveMessage): boolean {
     const reg = this.registry();
     const godId = reg.godId ?? 'god';
-    if (!isKnownTarget(reg.agents, msg.to)) {
+    if (!isKnownTarget(reg.agents, msg.to, this.agentsDir())) {
       this.appendLog({ kind: 'drop', reason: 'unknown-recipient', from: msg.from, to: shortTarget(msg.to), id: msg.id });
       return false;
     }
     // The hive has no separate human-approval queue — approvals are native to
     // each agent's Claude Code session (and approvable remotely). A message aimed
     // at "human" is handled by the god/orchestrator, the human's proxy here.
-    const resolveTo = (to: string): string => (to === 'human' || to === 'god' ? godId : rosterIdFor(reg.agents, to) ?? to);
+    const resolveTo = (to: string): string => (to === 'human' || to === 'god' ? godId : rosterIdFor(reg.agents, to, this.agentsDir()) ?? to);
     const targets = msg.to === 'broadcast'
       // The roster for fan-out is the ACTIVE registry: skip the send-only prep
       // assistant and any archived agent (closed tab). Hookless providers are
@@ -1975,7 +1979,15 @@ export class HiveManager {
     reportOutboxFailure(stage, f, id, error, {
       log: (row) => this.appendLog(row),
       quarantine: () => quarantineOutboxFile(outbox, f),
-      notify: (subject, body) => { this.routeMessage(this.normalize({ to: id, act: 'inform', requires_reply: false, hops, subject, body }, 'system')); }
+      notify: (subject, body) => {
+        // Only an exact roster id is told directly: a near match would hand this folder's notice to another agent.
+        const reg = this.registry();
+        const own = isRosterId(reg.agents, id);
+        this.routeMessage(this.normalize({
+          to: own ? id : reg.godId ?? 'god', act: 'inform', requires_reply: false, hops, subject,
+          body: own ? body : `From the folder ${shortTarget(id)}, which is not on the roster. ${body}`
+        }, 'system'));
+      }
     });
   }
 
@@ -1993,6 +2005,10 @@ export class HiveManager {
       if (!existsSync(outbox)) continue;
       for (const f of readdirSync(outbox)) {
         if (!f.endsWith('.json')) continue;
+        if (shadowsRosterId(this.registry().agents, id)) {
+          this.outboxFailed('sender', outbox, f, id, undefined);
+          continue;
+        }
         const full = join(outbox, f);
         let stage: OutboxStage = 'read';
         let hops = 0;
@@ -2027,7 +2043,7 @@ export class HiveManager {
           hops = msg.hops;
           stage = 'route';
           if (!this.routeMessage(msg)) {
-            this.outboxFailed(isKnownTarget(this.registry().agents, msg.to) ? 'not-delivered' : 'recipient', outbox, f, id, undefined, hops);
+            this.outboxFailed(isKnownTarget(this.registry().agents, msg.to, this.agentsDir()) ? 'not-delivered' : 'recipient', outbox, f, id, undefined, hops);
             continue;
           }
           stage = 'archive';

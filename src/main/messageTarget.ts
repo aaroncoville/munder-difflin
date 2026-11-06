@@ -31,26 +31,43 @@ export function isRosterId(agents: Record<string, unknown>, id: unknown): id is 
 
 /** Whether `id` is the exact name of an entry in `agentsDir`. A disk that ignores case or form would open a different agent's folder for a near match. */
 export function hasExactFolder(agentsDir: string, id: string): boolean {
+  return folderNames(agentsDir).includes(id);
+}
+
+function folderNames(agentsDir: string): string[] {
   try {
-    return readdirSync(agentsDir).includes(id);
+    return readdirSync(agentsDir);
   } catch {
-    return false;
+    return [];
   }
 }
 
-/** The roster id `to` means: itself, or the one entry it matches ignoring case and Unicode form. */
-export function rosterIdFor(agents: Record<string, unknown>, to: unknown): string | null {
+/**
+ * The roster id `to` means: itself, or the one entry it matches ignoring case and Unicode form. A near match counts
+ * only when that entry's exact folder is the sole folder in `agentsDir` with its key: a disk can keep two folders the
+ * key treats as one, and then `to` may name the other, so it must not be merged into this agent.
+ */
+export function rosterIdFor(agents: Record<string, unknown>, to: unknown, agentsDir: string): string | null {
   if (isRosterId(agents, to)) return to;
   if (!isFolderName(to) || isAppSender(to)) return null;
   const key = folderKey(to);
   const matches = Object.keys(agents).filter((id) => folderKey(id) === key && isRosterId(agents, id));
-  return matches.length === 1 ? matches[0] : null;
+  if (matches.length !== 1) return null;
+  const folders = folderNames(agentsDir).filter((name) => folderKey(name) === key);
+  return folders.length === 1 && folders[0] === matches[0] ? matches[0] : null;
+}
+
+/** Whether a folder named `id` is not on `agents` yet folds onto an id that is, so it must not act as that agent. */
+export function shadowsRosterId(agents: Record<string, unknown>, id: string): boolean {
+  if (Object.prototype.hasOwnProperty.call(agents, id)) return false;
+  const key = folderKey(id);
+  return Object.keys(agents).some((other) => folderKey(other) === key);
 }
 
 /** Whether `to` may go on to routing: a roster id, a name for god, `broadcast`, or one of the app's own senders. */
-export function isKnownTarget(agents: Record<string, unknown>, to: unknown): to is string {
+export function isKnownTarget(agents: Record<string, unknown>, to: unknown, agentsDir: string): to is string {
   if (typeof to !== 'string') return false;
-  return to === 'broadcast' || GOD_NAMES.has(to) || isAppSender(to) || rosterIdFor(agents, to) !== null;
+  return to === 'broadcast' || GOD_NAMES.has(to) || isAppSender(to) || rosterIdFor(agents, to, agentsDir) !== null;
 }
 
 /**

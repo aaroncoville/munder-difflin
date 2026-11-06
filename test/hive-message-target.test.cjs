@@ -14,7 +14,7 @@ const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
-const { isKnownTarget, isRosterId } = loadTs('src/main/messageTarget.ts');
+const { isKnownTarget, isRosterId, rosterIdFor } = loadTs('src/main/messageTarget.ts');
 
 async function floor(t, emit) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-message-target-'));
@@ -438,4 +438,122 @@ test('a hookless agent with an ordinary name still gets its terminal handoff', a
   assert.equal(hive.routeOnce(), 1);
   assert.deepEqual(sent.map((m) => m.to), ['real-hookless']);
   assert.deepEqual(hive.inbox('god-1'), []);
+});
+
+// A dotless i folds onto "i" in the key that matches ids, yet is a separate folder
+// on disk. A leftover folder with such a name must never be merged into that agent.
+const DOTLESS = '\u0131';
+
+async function staleTwin(t) {
+  const f = await floor(t);
+  await f.hive.ensureAgent({ id: 'i', name: 'I', provider: 'claude', cwd: f.home });
+  const stale = path.join(f.agents, DOTLESS);
+  fs.mkdirSync(path.join(stale, 'outbox', '.sent'), { recursive: true });
+  fs.mkdirSync(path.join(stale, 'inbox'), { recursive: true });
+  if (fs.readdirSync(f.agents).filter((n) => n === 'i' || n === DOTLESS).length !== 2) t.skip('this disk merges the two names');
+  const fromStale = (file, to) => fs.writeFileSync(path.join(stale, 'outbox', file), JSON.stringify({ to, act: 'inform', subject: 'stale', body: 'from the stale folder' }));
+  const mail = (id) => f.hive.inbox(id);
+  const refused = () => f.hive.logTail(500).filter((e) => e.kind === 'outbox-error' && e.stage === 'sender');
+  return { ...f, stale, fromStale, mail, refused };
+}
+
+test('a stale folder that folds onto a live id does not get its failure notice into that agent', async (t) => {
+  const f = await staleTwin(t);
+  f.fromStale('poc.json', 'nobody');
+  f.hive.routeOnce();
+  assert.deepEqual(f.mail('i'), [], 'a notice for the stale folder crossed into the live agent');
+  const god = f.mail('god-1');
+  assert.equal(god.length, 1, 'god is told, since the folder has no one to tell');
+  assert.match(god[0].body, /not on the roster/);
+  assert.equal(fs.existsSync(path.join(f.stale, 'outbox', '.sent', 'bad-poc.json')), true);
+  assert.equal(f.refused().length, 1, 'and it is logged');
+});
+
+test('a stale folder that folds onto a live id cannot send as anyone, to anyone', async (t) => {
+  const f = await staleTwin(t);
+  f.fromStale('a.json', 'worker-2');
+  f.fromStale('b.json', 'i');
+  f.fromStale('c.json', 'god');
+  f.hive.routeOnce();
+  assert.deepEqual(f.mail('worker-2'), []);
+  assert.deepEqual(f.mail('i'), []);
+  assert.equal(f.mail('god-1').filter((m) => m.body === 'from the stale folder').length, 0, 'its content is not relayed as if it were an agent');
+  assert.equal(f.refused().length, 3);
+});
+
+test('a stale folder with nothing in its outbox writes no log row on every pass', async (t) => {
+  const f = await staleTwin(t);
+  f.hive.routeOnce();
+  f.hive.routeOnce();
+  assert.deepEqual(f.refused(), []);
+});
+
+test('mail addressed to the stale spelling is refused while both folders exist, not merged', async (t) => {
+  const f = await staleTwin(t);
+  f.write('m.json', DOTLESS);
+  f.hive.routeOnce();
+  assert.deepEqual(f.mail('i'), []);
+  assert.equal(f.sent('bad-m.json'), true);
+  assert.deepEqual(f.mail('worker-1').map((m) => m.subject), ['[not delivered] m.json']);
+});
+
+test('the live agent itself still sends and receives beside a stale twin', async (t) => {
+  const f = await staleTwin(t);
+  f.write('m.json', 'i');
+  f.hive.routeOnce();
+  assert.deepEqual(f.mail('i').map((m) => m.from), ['worker-1']);
+  fs.writeFileSync(path.join(f.agents, 'i', 'outbox', 'r.json'), JSON.stringify({ to: 'worker-2', act: 'inform', subject: 's', body: 'b' }));
+  f.hive.routeOnce();
+  assert.deepEqual(f.mail('worker-2').map((m) => m.from), ['i']);
+});
+
+test('a near spelling still reaches the one agent it can mean when no other folder claims it', async (t) => {
+  const f = await floor(t);
+  await f.hive.ensureAgent({ id: 'i', name: 'I', provider: 'claude', cwd: f.home });
+  f.write('m.json', DOTLESS);
+  assert.equal(f.hive.routeOnce(), 1);
+  assert.equal(f.hive.inbox('i').length, 1);
+});
+
+test('a folded lookup maps only to an id whose exact folder exists and whose key no other folder shares', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-folded-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const agents = { i: {} };
+  assert.equal(rosterIdFor(agents, 'I', dir), null, 'the id has no folder at all');
+  fs.mkdirSync(path.join(dir, 'i'));
+  assert.equal(rosterIdFor(agents, 'I', dir), 'i');
+  assert.equal(rosterIdFor(agents, 'i', dir), 'i', 'an exact id needs no lookup');
+  fs.mkdirSync(path.join(dir, DOTLESS));
+  if (fs.readdirSync(dir).length === 2) assert.equal(rosterIdFor(agents, DOTLESS, dir), null, 'two folders share the key');
+  assert.equal(rosterIdFor(agents, 'I', path.join(dir, 'missing')), null, 'an unreadable folder list fails closed');
+  assert.equal(rosterIdFor(agents, 'I'), null, 'and so does no folder list at all');
+});
+
+test('a folded lookup refuses when the one folder with the key is not the entry\'s own', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-folded-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, DOTLESS));
+  assert.equal(rosterIdFor({ i: {} }, 'I', dir), null, 'only a stale twin is on disk, so the entry has no folder of its own');
+});
+
+// Refusing these would quarantine every outbox the first time the registry could not be read.
+test('a folder simply not on the roster, folding onto nobody, still has its mail routed', async (t) => {
+  const f = await floor(t);
+  const stale = path.join(f.agents, 'departed');
+  fs.mkdirSync(path.join(stale, 'outbox', '.sent'), { recursive: true });
+  fs.writeFileSync(path.join(stale, 'outbox', 'x.json'), JSON.stringify({ to: 'worker-2', act: 'inform', subject: 's', body: 'b' }));
+  assert.equal(f.hive.routeOnce(), 1);
+  assert.deepEqual(f.hive.inbox('worker-2').map((m) => m.from), ['departed']);
+});
+
+test('a failure notice for a folder not on the roster at all goes to god, where it used to vanish', async (t) => {
+  const f = await floor(t);
+  const stale = path.join(f.agents, 'departed');
+  fs.mkdirSync(path.join(stale, 'outbox', '.sent'), { recursive: true });
+  fs.writeFileSync(path.join(stale, 'outbox', 'x.json'), JSON.stringify({ to: 'nobody', act: 'inform', subject: 's', body: 'b' }));
+  f.hive.routeOnce();
+  const god = f.hive.inbox('god-1');
+  assert.equal(god.length, 1);
+  assert.match(god[0].body, /not on the roster/);
+  assert.equal(fs.existsSync(path.join(stale, 'outbox', '.sent', 'bad-x.json')), true);
 });
