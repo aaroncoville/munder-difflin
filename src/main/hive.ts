@@ -453,7 +453,7 @@ export class HiveManager {
     return this._runtime;
   }
 
-  /** Whether config.disableHiveGitCommits is on: the hive runs no git at all. Mirrored like the spawn gate below. */
+  /** Whether config.disableHiveGitCommits is on: no commits and no new repository. Mirrored like the spawn gate below. */
   private _gitCommitsDisabled = false;
   setGitCommitsDisabled(on: boolean): void { this._gitCommitsDisabled = on; }
 

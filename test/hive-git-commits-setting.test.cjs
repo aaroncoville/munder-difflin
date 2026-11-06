@@ -16,6 +16,7 @@ const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
+const { applyGitCommitsSetting, gitCommitsDisabled } = loadTs('src/main/hiveGitSetting.ts');
 
 function home(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-hive-git-'));
@@ -118,8 +119,56 @@ test('the app applies the setting before the hive is first prepared, and on ever
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.ts'), 'utf8')
     .split('\n').filter((line) => !line.trim().startsWith('//')).join('\n');
   const start = source.indexOf('function bootstrapHiveServices');
-  const set = source.indexOf('hive.setGitCommitsDisabled(readConfig().disableHiveGitCommits === true)', start);
+  const set = source.indexOf('hive.setGitCommitsDisabled(gitCommitsDisabled(readConfig().disableHiveGitCommits))', start);
   assert.ok(set > start, 'read at bootstrap');
   assert.ok(set < source.indexOf('hive.ensureHive()', start), 'a new hive must not be initialised first');
-  assert.match(source, /patch\?\.disableHiveGitCommits === 'boolean'\) hive\.setGitCommitsDisabled\(patch\.disableHiveGitCommits\)/);
+  assert.match(source, /'disableHiveGitCommits' in patch\) applyGitCommitsSetting\(hive, patch\.disableHiveGitCommits\)/);
 });
+
+test('turning commits back on while running creates the repository and commits resume', async (t) => {
+  const dir = home(t);
+  const hive = await floor(t, dir, true);
+  const root = path.join(dir, 'hive');
+  assert.equal(fs.existsSync(path.join(root, '.git')), false);
+
+  applyGitCommitsSetting(hive, false);
+
+  const before = head(root);
+  hive.send(MESSAGE, 'worker-1');
+  assert.notEqual(head(root), before);
+});
+
+test('turning commits off while running stops them and leaves the repository', async (t) => {
+  const dir = home(t);
+  const hive = await floor(t, dir, false);
+  const root = path.join(dir, 'hive');
+  const before = head(root);
+
+  applyGitCommitsSetting(hive, true);
+  hive.send(MESSAGE, 'worker-1');
+
+  assert.equal(head(root), before);
+});
+
+for (const junk of ['true', 'false', 1, 0, null, {}, []]) {
+  test(`a value of ${JSON.stringify(junk)} leaves commits on and warns`, async (t) => {
+    const warnings = [];
+    assert.equal(gitCommitsDisabled(junk, (line) => warnings.push(line)), false);
+    assert.equal(warnings.length, 1);
+
+    const dir = home(t);
+    const hive = await floor(t, dir, true);
+    applyGitCommitsSetting(hive, junk, () => {});
+    const before = head(path.join(dir, 'hive'));
+    hive.send(MESSAGE, 'worker-1');
+    assert.notEqual(head(path.join(dir, 'hive')), before);
+  });
+}
+
+for (const value of [true, false, undefined]) {
+  test(`a value of ${value} gives no warning`, () => {
+    const warnings = [];
+    assert.equal(gitCommitsDisabled(value, (line) => warnings.push(line)), value === true);
+    assert.equal(warnings.length, 0);
+  });
+}
