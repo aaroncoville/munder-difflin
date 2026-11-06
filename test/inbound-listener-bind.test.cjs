@@ -55,6 +55,18 @@ function statusOf(hostname, port) {
   });
 }
 
+/** The address this machine gives a listener with no host. */
+function wildcardAddress() {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer();
+    server.on('error', reject);
+    server.listen(0, () => {
+      const { address } = server.address();
+      server.close(() => resolve(address));
+    });
+  });
+}
+
 for (const [name, make] of Object.entries(LISTENERS)) {
   test(`${name} binds loopback when no option is given`, async (t) => {
     assert.equal((await bind(t, make)).address, '127.0.0.1');
@@ -64,8 +76,12 @@ for (const [name, make] of Object.entries(LISTENERS)) {
     assert.equal((await bind(t, make, { bindAllInterfaces: false })).address, '127.0.0.1');
   });
 
-  test(`${name} binds every IPv4 interface only with the opt-in`, async (t) => {
-    assert.equal((await bind(t, make, { bindAllInterfaces: true })).address, '0.0.0.0');
+  test(`${name} takes the operating system's wildcard only with the opt-in`, async (t) => {
+    const { address, port } = await bind(t, make, { bindAllInterfaces: true });
+    // The same address a listener given no host gets: dual-stack where the machine has IPv6.
+    assert.equal(address, await wildcardAddress());
+    assert.equal(typeof (await statusOf('127.0.0.1', port)), 'number');
+    if (address === '::') assert.equal(typeof (await statusOf('::1', port)), 'number');
   });
 
   // The config file is hand-editable JSON, so the type does not protect this.

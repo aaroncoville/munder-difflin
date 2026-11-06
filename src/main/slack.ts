@@ -72,7 +72,7 @@ type _SlackEventFile = SlackEventFile;
 export interface SlackWebhookServerOptions {
   /** Local TCP port the HTTP server binds to (and the tunnel forwards to). */
   port: number;
-  /** Bind every IPv4 interface instead of loopback, for LAN or router forwarding. */
+  /** Bind every interface instead of loopback, for LAN or router forwarding. */
   bindAllInterfaces?: boolean;
   /** Slack app signing secret (Basic Information → Signing Secret). Required. */
   signingSecret: string;
@@ -118,7 +118,7 @@ export class SlackWebhookServer {
   private server: Server | null = null;
   private tunnelUrl: string | null = null;
   private readonly port: number;
-  private readonly host: string;
+  private readonly host: string | undefined;
   private readonly signingSecret: string;
   private readonly channelId?: string;
   private readonly onMessage: (m: SlackInboundMessage) => void | Promise<void>;

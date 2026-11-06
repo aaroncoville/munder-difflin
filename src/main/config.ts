@@ -408,7 +408,7 @@ export interface HarnessConfig {
    *  @deprecated The port is a property of the shared server, not of any one
    *  trigger; `webhookTriggers` are multiplexed over it by id. */
   webhookPort?: number;
-  /** Bind the Slack and webhook listeners to every IPv4 interface instead of
+  /** Bind the Slack and webhook listeners to every interface instead of
    *  loopback (default false). Tunnels do not need it; LAN or router forwarding does. */
   inboundBindAllInterfaces?: boolean;
 

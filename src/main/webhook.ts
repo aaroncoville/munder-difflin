@@ -103,7 +103,7 @@ export interface WebhookTaskStatus {
 export interface WebhookServerOptions {
   /** Local TCP port the HTTP server binds to (and the tunnel forwards to). */
   port: number;
-  /** Bind every IPv4 interface instead of loopback, for LAN or router forwarding. */
+  /** Bind every interface instead of loopback, for LAN or router forwarding. */
   bindAllInterfaces?: boolean;
   /** The endpoints to serve. May be swapped later with `setEndpoints`. */
   endpoints: WebhookEndpoint[];
@@ -147,7 +147,7 @@ export class WebhookServer {
   private server: Server | null = null;
   private tunnelUrl: string | null = null;
   private readonly port: number;
-  private readonly host: string;
+  private readonly host: string | undefined;
   private endpoints = new Map<string, WebhookEndpoint>();
   private readonly onMessage: (msg: WebhookInbound, endpoint: WebhookEndpointRef) => WebhookDispatch | null;
   private readonly lookupStatus: (token: string) => WebhookTaskStatus | null;
