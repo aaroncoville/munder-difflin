@@ -45,7 +45,7 @@ import { preferredAgentRole } from '../shared/agentRole';
 import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde } from './fs';
 import { refreshMineIgnoresOnce } from './hiveMineIgnore';
-import { hasExactFolder, isAppSender, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, rosterIdFor, shortTarget } from './messageTarget';
+import { agentFolderId, hasExactFolder, isAppSender, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, rosterIdFor, shortTarget } from './messageTarget';
 import { codexTrustEntry } from '../shared/codexTrust';
 import { withCodexWritableRoots } from '../shared/codexWritableRoots';
 import { resolveGodName } from '../shared/godIdentity';
@@ -1135,7 +1135,9 @@ export class HiveManager {
     const out: SettledInbox = { moved: 0, kept: 0, unanswered: [] };
     const root = this.root();
     if (!root) return out;
-    const inbox = join(root, 'agents', id, 'inbox');
+    const owner = this.callerDir(id);
+    if (owner === null) return out;
+    const inbox = join(owner, 'inbox');
     if (!existsSync(inbox)) return out;
     let files: string[];
     try { files = readdirSync(inbox).filter((f) => f.endsWith('.json')); } catch { return out; }
@@ -1526,8 +1528,8 @@ export class HiveManager {
    * surfaced exactly once (no infinite loop).
    */
   drainForStop(agentId: string): { block: boolean; reason?: string } {
-    const dir = this.agentDir(agentId);
-    if (!existsSync(dir)) return { block: false };
+    const dir = this.callerDir(agentId);
+    if (dir === null || !existsSync(dir)) return { block: false };
     const cursorPath = join(dir, 'cursor.json');
     const cursor = this.readJson<{ lastProcessed: string | null }>(cursorPath, { lastProcessed: null });
     const fresh = this.inbox(agentId)
@@ -2156,8 +2158,26 @@ export class HiveManager {
     this.writeTasks(next);
     return true;
   }
+  /** The roster id a caller's `id` means. Throws AgentIdError otherwise; IPC handlers run this so the caller sees why. */
+  checkAgentId(id: unknown): string {
+    return agentFolderId(this.registry().agents, this.registry().godId, join(this.root() ?? '', 'agents'), id);
+  }
+  /** The options of a voiceMessages call from IPC, with any agent checked. */
+  checkedVoiceOptions(opts: unknown): { agentId?: string; id?: string; limit?: number; includeArchived?: boolean } {
+    if (!opts || typeof opts !== 'object') return {};
+    const checked = { ...(opts as { agentId?: unknown }) };
+    if (checked.agentId !== undefined) checked.agentId = this.checkAgentId(checked.agentId);
+    return checked as { agentId?: string };
+  }
+  /** The folder for a caller's id, or null with no path built. These readers keep answering "nothing" to an id they
+   *  do not know, because the app's own timers call them. */
+  private callerDir(id: unknown): string | null {
+    try { return this.agentDir(this.checkAgentId(id)); } catch { return null; }
+  }
   memory(id: string): string {
-    const p = join(this.agentDir(id), 'memory.md');
+    const dir = this.callerDir(id);
+    if (dir === null) return '';
+    const p = join(dir, 'memory.md');
     return existsSync(p) ? readFileSync(p, 'utf8') : '';
   }
   /** Whether an agent has recorded NON-TRIVIAL memory — i.e. has appended real
@@ -2167,7 +2187,9 @@ export class HiveManager {
    *  but most of the floor's history lives in a handful of them). Cheap: reads a
    *  small markdown file; never throws. Works for ANY id, active OR archived. */
   hasMemory(id: string): boolean {
-    const p = join(this.agentDir(id), 'memory.md');
+    const dir = this.callerDir(id);
+    if (dir === null) return false;
+    const p = join(dir, 'memory.md');
     if (!existsSync(p)) return false;
     try {
       // A fresh seed is ~90 chars (one header line + the prompt). Anything
@@ -2176,13 +2198,15 @@ export class HiveManager {
     } catch { return false; }
   }
   inbox(id: string): HiveMessage[] {
-    return this.listMessages(join(this.agentDir(id), 'inbox'));
+    const dir = this.callerDir(id);
+    return dir === null ? [] : this.listMessages(join(dir, 'inbox'));
   }
   /** Read an agent's OUTBOX (messages it has authored/sent). Symmetric with
    *  inbox(); the router drains live outbox files into recipients' inboxes and
    *  archives the original under outbox/.sent, so a sent message survives there. */
   outbox(id: string): HiveMessage[] {
-    return this.listMessages(join(this.agentDir(id), 'outbox'));
+    const dir = this.callerDir(id);
+    return dir === null ? [] : this.listMessages(join(dir, 'outbox'));
   }
 
   /**
@@ -2215,7 +2239,7 @@ export class HiveManager {
     let owners: string[];
     try {
       owners = onlyAgent
-        ? [onlyAgent]
+        ? (this.callerDir(onlyAgent) === null ? [] : [this.checkAgentId(onlyAgent)])
         : readdirSync(agentsDir).filter((id) => !id.startsWith('.') && existsSync(this.agentDir(id)));
     } catch {
       return [];
@@ -2266,7 +2290,9 @@ export class HiveManager {
   }
   /** Count undrained inbox messages for an agent (cheap — for the fleet snapshot). */
   inboxBacklog(id: string): number {
-    const dir = join(this.agentDir(id), 'inbox');
+    const owner = this.callerDir(id);
+    if (owner === null) return 0;
+    const dir = join(owner, 'inbox');
     if (!existsSync(dir)) return 0;
     try { return readdirSync(dir).filter((f) => f.endsWith('.json')).length; } catch { return 0; }
   }

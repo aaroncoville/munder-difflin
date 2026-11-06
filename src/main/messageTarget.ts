@@ -80,6 +80,27 @@ export function newRosterIdRefusal(agents: Record<string, unknown>, id: unknown,
 /** Provisioning refused an agent id, which unlike other provisioning errors must stop the spawn. */
 export class RefusedRosterId extends Error {}
 
+/** Why a caller's agent id gets no folder. The code is also in the message, because that is all that crosses IPC. */
+export class AgentIdError extends Error {
+  constructor(readonly code: 'invalid' | 'unknown' | 'reserved' | 'no-folder', id: unknown) {
+    super(`Agent id ${shortTarget(id)} refused (${code})`);
+    this.name = 'AgentIdError';
+  }
+}
+
+/**
+ * The roster id a caller's `id` means, whose folder is safe to open: a roster id, or a spelling of one, or a name for
+ * god. Throws AgentIdError for anything else, before any path is built from it.
+ */
+export function agentFolderId(agents: Record<string, unknown>, godId: string | null, agentsDir: string, id: unknown): string {
+  if (!isFolderName(id)) throw new AgentIdError('invalid', id);
+  if (isAppSender(id) || folderKey(id) === 'broadcast') throw new AgentIdError('reserved', id);
+  const roster = GOD_NAMES.has(id) && godId !== null ? godId : rosterIdFor(agents, id, agentsDir);
+  if (roster === null || !isRosterId(agents, roster)) throw new AgentIdError('unknown', id);
+  if (!hasExactFolder(agentsDir, roster)) throw new AgentIdError('no-folder', id);
+  return roster;
+}
+
 /** A refused target as it may appear in a log row or a notice: one line, and short. */
 export function shortTarget(to: unknown): string {
   return String(typeof to === 'string' ? JSON.stringify(to) : typeof to).slice(0, 64);
