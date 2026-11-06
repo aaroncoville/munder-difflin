@@ -15,6 +15,7 @@ const loadTs = require('./load-ts.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { isSafeMessageId, publishMessage } = loadTs('src/main/messageId.ts');
+const { CodexThreads, continuesThread } = loadTs('src/main/codexThread.ts');
 
 async function floor(t) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-message-id-'));
@@ -203,27 +204,154 @@ test('publishing gives up rather than overwrite when every minted id is taken', 
   assert.deepEqual(fs.readdirSync(dir), ['taken.json']);
 });
 
-test('a disk without hard links still publishes without overwriting', (t) => {
+test('a disk without hard links publishes without overwriting', (t) => {
   const dir = inboxDir(t);
   fs.writeFileSync(path.join(dir, 'given.json'), 'keep');
   t.mock.method(fs, 'linkSync', () => { throw Object.assign(new Error('no links'), { code: 'ENOTSUP' }); });
-
   const mints = ['free'];
+
   const id = publishMessage(dir, { id: 'given', body: 'b' }, () => mints.shift());
 
   assert.equal(id, 'free');
   assert.equal(fs.readFileSync(path.join(dir, 'given.json'), 'utf8'), 'keep');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'free.json'), 'utf8')).body, 'b');
+  assert.deepEqual(fs.readdirSync(dir).sort(), ['free.json', 'given.json'], 'no claim or temporary file is left');
+});
+
+test('without hard links no part-written file is ever visible for settling to archive', async (t) => {
+  const { hive, inbox, route } = await floor(t);
+  t.mock.method(fs, 'linkSync', () => { throw Object.assign(new Error('no links'), { code: 'ENOTSUP' }); });
+  const rename = fs.renameSync;
+  const seen = [];
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    if (to === path.join(inbox, 'late.json')) {
+      seen.push(fs.readdirSync(inbox).filter((f) => f.endsWith('.json')));
+      seen.push(hive.settleInbox('god-1').moved);
+      assert.equal(typeof JSON.parse(fs.readFileSync(from, 'utf8')).body, 'string', 'whole before it gets its name');
+    }
+    return rename(from, to);
+  });
+
+  route('late', 'whole');
+
+  assert.deepEqual(seen, [[], 0]);
+  assert.equal(hive.inbox('god-1')[0].body, 'whole');
+});
+
+test('a claim left by a stopped publisher does not lose the message', (t) => {
+  const dir = inboxDir(t);
+  fs.writeFileSync(path.join(dir, '.given.json.claim'), '');
+  t.mock.method(fs, 'linkSync', () => { throw Object.assign(new Error('no links'), { code: 'ENOTSUP' }); });
+
+  const id = publishMessage(dir, { id: 'given', body: 'b' }, () => 'free');
+
+  assert.equal(id, 'free');
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'free.json'), 'utf8')).body, 'b');
 });
 
 test('a failure other than a taken name is reported, and leaves no temporary file', (t) => {
   const dir = inboxDir(t);
   t.mock.method(fs, 'linkSync', () => { throw Object.assign(new Error('no links'), { code: 'ENOTSUP' }); });
-  t.mock.method(fs, 'copyFileSync', () => { throw Object.assign(new Error('disk full'), { code: 'ENOSPC' }); });
+  t.mock.method(fs, 'renameSync', () => { throw Object.assign(new Error('disk full'), { code: 'ENOSPC' }); });
 
   assert.throws(() => publishMessage(dir, { id: 'given' }, () => 'minted'), /disk full/);
 
   assert.deepEqual(fs.readdirSync(dir), []);
+});
+
+test('a message moved to .done between the check and publishing does not end up sharing its id', async (t) => {
+  const { hive, inbox, route, files } = await floor(t);
+  route('same', 'old');
+  const link = fs.linkSync;
+  let moved = false;
+  t.mock.method(fs, 'linkSync', (from, to) => {
+    if (!moved && to === path.join(inbox, 'same.json')) {
+      moved = true;
+      fs.renameSync(to, path.join(inbox, '.done', 'same.json'));
+    }
+    return link(from, to);
+  });
+
+  route('same', 'new');
+
+  assert.equal(moved, true);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(inbox, '.done', 'same.json'), 'utf8')).body, 'old');
+  assert.equal(files().includes('same.json'), false, 'the new message does not keep the id');
+  assert.deepEqual(hive.inbox('god-1').map((m) => m.body), ['new']);
+  assert.ok(files().includes(`${hive.inbox('god-1')[0].id}.json`));
+});
+
+test('a recipient filing the new message at once does not lose it or its id', (t) => {
+  const dir = inboxDir(t);
+  fs.mkdirSync(path.join(dir, '.done'));
+  const link = fs.linkSync;
+  t.mock.method(fs, 'linkSync', (from, to) => {
+    link(from, to);
+    fs.renameSync(to, path.join(dir, '.done', path.basename(to)));
+  });
+
+  const id = publishMessage(dir, { id: 'quick', body: 'b' }, () => 'minted');
+
+  assert.equal(id, 'quick');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, '.done', 'quick.json'), 'utf8')).body, 'b');
+});
+
+test('settling never replaces a message already filed under the same name', async (t) => {
+  const { hive, inbox } = await floor(t);
+  fs.writeFileSync(path.join(inbox, '.done', 'twin.json'), JSON.stringify({ id: 'twin', body: 'filed' }));
+  fs.writeFileSync(path.join(inbox, 'twin.json'), JSON.stringify({ id: 'twin', body: 'unread', act: 'request', from: 'worker-1', subject: 's' }));
+
+  const settled = hive.settleInbox('god-1');
+
+  assert.equal(settled.moved, 1);
+  assert.equal(settled.unanswered.length, 1);
+  const bodies = fs.readdirSync(path.join(inbox, '.done')).filter((f) => f.endsWith('.json'))
+    .map((f) => JSON.parse(fs.readFileSync(path.join(inbox, '.done', f), 'utf8')).body).sort();
+  assert.deepEqual(bodies, ['filed', 'unread']);
+});
+
+test('a reply to a replaced id stays in the sender\'s Codex thread', async (t) => {
+  const { hive, agents, inbox } = await floor(t);
+  await hive.ensureAgent({ id: 'codex-1', name: 'Coder', provider: 'codex', cwd: path.dirname(agents) });
+  const threads = new CodexThreads(() => null);
+  const seen = [];
+  hive.setRoutedObserver((msg, targets, replaced) => {
+    seen.push(replaced);
+    threads.observe(msg, targets, (id) => id === 'codex-1', () => true, () => [], replaced);
+  });
+  fs.writeFileSync(path.join(inbox, 'order.json'), JSON.stringify({ id: 'order', body: 'taken' }));
+
+  hive.send({ id: 'order', to: 'god', act: 'request', subject: 'do this', body: 'b' }, 'codex-1');
+
+  const stored = hive.inbox('god-1').find((m) => m.subject === 'do this');
+  assert.notEqual(stored.id, 'order');
+  assert.deepEqual(seen.at(-1), { 'god-1': stored.id });
+  const reply = { id: 'r', act: 'request', from: 'god-1', in_reply_to: stored.id };
+  assert.equal(continuesThread(reply, threads.get('codex-1')), true);
+});
+
+test('a reply to a replaced id stays in the recipient\'s Codex thread too', async (t) => {
+  const { hive, agents } = await floor(t);
+  await hive.ensureAgent({ id: 'codex-1', name: 'Coder', provider: 'codex', cwd: path.dirname(agents) });
+  const inbox = path.join(agents, 'codex-1', 'inbox');
+  const threads = new CodexThreads(() => null);
+  hive.setRoutedObserver((msg, targets, replaced) => {
+    threads.observe(msg, targets, (id) => id === 'codex-1', () => true, () => [], replaced);
+  });
+  fs.writeFileSync(path.join(inbox, '.done', 'note.json'), JSON.stringify({ id: 'note' }));
+
+  hive.send({ id: 'note', to: 'codex-1', act: 'inform', subject: 'fyi', body: 'b' }, 'worker-1');
+
+  const stored = hive.inbox('codex-1')[0];
+  assert.notEqual(stored.id, 'note');
+  assert.equal(threads.get('codex-1').ids.includes(stored.id), true);
+});
+
+test('the app hands replaced ids to the thread record', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.ts'), 'utf8')
+    .split('\n').filter((line) => !line.trim().startsWith('//')).join('\n');
+  assert.match(source, /setRoutedObserver\(\(msg, targets, replaced\) =>/);
+  assert.match(source, /codexThreads\.observe\(msg, targets,[^\n]*, replaced\)/);
 });
 
 const REJECTED = {

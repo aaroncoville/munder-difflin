@@ -28,7 +28,7 @@ import { homedir } from 'node:os';
 import { spawnSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
 import type { AgentUsageSample } from './usage';
-import { archiveOutboxFile, quarantineOutboxFile, reportOutboxFailure, type OutboxStage } from './outboxFailure';
+import { archiveOutboxFile, moveWithoutReplacing, quarantineOutboxFile, reportOutboxFailure, type OutboxStage } from './outboxFailure';
 import { COMMAND_GROUPS } from '../shared/claudeCommands';
 import { ensureCodexShortHome } from '../shared/codexRemote';
 import {
@@ -1148,7 +1148,7 @@ export class HiveManager {
       if (at > before) { out.kept++; continue; }
       // A rename that fails (EPERM on a file another process holds) leaves the
       // message where it was — still pending, exactly the pre-settle state.
-      try { renameSync(fp, join(done, f)); out.moved++; } catch { continue; }
+      try { moveWithoutReplacing(fp, done, (n) => (n === 0 ? f : `${n}-${f}`)); out.moved++; } catch { continue; }
       if (msg.act === 'request' || msg.act === 'query') {
         out.unanswered.push({
           id: msg.id ?? f, act: msg.act, from: msg.from ?? 'unknown', subject: msg.subject ?? '',
@@ -1703,7 +1703,10 @@ export class HiveManager {
     const inbox = join(this.agentDir(toId), 'inbox');
     if (!existsSync(inbox)) return false; // unknown recipient — the caller reports it
     const id = publishMessage(inbox, msg, () => `${stamp()}-${shortRand()}`);
-    if (id !== msg.id) this.appendLog({ kind: 'message-id-replaced', reason: 'duplicate', from: msg.from, to: toId, id });
+    if (id !== msg.id) {
+      this.appendLog({ kind: 'message-id-replaced', reason: 'duplicate', from: msg.from, to: toId, id });
+      this.replacedIds.set(msg.id, { ...this.replacedIds.get(msg.id), [toId]: id });
+    }
     return true;
   }
 
@@ -1835,14 +1838,18 @@ export class HiveManager {
     this.emitMessage(msg, targets);
     // Main-process observer (e.g. the closing-time controller watching for the
     // team's ACKs and the god's COMPLETE). Best-effort, never breaks routing.
-    try { this.routedObserver?.(msg, targets); } catch { /* observer error */ }
+    const replaced = this.replacedIds.get(msg.id) ?? {};
+    this.replacedIds.delete(msg.id);
+    try { this.routedObserver?.(msg, targets, replaced); } catch { /* observer error */ }
     return targets.length === 0 || delivered.length > 0 || bounced;
   }
 
   /** Observer invoked for EVERY routed message with its resolved targets.
    *  Used by main-process features that react to hive traffic (closing time). */
-  private routedObserver: ((msg: HiveMessage, targets: string[]) => void) | null = null;
-  setRoutedObserver(cb: ((msg: HiveMessage, targets: string[]) => void) | null): void {
+  private routedObserver: ((msg: HiveMessage, targets: string[], replaced: Record<string, string>) => void) | null = null;
+  /** Recipients of a message being routed whose copy got a new id, by the message's own id. */
+  private readonly replacedIds = new Map<string, Record<string, string>>();
+  setRoutedObserver(cb: ((msg: HiveMessage, targets: string[], replaced: Record<string, string>) => void) | null): void {
     this.routedObserver = cb;
   }
 

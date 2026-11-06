@@ -1,6 +1,6 @@
-import { copyFileSync, constants, existsSync, linkSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, linkSync, openSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 // Letters, digits, dot, underscore and hyphen, starting with a letter or digit: no separators, no
 // traversal, nothing a directory listing would hide. 128 leaves room for ".json" and a temp suffix.
@@ -15,39 +15,66 @@ export function isSafeMessageId(id: unknown): id is string {
   return typeof id === 'string' && SAFE_ID.test(id) && !RESERVED_ON_WINDOWS.test(id);
 }
 
-/**
- * Makes `target` appear with `source`'s content, or throws EEXIST if `target` exists. A hard link does that atomically
- * with the whole content in place. A disk without hard links gets an exclusive copy, which is equally safe from
- * overwriting but can be seen part-written, and readers already skip a file they cannot parse.
- */
+/** Publishes without a hard link: a claim all publishers honour, then a rename, so the name only ever shows a whole file. */
+function publishByClaim(source: string, target: string): void {
+  const claim = join(dirname(target), `.${basename(target)}.claim`);
+  closeSync(openSync(claim, 'wx'));
+  try {
+    if (existsSync(target)) throw Object.assign(new Error('name taken'), { code: 'EEXIST' });
+    renameSync(source, target);
+  } finally {
+    rmSync(claim, { force: true });
+  }
+}
+
+/** Makes `target` appear with `source`'s whole content, or throws EEXIST. A hard link does that atomically. */
 function publishWithoutReplacing(source: string, target: string): void {
   try {
     linkSync(source, target);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw error;
-    copyFileSync(source, target, constants.COPYFILE_EXCL);
+    publishByClaim(source, target);
+  }
+}
+
+function inodeOf(path: string): bigint | null {
+  try {
+    return statSync(path, { bigint: true }).ino;
+  } catch {
+    return null;
   }
 }
 
 /**
- * Writes `msg` into `inbox` as `<id>.json` and returns the id used. It keeps `msg.id` if that is safe and names no message
- * in `inbox` or `inbox/.done`; otherwise, or if the name is taken by the time it publishes, it uses `mint()`. Nothing
- * already in the inbox is ever replaced, and the stored id always names its own file.
+ * Writes `msg` into `inbox` as `<id>.json` and returns the id used. It keeps `msg.id` if that is safe and free;
+ * otherwise, or if the name is taken by the time it publishes, it uses `mint()`. Nothing in the inbox is ever replaced,
+ * and the stored id always names its own file.
+ *
+ * An id must stay unique across `inbox` and `inbox/.done`, because filing a message there with a plain move replaces
+ * any twin. A message can move to `.done` at any moment, so `.done` is checked after publishing: if publishing
+ * succeeded, an earlier message of that name had already left the inbox, and is found there.
  */
 export function publishMessage<T extends object>(inbox: string, msg: T & { id?: unknown }, mint: () => string): string {
-  const unused = (id: string): boolean => !existsSync(join(inbox, '.done', `${id}.json`));
-  let id = isSafeMessageId(msg.id) && unused(msg.id) ? msg.id : mint();
+  const filed = (id: string): string => join(inbox, '.done', `${id}.json`);
+  let id = isSafeMessageId(msg.id) && !existsSync(filed(msg.id)) ? msg.id : mint();
   const temp = join(inbox, `.publish-${randomBytes(6).toString('hex')}.tmp`);
   try {
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-      writeFileSync(temp, JSON.stringify({ ...msg, id }, null, 2), { encoding: 'utf8', flag: 'w' });
+      writeFileSync(temp, JSON.stringify({ ...msg, id }, null, 2), 'utf8');
+      const own = inodeOf(temp);
+      const target = join(inbox, `${id}.json`);
       try {
-        publishWithoutReplacing(temp, join(inbox, `${id}.json`));
-        return id;
+        publishWithoutReplacing(temp, target);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
         id = mint();
+        continue;
       }
+      const twin = inodeOf(filed(id));
+      if (twin === null || twin === own) return id;
+      // Another message holds this id in .done. Take ours back, unless the recipient has already filed it.
+      if (inodeOf(target) === own) rmSync(target, { force: true });
+      id = mint();
     }
   } finally {
     rmSync(temp, { force: true });
