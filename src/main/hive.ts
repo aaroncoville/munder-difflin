@@ -220,6 +220,7 @@ export interface SpawnInjection {
 }
 
 const HOP_CAP = 12;
+const MAX_HELD_SENDS = 1000;
 /** How long an unparseable outbox file is given to be finished by its sender
  *  before the router drops it. */
 const MALFORMED_RETRY_MS = 2_000;
@@ -1727,6 +1728,40 @@ export class HiveManager {
     return true;
   }
 
+  private routeSend(msg: HiveMessage): void {
+    if (!this.routeMessage(msg) && !isKnownTarget(this.routingRegistry().agents, msg.to, this.agentsDir())) this.reportRefusedSend(msg);
+    this.commit(`hive: msg ${msg.from}→${msg.to} (${msg.act})`);
+  }
+
+  /** Keep a send until a routing pass can read the registry. These are held in memory, not on disk: agents can write
+   *  under the hive root, so a file read back here could carry any sender. So they do not survive the app exiting while
+   *  the registry is still unreadable. The log row records that each one is waiting, without its body. */
+  private holdSend(msg: HiveMessage): void {
+    if (this.heldSends.length >= MAX_HELD_SENDS) {
+      this.appendLog({ kind: 'send-refused', id: msg.id, from: shortTarget(msg.from), to: shortTarget(msg.to) });
+      throw new RegistryUnreadable('The agent registry could not be read and too many messages are already waiting, so this one was not sent.');
+    }
+    this.heldSends.push(msg);
+    this.appendLog({ kind: 'send-waiting', id: msg.id, from: shortTarget(msg.from), to: shortTarget(msg.to) });
+  }
+
+  /** In order, removing each only once it has gone. One that throws stays first in line for the next pass, and the
+   *  outboxes still get this pass. */
+  private releaseHeldSends(): void {
+    while (this.heldSends.length > 0) {
+      const msg = this.heldSends[0];
+      try {
+        this.routeSend(msg);
+      } catch {
+        this.appendLog({ kind: 'send-failed', id: msg.id, from: shortTarget(msg.from), to: shortTarget(msg.to) });
+        return;
+      }
+      this.heldSends.shift();
+    }
+  }
+
+  private readonly heldSends: HiveMessage[] = [];
+
   /** One harness bounce of `msg` to god: bump the hop counter, rewrite the
    *  subject, and log the drop once the counter passes HOP_CAP. Agents can't
    *  move hops past the cap themselves (normalize clamps what they wrote), so
@@ -1746,8 +1781,12 @@ export class HiveManager {
   /** Inject a message directly (used by the orchestrator / UI / tests). */
   send(partial: Partial<HiveMessage>, from = 'system'): HiveMessage {
     const msg = this.normalize(partial, from);
-    if (!this.routeMessage(msg) && !isKnownTarget(this.routingRegistry().agents, msg.to, this.agentsDir())) this.reportRefusedSend(msg);
-    this.commit(`hive: msg ${msg.from}→${msg.to} (${msg.act})`);
+    // With no roster to judge by, routing would refuse this and could not deliver the notice either, losing the body.
+    if (this.root() && !this.readableRegistry()) {
+      this.holdSend(msg);
+      return msg;
+    }
+    this.routeSend(msg);
     return msg;
   }
 
@@ -2035,6 +2074,7 @@ export class HiveManager {
     this.registryUnreadable = false;
     this.passRegistry = roster;
     try {
+      this.releaseHeldSends();
       return this.drainOutboxes(agentsDir, roster, now);
     } finally {
       this.passRegistry = null;

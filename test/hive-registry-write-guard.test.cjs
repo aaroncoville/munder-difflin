@@ -111,3 +111,122 @@ for (const [label, write] of [
     assert.equal(fs.readFileSync(f.file, 'utf8'), '{"agents":');
   });
 }
+
+// ---- send ----
+
+const message = (to, body = 'the unique body') => ({ to, act: 'inform', subject: 'subject', body });
+const everywhere = (f) => fs.readdirSync(f.agents).flatMap((id) => f.hive.inbox(id)).map((m) => m.body);
+
+test('a send with an unreadable registry waits, and its body arrives once a pass can read it', async (t) => {
+  const f = await setup(t);
+  fs.writeFileSync(f.file, '{');
+
+  const sent = f.hive.send(message('worker-2'), 'worker-1');
+
+  assert.equal(sent.body, 'the unique body');
+  assert.equal(f.hive.routeOnce(), 0, 'nothing to judge it by yet');
+  f.repair();
+  assert.deepEqual(everywhere(f), [], 'not delivered before a pass');
+  f.hive.routeOnce();
+  assert.deepEqual(f.hive.inbox('worker-2').map((m) => [m.id, m.from, m.body]), [[sent.id, 'worker-1', 'the unique body']]);
+  assert.equal(rows(f.hive, 'send-waiting').length, 1);
+  f.hive.routeOnce();
+  assert.equal(f.hive.inbox('worker-2').length, 1, 'delivered once');
+});
+
+test('the log says a send is waiting without holding its body', async (t) => {
+  const f = await setup(t);
+  fs.writeFileSync(f.file, '{');
+  f.hive.send(message('worker-2', 'SECRET-BODY'), 'worker-1');
+  const [row] = rows(f.hive, 'send-waiting');
+  assert.equal(row.from, '"worker-1"');
+  assert.equal(JSON.stringify(row).includes('SECRET-BODY'), false);
+});
+
+test('waiting sends go out in order', async (t) => {
+  const f = await setup(t);
+  fs.writeFileSync(f.file, '{');
+  for (const n of [1, 2, 3]) f.hive.send({ ...message('worker-2', `body ${n}`), id: `m-${n}`, created_at: `2026-01-01T00:00:0${n}.000Z` }, 'worker-1');
+  f.repair();
+  const order = [];
+  f.hive.setRoutedObserver((m) => order.push(m.id));
+  f.hive.routeOnce();
+  assert.deepEqual(order, ['m-1', 'm-2', 'm-3']);
+});
+
+test('a waiting send to a target that turns out unknown still reaches its sender as a notice, with the body', async (t) => {
+  const f = await setup(t);
+  fs.writeFileSync(f.file, '{');
+  f.hive.send(message('nobody'), 'worker-1');
+  f.repair();
+  f.hive.routeOnce();
+  const [notice] = f.hive.inbox('worker-1');
+  assert.match(notice.subject, /not delivered/);
+  assert.match(notice.body, /the unique body/);
+});
+
+test('a send from an app sender, which has no folder, also survives', async (t) => {
+  const f = await setup(t);
+  fs.writeFileSync(f.file, '{');
+  f.hive.send(message('god'), 'scheduler');
+  f.repair();
+  f.hive.routeOnce();
+  assert.deepEqual(f.hive.inbox('god-1').map((m) => [m.from, m.body]), [['scheduler', 'the unique body']]);
+});
+
+test('a waiting send cannot be injected: nothing is read from disk to deliver it', async (t) => {
+  const f = await setup(t);
+  fs.writeFileSync(f.file, '{');
+  f.hive.send(message('worker-2'), 'worker-1');
+  const before = fs.readdirSync(f.hive.root()).sort();
+  f.repair();
+  assert.deepEqual(fs.readdirSync(f.hive.root()).sort(), before);
+  assert.equal(fs.readdirSync(f.hive.root()).some((n) => /wait|pending|spool/i.test(n)), false, 'a folder here is writable by agents, who could then forge a sender');
+});
+
+test('a waiting send that throws stays waiting, and does not hold up other mail or the next pass', async (t) => {
+  const f = await setup(t);
+  fs.writeFileSync(f.file, '{');
+  f.hive.send({ ...message('worker-2', 'held body'), id: 'held-1' }, 'worker-1');
+  f.hive.send({ ...message('worker-2', 'second held body'), id: 'held-2' }, 'worker-1');
+  f.repair();
+  fs.writeFileSync(path.join(f.agents, 'worker-1', 'outbox', 'x.json'), JSON.stringify(message('worker-2', 'outbox body')));
+  const route = f.hive.routeMessage;
+  let failures = 1;
+  f.hive.routeMessage = function (msg) {
+    if (msg.id === 'held-1' && failures-- > 0) throw new Error('disk full');
+    return route.call(this, msg);
+  };
+
+  assert.equal(f.hive.routeOnce(), 1, 'outbox mail is not held up');
+
+  assert.deepEqual(f.hive.inbox('worker-2').map((m) => m.body), ['outbox body']);
+  assert.deepEqual(rows(f.hive, 'send-failed').map((r) => r.id), ['held-1']);
+  f.hive.routeOnce();
+  assert.deepEqual(f.hive.inbox('worker-2').map((m) => m.body).sort(), ['held body', 'outbox body', 'second held body'], 'nothing lost, nothing repeated');
+});
+
+test('past its limit a send fails visibly rather than growing forever or vanishing', async (t) => {
+  const f = await setup(t);
+  fs.writeFileSync(f.file, '{');
+  const LIMIT = 1000;
+  for (let n = 0; n < LIMIT; n++) f.hive.send(message('worker-2', `body ${n}`), 'worker-1');
+  assert.throws(() => f.hive.send(message('worker-2', 'one too many'), 'worker-1'), RegistryUnreadable);
+  assert.equal(rows(f.hive, 'send-refused').length, 1);
+  f.repair();
+  f.hive.routeOnce();
+  assert.equal(f.hive.inbox('worker-2').length, LIMIT, 'none of the waiting ones were lost');
+});
+
+test('with a readable registry a send goes straight out, as ever', async (t) => {
+  const f = await setup(t);
+  f.hive.send(message('worker-2'), 'worker-1');
+  assert.deepEqual(f.hive.inbox('worker-2').map((m) => m.body), ['the unique body']);
+  assert.deepEqual(rows(f.hive, 'send-waiting'), []);
+});
+
+test('a hive with no home still takes a send without throwing', () => {
+  const hive = new HiveManager(() => null);
+  // Nothing can ever release a send here, so nothing may be held: the limit would make the next one throw.
+  for (let n = 0; n < 1001; n++) assert.doesNotThrow(() => hive.send(message('worker-2'), 'worker-1'));
+});
