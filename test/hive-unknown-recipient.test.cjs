@@ -34,7 +34,7 @@ async function floor(t) {
 
 const entries = (hive, kind) => hive.logTail(500).filter((e) => e.kind === kind);
 
-test('mail to an id with no inbox bounces to god and is logged as a drop', async (t) => {
+test('mail to an id not on the roster is refused, logged as a drop, and its sender is told', async (t) => {
   const { hive } = await floor(t);
 
   // "jim" is the display name; the contract is the agent id, so nothing resolves.
@@ -42,16 +42,16 @@ test('mail to an id with no inbox bounces to god and is logged as a drop', async
 
   assert.equal(hive.inbox('jim-1').length, 0, 'nothing should reach the real agent');
 
-  const dropped = entries(hive, 'drop').filter((e) => e.reason === 'no-inbox');
+  const dropped = entries(hive, 'drop').filter((e) => e.reason === 'unknown-recipient');
   assert.equal(dropped.length, 1);
-  assert.equal(dropped[0].to, 'jim');
+  assert.equal(dropped[0].to, '"jim"');
   assert.equal(dropped[0].from, 'god-1');
 
-  const bounced = hive.inbox('god-1');
-  assert.equal(bounced.length, 1);
-  assert.match(bounced[0].subject, /^\[undeliverable — no agent "jim"/);
-  assert.match(bounced[0].subject, /T15 — start the build$/);
-  assert.equal(bounced[0].body, 'go', 'the bounce carries the original body');
+  const notices = hive.inbox('god-1');
+  assert.equal(notices.length, 1);
+  assert.match(notices[0].subject, /^\[not delivered\] T15 — start the build$/);
+  assert.match(notices[0].body, /"jim"/);
+  assert.match(notices[0].body, /go$/, 'the notice carries the original body');
 });
 
 test('the message log records delivered targets, not intent', async (t) => {

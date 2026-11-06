@@ -45,6 +45,7 @@ import { preferredAgentRole } from '../shared/agentRole';
 import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde } from './fs';
 import { refreshMineIgnoresOnce } from './hiveMineIgnore';
+import { hasExactFolder, isAppSender, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, rosterIdFor, shortTarget } from './messageTarget';
 import { codexTrustEntry } from '../shared/codexTrust';
 import { withCodexWritableRoots } from '../shared/codexWritableRoots';
 import { resolveGodName } from '../shared/godIdentity';
@@ -777,6 +778,8 @@ export class HiveManager {
       extraWritableDirs?: string[];
     } = {}
   ): Promise<SpawnInjection> {
+    const refusal = newRosterIdRefusal(this.registry().agents, meta.id, meta.isGod === true);
+    if (refusal) throw new RefusedRosterId(`Agent id ${shortTarget(meta.id)}: ${refusal}`);
     const root = this.root();
     if (!root) return { args: [], env: {} };
     this.ensureHive();
@@ -1697,10 +1700,16 @@ export class HiveManager {
     };
   }
 
+  private agentsDir(): string {
+    return join(this.root() ?? '', 'agents');
+  }
+
   /** Atomically deliver a message into a recipient agent's inbox.
    *  Returns false when the recipient has no inbox, so the caller can bounce and
    *  log the drop rather than let the message vanish. */
   private deliver(msg: HiveMessage, toId: string): boolean {
+    if (!isRosterId(this.registry().agents, toId)) return false; // never build a path from anything else
+    if (!hasExactFolder(join(this.root()!, 'agents'), toId)) return false; // nor open a near match's folder
     const inbox = join(this.agentDir(toId), 'inbox');
     if (!existsSync(inbox)) return false; // unknown recipient — the caller reports it
     const id = publishMessage(inbox, msg, () => `${stamp()}-${shortRand()}`);
@@ -1730,7 +1739,7 @@ export class HiveManager {
   /** Inject a message directly (used by the orchestrator / UI / tests). */
   send(partial: Partial<HiveMessage>, from = 'system'): HiveMessage {
     const msg = this.normalize(partial, from);
-    this.routeMessage(msg);
+    if (!this.routeMessage(msg) && !isKnownTarget(this.registry().agents, msg.to, this.agentsDir())) this.reportRefusedSend(msg);
     this.commit(`hive: msg ${msg.from}→${msg.to} (${msg.act})`);
     return msg;
   }
@@ -1740,17 +1749,21 @@ export class HiveManager {
   private routeMessage(msg: HiveMessage): boolean {
     const reg = this.registry();
     const godId = reg.godId ?? 'god';
+    if (!isKnownTarget(reg.agents, msg.to, this.agentsDir())) {
+      this.appendLog({ kind: 'drop', reason: 'unknown-recipient', from: msg.from, to: shortTarget(msg.to), id: msg.id });
+      return false;
+    }
     // The hive has no separate human-approval queue — approvals are native to
     // each agent's Claude Code session (and approvable remotely). A message aimed
     // at "human" is handled by the god/orchestrator, the human's proxy here.
-    const resolveTo = (to: string): string => (to === 'human' || to === 'god' ? godId : to);
+    const resolveTo = (to: string): string => (to === 'human' || to === 'god' ? godId : rosterIdFor(reg.agents, to, this.agentsDir()) ?? to);
     const targets = msg.to === 'broadcast'
       // The roster for fan-out is the ACTIVE registry: skip the send-only prep
       // assistant and any archived agent (closed tab). Hookless providers are
       // NOT skipped — the per-target path below already serves them a terminal
       // work order, so excluding them here only made a broadcast invisible to an
       // agent that direct mail reaches fine. See selectBroadcastTargets.
-      ? selectBroadcastTargets(reg.agents, msg.from)
+      ? selectBroadcastTargets(reg.agents, msg.from).filter((t) => !isAppSender(t))
       // Never deliver to self — guards a god → "human" message looping back to god.
       : [resolveTo(msg.to)].filter((t) => t !== msg.from);
     // Targets that actually took delivery. The log below reports these instead of
@@ -1765,6 +1778,11 @@ export class HiveManager {
     const bounce = (subject: string): void => { if (this.bounceToGod(msg, godId, subject)) bounced = true; };
     try {
     for (const t of targets) {
+      // Before every channel, because a terminal handoff hands over the whole message without reaching deliver().
+      if (isAppSender(t)) {
+        bounce(`[reply to "${t}", one of the app's own names, which has no inbox] ${msg.subject}`);
+        continue;
+      }
       // The send-only prep assistant must never be a delivery target: it doesn't
       // drain an inbox, so direct mail to it would rot unread (observed live: a
       // task brief plus the follow-up reprimand about the unread inbox, both
@@ -1942,13 +1960,48 @@ export class HiveManager {
     }, 'router'), id);
   }
 
+  /** A send() has no file to set aside, so the content goes with the notice. Mail from the app's own senders, which
+   *  have no inbox, goes to god, so a mistyped target still surfaces to someone. */
+  private reportRefusedSend(msg: HiveMessage): void {
+    const reg = this.registry();
+    const to = isRosterId(reg.agents, msg.from) ? msg.from : (reg.godId ?? 'god');
+    this.routeMessage(this.normalize({
+      to,
+      act: 'inform',
+      requires_reply: false,
+      hops: msg.hops,
+      subject: `[not delivered] ${msg.subject}`,
+      body: `A message from ${msg.from} was not delivered: its recipient ${shortTarget(msg.to)} is not an agent on the roster or a known name.\n\n${msg.body}`
+    }, 'system'));
+  }
+
   /** See reportOutboxFailure. The notice carries `hops`, so the relay limit still bounds a sender that bounces. */
   private outboxFailed(stage: OutboxStage, outbox: string, f: string, id: string, error: unknown, hops = 0): void {
     reportOutboxFailure(stage, f, id, error, {
       log: (row) => this.appendLog(row),
       quarantine: () => quarantineOutboxFile(outbox, f),
-      notify: (subject, body) => { this.routeMessage(this.normalize({ to: id, act: 'inform', requires_reply: false, hops, subject, body }, 'system')); }
+      notify: (subject, body) => {
+        // Only an exact roster id is told directly: a near match would hand this folder's notice to another agent.
+        const reg = this.registry();
+        const own = isRosterId(reg.agents, id);
+        this.routeMessage(this.normalize({
+          to: own ? id : reg.godId ?? 'god', act: 'inform', requires_reply: false, hops, subject,
+          body: own ? body : `From the folder ${shortTarget(id)}, which is not an agent on the roster. ${body}`
+        }, 'system'));
+      }
     });
+  }
+
+  private registryUnreadable = false;
+
+  private readableRegistry(): Registry | null {
+    try {
+      const parsed = JSON.parse(readFileSync(join(this.root()!, 'registry.json'), 'utf8')) as Partial<Registry> | null;
+      const agents = parsed?.agents;
+      return agents && typeof agents === 'object' && !Array.isArray(agents) ? parsed as Registry : null;
+    } catch {
+      return null;
+    }
   }
 
   routeOnce(now = Date.now()): number {
@@ -1956,6 +2009,15 @@ export class HiveManager {
     if (!root) return 0;
     const agentsDir = join(root, 'agents');
     if (!existsSync(agentsDir)) return 0;
+    // Who may send cannot be judged without a roster, so an unreadable one leaves all mail where it is until a later
+    // pass can read it. registry() cannot serve here: it reads a failure as an empty roster, which refuses everyone.
+    const roster = this.readableRegistry();
+    if (!roster) {
+      if (!this.registryUnreadable) this.appendLog({ kind: 'outbox-registry-unreadable' });
+      this.registryUnreadable = true;
+      return 0;
+    }
+    this.registryUnreadable = false;
     // A sender may remove or rename a half-written file itself; forget it, so a
     // later file of the same name starts its own retry window.
     for (const p of this.malformedSince.keys()) if (!existsSync(p)) this.malformedSince.delete(p);
@@ -1965,6 +2027,11 @@ export class HiveManager {
       if (!existsSync(outbox)) continue;
       for (const f of readdirSync(outbox)) {
         if (!f.endsWith('.json')) continue;
+        // The sender comes from this folder's name, read from disk, so an exact roster id has its exact folder.
+        if (!isRosterId(roster.agents, id)) {
+          this.outboxFailed('sender', outbox, f, id, undefined);
+          continue;
+        }
         const full = join(outbox, f);
         let stage: OutboxStage = 'read';
         let hops = 0;
@@ -1998,7 +2065,10 @@ export class HiveManager {
           msg.from = id; // sender is authoritative — the owning directory
           hops = msg.hops;
           stage = 'route';
-          if (!this.routeMessage(msg)) { this.outboxFailed('not-delivered', outbox, f, id, undefined, hops); continue; }
+          if (!this.routeMessage(msg)) {
+            this.outboxFailed(isKnownTarget(this.registry().agents, msg.to, this.agentsDir()) ? 'not-delivered' : 'recipient', outbox, f, id, undefined, hops);
+            continue;
+          }
           stage = 'archive';
           archiveOutboxFile(outbox, f); // archive, don't reprocess
           routed++;

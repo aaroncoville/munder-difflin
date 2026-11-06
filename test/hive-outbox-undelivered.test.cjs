@@ -78,14 +78,16 @@ test('a bounce to god counts as landed: filed as sent, and no failure notice', a
   assert.equal(hive.inbox('worker-1').length, 0);
 });
 
-test('mail to an unknown id bounces to god and counts as landed', async (t) => {
+test('mail to an unknown id is not filed as sent, and its sender is told why', async (t) => {
   const { hive, write, sent } = await floor(t);
   write('worker-1', 'unknown.json', { to: 'nobody', act: 'inform', subject: 's', body: 'b' });
 
-  assert.equal(hive.routeOnce(), 1);
+  assert.equal(hive.routeOnce(), 0);
 
-  assert.equal(sent('worker-1', 'unknown.json'), true);
-  assert.equal(hive.inbox('worker-1').length, 0);
+  assert.equal(sent('worker-1', 'unknown.json'), false);
+  assert.equal(sent('worker-1', 'bad-unknown.json'), true);
+  assert.match(hive.inbox('worker-1')[0].body, /not an agent on the roster/);
+  assert.equal(hive.inbox('god-1').length, 0);
 });
 
 test('a message from god to the human has no delivery target and is not a failure', async (t) => {
