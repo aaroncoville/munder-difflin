@@ -5048,6 +5048,16 @@ async function processSpawnRequest(filePath: string): Promise<void> {
     hive.send({ to: workerId, conversation: `worker-${reqId}`, act: 'request', subject: meta.name, body: `${prefix}${objective}${suffix}` }, 'god');
   } catch (e) {
     console.error('[worker] dispatch send failed:', e);
+    // Spawn success includes delivering the objective: without it this worker would hold a slot, with no task, until the
+    // idle reaper. The code goes in the log because the notice below cannot reach god if the registry is the problem.
+    const code = e instanceof RegistryUnreadable ? e.code : 'send-failed';
+    hive.appendLog({ kind: 'worker-dispatch-failed', workerId, request: basename(filePath), code });
+    const rec = liveWorkers.get(workerId);
+    if (rec) rec.releasing = true;
+    ptyManager.kill(workerId);
+    teardownPty(workerId);
+    fail(`objective not delivered (${code})`);
+    return;
   }
 
   console.log(`[worker] spawned ${workerId} (cwd=${cwd}, base=${baseBranch}${slack ? ', slack' : ''})`);
