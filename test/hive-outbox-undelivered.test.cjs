@@ -275,15 +275,17 @@ function loadWorkerDoneAt(hiveRoot) {
 
 test('the worker reader finds the newest done under a suffixed name', async (t) => {
   const { hive, agent, write } = await floor(t);
-  const first = '2026-01-01T00:00:00.000Z';
-  const second = '2026-01-02T00:00:00.000Z';
-  write('worker-1', 'done.json', { to: 'god', act: 'done', subject: 'a', body: 'b', created_at: first });
+  const sentDir = path.join(agent('worker-1'), 'outbox', '.sent');
+  write('worker-1', 'done.json', { to: 'god', act: 'done', subject: 'a', body: 'b' });
   hive.routeOnce();
-  write('worker-1', 'done.json', { to: 'god', act: 'done', subject: 'a', body: 'c', created_at: second });
+  write('worker-1', 'done.json', { to: 'god', act: 'done', subject: 'a', body: 'c' });
   hive.routeOnce();
+  // The reader goes by when each file was written.
+  fs.utimesSync(path.join(sentDir, 'done.json'), 1_000, 1_000);
+  fs.utimesSync(path.join(sentDir, '1-done.json'), 2_000, 2_000);
 
   const workerDoneAt = loadWorkerDoneAt(path.dirname(path.dirname(agent('worker-1'))));
-  assert.equal(workerDoneAt('worker-1', 0), Date.parse(second));
+  assert.equal(workerDoneAt('worker-1', 0), 2_000_000);
 });
 
 test('a directory at the archive name does not stop the file being archived', async (t) => {

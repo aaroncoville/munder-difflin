@@ -131,7 +131,8 @@ export class CodexThreads {
     targets: string[],
     isWorker: (id: string) => boolean,
     isAgent: (id: string) => boolean,
-    inboxOf: (id: string) => ThreadMessage[]
+    inboxOf: (id: string) => ThreadMessage[],
+    replaced: Record<string, string> = {}
   ): void {
     if (!msg.id) return;
     if (msg.from && isWorker(msg.from)) {
@@ -147,6 +148,11 @@ export class CodexThreads {
       // worker takes this request in the thread it is in.
       else if (thread.fresh || inboxOf(to).some((m) => thread.ids.includes(m.id))) this.join(to, [msg.id], true);
       // Otherwise it waits in the inbox for the new thread it opens.
+    }
+    // A copy delivered under a new id is answered by that id.
+    for (const [to, id] of Object.entries(replaced)) {
+      if (msg.from && isWorker(msg.from)) this.join(msg.from, [id], false);
+      if (isWorker(to) && this.get(to).ids.includes(msg.id)) this.join(to, [id], false);
     }
   }
 

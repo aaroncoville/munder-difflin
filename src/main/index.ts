@@ -3993,10 +3993,10 @@ const closingTime = new ClosingTimeController(
   // at their next hook boundary instead of waiting for a Stop.
   control
 );
-hive.setRoutedObserver((msg, targets) => {
+hive.setRoutedObserver((msg, targets, replaced) => {
   closingTime.onRouted(msg, targets);
   const agents = hive.registry().agents;
-  codexThreads.observe(msg, targets, (id) => agents[id]?.provider === 'codex', (id) => !!agents[id], (id) => hive.inbox(id));
+  codexThreads.observe(msg, targets, (id) => agents[id]?.provider === 'codex', (id) => !!agents[id], (id) => hive.inbox(id), replaced);
 });
 ipcMain.handle('app:startClosingTime', () => closingTime.start());
 ipcMain.handle('app:cancelClosingTime', () => closingTime.cancel());

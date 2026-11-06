@@ -27,10 +27,14 @@ const OUTCOME: Record<OutboxStage, string> = {
  * exclusive create before the rename replaces the claim. Returns the name used.
  */
 function moveToSent(outbox: string, file: string, nameFor: (n: number) => string): string {
-  const source = join(outbox, file);
+  return moveWithoutReplacing(join(outbox, file), join(outbox, '.sent'), nameFor);
+}
+
+/** Moves `source` into `folder` under the first free name `nameFor` gives, claiming it first. Returns the name used. */
+export function moveWithoutReplacing(source: string, folder: string, nameFor: (n: number) => string): string {
   for (let n = 0; n < 10_000; n++) {
     const name = nameFor(n);
-    const target = join(outbox, '.sent', name);
+    const target = join(folder, name);
     try {
       closeSync(openSync(target, 'wx'));
     } catch (error) {
@@ -47,7 +51,7 @@ function moveToSent(outbox: string, file: string, nameFor: (n: number) => string
     }
     return name;
   }
-  throw new Error('no free name under .sent');
+  throw new Error(`no free name in ${folder}`);
 }
 
 /** Files a delivered message as `<file>`, or `<n>-<file>` when that is taken. Returns the name used. */

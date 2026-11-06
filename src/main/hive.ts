@@ -28,7 +28,7 @@ import { homedir } from 'node:os';
 import { spawnSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
 import type { AgentUsageSample } from './usage';
-import { archiveOutboxFile, quarantineOutboxFile, reportOutboxFailure, type OutboxStage } from './outboxFailure';
+import { archiveOutboxFile, moveWithoutReplacing, quarantineOutboxFile, reportOutboxFailure, type OutboxStage } from './outboxFailure';
 import { COMMAND_GROUPS } from '../shared/claudeCommands';
 import { ensureCodexShortHome } from '../shared/codexRemote';
 import {
@@ -49,6 +49,7 @@ import { codexTrustEntry } from '../shared/codexTrust';
 import { withCodexWritableRoots } from '../shared/codexWritableRoots';
 import { resolveGodName } from '../shared/godIdentity';
 import { appendSession } from './codexActivity';
+import { isSafeMessageId, publishMessage, sweepInboxLeftovers } from './messageId';
 
 /** The subset of HarnessConfig the hive consumes for the default-MCP merge.
  *  Kept as a local shape so hive.ts never imports the foundation-owned config
@@ -711,7 +712,7 @@ export class HiveManager {
     // …and the PATH-visible `node` fallback for the agent's OWN subprocesses.
     this.writeRuntimeShims();
 
-    refreshMineIgnoresOnce(this, root, ensureMineIgnore);
+    refreshMineIgnoresOnce(this, root, (dir) => { ensureMineIgnore(dir); sweepInboxLeftovers(join(dir, 'inbox')); });
     if (!this._gitCommitsDisabled && !existsSync(join(root, '.git'))) {
       this.git(['init', '-q'], root);
       this.commit('hive: init');
@@ -1147,7 +1148,7 @@ export class HiveManager {
       if (at > before) { out.kept++; continue; }
       // A rename that fails (EPERM on a file another process holds) leaves the
       // message where it was — still pending, exactly the pre-settle state.
-      try { renameSync(fp, join(done, f)); out.moved++; } catch { continue; }
+      try { moveWithoutReplacing(fp, done, (n) => (n === 0 ? f : `${n}-${f}`)); out.moved++; } catch { continue; }
       if (msg.act === 'request' || msg.act === 'query') {
         out.unanswered.push({
           id: msg.id ?? f, act: msg.act, from: msg.from ?? 'unknown', subject: msg.subject ?? '',
@@ -1671,8 +1672,9 @@ export class HiveManager {
   /** Normalize a partial message into a full HiveMessage. */
   private normalize(partial: Partial<HiveMessage>, from: string): HiveMessage {
     const act = (partial.act ?? 'inform') as MessageAct;
+    if (partial.id != null && !isSafeMessageId(partial.id)) this.appendLog({ kind: 'message-id-replaced', reason: 'invalid', from });
     return {
-      id: partial.id ?? `${stamp()}-${shortRand()}`,
+      id: isSafeMessageId(partial.id) ? partial.id : `${stamp()}-${shortRand()}`,
       conversation: partial.conversation ?? `conv-${shortRand()}`,
       in_reply_to: partial.in_reply_to ?? null,
       from: partial.from ?? from,
@@ -1700,7 +1702,11 @@ export class HiveManager {
   private deliver(msg: HiveMessage, toId: string): boolean {
     const inbox = join(this.agentDir(toId), 'inbox');
     if (!existsSync(inbox)) return false; // unknown recipient — the caller reports it
-    this.atomicWriteJson(join(inbox, `${msg.id}.json`), msg);
+    const id = publishMessage(inbox, msg, () => `${stamp()}-${shortRand()}`);
+    if (id !== msg.id) {
+      this.appendLog({ kind: 'message-id-replaced', reason: 'duplicate', from: msg.from, to: toId, id });
+      this.replacedIds.set(msg.id, { ...this.replacedIds.get(msg.id), [toId]: id });
+    }
     return true;
   }
 
@@ -1749,8 +1755,14 @@ export class HiveManager {
     // Targets that actually took delivery. The log below reports these instead of
     // intent, so a bounced or dropped message can never read as delivered.
     const delivered: string[] = [];
+    const tellObserver = (landed: string[]): void => {
+      const replaced = this.replacedIds.get(msg.id) ?? {};
+      this.replacedIds.delete(msg.id);
+      try { this.routedObserver?.(msg, landed, replaced); } catch { /* observer error */ }
+    };
     let bounced = false;
     const bounce = (subject: string): void => { if (this.bounceToGod(msg, godId, subject)) bounced = true; };
+    try {
     for (const t of targets) {
       // The send-only prep assistant must never be a delivery target: it doesn't
       // drain an inbox, so direct mail to it would rot unread (observed live: a
@@ -1828,18 +1840,25 @@ export class HiveManager {
         bounce(`[undeliverable — no agent "${t}" on this floor; check the id against the roster] ${msg.subject}`);
       }
     }
+    } catch (error) {
+      // Copies that landed before this still have to be known by their ids.
+      tellObserver(delivered);
+      throw error;
+    }
     this.appendLog({ kind: 'message', from: msg.from, to: msg.to, act: msg.act, subject: msg.subject, id: msg.id, delivered });
     this.emitMessage(msg, targets);
     // Main-process observer (e.g. the closing-time controller watching for the
     // team's ACKs and the god's COMPLETE). Best-effort, never breaks routing.
-    try { this.routedObserver?.(msg, targets); } catch { /* observer error */ }
+    tellObserver(targets);
     return targets.length === 0 || delivered.length > 0 || bounced;
   }
 
   /** Observer invoked for EVERY routed message with its resolved targets.
    *  Used by main-process features that react to hive traffic (closing time). */
-  private routedObserver: ((msg: HiveMessage, targets: string[]) => void) | null = null;
-  setRoutedObserver(cb: ((msg: HiveMessage, targets: string[]) => void) | null): void {
+  private routedObserver: ((msg: HiveMessage, targets: string[], replaced: Record<string, string>) => void) | null = null;
+  /** Recipients of a message being routed whose copy got a new id, by the message's own id. */
+  private readonly replacedIds = new Map<string, Record<string, string>>();
+  setRoutedObserver(cb: ((msg: HiveMessage, targets: string[], replaced: Record<string, string>) => void) | null): void {
     this.routedObserver = cb;
   }
 
