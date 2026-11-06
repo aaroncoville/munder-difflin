@@ -93,6 +93,7 @@
     "noteAria": "Note for {{name}}"
   },
   "askMe": {
+    "answerNotSent": "Your answer on \"{{title}}\" is saved on the card, but it could not be sent on: {{error}}",
     "emptyTitle": "Nothing needs you right now. 🌿",
     "emptySub": "When the team blocks a task on your input — a question to answer or a to-do only you can perform — it shows up here (and on the ASK ME board on the floor).",
     "openDetail": "open the full task detail",
@@ -1133,6 +1134,7 @@
     "searchFailed": "Couldn't search"
   },
   "threads": {
+    "sendFailed": "failed: {{error}}",
     "noSubject": "(no subject)",
     "empty": "No conversations yet. Messages this agent receives will appear here as threads.",
     "less": "less",

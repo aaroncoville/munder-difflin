@@ -90,6 +90,8 @@ export function AskMeTab() {
    *  large") — silently dropping a file the user just pasted is the one thing
    *  worse than refusing it. */
   const [attachError, setAttachError] = useState<Record<string, string>>({});
+  // The answer is on the card by then, so the card has left this board and this has to sit above it.
+  const [notifyError, setNotifyError] = useState('');
   const [dropping, setDropping] = useState<string | null>(null);
   /** The attachment IPC still in flight for a card, if any — one chained
    *  promise per card, so `sendAnswer` has exactly one thing to wait on. */
@@ -215,7 +217,7 @@ export function AskMeTab() {
       if (!result.ok) throw new Error('task changed before answer could be saved');
       setTasks(next);
       // 2) Tell the god, so the card gets unblocked and work continues.
-      await window.cth.hiveSend({
+      const told = await window.cth.hiveSend({
         to: 'god',
         act: 'inform',
         subject: `HUMAN ANSWER on task "${task.title}"`,
@@ -226,6 +228,7 @@ export function AskMeTab() {
           'The answer is also recorded in the card\'s humanQA. Act on it, unblock the card, and continue the work.'
         ].join('\n')
       }, 'human');
+      setNotifyError(told.ok ? '' : translate('askMe.answerNotSent', { title: task.title, error: told.error ?? '?' }));
       setAnswerDraft(task.id, '');
       clearAttachments(task.id);
     } catch {
@@ -276,6 +279,9 @@ export function AskMeTab() {
     // memory viewer uses. Pixelify Sans (font-ui) is too chunky for prose like
     // questions and answers. Display/badge bits keep their explicit faces.
     <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', background: 'var(--cth-paper-200)', padding: 10, display: 'flex', flexDirection: 'column', gap: 10, fontFamily: 'var(--cth-font-mono)' }}>
+      {notifyError && (
+        <div style={{ fontSize: 12, color: 'var(--cth-coral)', padding: '0 0 8px' }}>{notifyError}</div>
+      )}
       {waiting.length === 0 && (
         <div style={{ textAlign: 'center', padding: '24px 12px', color: 'var(--cth-ink-500)', fontSize: 12 }}>
           {translate('askMe.emptyTitle')}<br />

@@ -571,7 +571,7 @@ function FloorTab({ seed }: { seed: { text: string; seq: number } }) {
       { to: 'god', act: 'request', subject: t('commandCenter.taskFromHuman'), body: full },
       'human'
     );
-    setDispatchText('');
+    if (res.ok) setDispatchText(''); // otherwise it is the only copy
     setDispatchMsg(res.ok
       ? suggested
         ? t('commandCenter.sentToWithSuggestion', { godName, name: suggested.name })
