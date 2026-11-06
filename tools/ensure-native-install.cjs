@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * Restore what a dependency's install script should have left behind.
+ * Finish installing two packages whose install can end up incomplete:
  *
- * npm can skip dependency install scripts: `--ignore-scripts` aside, recent npm
- * versions block those not covered by `allowScripts`, with only a warning. The
- * root postinstall still runs, and two packages are then incomplete:
- *
- * - electron: its install script downloads the binary and writes `path.txt`.
- *   electron-vite reads that file and throws "Electron uninstall" without it, so
- *   `dist` existing is not enough; an interrupted extraction leaves `dist` too.
- * - node-pty: its install script compiles the binding where no prebuild ships.
+ * - electron: since v43 the package declares no install script. The binary is
+ *   downloaded by its install.js, which only runs when something requires the
+ *   package. electron-vite never does: it reads `path.txt` and throws "Electron
+ *   uninstall" without it. So every clean install reaches that error, and `dist`
+ *   existing is not enough, because an interrupted extraction leaves `dist` too.
+ * - node-pty: its install script compiles the binding where no prebuild ships, and
+ *   recent npm versions block scripts not covered by `allowScripts`, with only a
+ *   warning.
  *
  * Each step runs the package's own script and only when its output is missing, so
  * a normal install does nothing here and this file downloads nothing itself.

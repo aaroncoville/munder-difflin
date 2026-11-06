@@ -54,7 +54,7 @@ test('nothing is pending when Electron and the node-pty binding are both present
   assert.deepEqual(pendingSteps({ root, ...DARWIN }), []);
 });
 
-test('Electron is pending when its install script never ran', (t) => {
+test('Electron is pending when its binary was never downloaded', (t) => {
   const root = fakeTree(t);
   electronPackage(root);
   assert.deepEqual(names(pendingSteps({ root, ...DARWIN })), ['electron']);
