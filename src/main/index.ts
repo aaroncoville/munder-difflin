@@ -72,6 +72,7 @@ import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WakeSkipLog, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
 import { shouldReapIdle, workerHasLiveJob } from './workerIdleJobs';
 import { afterWorkerDone } from './workerDoneGrace';
+import { describeUnpushed, unpushedWorkerBranches } from './workerUnpushed';
 import {
   CODEX_ACTIVITY_TTL_MS,
   CodexHomes,
@@ -5106,6 +5107,9 @@ async function ephemeralWorkerTick(): Promise<void> {
         }
         // Inside the window: stays reachable, its old mail settled above so the inbox-wake watchdog cannot nudge it to redo it.
         if (afterDone === 'keep') continue;
+        // Before teardown, which can remove the worktree. Silent when clean, so a normal release sends no notice.
+        const unpushedAtDone = await unpushedWorkerBranches(worktreePaths.get(workerId), rec.baseBranch);
+        if (unpushedAtDone === null || unpushedAtDone.length > 0) informGod(`[worker released — unpushed branches] ${workerId}`, `Worker ${workerId} signaled done and is being released. ${describeUnpushed(unpushedAtDone)}`, rec.slack);
         ptyManager.kill(workerId);
         teardownPty(workerId);
         continue;
@@ -5118,9 +5122,10 @@ async function ephemeralWorkerTick(): Promise<void> {
         if (used > tokenCap) {
           rec.releasing = true;
           console.warn(`[worker] reaping ${workerId} — token cap (${used.toLocaleString()} > ${tokenCap.toLocaleString()})`);
+          const unpushedAtCap = await unpushedWorkerBranches(worktreePaths.get(workerId), rec.baseBranch);
           informGod(
             `[worker reaped — token cap] ${workerId}`,
-            `Worker ${workerId} used ${used.toLocaleString()} tokens (> its cap of ${tokenCap.toLocaleString()}) and was reaped. Any committed work on its branch is preserved for you.`,
+            `Worker ${workerId} used ${used.toLocaleString()} tokens (> its cap of ${tokenCap.toLocaleString()}) and was reaped. Any committed work on its branch is preserved for you. ${describeUnpushed(unpushedAtCap)}`,
             rec.slack
           );
           ptyManager.kill(workerId);
@@ -5135,9 +5140,10 @@ async function ephemeralWorkerTick(): Promise<void> {
       if (shouldReapIdle(rec, { ptyIdleMs: idleMs, limitMs: idleTimeoutMs, ceilingMs: idleCeilingMs, now: Date.now(), hasLiveJob })) {
         rec.releasing = true;
         console.warn(`[worker] reaping idle ${workerId} (${Math.round(idleMs / 60000)}min idle)`);
+        const unpushedAtIdle = await unpushedWorkerBranches(worktreePaths.get(workerId), rec.baseBranch);
         informGod(
           `[worker reaped — idle] ${workerId}`,
-          `Worker ${workerId} produced no output for ${Math.round(idleMs / 60000)} min (> the ${Math.round(idleTimeoutMs / 60000)} min cap) and never signaled done, so it was reaped. Any committed work on its branch is preserved for you.`,
+          `Worker ${workerId} produced no output for ${Math.round(idleMs / 60000)} min (> the ${Math.round(idleTimeoutMs / 60000)} min cap) and never signaled done, so it was reaped. Any committed work on its branch is preserved for you. ${describeUnpushed(unpushedAtIdle)}`,
           rec.slack
         );
         ptyManager.kill(workerId);

@@ -2,8 +2,8 @@
 // A worker that reported done was released on the next tick, so a follow-up sent
 // seconds later reached an archived agent and bounced. It now stays reachable
 // for a grace window. The later tests run the real ephemeralWorkerTick body from
-// index.ts (which cannot be imported on its own) against a real mailbox and a
-// fake clock, because the property that matters is what the
+// index.ts (which cannot be imported on its own) against a real mailbox, a real
+// git worktree and a fake clock, because the property that matters is what the
 // tick does, not what a helper would return if the tick called it.
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -11,10 +11,12 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
+const { execFileSync } = require('node:child_process');
 const ts = require('typescript');
 const loadTs = require('./load-ts.cjs');
 
 const grace = loadTs('src/main/workerDoneGrace.ts');
+const unpushed = loadTs('src/main/workerUnpushed.ts');
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { WORKER_DONE_GRACE_MS: GRACE, workerFollowUpAfter, afterWorkerDone } = grace;
 
@@ -97,6 +99,9 @@ function liveTickSource() {
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 }
 
+const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
+const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', env: GIT_ENV }).trim();
+
 async function setup(t, overrides = {}) {
   const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'md-grace-tick-')));
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
@@ -107,6 +112,17 @@ async function setup(t, overrides = {}) {
   const agentDir = path.join(hive.root(), 'agents', id);
   for (const d of ['inbox/.done', 'outbox/.sent']) fs.mkdirSync(path.join(agentDir, d), { recursive: true });
 
+  // A real repository whose worker branch has one unpushed commit.
+  const remote = path.join(home, 'remote.git');
+  execFileSync('git', ['init', '-q', '--bare', '-b', 'main', remote], { env: GIT_ENV });
+  const repo = path.join(home, 'repo');
+  execFileSync('git', ['clone', '-q', remote, repo], { env: GIT_ENV });
+  const commit = (dir, m) => git(dir, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', m);
+  commit(repo, 'base');
+  git(repo, 'push', '-q', 'origin', 'HEAD:main');
+  const wt = path.join(home, 'wt');
+  git(repo, 'worktree', 'add', '-q', '-b', 'agent/w', wt, 'HEAD');
+
   let clock = T0;
   const FakeDate = class extends Date { static now() { return clock; } };
   const rec = { workerId: id, reqId: 'w', name: 'W', baseBranch: 'main', spawnedAt: T0 - 600_000, releasing: false };
@@ -115,19 +131,25 @@ async function setup(t, overrides = {}) {
   const context = {
     Date: FakeDate, Math, Number, JSON, Set, Map, console: { log() {}, warn() {}, error(e) { throw e; } },
     liveWorkers, workerTickRunning: false, preservedWorktrees: new Map(), lastGcSweepAt: T0, GC_SWEEP_MS: 60_000,
+    worktreePaths: new Map([[id, wt]]),
     readConfig: () => ({ orchestratorMaySpawn: false }),
     hive, ptyManager: { idleFor: () => 0, list: () => [], kill: (pid) => { calls.kill.push(pid); } },
-    teardownPty: (pid) => { calls.gone.push(pid); },
+    teardownPty: (pid) => {
+      // Teardown is what removes a worktree: a scan after it would find nothing.
+      calls.gone.push(pid);
+      fs.rmSync(wt, { recursive: true, force: true });
+    },
     informGod: (subject, body) => calls.notices.push({ subject, body }),
     workerTokensUsed: () => 0, shouldReapIdle: () => false, workerHasLiveJob: () => false,
     existsSync: fs.existsSync, readdirSync: fs.readdirSync, readFileSync: fs.readFileSync, statSync: fs.statSync, join: path.join,
     afterWorkerDone: grace.afterWorkerDone,
+    unpushedWorkerBranches: unpushed.unpushedWorkerBranches, describeUnpushed: unpushed.describeUnpushed,
     ...overrides
   };
   const { ephemeralWorkerTick } = vm.runInNewContext(liveTickSource(), context);
   const write = (dir, name, msg) => fs.writeFileSync(path.join(agentDir, dir, `${name}.json`), JSON.stringify(msg));
   return {
-    hive, id, rec, calls, context, tick: ephemeralWorkerTick,
+    hive, id, rec, calls, wt, commit, context, tick: ephemeralWorkerTick,
     advance: (ms) => { clock += ms; },
     done: (name) => write('outbox/.sent', name, { from: id, to: 'god-1', act: 'done', created_at: iso(clock) }),
     fromGod: (name, act = 'request', conversation = 'c') => write('inbox', name,
@@ -203,3 +225,55 @@ test('tick: mail from after the done stays pending during the window', async (t)
   await f.tick();
   assert.deepEqual(f.calls.kill, [f.id], 'an inform does not hold the slot past the window');
 });
+
+test('tick: an unpushed branch is named once when a done worker is released, before its worktree is torn down', async (t) => {
+  const f = await setup(t);
+  f.commit(f.wt, 'never pushed');
+  f.done('d1');
+  f.advance(1_000);
+  await f.tick();
+  assert.deepEqual(f.calls.notices, [], 'not during the window: the worker can still push');
+  f.advance(GRACE);
+  await f.tick();
+  assert.equal(f.calls.notices.length, 1);
+  assert.match(f.calls.notices[0].subject, /unpushed/);
+  assert.match(f.calls.notices[0].body, /agent\/w at [0-9a-f]+ .*\(on no remote\)/);
+  assert.match(f.calls.notices[0].body, /app-created worktree/);
+  assert.deepEqual(f.calls.kill, [f.id]);
+});
+
+test('tick: a done worker with nothing unpushed costs the orchestrator no notice', async (t) => {
+  const f = await setup(t);
+  f.commit(f.wt, 'pushed');
+  git(f.wt, 'push', '-q', '-u', 'origin', 'agent/w');
+  f.done('d1');
+  f.advance(GRACE + 1);
+  await f.tick();
+  assert.deepEqual(f.calls.kill, [f.id]);
+  assert.deepEqual(f.calls.notices, []);
+});
+
+for (const [name, overrides, subject] of [
+  ['idle', { shouldReapIdle: () => true }, /idle/],
+  ['token cap', { workerTokensUsed: () => 2_000, readConfig: () => ({ orchestratorMaySpawn: false, defaultWorkerTokenCap: 1_000 }) }, /token cap/]
+]) {
+  test(`tick: a ${name} reap names the unpushed branch and says what was scanned`, async (t) => {
+    const f = await setup(t, overrides);
+    f.commit(f.wt, 'never pushed');
+    await f.tick();
+    assert.equal(f.calls.notices.length, 1);
+    assert.match(f.calls.notices[0].subject, subject);
+    assert.match(f.calls.notices[0].body, /preserved for you/);
+    assert.match(f.calls.notices[0].body, /agent\/w at [0-9a-f]+ .*\(on no remote\)/);
+    assert.match(f.calls.notices[0].body, /app-created worktree/);
+    assert.deepEqual(f.calls.kill, [f.id]);
+  });
+
+  test(`tick: a ${name} reap with nothing unpushed still says only app-created worktrees were checked`, async (t) => {
+    const f = await setup(t, overrides);
+    await f.tick();
+    assert.equal(f.calls.notices.length, 1);
+    assert.doesNotMatch(f.calls.notices[0].body, /NOT pushed/);
+    assert.match(f.calls.notices[0].body, /made elsewhere/);
+  });
+}
