@@ -28,6 +28,7 @@ import { homedir } from 'node:os';
 import { spawnSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
 import type { AgentUsageSample } from './usage';
+import { archiveOutboxFile, quarantineOutboxFile, reportOutboxFailure, type OutboxStage } from './outboxFailure';
 import { COMMAND_GROUPS } from '../shared/claudeCommands';
 import { ensureCodexShortHome } from '../shared/codexRemote';
 import {
@@ -1708,15 +1709,15 @@ export class HiveManager {
    *  move hops past the cap themselves (normalize clamps what they wrote), so
    *  this fuse can only fire on a REAL relay loop — a bounced mail that keeps
    *  coming back undeliverable — and never on an agent-authored number. */
-  private bounceToGod(msg: HiveMessage, godId: string, subject: string): void {
+  private bounceToGod(msg: HiveMessage, godId: string, subject: string): boolean {
     const hops = msg.hops + 1;
     if (hops > HOP_CAP) {
       // loop guard — drop a runaway message rather than let agents ping-pong.
       // There's no human queue to fall back on; the god agent owns conflicts.
       this.appendLog({ kind: 'drop', reason: 'hop-cap', from: msg.from, to: msg.to, id: msg.id });
-      return;
+      return false;
     }
-    this.deliver({ ...msg, hops, to: godId, subject }, godId);
+    return this.deliver({ ...msg, hops, to: godId, subject }, godId);
   }
 
   /** Inject a message directly (used by the orchestrator / UI / tests). */
@@ -1727,7 +1728,9 @@ export class HiveManager {
     return msg;
   }
 
-  private routeMessage(msg: HiveMessage): void {
+  /** Returns false only when the message landed nowhere. No target at all is not a failure: that is how god's
+   *  mail to the human routes. */
+  private routeMessage(msg: HiveMessage): boolean {
     const reg = this.registry();
     const godId = reg.godId ?? 'god';
     // The hive has no separate human-approval queue — approvals are native to
@@ -1746,6 +1749,8 @@ export class HiveManager {
     // Targets that actually took delivery. The log below reports these instead of
     // intent, so a bounced or dropped message can never read as delivered.
     const delivered: string[] = [];
+    let bounced = false;
+    const bounce = (subject: string): void => { if (this.bounceToGod(msg, godId, subject)) bounced = true; };
     for (const t of targets) {
       // The send-only prep assistant must never be a delivery target: it doesn't
       // drain an inbox, so direct mail to it would rot unread (observed live: a
@@ -1753,7 +1758,7 @@ export class HiveManager {
       // unread for hours). Bounce such mail to god instead, so the sender's intent
       // surfaces immediately and nothing is silently lost.
       if (reg.agents[t]?.isAssistant) {
-        this.bounceToGod(msg, godId, `[bounced — "${t}" is the send-only prep assistant; route work to a real agent] ${msg.subject}`);
+        bounce(`[bounced — "${t}" is the send-only prep assistant; route work to a real agent] ${msg.subject}`);
         continue;
       }
       // An ARCHIVED recipient (its terminal is gone) still has an inbox, so the
@@ -1797,7 +1802,7 @@ export class HiveManager {
       // (the bounce target).
       if (t !== godId && !canReceiveInbox(reg.agents[t]?.provider)) {
         if (!this.emitTerminalHandoff(msg, t)) {
-          this.bounceToGod(msg, godId, `[undeliverable — "${t}" runs ${reg.agents[t]?.provider ?? 'a hookless CLI'} and the terminal handoff failed (renderer unavailable); relay this to it] ${msg.subject}`);
+          bounce(`[undeliverable — "${t}" runs ${reg.agents[t]?.provider ?? 'a hookless CLI'} and the terminal handoff failed (renderer unavailable); relay this to it] ${msg.subject}`);
         } else delivered.push(t);
         continue;
       }
@@ -1809,7 +1814,7 @@ export class HiveManager {
       const proxyDesc = bridgeOf(reg.agents[t]?.provider);
       if (t !== godId && proxyDesc?.kind === 'proxy' && proxyDesc.inboxDelivery === 'terminal') {
         if (!this.emitTerminalHandoff(msg, t)) {
-          this.bounceToGod(msg, godId, `[undeliverable — "${t}" runs ${reg.agents[t]?.provider ?? 'a proxy-tier CLI'} and the terminal handoff failed (renderer unavailable); relay this to it] ${msg.subject}`);
+          bounce(`[undeliverable — "${t}" runs ${reg.agents[t]?.provider ?? 'a proxy-tier CLI'} and the terminal handoff failed (renderer unavailable); relay this to it] ${msg.subject}`);
         } else delivered.push(t);
         continue;
       }
@@ -1820,7 +1825,7 @@ export class HiveManager {
       // hop-cap one and bounce to god, mirroring the undeliverable bounces above.
       this.appendLog({ kind: 'drop', reason: 'no-inbox', from: msg.from, to: t, id: msg.id });
       if (t !== godId) {
-        this.bounceToGod(msg, godId, `[undeliverable — no agent "${t}" on this floor; check the id against the roster] ${msg.subject}`);
+        bounce(`[undeliverable — no agent "${t}" on this floor; check the id against the roster] ${msg.subject}`);
       }
     }
     this.appendLog({ kind: 'message', from: msg.from, to: msg.to, act: msg.act, subject: msg.subject, id: msg.id, delivered });
@@ -1828,6 +1833,7 @@ export class HiveManager {
     // Main-process observer (e.g. the closing-time controller watching for the
     // team's ACKs and the god's COMPLETE). Best-effort, never breaks routing.
     try { this.routedObserver?.(msg, targets); } catch { /* observer error */ }
+    return targets.length === 0 || delivered.length > 0 || bounced;
   }
 
   /** Observer invoked for EVERY routed message with its resolved targets.
@@ -1905,14 +1911,24 @@ export class HiveManager {
     if (now - since < MALFORMED_RETRY_MS) return;
     this.malformedSince.delete(full);
     this.appendLog({ kind: 'drop', reason: 'malformed-json', from: id, file: f });
-    try { renameSync(full, join(outbox, '.sent', `bad-${f}`)); } catch { /* noop */ }
+    let quarantined = `bad-${f}`;
+    try { quarantined = quarantineOutboxFile(outbox, f); } catch { /* noop */ }
     this.deliver(this.normalize({
       from: 'router', to: id, act: 'inform', requires_reply: false,
       subject: `Undelivered: ${f} is not valid JSON`,
       body: `Your outbox file ${f} still did not parse as JSON after a retry, so it was not delivered. `
-        + `It was moved to outbox/.sent/bad-${f}. Fix it and write it to your outbox again `
+        + `It was moved to outbox/.sent/${quarantined}. Fix it and write it to your outbox again `
         + `(write to a .tmp name and rename it into place so it is never read half-written).`
     }, 'router'), id);
+  }
+
+  /** See reportOutboxFailure. The notice carries `hops`, so the relay limit still bounds a sender that bounces. */
+  private outboxFailed(stage: OutboxStage, outbox: string, f: string, id: string, error: unknown, hops = 0): void {
+    reportOutboxFailure(stage, f, id, error, {
+      log: (row) => this.appendLog(row),
+      quarantine: () => quarantineOutboxFile(outbox, f),
+      notify: (subject, body) => { this.routeMessage(this.normalize({ to: id, act: 'inform', requires_reply: false, hops, subject, body }, 'system')); }
+    });
   }
 
   routeOnce(now = Date.now()): number {
@@ -1930,6 +1946,8 @@ export class HiveManager {
       for (const f of readdirSync(outbox)) {
         if (!f.endsWith('.json')) continue;
         const full = join(outbox, f);
+        let stage: OutboxStage = 'read';
+        let hops = 0;
         try {
           const raw = readFileSync(full, 'utf8');
           let partial: Partial<HiveMessage>;
@@ -1955,14 +1973,18 @@ export class HiveManager {
             });
           }
           this.malformedSince.delete(full);
+          stage = 'normalize';
           const msg = this.normalize(partial, id);
           msg.from = id; // sender is authoritative — the owning directory
-          this.routeMessage(msg);
-          renameSync(full, join(outbox, '.sent', f)); // archive, don't reprocess
+          hops = msg.hops;
+          stage = 'route';
+          if (!this.routeMessage(msg)) { this.outboxFailed('not-delivered', outbox, f, id, undefined, hops); continue; }
+          stage = 'archive';
+          archiveOutboxFile(outbox, f); // archive, don't reprocess
           routed++;
-        } catch {
-          // malformed file — quarantine so we don't spin on it
-          try { renameSync(full, join(outbox, '.sent', `bad-${f}`)); } catch { /* noop */ }
+        } catch (error) {
+          // Set it aside so we don't spin on it, and say so.
+          this.outboxFailed(stage, outbox, f, id, error, hops);
         }
       }
     }
