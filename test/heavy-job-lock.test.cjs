@@ -135,7 +135,7 @@ function lock(limit, extra = {}) {
 const H = { heavy: true, kind: 'suite', why: 'npm test' };
 const take = (x, a, id = a) => x.l.acquire(a, H, 'npm test', id, false);
 
-test('N=1: the first job takes the slot, another agent is denied naming the holder, the holder re-enters, its last PostToolUse frees it', () => {
+test('N=1: the first job takes the slot, another agent is denied naming the holder, and its PostToolUse frees it', () => {
   const x = lock(1);
   assert.deepEqual(x.l.acquire('a', H, 'node --test test/*.test.cjs', 'c1', false), { allow: true, acquired: true });
   const d = x.l.acquire('b', H, 'npm ci', 'b1', false);
@@ -143,10 +143,7 @@ test('N=1: the first job takes the slot, another agent is denied naming the hold
   assert.match(d.reason, /allows 1 heavy job at once and it is held by a \(suite: npm test, since \d\d:\d\d:\d\dZ\)/);
   assert.match(d.reason, /queued \(position 1\)/);
   assert.match(d.reason, /Do not retry or poll/);
-  assert.deepEqual(x.l.acquire('a', H, 'npm run build', 'c2', false), { allow: true, acquired: false }, 're-entrant');
   x.l.callDone('a', 'c1');
-  assert.equal(x.l.snapshot().length, 1, 'one call still running');
-  x.l.callDone('a', 'c2');
   assert.equal(x.l.snapshot().length, 0, 'freed');
   assert.equal(x.logs.find((r) => r.action === 'release').reason, 'posttool');
 });
@@ -336,7 +333,6 @@ test('a secret in the command never reaches another agent\'s deny text, the log 
   const x = lock(1);
   x.l.acquire('a', H, 'TOKEN=hunter2 npm test', 'c1', false);
   const d = x.l.acquire('b', H, 'TOKEN=hunter2 npm test', 'c2', false);
-  x.l.acquire('a', H, 'SECOND=hunter2 npm test', 'c3', false);
   const seen = JSON.stringify([d, x.logs, x.l.snapshot(), x.l.queueSnapshot()]);
   assert.equal(seen.includes('hunter2'), false, seen);
 });
@@ -408,8 +404,8 @@ test('heavySlotNotice names the job and the deadline, and asks for no reply', ()
   assert.match(n.body, /No reply is needed/);
 });
 
-test('two overlapping calls with the same id hold the slot until both have finished', () => {
-  const x = lock(1);
+test('two overlapping calls with the same id hold a slot each until both have finished', () => {
+  const x = lock(2);
   x.l.acquire('a', H, 'npm test', 'cmd:npm test', false);
   x.l.acquire('a', H, 'npm test', 'cmd:npm test', false);
   x.l.callDone('a', 'cmd:npm test');
@@ -439,7 +435,7 @@ test('a call still waiting for approval keeps its slot past any number of empty 
 
 test('one running call does not let empty scans free a second call that has not started', async () => {
   let procs = [{ pid: 11, parentPid: 10, commandLine: 'npm test' }];
-  const x = lock(1, { roots: () => [{ agentId: 'a', pid: 10 }], probe: async () => procs });
+  const x = lock(2, { roots: () => [{ agentId: 'a', pid: 10 }], probe: async () => procs });
   x.l.acquire('a', H, 'npm test', 'c1', false);
   x.l.acquire('a', { heavy: true, kind: 'build', why: 'dotnet build' }, 'dotnet build', 'c2', false);
   await x.l.scan();
@@ -471,4 +467,103 @@ test('the TTL runs from the last sighting, so a job confirmed live past the hour
   x.l.acquire('a', H, 'npm test', 'c1', false);
   for (let i = 0; i < 4; i++) { x.tick(HEAVY_TTL_MS / 2); await x.l.scan(); assert.equal(x.l.snapshot().length, 1, `tick ${i}`); }
   assert.equal(take(x, 'b').allow, false);
+});
+
+// Each call is its own job with its own slot. The process check binds one process tree to one call,
+// so a listing can never be evidence for two calls.
+const wrapper = (pid, cmd = 'npm test', parentPid = 10) => ({ pid, parentPid, commandLine: `/bin/zsh -c eval '${cmd}'` });
+const child = (pid, parentPid) => ({ pid, parentPid, commandLine: 'npm test' });
+
+test('limit 1: a second identical command from the same agent is denied and queued, and the first ending hands it the slot', () => {
+  const x = lock(1);
+  assert.equal(x.l.acquire('a', H, 'npm test', 'c1', false).allow, true);
+  const d = x.l.acquire('a', H, 'npm test', 'c2', false);
+  assert.equal(d.allow, false);
+  assert.match(d.reason, /position 1/);
+  x.l.callDone('a', 'c1');
+  assert.deepEqual(x.told.map((t) => t.agentId), ['a']);
+  assert.equal(x.l.acquire('a', H, 'npm test', 'c2', false).allow, true);
+});
+
+test('limit 1: a different heavy command from the holder is denied too', () => {
+  const x = lock(1);
+  x.l.acquire('a', H, 'npm test', 'c1', false);
+  assert.equal(x.l.acquire('a', { heavy: true, kind: 'build', why: 'dotnet build' }, 'dotnet build', 'c2', false).allow, false);
+});
+
+for (const [label, id1, id2] of [['distinct ids', 'c1', 'c2'], ['the same fallback id', 'cmd:npm test', 'cmd:npm test']]) {
+  test(`limit 2, ${label}: the first running and the second pending, the first exiting frees only the first`, async () => {
+    let procs = [wrapper(11), child(12, 11)];
+    const x = lock(2, { roots: () => [{ agentId: 'a', pid: 10 }], probe: async () => procs });
+    x.l.acquire('a', H, 'npm test', id1, false);
+    x.l.acquire('a', H, 'npm test', id2, false);
+    await x.l.scan();
+    assert.deepEqual(x.l.snapshot().map((h) => h.started), [true, false], 'one process tree is evidence for one call');
+    x.l.callDone('a', id1);
+    assert.deepEqual(x.l.snapshot().map((h) => h.started), [false], 'the Post went to the running call');
+    procs = [];
+    for (let i = 0; i < HEAVY_SCAN_MISSES + 2; i++) await x.l.scan();
+    assert.equal(x.l.snapshot().length, 1, 'the pending call keeps its own slot');
+    x.l.callDone('a', id2);
+    assert.equal(x.l.snapshot().length, 0, 'freed only by its own completion');
+  });
+
+  test(`limit 2, ${label}: the first lost its Post, and its exit still frees only the first`, async () => {
+    let procs = [wrapper(11), child(12, 11)];
+    const x = lock(2, { roots: () => [{ agentId: 'a', pid: 10 }], probe: async () => procs });
+    x.l.acquire('a', H, 'npm test', id1, false);
+    x.l.acquire('a', H, 'npm test', id2, false);
+    await x.l.scan();
+    procs = [];
+    for (let i = 0; i < HEAVY_SCAN_MISSES; i++) await x.l.scan();
+    assert.deepEqual(x.l.snapshot().map((h) => h.started), [false]);
+    assert.equal(take(x, 'b').allow, true, 'one slot freed');
+    assert.equal(take(x, 'c').allow, false, 'and only one');
+  });
+}
+
+test('two identical jobs in separate process trees are each bound, and each one\'s exit frees only itself', async () => {
+  let procs = [wrapper(11), child(12, 11), wrapper(21), child(22, 21)];
+  const x = lock(2, { roots: () => [{ agentId: 'a', pid: 10 }], probe: async () => procs });
+  x.l.acquire('a', H, 'npm test', 'c1', false);
+  x.l.acquire('a', H, 'npm test', 'c2', false);
+  await x.l.scan();
+  assert.deepEqual(x.l.snapshot().map((h) => h.started), [true, true]);
+  procs = [wrapper(21), child(22, 21)];
+  for (let i = 0; i < HEAVY_SCAN_MISSES; i++) await x.l.scan();
+  assert.equal(x.l.snapshot().length, 1);
+  procs = [];
+  for (let i = 0; i < HEAVY_SCAN_MISSES; i++) await x.l.scan();
+  assert.equal(x.l.snapshot().length, 0);
+});
+
+test('a process tree bound to one call is not evidence for another, even nested under it', async () => {
+  const procs = [wrapper(11, 'npm run all'), { pid: 12, parentPid: 11, commandLine: 'npm test' }];
+  const x = lock(2, { roots: () => [{ agentId: 'a', pid: 10 }], probe: async () => procs });
+  x.l.acquire('a', { heavy: true, kind: 'build', why: 'npm run all' }, 'npm run all', 'c1', false);
+  x.l.acquire('a', H, 'npm test', 'c2', false);
+  await x.l.scan();
+  assert.deepEqual(x.l.snapshot().map((h) => h.started), [true, false]);
+});
+
+test('a backgrounded job survives its wrapper exiting, by rebinding to what it left running', async () => {
+  let procs = [wrapper(11), child(12, 11)];
+  const x = lock(1, { roots: () => [{ agentId: 'a', pid: 10 }], probe: async () => procs });
+  x.l.acquire('a', H, 'npm test', 'c1', true);
+  x.l.callDone('a', 'c1');
+  await x.l.scan();
+  procs = [{ pid: 12, parentPid: 10, commandLine: 'npm test' }];
+  for (let i = 0; i < HEAVY_SCAN_MISSES + 1; i++) await x.l.scan();
+  assert.equal(x.l.snapshot().length, 1);
+});
+
+test('turnOver frees all of the agent\'s foreground calls, and PTY exit frees everything it had', () => {
+  const x = lock(3);
+  x.l.acquire('a', H, 'npm test', 'c1', false);
+  x.l.acquire('a', H, 'npm ci', 'c2', false);
+  x.l.acquire('a', H, 'npm run build', 'c3', true);
+  x.l.turnOver('a');
+  assert.deepEqual(x.l.snapshot().map((h) => h.background), [true]);
+  x.l.agentGone('a');
+  assert.deepEqual(x.l.snapshot(), []);
 });

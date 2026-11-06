@@ -240,31 +240,32 @@ export function heavyLimit(v: unknown): HeavyLimit {
   return typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= 16 ? v : HEAVY_DEFAULT_LIMIT;
 }
 
+/** One heavy tool call. Each call is its own job with its own slot, even when an agent repeats a
+ *  command, because a process listing could not otherwise say which of the two has ended. */
 export interface HeavyCall {
-  count: number;
-  command: string;
-  why?: string;
-  /** Seen in a process listing. Until then it may be waiting at a permission prompt. */
-  seen: boolean;
-}
-
-export interface HeavyHolder {
+  key: number;
   agentId: string;
+  /** The provider's id for the call, or the command when it sends none, so it need not be unique. */
+  callId: string;
   kind: HeavyKind;
   /** The classifier's label. Shown to other agents and logged, unlike the command itself, which
    *  can carry secrets (`TOKEN=x npm test`). */
   label: string;
-  /** The raw commands, kept in memory only, to recognise the job in a process listing. */
-  commands: Set<string>;
+  /** The raw command, kept in memory only, to recognise the job in a process listing. */
+  command: string;
+  why?: string;
   since: number;
-  /** Last acquire, re-entry or sighting in a process listing: the TTL runs from here. */
+  /** Last acquire or sighting in a process listing: the TTL runs from here. */
   touched: number;
-  /** Heavy calls still running, by id. Providers with no tool-use id fall back to the command as
-   *  the id, so two overlapping identical calls share an entry and are counted. */
-  calls: Map<string, HeavyCall>;
   /** A backgrounded job: its PostToolUse says nothing about whether it has finished. */
   background: boolean;
-  /** Consecutive watcher scans that found no job of this holder. */
+  /** Its PostToolUse arrived, or its turn ended, so it is past any permission prompt. */
+  posted: boolean;
+  /** Seen in a process listing. Until then, and until `posted`, it may be at a permission prompt. */
+  seen: boolean;
+  /** The process at the top of this call's tree. No other call can claim it or anything under it. */
+  pid?: number;
+  /** Consecutive watcher scans that found no job for this call. */
   misses: number;
 }
 
@@ -294,16 +295,11 @@ const COMMAND_KEEP = 200;
 
 export type HeavyDecision = { allow: true; acquired: boolean } | { allow: false; reason: string };
 type ReleaseReason = 'posttool' | 'turn-end' | 'process-exit' | 'pty-exit' | 'ttl';
-function addCall(calls: Map<string, HeavyCall>, callId: string, command: string, cls: HeavyClass): Map<string, HeavyCall> {
-  const call = calls.get(callId);
-  if (call) call.count++;
-  else calls.set(callId, { count: 1, command: command.slice(0, COMMAND_KEEP), why: cls.why, seen: false });
-  return calls;
-}
 const clock = (ms: number): string => `${new Date(ms).toISOString().slice(11, 19)}Z`;
 
 export class HeavyJobLock {
-  private readonly holders = new Map<string, HeavyHolder>();
+  private readonly calls = new Map<number, HeavyCall>();
+  private nextKey = 1;
   private readonly queue: Array<{ agentId: string; kind: HeavyKind; since: number }> = [];
   private readonly reservations = new Map<string, { kind: HeavyKind; until: number }>();
   private timer: unknown = null;
@@ -317,10 +313,10 @@ export class HeavyJobLock {
     this.clearTimer = d.clearTimer ?? ((t) => clearTimeout(t as NodeJS.Timeout));
   }
 
-  /** The current holders. Expired ones are released first. */
+  /** The calls holding slots, oldest first. Expired ones are released first. */
   snapshot(): Array<{ agentId: string; kind: HeavyKind; job: string; since: string; background: boolean; started: boolean }> {
     this.expire();
-    return [...this.holders.values()].map((h) => ({ agentId: h.agentId, kind: h.kind, job: h.label, since: new Date(h.since).toISOString(), background: h.background, started: [...h.calls.values()].every((c) => c.seen) }));
+    return [...this.calls.values()].map((c) => ({ agentId: c.agentId, kind: c.kind, job: c.label, since: new Date(c.since).toISOString(), background: c.background, started: c.seen || c.posted }));
   }
 
   /** Who is waiting, and which slots are set aside for whom. */
@@ -337,9 +333,7 @@ export class HeavyJobLock {
     return { limit: this.d.limit(), holders, ...this.queueSnapshot() };
   }
 
-  /** PreToolUse: a heavy call from `agentId`. Take a slot, share the agent's own, or queue it.
-   *  `countOnly` is for a provider that cannot be refused: its job runs either way, so it is counted
-   *  even past the limit, which makes other agents wait for that capacity. */
+  /** PreToolUse: a heavy call from `agentId`. Take a slot, or queue it. */
   acquire(agentId: string, cls: HeavyClass, command: string, callId: string, background: boolean, countOnly = false): HeavyDecision {
     const limit = this.d.limit();
     if (limit === 'off' || !cls.heavy || !cls.kind) {
@@ -347,23 +341,13 @@ export class HeavyJobLock {
       return { allow: true, acquired: false };
     }
     this.expire();
-    const mine = this.holders.get(agentId);
-    if (mine) {
-      // Re-entrant: an agent's heavy calls share its one slot (and refresh its TTL).
-      addCall(mine.calls, callId, command, cls); mine.commands.add(command.slice(0, COMMAND_KEEP));
-      mine.background = mine.background || background; mine.touched = this.now(); mine.misses = 0;
-      this.log({ kind: 'heavy-lock', action: 'reenter', agentId, heavyKind: cls.kind, job: cls.why });
-      this.arm();
-      return { allow: true, acquired: false };
-    }
     this.serve(); // a raised limit serves the queue before anyone new
     const reserved = this.reservations.delete(agentId);
-    if (!reserved && !countOnly && this.holders.size + this.reservations.size >= limit) return this.refuse(agentId, cls, limit);
-    this.holders.set(agentId, {
-      agentId, kind: cls.kind, label: cls.why ?? cls.kind, commands: new Set([command.slice(0, COMMAND_KEEP)]),
-      since: this.now(), touched: this.now(), calls: addCall(new Map(), callId, command, cls), background, misses: 0
-    });
-    this.log({ kind: 'heavy-lock', action: 'acquire', agentId, heavyKind: cls.kind, job: cls.why, background, limit, reserved, countOnly });
+    if (!reserved && !countOnly && this.calls.size + this.reservations.size >= limit) return this.refuse(agentId, cls, limit);
+    const now = this.now();
+    const key = this.nextKey++;
+    this.calls.set(key, { key, agentId, callId, kind: cls.kind, label: cls.why ?? cls.kind, command: command.slice(0, COMMAND_KEEP), why: cls.why, since: now, touched: now, background, posted: false, seen: false, misses: 0 });
+    this.log({ kind: 'heavy-lock', action: 'acquire', agentId, heavyKind: cls.kind, job: cls.why, background, limit, reserved });
     this.arm();
     return { allow: true, acquired: true };
   }
@@ -371,7 +355,7 @@ export class HeavyJobLock {
   private refuse(agentId: string, cls: HeavyClass, limit: number): HeavyDecision {
     let at = this.queue.findIndex((w) => w.agentId === agentId);
     if (at < 0) at = this.queue.push({ agentId, kind: cls.kind!, since: this.now() }) - 1;
-    const holders = [...this.holders.values()];
+    const holders = [...this.calls.values()];
     const taken: string[] = [];
     if (holders.length) taken.push(`held by ${holders.map((h) => `${h.agentId} (${h.kind}: ${h.label}, since ${clock(h.since)})`).join('; ')}`);
     if (this.reservations.size) taken.push(`reserved for ${[...this.reservations.keys()].join(', ')}`);
@@ -383,32 +367,35 @@ export class HeavyJobLock {
     return { allow: false, reason };
   }
 
-  /** PostToolUse of a heavy call. The slot is freed when the agent has no call left and no
-   *  background job. */
+  private callsOf(agentId: string): HeavyCall[] {
+    return [...this.calls.values()].filter((c) => c.agentId === agentId);
+  }
+
+  /** PostToolUse of a heavy call. When several calls share an id, the one already seen running is
+   *  the one that finished, not one still at a permission prompt. */
   callDone(agentId: string, callId: string): void {
-    const h = this.holders.get(agentId);
-    const call = h?.calls.get(callId);
-    if (!h || !call) return;
-    if (--call.count > 0) return;
-    h.calls.delete(callId);
-    if (!h.calls.size && !h.background) this.release(agentId, 'posttool');
+    const open = this.callsOf(agentId).filter((c) => c.callId === callId && !c.posted);
+    const call = open.find((c) => c.seen) ?? open[0];
+    if (!call) return;
+    if (call.background) call.posted = true;
+    else this.release(call.key, 'posttool');
   }
 
   /** The agent's turn ended, so no foreground call of its can still be running. This catches the
    *  calls that never get a PostToolUse: one the user rejected at the permission prompt (which
    *  comes after PreToolUse) and one that was interrupted. */
   turnOver(agentId: string): void {
-    const h = this.holders.get(agentId);
-    if (!h) return;
-    h.calls.clear();
-    if (!h.background) this.release(agentId, 'turn-end');
+    for (const c of this.callsOf(agentId)) {
+      if (c.background) c.posted = true;
+      else this.release(c.key, 'turn-end');
+    }
   }
 
   /** The agent's PTY exited: its jobs are gone with it, and it is no longer waiting. */
   agentGone(agentId: string): void {
     this.dropWaiting(agentId);
-    if (this.holders.has(agentId)) this.release(agentId, 'pty-exit');
-    else this.serve();
+    for (const c of this.callsOf(agentId)) this.release(c.key, 'pty-exit');
+    this.serve();
   }
 
   /** Several PTYs are closing together (quit, reset, change of home), which skips their exit
@@ -426,19 +413,19 @@ export class HeavyJobLock {
     if (this.reservations.delete(agentId)) this.log({ kind: 'heavy-lock', action: 'reserve-dropped', agentId });
   }
 
-  private release(agentId: string, reason: ReleaseReason): void {
-    const h = this.holders.get(agentId);
-    if (!h) return;
-    this.holders.delete(agentId);
-    this.log({ kind: 'heavy-lock', action: 'release', agentId, heavyKind: h.kind, reason, heldMs: this.now() - h.since });
+  private release(key: number, reason: ReleaseReason): void {
+    const c = this.calls.get(key);
+    if (!c) return;
+    this.calls.delete(key);
+    this.log({ kind: 'heavy-lock', action: 'release', agentId: c.agentId, heavyKind: c.kind, reason, heldMs: this.now() - c.since });
     this.serve();
-    if (!this.holders.size && !this.reservations.size && this.timer) { this.clearTimer(this.timer); this.timer = null; }
+    if (!this.calls.size && !this.reservations.size && this.timer) { this.clearTimer(this.timer); this.timer = null; }
   }
 
   /** Hand free slots to the oldest live waiters. */
   private serve(): void {
     const limit = this.d.limit();
-    while (this.queue.length && (limit === 'off' || this.holders.size + this.reservations.size < limit)) {
+    while (this.queue.length && (limit === 'off' || this.calls.size + this.reservations.size < limit)) {
       const w = this.queue.shift()!;
       if (this.d.alive && !this.d.alive(w.agentId)) { this.log({ kind: 'heavy-lock', action: 'queue-dropped', agentId: w.agentId }); continue; }
       const until = this.now() + HEAVY_RESERVE_MS;
@@ -454,7 +441,7 @@ export class HeavyJobLock {
 
   private expire(): void {
     const t = this.now();
-    for (const h of [...this.holders.values()]) if (t - h.touched >= HEAVY_TTL_MS) this.release(h.agentId, 'ttl');
+    for (const c of [...this.calls.values()]) if (t - c.touched >= HEAVY_TTL_MS) this.release(c.key, 'ttl');
     for (const [agentId, r] of [...this.reservations]) {
       if (t < r.until) continue;
       this.reservations.delete(agentId);
@@ -465,47 +452,61 @@ export class HeavyJobLock {
 
   /** The watcher runs only while a slot is held or reserved. */
   private arm(): void {
-    if (this.timer || (!this.holders.size && !this.reservations.size)) return;
+    if (this.timer || (!this.calls.size && !this.reservations.size)) return;
     this.timer = this.setTimer(() => { this.timer = null; void this.scan().finally(() => this.arm()); }, HEAVY_SCAN_MS);
   }
 
-  /** One watcher tick: expiry for everyone, and a process check for any call that may not get a
-   *  PostToolUse. No listing can free a call that has never been seen running: it may be waiting at
-   *  a permission prompt, which comes after PreToolUse and reports nothing, and an approval arriving
-   *  after its slot went to someone else would run uncounted. Such a call is freed by its
-   *  PostToolUse, the turn ending, the PTY exiting or the TTL. A job counts as still running when a descendant of the agent's PTY classifies as
-   *  heavy or carries the command the agent ran, since the shell wrapper keeps that text even when
-   *  the process doing the work looks like `node x/y.mjs`. The PTY root is left out: its arguments
-   *  can quote the command without running it. A failed probe is no evidence either way. */
+  /** One watcher tick: expiry for everyone, and a process check for calls that may not get a
+   *  PostToolUse. Each call claims one process tree: the topmost process under the agent's PTY that
+   *  carries its command or classifies with its label, since the shell wrapper keeps the command's
+   *  text even when the process doing the work looks like `node x/y.mjs`. A claimed tree is evidence
+   *  for that call alone, so one running `npm test` cannot vouch for a second one. The PTY root is
+   *  left out: its arguments can quote a command without running it. A failed probe is no evidence
+   *  either way, and a process id reused while its call is still held would read as still running.
+   *
+   *  No listing can free a call that has never been seen running: it may be waiting at a permission
+   *  prompt, which comes after PreToolUse and reports nothing, and an approval arriving after its
+   *  slot went to someone else would run uncounted. Such a call is freed by its PostToolUse, the
+   *  turn ending, the PTY exiting or the TTL. */
   async scan(): Promise<void> {
     this.expire();
-    const watched = [...this.holders.values()].filter((h) => h.background || h.calls.size > 0);
-    if (!watched.length || !this.d.probe || !this.d.roots) return;
+    if (!this.calls.size || !this.d.probe || !this.d.roots) return;
     let procs: ProcRow[];
     try { procs = await this.d.probe(); } catch { return; }
     const parent = new Map(procs.map((p) => [p.pid, p.parentPid]));
     const rootOf = new Map(this.d.roots().map((r) => [r.pid, r.agentId]));
+    const lineage = (pid: number): number[] => {
+      const seen: number[] = []; let cur: number | undefined = parent.get(pid);
+      while (cur !== undefined && !seen.includes(cur)) { seen.push(cur); cur = parent.get(cur); }
+      return seen;
+    };
     const ownerOf = (pid: number): string | null => {
-      const seen = new Set<number>(); let cur: number | undefined = pid;
-      while (cur !== undefined && !seen.has(cur)) { seen.add(cur); const a = rootOf.get(cur); if (a) return a; cur = parent.get(cur); }
+      for (const p of [pid, ...lineage(pid)]) { const a = rootOf.get(p); if (a) return a; }
       return null;
     };
-    const under = new Map<string, string[]>();
+    const under = new Map<string, ProcRow[]>();
     for (const p of procs) {
       if (rootOf.has(p.pid)) continue;
       const a = ownerOf(p.pid);
-      if (a) under.set(a, [...(under.get(a) ?? []), p.commandLine]);
+      if (a) under.set(a, [...(under.get(a) ?? []), p]);
     }
-    for (const h of watched) {
-      if (!this.holders.has(h.agentId)) continue;
-      const lines = under.get(h.agentId) ?? [];
-      for (const c of h.calls.values()) {
-        if (!c.seen) c.seen = lines.some((l) => (!!c.command && l.includes(c.command)) || (!!c.why && classifyCommand(l).why === c.why));
+    const listed = new Set(procs.map((p) => p.pid));
+    const claimed = new Set<number>();
+    for (const c of this.calls.values()) if (c.pid !== undefined && listed.has(c.pid)) claimed.add(c.pid);
+    for (const c of [...this.calls.values()]) {
+      if (!this.calls.has(c.key)) continue;
+      if (c.pid === undefined || !listed.has(c.pid)) {
+        c.pid = undefined;
+        const matches = (under.get(c.agentId) ?? []).filter((p) => !claimed.has(p.pid) && !lineage(p.pid).some((a) => claimed.has(a))
+          && ((!!c.command && p.commandLine.includes(c.command)) || (!!c.why && classifyCommand(p.commandLine).why === c.why)));
+        const mine = new Set(matches.map((p) => p.pid));
+        c.pid = matches.find((p) => !lineage(p.pid).some((a) => mine.has(a)))?.pid;
+        if (c.pid !== undefined) claimed.add(c.pid);
       }
-      if ([...h.calls.values()].some((c) => !c.seen)) { h.misses = 0; continue; }
-      if (lines.some((l) => classifyCommand(l).heavy || [...h.commands].some((c) => c && l.includes(c)))) { h.misses = 0; h.touched = this.now(); continue; }
-      h.misses++;
-      if (h.misses >= HEAVY_SCAN_MISSES) this.release(h.agentId, 'process-exit');
+      if (c.pid !== undefined) { c.seen = true; c.misses = 0; c.touched = this.now(); continue; }
+      if (!c.seen && !c.posted) { c.misses = 0; continue; }
+      c.misses++;
+      if (c.misses >= HEAVY_SCAN_MISSES) this.release(c.key, 'process-exit');
     }
   }
 
