@@ -361,3 +361,13 @@ test('heavySlotNotice names the job and the deadline, and asks for no reply', ()
   assert.match(n.subject, /09:05Z/);
   assert.match(n.body, /No reply is needed/);
 });
+
+test('two overlapping calls with the same id hold the slot until both have finished', () => {
+  const x = lock(1);
+  x.l.acquire('a', H, 'npm test', 'cmd:npm test', false);
+  x.l.acquire('a', H, 'npm test', 'cmd:npm test', false);
+  x.l.callDone('a', 'cmd:npm test');
+  assert.equal(x.l.snapshot().length, 1, 'the second is still running');
+  x.l.callDone('a', 'cmd:npm test');
+  assert.equal(x.l.snapshot().length, 0);
+});

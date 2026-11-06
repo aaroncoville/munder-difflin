@@ -185,6 +185,8 @@ export function heavyLimit(v: unknown): HeavyLimit {
   return Number.isInteger(n) && n >= 1 ? Math.min(16, n) : HEAVY_DEFAULT_LIMIT;
 }
 
+export interface HeavyCall { count: number; command: string; why?: string }
+
 export interface HeavyHolder {
   agentId: string;
   kind: HeavyKind;
@@ -196,8 +198,9 @@ export interface HeavyHolder {
   since: number;
   /** Last acquire or re-entry: the TTL runs from here. */
   touched: number;
-  /** Heavy calls still running. */
-  calls: Set<string>;
+  /** Heavy calls still running, by id. Providers with no tool-use id fall back to the command as
+   *  the id, so two overlapping identical calls share an entry and are counted. */
+  calls: Map<string, HeavyCall>;
   /** A backgrounded job: its PostToolUse says nothing about whether it has finished. */
   background: boolean;
   /** Consecutive watcher scans that found no job of this holder. */
@@ -229,6 +232,12 @@ const COMMAND_KEEP = 200;
 
 export type HeavyDecision = { allow: true; acquired: boolean } | { allow: false; reason: string };
 type ReleaseReason = 'posttool' | 'turn-end' | 'process-exit' | 'pty-exit' | 'ttl';
+function addCall(calls: Map<string, HeavyCall>, callId: string, command: string, cls: HeavyClass): Map<string, HeavyCall> {
+  const call = calls.get(callId);
+  if (call) call.count++;
+  else calls.set(callId, { count: 1, command: command.slice(0, COMMAND_KEEP), why: cls.why });
+  return calls;
+}
 const clock = (ms: number): string => `${new Date(ms).toISOString().slice(11, 19)}Z`;
 
 export class HeavyJobLock {
@@ -277,7 +286,7 @@ export class HeavyJobLock {
     const mine = this.holders.get(agentId);
     if (mine) {
       // Re-entrant: an agent's heavy calls share its one slot (and refresh its TTL).
-      mine.calls.add(callId); mine.commands.add(command.slice(0, COMMAND_KEEP));
+      addCall(mine.calls, callId, command, cls); mine.commands.add(command.slice(0, COMMAND_KEEP));
       mine.background = mine.background || background; mine.touched = this.now(); mine.misses = 0;
       this.log({ kind: 'heavy-lock', action: 'reenter', agentId, heavyKind: cls.kind, job: cls.why });
       this.arm();
@@ -288,7 +297,7 @@ export class HeavyJobLock {
     if (!reserved && this.holders.size + this.reservations.size >= limit) return this.refuse(agentId, cls, limit);
     this.holders.set(agentId, {
       agentId, kind: cls.kind, label: cls.why ?? cls.kind, commands: new Set([command.slice(0, COMMAND_KEEP)]),
-      since: this.now(), touched: this.now(), calls: new Set([callId]), background, misses: 0
+      since: this.now(), touched: this.now(), calls: addCall(new Map(), callId, command, cls), background, misses: 0
     });
     this.log({ kind: 'heavy-lock', action: 'acquire', agentId, heavyKind: cls.kind, job: cls.why, background, limit, reserved });
     this.arm();
@@ -314,7 +323,10 @@ export class HeavyJobLock {
    *  background job. */
   callDone(agentId: string, callId: string): void {
     const h = this.holders.get(agentId);
-    if (!h || !h.calls.delete(callId)) return;
+    const call = h?.calls.get(callId);
+    if (!h || !call) return;
+    if (--call.count > 0) return;
+    h.calls.delete(callId);
     if (!h.calls.size && !h.background) this.release(agentId, 'posttool');
   }
 
