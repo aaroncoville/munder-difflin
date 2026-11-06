@@ -386,6 +386,7 @@ interface WorkerRec {
   spawnedAt: number;      // epoch ms
   command?: string;       // effective command LINE, so an early death can name it
   releasing?: boolean;    // kill issued; awaiting teardownPty (skip re-processing)
+  doneKept?: boolean;     // reported done and still inside its grace window
   /** Per-worker TOTAL-token cap from the spawn-request (overrides the config
    *  default). 0/undefined = no per-request cap. P4 plumbing — unlimited today. */
   tokenCap?: number;
@@ -5069,6 +5070,7 @@ async function ephemeralWorkerTick(): Promise<void> {
       if (rec.releasing) continue;
       const doneAt = workerDoneAt(workerId, rec.spawnedAt);
       const afterDone = doneAt === null ? null : afterWorkerDone(join(hive.root() ?? '', 'agents', workerId, 'inbox'), hive.registry()?.godId ?? 'god', doneAt, Date.now());
+      rec.doneKept = afterDone === 'keep';
       if (doneAt !== null && afterDone !== 'reengaged') {
         // Success: the worker already replied in-thread; just release it.
         rec.releasing = afterDone === 'release';
@@ -5213,7 +5215,7 @@ interface WorkerSnapshot {
   tokenCap: number | null;      // effective cap (per-request or config default); null = unlimited
   hasSlack: boolean;
   releasing: boolean;
-  status: 'releasing' | 'working';
+  status: 'releasing' | 'done' | 'working';
 }
 /** Snapshot of a preserved-but-not-yet-GC'd worktree for the tab. */
 interface PreservedSnapshot {
@@ -5244,7 +5246,7 @@ ipcMain.handle('workers:list', (): { live: WorkerSnapshot[]; preserved: Preserve
       tokenCap: effCap > 0 ? effCap : null,
       hasSlack: !!rec.slack,
       releasing: !!rec.releasing,
-      status: rec.releasing ? 'releasing' : 'working'
+      status: rec.releasing ? 'releasing' : rec.doneKept ? 'done' : 'working'
     };
   });
   const preserved: PreservedSnapshot[] = [...preservedWorktrees.values()].map((e) => ({

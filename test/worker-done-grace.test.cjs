@@ -121,6 +121,9 @@ function liveTickSource() {
     assert.ok(node, `${name} is a top-level function of index.ts`);
     return node.getText(ast);
   });
+  const listHandler = ast.statements.find((n) => ts.isExpressionStatement(n) && n.getText(ast).startsWith("ipcMain.handle('workers:list'"));
+  assert.ok(listHandler, 'the workers:list handler is a top-level statement of index.ts');
+  bodies.push(listHandler.getText(ast));
   return ts.transpileModule(`${bodies.join('\n')}\n({ ephemeralWorkerTick })`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 }
@@ -154,8 +157,10 @@ async function setup(t, overrides = {}) {
   const rec = { workerId: id, reqId: 'w', name: 'W', baseBranch: 'main', spawnedAt: T0 - 600_000, releasing: false };
   const liveWorkers = new Map([[id, rec]]);
   const calls = { kill: [], notices: [], gone: [] };
+  const handlers = {};
   const context = {
     Date: FakeDate, Math, Number, JSON, Set, Map, console: { log() {}, warn() {}, error(e) { throw e; } },
+    ipcMain: { handle: (channel, fn) => { handlers[channel] = fn; } },
     liveWorkers, workerTickRunning: false, preservedWorktrees: new Map(), lastGcSweepAt: T0, GC_SWEEP_MS: 60_000,
     worktreePaths: new Map([[id, wt]]),
     readConfig: () => ({ orchestratorMaySpawn: false }),
@@ -176,6 +181,7 @@ async function setup(t, overrides = {}) {
   const write = (dir, name, msg, at = clock) => put(path.join(agentDir, dir), name, msg, at);
   return {
     hive, id, rec, calls, wt, commit, context, tick: ephemeralWorkerTick,
+    status: () => handlers['workers:list']().live.find((w) => w.workerId === id)?.status,
     advance: (ms) => { clock += ms; },
     done: (name, created_at = iso(clock)) => write('outbox/.sent', name, { from: id, to: 'god-1', act: 'done', created_at }),
     staleDone: (name, created_at) => write('outbox/.sent', name, { from: id, to: 'god-1', act: 'done', created_at }, T0 - 700_000),
@@ -317,6 +323,25 @@ test('tick: a worker over its token cap is reaped inside the window, and one und
   await f.tick();
   assert.deepEqual(f.calls.kill, [f.id], 'reporting done must not exempt a worker that keeps spending');
   assert.match(f.calls.notices.at(-1).subject, /token cap/);
+});
+
+// A kept worker still holds a concurrency slot, and showing it as working would
+// leave a full tab with nothing to explain why new requests are queueing.
+test('the workers list shows a kept worker as done, and as working again once re-engaged', async (t) => {
+  const f = await setup(t);
+  assert.equal(f.status(), 'working');
+  f.done('d1');
+  f.advance(1_000);
+  await f.tick();
+  assert.equal(f.status(), 'done');
+  f.advance(1_000);
+  f.fromGod('followup');
+  await f.tick();
+  assert.equal(f.status(), 'working', 'it has work again');
+  f.done('d2');
+  f.advance(GRACE);
+  f.rec.releasing = true;
+  assert.equal(f.status(), 'releasing');
 });
 
 test('tick: the idle reaper leaves a worker alone inside its window', async (t) => {
