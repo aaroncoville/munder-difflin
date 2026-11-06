@@ -71,6 +71,7 @@ import { buildWorkerLaunch } from './workerLaunch';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WakeSkipLog, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
 import { shouldReapIdle, workerHasLiveJob } from './workerIdleJobs';
+import { afterWorkerDone } from './workerDoneGrace';
 import {
   CODEX_ACTIVITY_TTL_MS,
   CodexHomes,
@@ -5067,10 +5068,11 @@ async function ephemeralWorkerTick(): Promise<void> {
     for (const [workerId, rec] of [...liveWorkers]) {
       if (rec.releasing) continue;
       const doneAt = workerDoneAt(workerId, rec.spawnedAt);
-      if (doneAt !== null) {
+      const afterDone = doneAt === null ? null : afterWorkerDone(join(hive.root() ?? '', 'agents', workerId, 'inbox'), hive.registry()?.godId ?? 'god', doneAt, Date.now());
+      if (doneAt !== null && afterDone !== 'reengaged') {
         // Success: the worker already replied in-thread; just release it.
-        rec.releasing = true;
-        console.log(`[worker] ${workerId} signaled done — releasing`);
+        rec.releasing = afterDone === 'release';
+        if (rec.releasing) console.log(`[worker] ${workerId} signaled done — releasing`);
         // Its mailbox is finished with too. Workers seldom file their own work
         // order before signaling done, and the id is reused on every re-hire of
         // the same name, so anything left unread here would greet the next
@@ -5084,7 +5086,7 @@ async function ephemeralWorkerTick(): Promise<void> {
         // which requests/queries were filed unread, so none vanishes silently.
         const settled = hive.settleInbox(workerId, doneAt);
         if (settled.moved > 0) console.log(`[worker] ${workerId}: filed ${settled.moved} unread inbox message(s) under inbox/.done`);
-        if (settled.kept > 0) console.log(`[worker] ${workerId}: left ${settled.kept} message(s) that arrived after its done signal pending`);
+        if (settled.kept > 0 && rec.releasing) console.log(`[worker] ${workerId}: left ${settled.kept} message(s) that arrived after its done signal pending`);
         // The worker's own work order is dispatched in conversation
         // `worker-<reqId>` (processSpawnRequest) and is exactly what it just
         // completed: reporting it "filed unread" on every release would cost
@@ -5096,12 +5098,14 @@ async function ephemeralWorkerTick(): Promise<void> {
           const lines = unanswered.map((m) => `- ${m.act} ${oneLine(m.id)} from ${oneLine(m.from)}: "${oneLine(m.subject)}"`);
           informGod(
             `[worker released — mail filed unread] ${workerId}`,
-            `Worker ${workerId} signaled done and was released. These messages were still unread in its inbox and were filed under inbox/.done without an answer:\n`
+            `Worker ${workerId} signaled done and is being released. These messages were still unread in its inbox and were filed under inbox/.done without an answer:\n`
             + lines.join('\n')
             + `\nIf one of them is not the order it just completed, nobody is working on it — resend it to another agent or re-hire the worker.`,
             rec.slack
           );
         }
+        // Inside the window: stays reachable, its old mail settled above so the inbox-wake watchdog cannot nudge it to redo it.
+        if (afterDone === 'keep') continue;
         ptyManager.kill(workerId);
         teardownPty(workerId);
         continue;
