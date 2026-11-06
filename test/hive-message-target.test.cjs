@@ -35,7 +35,7 @@ async function floor(t, emit) {
 /** Every file under `dir` outside the sender's outbox and the log, so a stray write shows up. */
 function files(dir) {
   return fs.readdirSync(dir, { recursive: true }).map(String)
-    .filter((f) => !f.endsWith('log.jsonl') && !f.split(path.sep).includes('.git') && !f.split(path.sep).includes('outbox') && !f.split(path.sep).includes('.claims'))
+    .filter((f) => !f.endsWith('log.jsonl') && !f.split(path.sep).includes('.git') && !f.split(path.sep).includes('outbox'))
     .sort();
 }
 
@@ -72,9 +72,14 @@ for (const [label, to] of Object.entries(REFUSED)) {
     assert.match(notices[0].body, /roster/);
     assert.deepEqual(hive.inbox('god-1'), [], 'it does not reach god either');
     assert.deepEqual(hive.inbox('worker-2'), []);
-    const added = files(home).filter((f) => !before.includes(f));
-    assert.equal(added.length, 1, `only the notice: ${added}`);
-    assert.ok(added[0].includes(path.join('worker-1', 'inbox')));
+    // Exactly the notice and the claim on its own id. A claim anywhere else would mean
+    // a path was built from the refused value, so claims are not excluded from this.
+    const senderInbox = path.join('hive', 'agents', 'worker-1', 'inbox');
+    assert.deepEqual(files(home).filter((f) => !before.includes(f)), [
+      path.join(senderInbox, '.claims'),
+      path.join(senderInbox, '.claims', notices[0].id),
+      path.join(senderInbox, `${notices[0].id}.json`)
+    ].sort());
     assert.ok(hive.logTail(50).some((r) => r.kind === 'drop' && r.reason === 'unknown-recipient'));
   });
 }
