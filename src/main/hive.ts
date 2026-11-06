@@ -29,7 +29,6 @@ import { spawnSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
 import type { AgentUsageSample } from './usage';
 import { archiveOutboxFile, moveWithoutReplacing, quarantineOutboxFile, reportOutboxFailure, type OutboxStage } from './outboxFailure';
-import { hasExactFolder, isKnownTarget, isRosterId, newRosterIdRefusal, rosterIdFor, shortTarget } from './messageTarget';
 import { COMMAND_GROUPS } from '../shared/claudeCommands';
 import { ensureCodexShortHome } from '../shared/codexRemote';
 import {
@@ -46,6 +45,7 @@ import { preferredAgentRole } from '../shared/agentRole';
 import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde } from './fs';
 import { refreshMineIgnoresOnce } from './hiveMineIgnore';
+import { hasExactFolder, isKnownTarget, isRosterId, newRosterIdRefusal, rosterIdFor, shortTarget } from './messageTarget';
 import { codexTrustEntry } from '../shared/codexTrust';
 import { withCodexWritableRoots } from '../shared/codexWritableRoots';
 import { resolveGodName } from '../shared/godIdentity';
