@@ -1353,6 +1353,7 @@ export class HiveManager {
         SubagentStop: [entry()],
         PreToolUse: [entry('*')],
         PostToolUse: [entry('*')],
+        PostToolUseFailure: [entry('*')],
         UserPromptSubmit: [entry()],
         Notification: [entry()],
         SessionStart: [entry()],
@@ -3391,6 +3392,33 @@ function post(payload) {
     c.on('error', function () {});
   } catch (e) {}
 }
+/* Ask the hook server and wait, for the one event a provider can act on. Fails open: an unreachable
+   server must not wedge the agent. A frame that cannot be sent answers at once. */
+function ask(payload, allowed) {
+  var frame;
+  try {
+    if (!SOCK) return allowed;
+    payload.agent_id = payload.agent_id || AGENT;
+    frame = JSON.stringify(payload) + '\\n';
+  } catch (e) { return allowed; }
+  return new Promise(function (resolve) {
+    var resp = '';
+    var timer = null;
+    var done = function () {
+      if (timer) clearTimeout(timer);
+      var out = null;
+      try { out = JSON.parse(resp).hookSpecificOutput; } catch (e) {}
+      resolve(out && out.permissionDecision === 'deny' ? { block: true, reason: out.permissionDecisionReason } : allowed);
+    };
+    try {
+      if (typeof setTimeout === 'function') timer = setTimeout(done, 5000);
+      var c = net.createConnection(SOCK, function () { try { c.end(frame); } catch (e) { done(); } });
+      c.on('data', function (d) { resp += d; });
+      c.on('end', done);
+      c.on('error', done);
+    } catch (e) { done(); }
+  });
+}
 function firstDefined(primary, fallback) {
   return primary !== undefined && primary !== null ? primary : fallback;
 }
@@ -3408,6 +3436,7 @@ function piToolPayload(hookEventName, ev) {
   return {
     hook_event_name: hookEventName,
     tool_name: piToolName(ev),
+    tool_use_id: piField(ev, 'toolCallId'),
     tool_input: piToolInput(ev)
   };
 }
@@ -3415,9 +3444,9 @@ function register(pi) {
   if (!pi || typeof pi.on !== 'function') return false;
   try {
     pi.on('tool_call', function (ev) {
-      post(piToolPayload('PreToolUse', ev));
-      if (AUTO) { try { if (ev && typeof ev.approve === 'function') ev.approve(); } catch (e) {} return { approve: true }; }
-      return undefined;
+      var allowed;
+      if (AUTO) { try { if (ev && typeof ev.approve === 'function') ev.approve(); } catch (e) {} allowed = { approve: true }; }
+      return ask(piToolPayload('PreToolUse', ev), allowed);
     });
     pi.on('tool_result', function (ev) { post(piToolPayload('PostToolUse', ev)); });
     pi.on('agent_end', function () { post({ hook_event_name: 'Stop' }); });
@@ -3448,16 +3477,48 @@ function post(payload) {
     c.on('error', () => {});
   } catch (e) {}
 }
+/* Ask the hook server and wait: the reason to refuse the call, or null. Fails open, so an unreachable
+   server cannot wedge the agent. */
+function denial(payload) {
+  return new Promise((resolve) => {
+    let resp = '';
+    let timer = null;
+    const done = () => {
+      if (timer) clearTimeout(timer);
+      let out = null;
+      try { out = JSON.parse(resp).hookSpecificOutput; } catch (e) {}
+      resolve(out && out.permissionDecision === 'deny' ? (out.permissionDecisionReason || 'Denied.') : null);
+    };
+    try {
+      if (!SOCK) return done();
+      payload.agent_id = payload.agent_id || AGENT;
+      const frame = JSON.stringify(payload) + '\\n';
+      timer = setTimeout(done, 5000);
+      const c = createConnection(SOCK, () => { try { c.end(frame); } catch (e) { done(); } });
+      c.on('data', (d) => { resp += d; });
+      c.on('end', done);
+      c.on('error', done);
+    } catch (e) { done(); }
+  });
+}
 export const HiveBridge = async () => {
+  const children = new Set();
   return {
     event: async (input) => {
-      try { if (input && input.event && input.event.type === 'session.idle') post({ hook_event_name: 'Stop' }); } catch (e) {}
+      try {
+        const ev = (input && input.event) || {};
+        const props = ev.properties || {};
+        if ((ev.type === 'session.created' || ev.type === 'session.updated') && props.info && props.info.parentID) children.add(props.info.id);
+        // A subagent is a child session under this PTY, and goes idle while its parent is still busy.
+        if (ev.type === 'session.idle') post({ hook_event_name: children.has(props.sessionID) ? 'SubagentStop' : 'Stop', tool_session_id: props.sessionID || 'unknown' });
+      } catch (e) {}
     },
-    'tool.execute.before': async (input) => {
-      try { post({ hook_event_name: 'PreToolUse', tool_name: input && (input.tool || input.name) }); } catch (e) {}
+    'tool.execute.before': async (input, output) => {
+      const reason = await denial({ hook_event_name: 'PreToolUse', tool_name: input && (input.tool || input.name), tool_use_id: input && input.callID, tool_session_id: input && input.sessionID, tool_input: (output && output.args) || (input && input.args) });
+      if (reason) throw new Error(reason);
     },
     'tool.execute.after': async (input) => {
-      try { post({ hook_event_name: 'PostToolUse', tool_name: input && (input.tool || input.name) }); } catch (e) {}
+      try { post({ hook_event_name: 'PostToolUse', tool_name: input && (input.tool || input.name), tool_use_id: input && input.callID, tool_input: input && input.args }); } catch (e) {}
     }
   };
 };
