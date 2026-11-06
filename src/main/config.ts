@@ -212,6 +212,9 @@ export interface HarnessConfig {
    *  Off does not FAIL a queued spawn request, it declines to consume one. The
    *  request sits in HIVE_ROOT/spawn-requests until the toggle is turned on. */
   orchestratorMaySpawn: boolean;
+  /** How many heavy jobs (installs, builds, full test suites) agents may run at once; another is
+   *  refused and queued. 'off' = no limit. Read on every hook, so a change applies at once. */
+  heavyJobsAtOnce?: number | 'off';
   /** The command we run when spawning a new agent. */
   defaultCommand: string;
   /** Default model for newly spawned agents (e.g. 'claude-sonnet-4-6[1m]'); unset = CLI default. */
@@ -461,6 +464,7 @@ const DEFAULTS: HarnessConfig = {
   registeredRepos: [],
   autoMode: true,
   orchestratorMaySpawn: false,
+  heavyJobsAtOnce: 2,
   defaultCommand: 'claude',
   godProvider: 'claude',
   godModel: 'claude-opus-4-8',

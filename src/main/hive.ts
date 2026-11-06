@@ -1353,6 +1353,7 @@ export class HiveManager {
         SubagentStop: [entry()],
         PreToolUse: [entry('*')],
         PostToolUse: [entry('*')],
+        PostToolUseFailure: [entry('*')],
         UserPromptSubmit: [entry()],
         Notification: [entry()],
         SessionStart: [entry()],

@@ -15,6 +15,7 @@ import { existsSync, rmSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { Notification, type WebContents } from 'electron';
 import type { HiveManager } from './hive';
+import { gateHeavyCall, settleHeavyCall, type HeavyJobLock } from './heavyJob';
 import type { HarnessConfig } from './config';
 import type { ControlRegistry } from './control';
 import type { CircuitBreaker } from './breaker';
@@ -36,6 +37,7 @@ interface HookPayload {
   cwd?: string;
   tool_name?: string;
   tool_input?: unknown;
+  tool_use_id?: string;
   stop_hook_active?: boolean;
   prompt?: string;
   source?: string;
@@ -59,6 +61,8 @@ interface HookPayload {
  *  is recorded — and until #277 nothing said so. The beat writes this into
  *  fleet.json so an operator (or god) can see it without a debugger. */
 export interface HookSocketHealth {
+  /** Who holds and who awaits the heavy-job slots; absent when no lock is wired. */
+  heavyLock?: ReturnType<HeavyJobLock['status']>;
   /** HIVE_SOCK — where the shims connect. null while the hive has no root. */
   path: string | null;
   /** True only while our server is listening AND (POSIX) the path still
@@ -167,6 +171,7 @@ export class HookServer {
   health(): HookSocketHealth {
     const listening = !!this.server?.listening && this.bound !== null;
     return {
+      ...(this.heavyLock ? { heavyLock: this.heavyLock.status() } : {}),
       path: this.hive.sockPath(),
       listening,
       since: listening && this.bound ? this.bound.since : null,
@@ -380,6 +385,10 @@ export class HookServer {
     return this.contextById.get(agentId);
   }
 
+  /** Limits concurrent heavy jobs across agents; null leaves every call alone. */
+  private heavyLock: HeavyJobLock | null = null;
+  setHeavyLock(lock: HeavyJobLock | null): void { this.heavyLock = lock; }
+
   private handle(p: HookPayload): unknown {
     const agentId = p.agent_id ?? undefined;
     const event = p.hook_event_name ?? 'Unknown';
@@ -417,6 +426,10 @@ export class HookServer {
       }
       return {};
     }
+
+    // Before every gate and early return below: a finished call must free its heavy-job slot even
+    // when the agent is halted or the hook answers with queued context.
+    if (agentId && this.heavyLock) settleHeavyCall(this.heavyLock, agentId, event, p);
 
     // 7C.3 — a graceful operator HALT overrides everything (incl. the inbox
     // drain below): stop the agent CLEANLY at this hook boundary rather than
@@ -521,6 +534,18 @@ export class HookServer {
             permissionDecisionReason: d.reason ?? 'Denied by operator.'
           }
         };
+      }
+    }
+
+    // After the approval gate above: a call it denies gets no PostToolUse, so a slot taken earlier
+    // would stay held. Slow approval at Claude's own prompt comes after this hook, and a rejection
+    // there is caught when the turn ends.
+    if (event === 'PreToolUse' && agentId && this.heavyLock) {
+      const reason = gateHeavyCall(this.heavyLock, agentId, p);
+      if (reason) {
+        this.emitControl(agentId, p.tool_name, reason);
+        this.emit(agentId, event, p);
+        return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } };
       }
     }
 

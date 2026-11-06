@@ -31,6 +31,7 @@ import { linkWorktreeDeps, unlinkWorktreeDeps } from './worktreeDeps';
 import { saveAskAttachment } from './askAttachments';
 import { HiveManager, type AgentMeta, type HiveMessage, type HiveTask } from './hive';
 import { HookServer } from './hooks';
+import { HeavyJobLock, heavyLimit, heavySlotNotice, probeProcesses } from './heavyJob';
 import { CircuitBreaker, type BreakerInput } from './breaker';
 import { shouldReengage, doingTaskTally, suppressionReason } from './heartbeatPolicy';
 import { CumulativeSampleGate, RunBaseline, snapshotUsageFor, usesCumulativeGate, type UsageProvider } from './usage';
@@ -322,6 +323,21 @@ const hookServer = new HookServer(
   standingGoalFromRoster,
   (agentId, event, message) => workerWake.noteHook(agentId, event, message)
 );
+// The machine's heavy-job slots. A queued agent is told on both channels when one is reserved for
+// it: mail wakes an idle agent, and a steer reaches a busy one at its next hook.
+const heavyLock = new HeavyJobLock({
+  limit: () => heavyLimit(readConfig().heavyJobsAtOnce),
+  roots: () => ptyManager.list().flatMap((s) => { const a = ptyToAgent.get(s.id); return a && s.pid > 0 ? [{ agentId: a, pid: s.pid }] : []; }),
+  probe: probeProcesses,
+  log: (row) => { try { hive.appendLog(row); } catch { /* best effort */ } },
+  alive: (agentId) => [...ptyToAgent.values()].includes(agentId),
+  notify: (agentId, kind, until) => {
+    const notice = heavySlotNotice(kind, until);
+    try { hive.send({ to: agentId, act: 'inform', requires_reply: false, ...notice }, 'system'); } catch { /* best effort */ }
+    try { control.steer(agentId, notice.subject); } catch { /* best effort */ }
+  }
+});
+hookServer.setHeavyLock(heavyLock);
 const memory = new MemoryManager(
   () => readConfig().harnessHome,
   () => migrateMemorySettings(readConfig())
@@ -485,6 +501,8 @@ function teardownPty(id: string): void {
     ptyToAgent.delete(id);
     // Drop watchdog state so a dead agent can't get nudged or leak its grace.
     try { workerWake.forget(agentId, id); } catch { /* best-effort */ }
+    // Its jobs went with the PTY, unless another PTY of the same agent is still alive.
+    if (![...ptyToAgent.values()].includes(agentId)) { try { heavyLock.agentGone(agentId); } catch { /* best-effort */ } }
     // Drop breaker state so a dead agent can't leak/zombie a tripped level.
     try { breaker.forget(agentId); } catch { /* best-effort */ }
     // A replacement using this id needs a new usage counter, not the dead PTY's.
@@ -3432,6 +3450,7 @@ ipcMain.handle('config:changeHome', async (_evt, payload: unknown) => {
   // (Identical recovery path to resetAll — relaunch is the clean re-bind.)
   allowQuit = true;
   writeConfig({ harnessHome: newHome });
+  try { heavyLock.agentsGone(ptyToAgent.values()); } catch { /* bulk kill skips exit callbacks */ }
   try { ptyManager.killAll(); } catch (e) { console.error('[changeHome] killAll:', e); }
   app.relaunch();
   app.exit(0);
@@ -3922,6 +3941,7 @@ function teardownAndQuit(): void {
   try { reflector.stop(); } catch (e) { console.error('[quit] reflector.stop:', e); }
   try { persist.close(); } catch (e) { console.error('[quit] persist.close:', e); }
   try { hive.stopAllProxyBridges(); } catch (e) { console.error('[quit] stopAllProxyBridges:', e); }
+  try { heavyLock.agentsGone(ptyToAgent.values()); } catch { /* bulk kill skips exit callbacks */ }
   try { ptyManager.killAll(); } catch (e) { console.error('[quit] killAll:', e); }
   app.quit();
 }
@@ -4017,6 +4037,7 @@ ipcMain.handle('app:resetAll', () => {
   try { memory.stop(); } catch (e) { console.error('[reset] memory.stop:', e); }
   try { reflector.stop(); } catch (e) { console.error('[reset] reflector.stop:', e); }
   try { persist.close(); } catch (e) { console.error('[reset] persist.close:', e); }
+  try { heavyLock.agentsGone(ptyToAgent.values()); } catch { /* bulk kill skips exit callbacks */ }
   try { ptyManager.killAll(); } catch (e) { console.error('[reset] killAll:', e); }
   try { hive.removeExposedCodexData(); } catch (e) { console.error('[reset] removeExposedCodexData:', e); }
   // Erase the hive (Michael's + every agent's memory, inboxes, tasks, board,
