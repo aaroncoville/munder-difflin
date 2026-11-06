@@ -29,7 +29,7 @@ import { spawnSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
 import type { AgentUsageSample } from './usage';
 import { archiveOutboxFile, moveWithoutReplacing, quarantineOutboxFile, reportOutboxFailure, type OutboxStage } from './outboxFailure';
-import { isKnownTarget, isRosterId, shortTarget } from './messageTarget';
+import { hasExactFolder, isKnownTarget, isRosterId, newRosterIdRefusal, rosterIdFor, shortTarget } from './messageTarget';
 import { COMMAND_GROUPS } from '../shared/claudeCommands';
 import { ensureCodexShortHome } from '../shared/codexRemote';
 import {
@@ -778,6 +778,8 @@ export class HiveManager {
       extraWritableDirs?: string[];
     } = {}
   ): Promise<SpawnInjection> {
+    const refusal = newRosterIdRefusal(this.registry().agents, meta.id, meta.isGod === true);
+    if (refusal) throw new Error(`Agent id ${shortTarget(meta.id)}: ${refusal}`);
     const root = this.root();
     if (!root) return { args: [], env: {} };
     this.ensureHive();
@@ -1702,6 +1704,7 @@ export class HiveManager {
    *  log the drop rather than let the message vanish. */
   private deliver(msg: HiveMessage, toId: string): boolean {
     if (!isRosterId(this.registry().agents, toId)) return false; // never build a path from anything else
+    if (!hasExactFolder(join(this.root()!, 'agents'), toId)) return false; // nor open a near match's folder
     const inbox = join(this.agentDir(toId), 'inbox');
     if (!existsSync(inbox)) return false; // unknown recipient — the caller reports it
     const id = publishMessage(inbox, msg, () => `${stamp()}-${shortRand()}`);
@@ -1748,7 +1751,7 @@ export class HiveManager {
     // The hive has no separate human-approval queue — approvals are native to
     // each agent's Claude Code session (and approvable remotely). A message aimed
     // at "human" is handled by the god/orchestrator, the human's proxy here.
-    const resolveTo = (to: string): string => (to === 'human' || to === 'god' ? godId : to);
+    const resolveTo = (to: string): string => (to === 'human' || to === 'god' ? godId : rosterIdFor(reg.agents, to) ?? to);
     const targets = msg.to === 'broadcast'
       // The roster for fan-out is the ACTIVE registry: skip the send-only prep
       // assistant and any archived agent (closed tab). Hookless providers are

@@ -50,7 +50,6 @@ const REFUSED = {
   'an empty string': '',
   'a space': ' ',
   'an unknown id': 'nobody',
-  'a roster name in the wrong case': 'WORKER-2',
   'a NUL byte': 'worker-2\u0000',
   'an oversize value': 'x'.repeat(5000),
   'an inherited property': '__proto__',
@@ -117,6 +116,13 @@ test('the log holds a shortened target, and the notice a shortened one too', asy
   const row = hive.logTail(50).find((r) => r.reason === 'unknown-recipient');
   assert.ok(String(row.to).length <= 80);
   assert.ok(hive.inbox('worker-1')[0].body.length < 500);
+});
+
+test('a roster id in the wrong case reaches that agent', async (t) => {
+  const { hive, write } = await floor(t);
+  write('m.json', 'WORKER-2');
+  assert.equal(hive.routeOnce(), 1);
+  assert.equal(hive.inbox('worker-2').length, 1);
 });
 
 test('a roster id is delivered', async (t) => {
@@ -247,4 +253,122 @@ test('a god id on disk that is a path is not delivered to', async (t) => {
   hive.routeOnce();
 
   assert.deepEqual(fs.readdirSync(outside), []);
+});
+
+for (const id of ['heartbeat', 'HEARTBEAT', 'Scheduler', 'system', 'router', 'ephemeral-worker', 'webhook', 'breaker', 'broadcast', 'human']) {
+  test(`an agent cannot be provisioned under the reserved name ${id}`, async (t) => {
+    const { hive, agents, home } = await floor(t);
+    await assert.rejects(hive.ensureAgent({ id, name: 'x', provider: 'claude', cwd: home }), /reserved/);
+    assert.equal(fs.existsSync(path.join(agents, id)), false);
+    assert.equal(Object.keys(hive.registry().agents).includes(id), false);
+  });
+}
+
+const COLLIDING = {
+  'another case': ['Agent', 'agent'],
+  'a non-ASCII letter in another case': ['Ägent', 'ägent'],
+  'composed and decomposed forms': ['café', 'café'],
+  'a sharp s': ['straße', 'STRASSE']
+};
+
+for (const [label, [first, second]] of Object.entries(COLLIDING)) {
+  test(`a new id colliding through ${label} is refused, with no folder or roster entry`, async (t) => {
+    const { hive, agents, home } = await floor(t);
+    await hive.ensureAgent({ id: first, name: 'x', provider: 'claude', cwd: home });
+    const before = fs.readdirSync(agents).sort();
+
+    await assert.rejects(hive.ensureAgent({ id: second, name: 'y', provider: 'claude', cwd: home }), /already/);
+
+    assert.deepEqual(fs.readdirSync(agents).sort(), before);
+    assert.equal(Object.keys(hive.registry().agents).includes(second), false);
+  });
+
+  test(`mail to a spelling differing by ${label} reaches that one agent`, async (t) => {
+    const { hive, home, agents } = await floor(t);
+    await hive.ensureAgent({ id: first, name: 'x', provider: 'claude', cwd: home });
+    fs.writeFileSync(path.join(agents, 'worker-1', 'outbox', 'm.json'), JSON.stringify({ to: second, act: 'inform', subject: 's', body: 'b' }));
+
+    assert.equal(hive.routeOnce(), 1);
+
+    assert.equal(hive.inbox(first).length, 1);
+    assert.equal(hive.logTail(50).some((r) => r.kind === 'message' && r.delivered?.[0] === first), true);
+  });
+}
+
+test('provisioning an existing agent again is allowed', async (t) => {
+  const { hive, home } = await floor(t);
+  await hive.ensureAgent({ id: 'worker-1', name: 'Helper', provider: 'claude', cwd: home });
+  assert.equal(hive.registry().agents['worker-1'].name, 'Helper');
+});
+
+for (const id of ['a.', 'a ', 'CON', 'nul', 'com1.txt', 'a/b', '..', '', 'x'.repeat(201)]) {
+  test(`an agent cannot be provisioned under the unsafe folder name ${JSON.stringify(id.slice(0, 12))}`, async (t) => {
+    const { hive, home } = await floor(t);
+    await assert.rejects(hive.ensureAgent({ id, name: 'x', provider: 'claude', cwd: home }), /folder name/);
+  });
+}
+
+function addRosterEntry(hive, id, extra = {}) {
+  const file = path.join(hive.root(), 'registry.json');
+  const reg = JSON.parse(fs.readFileSync(file, 'utf8'));
+  reg.agents[id] = { id, name: 'x', provider: 'claude', cwd: '.', ...extra };
+  fs.writeFileSync(file, JSON.stringify(reg));
+}
+
+test('a roster entry named after an app sender does not capture replies to it', async (t) => {
+  const { hive, agents, write } = await floor(t);
+  addRosterEntry(hive, 'heartbeat');
+  const inbox = path.join(agents, 'heartbeat', 'inbox');
+  fs.mkdirSync(path.join(inbox, '.done'), { recursive: true });
+
+  write('m.json', 'heartbeat');
+  assert.equal(hive.routeOnce(), 1);
+
+  assert.deepEqual(fs.readdirSync(inbox).filter((f) => f.endsWith('.json')), []);
+  assert.equal(hive.inbox('god-1').length, 1, 'the name means the app, so it surfaces to god');
+});
+
+test('a reply to an app sender in another case surfaces the same way', async (t) => {
+  const { hive, write, sent } = await floor(t);
+  write('m.json', 'HeartBeat');
+  assert.equal(hive.routeOnce(), 1);
+  assert.equal(sent('m.json'), true);
+  assert.equal(hive.inbox('god-1').length, 1);
+});
+
+test('a broadcast skips a roster entry named after an app sender', async (t) => {
+  const { hive, agents, write } = await floor(t);
+  addRosterEntry(hive, 'scheduler');
+  const inbox = path.join(agents, 'scheduler', 'inbox');
+  fs.mkdirSync(inbox, { recursive: true });
+
+  write('m.json', 'broadcast');
+  hive.routeOnce();
+
+  assert.deepEqual(fs.readdirSync(inbox), []);
+});
+
+test('two roster spellings of one folder: the one with no exact folder entry is not delivered to', async (t) => {
+  const { hive, home, agents, write } = await floor(t);
+  await hive.ensureAgent({ id: 'Agent', name: 'x', provider: 'claude', cwd: home });
+  addRosterEntry(hive, 'agent');
+
+  write('m.json', 'agent');
+  hive.routeOnce();
+
+  assert.equal(fs.readdirSync(agents).includes('agent'), false);
+  assert.deepEqual(fs.readdirSync(path.join(agents, 'Agent', 'inbox')).filter((f) => f.endsWith('.json')), [], 'the other agent gets none of it');
+  assert.equal(hive.inbox('god-1').length, 1, 'it surfaces to god');
+});
+
+test('an inexact spelling matching two roster entries is refused', async (t) => {
+  const { hive, home, agents, write, sent } = await floor(t);
+  await hive.ensureAgent({ id: 'Agent', name: 'x', provider: 'claude', cwd: home });
+  addRosterEntry(hive, 'agent');
+
+  write('m.json', 'AGENT');
+  hive.routeOnce();
+
+  assert.equal(sent('bad-m.json'), true);
+  assert.deepEqual(fs.readdirSync(path.join(agents, 'Agent', 'inbox')).filter((f) => f.endsWith('.json')), []);
 });
