@@ -78,12 +78,94 @@ test('with no node anywhere it says what is missing and exits 127', { skip: !POS
   assert.ok(r.stderr.includes(missing), 'and names the binary it expected');
 });
 
-test('the Windows launcher checks the binary and falls back to node on PATH', () => {
-  const body = nodeLauncherScript('C:\\App\\app.exe', 'win32', 'C:\\h\\bin\\runtime\\node.cmd');
-  assert.match(body, /^@echo off\r\n/);
-  assert.match(body, /if not exist "C:\\App\\app\.exe" goto /);
-  assert.match(body, /set ELECTRON_RUN_AS_NODE=1\r\n"C:\\App\\app\.exe" %\*\r\nexit \/b %errorlevel%/);
-  assert.match(body, /\r\nnode %\*\r\n/);
+// ---- Windows ----
+// This walks the generated script's own lines, so a change to its flow changes the result. It knows cmd.exe's control
+// flow, not its quoting, and throws on any line it does not recognise. The real cmd.exe test below covers the rest
+// wherever these tests run on Windows.
+function runBatch(script, { exists = [], where = [], env = {} }) {
+  const vars = { LOCALAPPDATA: 'C:\\Users\\u\\AppData\\Local', ProgramFiles: 'C:\\Program Files', ...env };
+  const lines = script.split('\r\n').filter(Boolean);
+  const out = { ran: null, ranWith: null, exit: null, stderr: '' };
+  const label = (name) => { const at = lines.indexOf(`:${name}`); assert.notEqual(at, -1, `no label ${name}`); return at; };
+  const expand = (line) => line.replace(/%(LOCALAPPDATA|ProgramFiles|FOUND_NODE)%/g, (_, v) => vars[v] ?? '');
+  for (let at = 0; at < lines.length; at++) {
+    const line = expand(lines[at]);
+    let m;
+    if (line === '@echo off' || line.startsWith(':')) continue;
+    if ((m = line.match(/^if not exist "([^"]+)" goto (\w+)$/))) { if (!exists.includes(m[1])) at = label(m[2]); continue; }
+    if ((m = line.match(/^set (\w+)=(.*)$/))) { vars[m[1]] = m[2]; continue; }
+    if ((m = line.match(/^for \/f "delims=" %%N in \('where node 2\^>nul'\) do if \/i not "%%~fN"=="([^"]+)" \(set "(\w+)=%%~fN" & goto (\w+)\)$/))) {
+      const hit = where.find((candidate) => candidate.toLowerCase() !== m[1].toLowerCase());
+      if (hit !== undefined) { vars[m[2]] = hit; at = label(m[3]); }
+      continue;
+    }
+    if ((m = line.match(/^if exist "([^"]+)" \(set "(\w+)=([^"]+)" & goto (\w+)\)$/))) {
+      if (exists.includes(m[1])) { vars[m[2]] = m[3]; at = label(m[4]); }
+      continue;
+    }
+    if ((m = line.match(/^"([^"]+)" %\*$/))) { out.ran = m[1]; out.ranWith = vars.ELECTRON_RUN_AS_NODE; vars.errorlevel = '7'; continue; }
+    if ((m = line.match(/^echo (.*) 1>&2$/))) { out.stderr = m[1]; continue; }
+    if ((m = line.match(/^exit \/b (\S+)$/))) { out.exit = m[1] === '%errorlevel%' ? vars.errorlevel : m[1]; return out; }
+    throw new Error(`a line this does not know: ${line}`);
+  }
+  throw new Error('the script ran off its end');
+}
+
+const WIN_EXE = 'C:\\Program Files (x86)\\App\\app.exe';
+const WIN_SHIM = 'C:\\h\\bin\\runtime\\node.cmd';
+const WIN_REAL = 'C:\\tools\\node\\node.exe';
+const WIN_MISE = 'C:\\Users\\u\\AppData\\Local\\mise\\shims\\node.exe';
+const WIN_PF = 'C:\\Program Files\\nodejs\\node.exe';
+const winScript = () => nodeLauncherScript(WIN_EXE, 'win32', WIN_SHIM);
+
+test('Windows: the app\'s binary runs as node whenever it exists', () => {
+  const r = runBatch(winScript(), { exists: [WIN_EXE], where: [WIN_REAL] });
+  assert.deepEqual([r.ran, r.ranWith, r.exit], [WIN_EXE, '1', '7']);
+});
+
+test('Windows: with the binary gone, a real node on PATH runs the script, not as Electron', () => {
+  const r = runBatch(winScript(), { where: [WIN_REAL] });
+  assert.deepEqual([r.ran, r.ranWith, r.exit], [WIN_REAL, undefined, '7']);
+});
+
+for (const [label, where] of [
+  ['first on PATH', [WIN_SHIM, WIN_REAL]],
+  ['in another case', [WIN_SHIM.toUpperCase(), WIN_REAL]]
+]) {
+  test(`Windows: the app's runtime shim is passed over when it is ${label}`, () => {
+    assert.equal(runBatch(winScript(), { where }).ran, WIN_REAL);
+  });
+}
+
+test('Windows: with only the runtime shim on PATH, the known locations are tried in order', () => {
+  assert.equal(runBatch(winScript(), { where: [WIN_SHIM], exists: [WIN_MISE, WIN_PF] }).ran, WIN_MISE);
+  assert.equal(runBatch(winScript(), { where: [WIN_SHIM], exists: [WIN_PF] }).ran, WIN_PF);
+});
+
+test('Windows: with only the runtime shim and nothing else, it says what is missing and exits 127', () => {
+  const r = runBatch(winScript(), { where: [WIN_SHIM] });
+  assert.equal(r.ran, null, 'the shim wraps the same missing binary');
+  assert.equal(r.exit, '127');
+  assert.match(r.stderr, /no node/i);
+  assert.ok(r.stderr.includes(WIN_EXE));
+});
+
+test('Windows, under real cmd.exe: the shim is skipped and a real node runs', { skip: POSIX }, (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'md launcher ('));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const shimDir = path.join(dir, 'runtime');
+  const realDir = path.join(dir, 'real');
+  fs.mkdirSync(shimDir);
+  fs.mkdirSync(realDir);
+  fs.writeFileSync(path.join(shimDir, 'node.cmd'), '@echo shim\r\n@exit /b 1\r\n');
+  fs.writeFileSync(path.join(realDir, 'node.cmd'), '@echo real %*\r\n@exit /b 7\r\n');
+  const launcher = path.join(dir, 'hive-node.cmd');
+  fs.writeFileSync(launcher, nodeLauncherScript(path.join(dir, 'gone.exe'), 'win32', path.join(shimDir, 'node.cmd')));
+  const run = (PATH) => spawnSync('cmd.exe', ['/c', launcher, 'a'], { env: { ...process.env, PATH: `${PATH};${process.env.SystemRoot}\\System32`, LOCALAPPDATA: dir, ProgramFiles: dir }, encoding: 'utf8' });
+  const found = run(`${shimDir};${realDir}`);
+  assert.match(found.stdout, /real a/);
+  assert.equal(found.status, 7);
+  assert.equal(run(shimDir).status, 127);
 });
 
 test('the hive writes this launcher, and the app\'s binary survives in it', { skip: !POSIX }, async (t) => {
