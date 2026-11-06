@@ -202,7 +202,7 @@ export interface HeavyHolder {
   /** The raw commands, kept in memory only, to recognise the job in a process listing. */
   commands: Set<string>;
   since: number;
-  /** Last acquire or re-entry: the TTL runs from here. */
+  /** Last acquire, re-entry or sighting in a process listing: the TTL runs from here. */
   touched: number;
   /** Heavy calls still running, by id. Providers with no tool-use id fall back to the command as
    *  the id, so two overlapping identical calls share an entry and are counted. */
@@ -442,7 +442,7 @@ export class HeavyJobLock {
         if (!c.seen) c.seen = lines.some((l) => (!!c.command && l.includes(c.command)) || (!!c.why && classifyCommand(l).why === c.why));
       }
       if ([...h.calls.values()].some((c) => !c.seen)) { h.misses = 0; continue; }
-      if (lines.some((l) => classifyCommand(l).heavy || [...h.commands].some((c) => c && l.includes(c)))) { h.misses = 0; continue; }
+      if (lines.some((l) => classifyCommand(l).heavy || [...h.commands].some((c) => c && l.includes(c)))) { h.misses = 0; h.touched = this.now(); continue; }
       h.misses++;
       if (h.misses >= HEAVY_SCAN_MISSES) this.release(h.agentId, 'process-exit');
     }

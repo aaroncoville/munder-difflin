@@ -421,3 +421,11 @@ test('a never-started call the agent abandoned is freed by the TTL', async () =>
   assert.equal(x.l.snapshot().length, 0);
   assert.equal(x.logs.at(-1).reason, 'ttl');
 });
+
+test('the TTL runs from the last sighting, so a job confirmed live past the hour keeps its slot', async () => {
+  const procs = [{ pid: 11, parentPid: 10, commandLine: 'npm test' }];
+  const x = lock(1, { roots: () => [{ agentId: 'a', pid: 10 }], probe: async () => procs });
+  x.l.acquire('a', H, 'npm test', 'c1', false);
+  for (let i = 0; i < 4; i++) { x.tick(HEAVY_TTL_MS / 2); await x.l.scan(); assert.equal(x.l.snapshot().length, 1, `tick ${i}`); }
+  assert.equal(take(x, 'b').allow, false);
+});
