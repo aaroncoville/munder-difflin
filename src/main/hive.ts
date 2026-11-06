@@ -45,7 +45,7 @@ import { preferredAgentRole } from '../shared/agentRole';
 import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde } from './fs';
 import { refreshMineIgnoresOnce } from './hiveMineIgnore';
-import { hasExactFolder, isAppSender, isKnownTarget, isRosterId, newRosterIdRefusal, rosterIdFor, shortTarget } from './messageTarget';
+import { hasExactFolder, isAppSender, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, rosterIdFor, shortTarget } from './messageTarget';
 import { codexTrustEntry } from '../shared/codexTrust';
 import { withCodexWritableRoots } from '../shared/codexWritableRoots';
 import { resolveGodName } from '../shared/godIdentity';
@@ -779,7 +779,7 @@ export class HiveManager {
     } = {}
   ): Promise<SpawnInjection> {
     const refusal = newRosterIdRefusal(this.registry().agents, meta.id, meta.isGod === true);
-    if (refusal) throw new Error(`Agent id ${shortTarget(meta.id)}: ${refusal}`);
+    if (refusal) throw new RefusedRosterId(`Agent id ${shortTarget(meta.id)}: ${refusal}`);
     const root = this.root();
     if (!root) return { args: [], env: {} };
     this.ensureHive();

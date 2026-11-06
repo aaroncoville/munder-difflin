@@ -63,8 +63,11 @@ export function newRosterIdRefusal(agents: Record<string, unknown>, id: unknown,
   const key = folderKey(id);
   if (isAppSender(id) || key === 'broadcast' || key === 'human' || (key === 'god' && !isGod)) return 'that name is reserved';
   const twin = Object.keys(agents).find((other) => folderKey(other) === key);
-  return twin === undefined ? null : `an agent named ${JSON.stringify(twin)} already has that folder`;
+  return twin === undefined ? null : `an agent named ${shortTarget(twin)} already has that folder`;
 }
+
+/** Provisioning refused an agent id, which unlike other provisioning errors must stop the spawn. */
+export class RefusedRosterId extends Error {}
 
 /** A refused target as it may appear in a log row or a notice: one line, and short. */
 export function shortTarget(to: unknown): string {
