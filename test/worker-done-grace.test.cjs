@@ -18,6 +18,7 @@ const loadTs = require('./load-ts.cjs');
 const grace = loadTs('src/main/workerDoneGrace.ts');
 const unpushed = loadTs('src/main/workerUnpushed.ts');
 const { HiveManager } = loadTs('src/main/hive.ts');
+const gitOps = loadTs('src/main/git.ts');
 const { WORKER_DONE_GRACE_MS: GRACE, workerFollowUpAfter, afterWorkerDone } = grace;
 
 const T0 = Date.parse('2026-03-01T12:00:00Z');
@@ -116,7 +117,7 @@ test('a missing inbox is no follow-up', () => {
 function liveTickSource() {
   const source = fs.readFileSync(path.resolve(__dirname, '..', 'src/main/index.ts'), 'utf8');
   const ast = ts.createSourceFile('index.ts', source, ts.ScriptTarget.ES2022, true);
-  const bodies = ['workerDoneAt', 'ephemeralWorkerTick'].map((name) => {
+  const bodies = ['workerDoneAt', 'finalizeWorkerWorktree', 'ephemeralWorkerTick'].map((name) => {
     const node = ast.statements.find((n) => ts.isFunctionDeclaration(n) && n.name?.text === name);
     assert.ok(node, `${name} is a top-level function of index.ts`);
     return node.getText(ast);
@@ -124,7 +125,7 @@ function liveTickSource() {
   const listHandler = ast.statements.find((n) => ts.isExpressionStatement(n) && n.getText(ast).startsWith("ipcMain.handle('workers:list'"));
   assert.ok(listHandler, 'the workers:list handler is a top-level statement of index.ts');
   bodies.push(listHandler.getText(ast));
-  return ts.transpileModule(`${bodies.join('\n')}\n({ ephemeralWorkerTick })`,
+  return ts.transpileModule(`${bodies.join('\n')}\n({ ephemeralWorkerTick, finalizeWorkerWorktree })`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 }
 
@@ -158,6 +159,7 @@ async function setup(t, overrides = {}) {
   const liveWorkers = new Map([[id, rec]]);
   const calls = { kill: [], notices: [], gone: [] };
   const handlers = {};
+  const teardowns = [];
   const context = {
     Date: FakeDate, Math, Number, JSON, Set, Map, console: { log() {}, warn() {}, error(e) { throw e; } },
     ipcMain: { handle: (channel, fn) => { handlers[channel] = fn; } },
@@ -165,11 +167,13 @@ async function setup(t, overrides = {}) {
     worktreePaths: new Map([[id, wt]]),
     readConfig: () => ({ orchestratorMaySpawn: false }),
     hive, ptyManager: { idleFor: () => 0, list: () => [], kill: (pid) => { calls.kill.push(pid); } },
+    // As teardownPty does: not awaited, and the only thing that removes the worktree.
     teardownPty: (pid) => {
-      // Teardown is what removes a worktree: a scan after it would find nothing.
       calls.gone.push(pid);
-      fs.rmSync(wt, { recursive: true, force: true });
+      teardowns.push(live.finalizeWorkerWorktree(wt, repo, rec));
     },
+    unlinkWorktreeDeps: async () => ({ ok: true }), workerScratchDir: () => null,
+    worktreeHasUnintegratedWork: gitOps.worktreeHasUnintegratedWork, removeWorktree: gitOps.removeWorktree,
     informGod: (subject, body) => calls.notices.push({ subject, body }),
     workerTokensUsed: () => 0, shouldReapIdle: () => false, workerHasLiveJob: () => false,
     existsSync: fs.existsSync, readdirSync: fs.readdirSync, readFileSync: fs.readFileSync, statSync: fs.statSync, join: path.join,
@@ -177,10 +181,12 @@ async function setup(t, overrides = {}) {
     unpushedWorkerBranches: unpushed.unpushedWorkerBranches, describeUnpushed: unpushed.describeUnpushed,
     ...overrides
   };
-  const { ephemeralWorkerTick } = vm.runInNewContext(liveTickSource(), context);
+  const live = vm.runInNewContext(liveTickSource(), context);
   const write = (dir, name, msg, at = clock) => put(path.join(agentDir, dir), name, msg, at);
   return {
-    hive, id, rec, calls, wt, commit, context, tick: ephemeralWorkerTick,
+    hive, id, rec, calls, wt, repo, commit, context,
+    tick: async () => { await live.ephemeralWorkerTick(); await Promise.all(teardowns); },
+    tickOnly: () => live.ephemeralWorkerTick(),
     status: () => handlers['workers:list']().live.find((w) => w.workerId === id)?.status,
     advance: (ms) => { clock += ms; },
     done: (name, created_at = iso(clock)) => write('outbox/.sent', name, { from: id, to: 'god-1', act: 'done', created_at }),
@@ -281,7 +287,11 @@ test('tick: mail from after the done stays pending during the window', async (t)
   assert.deepEqual(f.calls.kill, [f.id], 'an inform does not hold the slot past the window');
 });
 
-test('tick: an unpushed branch is named once when a done worker is released, before its worktree is torn down', async (t) => {
+const LISTED = /agent\/w at [0-9a-f]+ .*\(on no remote\)/;
+
+// Commits neither pushed nor merged are the common case, and the preserved notice
+// already fires for them. A second notice about the same branch costs a second turn.
+test('tick: unpushed and unintegrated work draws one notice, carrying both facts', async (t) => {
   const f = await setup(t);
   f.commit(f.wt, 'never pushed');
   f.done('d1');
@@ -290,22 +300,62 @@ test('tick: an unpushed branch is named once when a done worker is released, bef
   assert.deepEqual(f.calls.notices, [], 'not during the window: the worker can still push');
   f.advance(GRACE);
   await f.tick();
-  assert.equal(f.calls.notices.length, 1);
-  assert.match(f.calls.notices[0].subject, /unpushed/);
-  assert.match(f.calls.notices[0].body, /agent\/w at [0-9a-f]+ .*\(on no remote\)/);
-  assert.match(f.calls.notices[0].body, /app-created worktree/);
-  assert.deepEqual(f.calls.kill, [f.id]);
+  assert.equal(f.calls.notices.length, 1, f.calls.notices.map((n) => n.subject).join(' | '));
+  const [notice] = f.calls.notices;
+  assert.match(notice.subject, /worktree preserved/);
+  assert.match(notice.body, LISTED);
+  assert.match(notice.body, /NOT pushed/);
+  assert.match(notice.body, /app-created worktree/);
+  assert.ok(fs.existsSync(f.wt), 'the work is preserved');
 });
 
-test('tick: a done worker with nothing unpushed costs the orchestrator no notice', async (t) => {
+test('tick: pushed but unmerged work gets the preserved notice, which says nothing is unpushed', async (t) => {
   const f = await setup(t);
   f.commit(f.wt, 'pushed');
   git(f.wt, 'push', '-q', '-u', 'origin', 'agent/w');
   f.done('d1');
   f.advance(GRACE + 1);
   await f.tick();
+  assert.equal(f.calls.notices.length, 1);
+  assert.match(f.calls.notices[0].subject, /worktree preserved/);
+  assert.doesNotMatch(f.calls.notices[0].body, /NOT pushed/);
+  assert.match(f.calls.notices[0].body, /made elsewhere/);
+});
+
+// Already merged into the base, so nothing is preserved, yet still on no remote.
+test('tick: unpushed work in a worktree about to be removed still gets a notice, scanned before the removal', async (t) => {
+  const f = await setup(t);
+  f.commit(f.wt, 'merged locally, never pushed');
+  git(f.repo, 'merge', '-q', '--ff-only', 'agent/w');
+  git(f.wt, 'branch', '-q', '--set-upstream-to=origin/main', 'agent/w');
+  f.done('d1');
+  f.advance(GRACE + 1);
+  await f.tick();
+  assert.equal(fs.existsSync(f.wt), false, 'nothing unintegrated, so the worktree is removed');
+  assert.equal(f.calls.notices.length, 1);
+  assert.match(f.calls.notices[0].subject, /unpushed/);
+  assert.match(f.calls.notices[0].body, /agent\/w at [0-9a-f]+ .*\(ahead of origin\/main\)/);
+});
+
+test('tick: a done worker with nothing to report costs the orchestrator no notice', async (t) => {
+  const f = await setup(t);
+  f.done('d1');
+  f.advance(GRACE + 1);
+  await f.tick();
   assert.deepEqual(f.calls.kill, [f.id]);
   assert.deepEqual(f.calls.notices, []);
+  assert.equal(fs.existsSync(f.wt), false);
+});
+
+// Between settling the mail and the kill there must be nothing to wait on, or a
+// message arriving in the gap is neither settled nor seen.
+test('tick: nothing is awaited between settling the mail and killing a released worker', async (t) => {
+  const f = await setup(t, { unpushedWorkerBranches: () => new Promise(() => {}) });
+  f.done('d1');
+  f.advance(GRACE + 1);
+  void f.tickOnly();
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(f.calls.kill, [f.id], 'a hung scan must not hold the release');
 });
 
 test('tick: a worker over its token cap is reaped inside the window, and one under it is not', async (t) => {
@@ -357,15 +407,18 @@ for (const [name, overrides, subject] of [
   ['idle', { shouldReapIdle: () => true }, /idle/],
   ['token cap', { workerTokensUsed: () => 2_000, readConfig: () => ({ orchestratorMaySpawn: false, defaultWorkerTokenCap: 1_000 }) }, /token cap/]
 ]) {
-  test(`tick: a ${name} reap names the unpushed branch and says what was scanned`, async (t) => {
+  test(`tick: a ${name} reap names the unpushed branch once, and the preserved notice does not repeat it`, async (t) => {
     const f = await setup(t, overrides);
     f.commit(f.wt, 'never pushed');
     await f.tick();
-    assert.equal(f.calls.notices.length, 1);
-    assert.match(f.calls.notices[0].subject, subject);
-    assert.match(f.calls.notices[0].body, /preserved for you/);
-    assert.match(f.calls.notices[0].body, /agent\/w at [0-9a-f]+ .*\(on no remote\)/);
-    assert.match(f.calls.notices[0].body, /app-created worktree/);
+    assert.equal(f.calls.notices.length, 2, 'the reap and the preserved notice are separate events');
+    const [reap, preserved] = f.calls.notices;
+    assert.match(reap.subject, subject);
+    assert.match(reap.body, /preserved for you/);
+    assert.match(reap.body, LISTED);
+    assert.match(reap.body, /app-created worktree/);
+    assert.match(preserved.subject, /worktree preserved/);
+    assert.doesNotMatch(preserved.body, /NOT pushed/);
     assert.deepEqual(f.calls.kill, [f.id]);
   });
 

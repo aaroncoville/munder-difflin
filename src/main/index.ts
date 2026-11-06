@@ -387,6 +387,7 @@ interface WorkerRec {
   command?: string;       // effective command LINE, so an early death can name it
   releasing?: boolean;    // kill issued; awaiting teardownPty (skip re-processing)
   doneKept?: boolean;     // reported done and still inside its grace window
+  unpushedNamed?: boolean; // a reap notice already named its unpushed branches
   /** Per-worker TOTAL-token cap from the spawn-request (overrides the config
    *  default). 0/undefined = no per-request cap. P4 plumbing — unlimited today. */
   tokenCap?: number;
@@ -557,6 +558,9 @@ async function finalizeWorkerWorktree(wtPath: string, origCwd: string, worker: W
   try {
     const deps = await unlinkWorktreeDeps(origCwd, wtPath);
     if (!deps.ok) console.error('[worktree] dependency unlink failed:', deps.error);
+    // Here rather than at the release: every route to teardown passes through, and it runs before the removal below.
+    const unpushed = worker.unpushedNamed ? undefined : await unpushedWorkerBranches(wtPath, worker.baseBranch);
+    const unpushedNote = unpushed === undefined ? '' : `\n${describeUnpushed(unpushed)}`;
     const work = await worktreeHasUnintegratedWork(wtPath, worker.baseBranch);
     if (work.keep) {
       console.warn(`[worker] PRESERVING worktree with unintegrated work: ${wtPath} (${work.detail})`);
@@ -570,11 +574,13 @@ async function finalizeWorkerWorktree(wtPath: string, origCwd: string, worker: W
         `[worker worktree preserved] ${worker.workerId}`,
         `Ephemeral worker ${worker.workerId} ended but its worktree holds unintegrated work, so it was NOT auto-removed (you are the sole integrator).\n`
         + `Worktree: ${wtPath}\nBranch: ${work.branch}\nState: ${work.detail}\n`
-        + `Review/merge it — it will be auto-reclaimed once its work lands in ${worker.baseBranch}, or remove it now with: git -C "${origCwd}" worktree remove "${wtPath}"`,
+        + `Review/merge it — it will be auto-reclaimed once its work lands in ${worker.baseBranch}, or remove it now with: git -C "${origCwd}" worktree remove "${wtPath}"${unpushedNote}`,
         worker.slack
       );
       return;
     }
+    // Silent when clean, so a normal release sends no notice.
+    if (unpushed === null || (unpushed && unpushed.length > 0)) informGod(`[worker ended — unpushed branches] ${worker.workerId}`, `Ephemeral worker ${worker.workerId} ended.${unpushedNote}`, worker.slack);
     const r = await removeWorktree(origCwd, wtPath);
     if (!r.ok) { console.error('[worker] removeWorktree failed:', r.error); return; }
     // Worktree is gone (clean/integrated at teardown), but DEFER its scratch-dir
@@ -5108,9 +5114,6 @@ async function ephemeralWorkerTick(): Promise<void> {
         }
         // Inside the window it stays reachable, its old mail settled above so the inbox-wake watchdog cannot nudge it to redo it.
         if (afterDone === 'release') {
-          // Before teardown, which can remove the worktree. Silent when clean, so a normal release sends no notice.
-          const unpushedAtDone = await unpushedWorkerBranches(worktreePaths.get(workerId), rec.baseBranch);
-          if (unpushedAtDone === null || unpushedAtDone.length > 0) informGod(`[worker released — unpushed branches] ${workerId}`, `Worker ${workerId} signaled done and is being released. ${describeUnpushed(unpushedAtDone)}`, rec.slack);
           ptyManager.kill(workerId);
           teardownPty(workerId);
           continue;
@@ -5125,6 +5128,7 @@ async function ephemeralWorkerTick(): Promise<void> {
           rec.releasing = true;
           console.warn(`[worker] reaping ${workerId} — token cap (${used.toLocaleString()} > ${tokenCap.toLocaleString()})`);
           const unpushedAtCap = await unpushedWorkerBranches(worktreePaths.get(workerId), rec.baseBranch);
+          rec.unpushedNamed = true;
           informGod(
             `[worker reaped — token cap] ${workerId}`,
             `Worker ${workerId} used ${used.toLocaleString()} tokens (> its cap of ${tokenCap.toLocaleString()}) and was reaped. Any committed work on its branch is preserved for you. ${describeUnpushed(unpushedAtCap)}`,
@@ -5144,6 +5148,7 @@ async function ephemeralWorkerTick(): Promise<void> {
         rec.releasing = true;
         console.warn(`[worker] reaping idle ${workerId} (${Math.round(idleMs / 60000)}min idle)`);
         const unpushedAtIdle = await unpushedWorkerBranches(worktreePaths.get(workerId), rec.baseBranch);
+        rec.unpushedNamed = true;
         informGod(
           `[worker reaped — idle] ${workerId}`,
           `Worker ${workerId} produced no output for ${Math.round(idleMs / 60000)} min (> the ${Math.round(idleTimeoutMs / 60000)} min cap) and never signaled done, so it was reaped. Any committed work on its branch is preserved for you. ${describeUnpushed(unpushedAtIdle)}`,
