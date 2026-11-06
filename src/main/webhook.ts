@@ -42,6 +42,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { validateAgainstSchema, type InboundKind } from '../shared/triggers';
+import { inboundListenHost } from './inboundBind';
 // NOTE: `tunnelmole` is an ESM-only package. The Electron main process is bundled
 // as CommonJS, so a static `import` gets externalized into `require('tunnelmole')`
 // and throws ERR_REQUIRE_ESM at load. It is imported dynamically inside
@@ -102,6 +103,8 @@ export interface WebhookTaskStatus {
 export interface WebhookServerOptions {
   /** Local TCP port the HTTP server binds to (and the tunnel forwards to). */
   port: number;
+  /** Bind every IPv4 interface instead of loopback, for LAN or router forwarding. */
+  bindAllInterfaces?: boolean;
   /** The endpoints to serve. May be swapped later with `setEndpoints`. */
   endpoints: WebhookEndpoint[];
   /**
@@ -144,6 +147,7 @@ export class WebhookServer {
   private server: Server | null = null;
   private tunnelUrl: string | null = null;
   private readonly port: number;
+  private readonly host: string;
   private endpoints = new Map<string, WebhookEndpoint>();
   private readonly onMessage: (msg: WebhookInbound, endpoint: WebhookEndpointRef) => WebhookDispatch | null;
   private readonly lookupStatus: (token: string) => WebhookTaskStatus | null;
@@ -157,6 +161,7 @@ export class WebhookServer {
 
   constructor(opts: WebhookServerOptions) {
     this.port = opts.port;
+    this.host = inboundListenHost(opts.bindAllInterfaces);
     this.onMessage = opts.onMessage;
     this.lookupStatus = opts.lookupStatus;
     this.setEndpoints(opts.endpoints);
@@ -241,7 +246,7 @@ export class WebhookServer {
       const server = createServer((req, res) => this.handleRequest(req, res));
       const onError = (e: Error): void => reject(e);
       server.once('error', onError);
-      server.listen(this.port, () => {
+      server.listen(this.port, this.host, () => {
         server.off('error', onError);
         this.server = server;
         resolve();

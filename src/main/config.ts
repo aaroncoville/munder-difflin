@@ -408,6 +408,9 @@ export interface HarnessConfig {
    *  @deprecated The port is a property of the shared server, not of any one
    *  trigger; `webhookTriggers` are multiplexed over it by id. */
   webhookPort?: number;
+  /** Bind the Slack and webhook listeners to every IPv4 interface instead of
+   *  loopback (default false). Tunnels do not need it; LAN or router forwarding does. */
+  inboundBindAllInterfaces?: boolean;
 
   // ─── Triggers (src/shared/triggers.ts owns every type here) ────────────────
   /** Auto-compaction / auto-clearing of agent terminal context. Both halves ship
@@ -493,6 +496,7 @@ const DEFAULTS: HarnessConfig = {
   webhookEnabled: false,
   webhookSecret: undefined,
   webhookPort: undefined,
+  inboundBindAllInterfaces: false,
   // Triggers. These three are the ONLY object/array defaults that get handed
   // straight back out of `readConfig` for a config that never persisted them, so
   // `withTriggerDefaults` re-copies them on every read — see the note there.
