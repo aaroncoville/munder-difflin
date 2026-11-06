@@ -1,4 +1,5 @@
 import { seedCodexHookTrust } from './codexHookTrust';
+import { applyGitCommitsSetting, gitCommitsDisabled } from './hiveGitSetting';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
 import { spawn } from 'node:child_process';
 import {
@@ -71,6 +72,8 @@ import { buildWorkerLaunch } from './workerLaunch';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WakeSkipLog, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
 import { shouldReapIdle, workerHasLiveJob } from './workerIdleJobs';
+import { afterWorkerDone } from './workerDoneGrace';
+import { describeUnpushed, unpushedWorkerBranches } from './workerUnpushed';
 import {
   CODEX_ACTIVITY_TTL_MS,
   CodexHomes,
@@ -384,6 +387,8 @@ interface WorkerRec {
   spawnedAt: number;      // epoch ms
   command?: string;       // effective command LINE, so an early death can name it
   releasing?: boolean;    // kill issued; awaiting teardownPty (skip re-processing)
+  doneKept?: boolean;     // reported done and still inside its grace window
+  unpushedNamed?: boolean; // a reap notice already named its unpushed branches
   /** Per-worker TOTAL-token cap from the spawn-request (overrides the config
    *  default). 0/undefined = no per-request cap. P4 plumbing — unlimited today. */
   tokenCap?: number;
@@ -554,6 +559,9 @@ async function finalizeWorkerWorktree(wtPath: string, origCwd: string, worker: W
   try {
     const deps = await unlinkWorktreeDeps(origCwd, wtPath);
     if (!deps.ok) console.error('[worktree] dependency unlink failed:', deps.error);
+    // Here rather than at the release: every route to teardown passes through, and it runs before the removal below.
+    const unpushed = worker.unpushedNamed ? undefined : await unpushedWorkerBranches(wtPath, worker.baseBranch);
+    const unpushedNote = unpushed === undefined ? '' : `\n${describeUnpushed(unpushed)}`;
     const work = await worktreeHasUnintegratedWork(wtPath, worker.baseBranch);
     if (work.keep) {
       console.warn(`[worker] PRESERVING worktree with unintegrated work: ${wtPath} (${work.detail})`);
@@ -567,11 +575,13 @@ async function finalizeWorkerWorktree(wtPath: string, origCwd: string, worker: W
         `[worker worktree preserved] ${worker.workerId}`,
         `Ephemeral worker ${worker.workerId} ended but its worktree holds unintegrated work, so it was NOT auto-removed (you are the sole integrator).\n`
         + `Worktree: ${wtPath}\nBranch: ${work.branch}\nState: ${work.detail}\n`
-        + `Review/merge it — it will be auto-reclaimed once its work lands in ${worker.baseBranch}, or remove it now with: git -C "${origCwd}" worktree remove "${wtPath}"`,
+        + `Review/merge it — it will be auto-reclaimed once its work lands in ${worker.baseBranch}, or remove it now with: git -C "${origCwd}" worktree remove "${wtPath}"${unpushedNote}`,
         worker.slack
       );
       return;
     }
+    // Silent when clean, so a normal release sends no notice.
+    if (unpushed === null || (unpushed && unpushed.length > 0)) informGod(`[worker ended — unpushed branches] ${worker.workerId}`, `Ephemeral worker ${worker.workerId} ended.${unpushedNote}`, worker.slack);
     const r = await removeWorktree(origCwd, wtPath);
     if (!r.ok) { console.error('[worker] removeWorktree failed:', r.error); return; }
     // Worktree is gone (clean/integrated at teardown), but DEFER its scratch-dir
@@ -1761,6 +1771,7 @@ async function startSlackServer(): Promise<{ ok: boolean; url?: string; error?: 
   slackServer?.stop();
   slackServer = new SlackWebhookServer({
     port: cfg.slackPort && cfg.slackPort > 0 ? cfg.slackPort : 3847,
+    bindAllInterfaces: cfg.inboundBindAllInterfaces,
     signingSecret: cfg.slackSigningSecret,
     channelId: cfg.slackChannelId,
     // Fires from the HTTP server's event loop (not the IPC thread); route through
@@ -2169,6 +2180,7 @@ async function startWebhookServer(): Promise<{ ok: boolean; url?: string; error?
   const cfg = readConfig();
   const server = new WebhookServer({
     port: cfg.webhookPort && cfg.webhookPort > 0 ? cfg.webhookPort : WEBHOOK_DEFAULT_PORT,
+    bindAllInterfaces: cfg.inboundBindAllInterfaces,
     endpoints,
     onMessage: handleWebhookMessage,
     lookupStatus: lookupWebhookStatus
@@ -3331,6 +3343,7 @@ ipcMain.handle('config:update', (_evt, patch: Partial<HarnessConfig>) => {
   // config per tick so it gates immediately; this is for the PROMPT, which is
   // built per spawn, so flipping the toggle reaches god the next time he starts.
   if (typeof patch?.orchestratorMaySpawn === 'boolean') hive.setOrchestratorMaySpawn(patch.orchestratorMaySpawn);
+  if (patch && 'disableHiveGitCommits' in patch) applyGitCommitsSetting(hive, patch.disableHiveGitCommits);
   if (!hiveWasEnabled && hive.enabled()) {
     console.log('[hive] harnessHome configured — bootstrapping hive services');
     try { bootstrapHiveServices(); } catch (e) { console.error('[hive] bootstrap after onboarding:', e); }
@@ -4805,10 +4818,11 @@ function archiveRequest(filePath: string, sub: '.done' | '.failed'): void {
  *  leave a PRIOR worker's `done` sitting in this same dir. Without a guard that
  *  stale signal would release the new worker on its very first tick — before it
  *  does anything or replies — causing a silent Slack hang. So we only count a
- *  `done` authored AFTER this worker spawned: by its `created_at` (the message's
- *  own timestamp), falling back to the file's mtime when `created_at` is missing
- *  or unparseable. When neither yields a usable timestamp we DON'T count it
- *  (fail toward keeping the worker alive — the idle reaper is the backstop). */
+ *  `done` written AFTER this worker spawned, by its file's mtime. The message's
+ *  `created_at` is not used: an agent writes it by hand, and the grace window
+ *  measured from it could be spent, or skipped, before it began. When the mtime
+ *  cannot be read we DON'T count it (fail toward keeping the worker alive — the
+ *  idle reaper is the backstop). */
 function workerDoneAt(workerId: string, spawnedAt: number): number | null {
   const root = hive.root();
   if (!root) return null;
@@ -4822,12 +4836,10 @@ function workerDoneAt(workerId: string, spawnedAt: number): number | null {
       if (!f.endsWith('.json')) continue;
       const fp = join(dir, f);
       try {
-        const msg = JSON.parse(readFileSync(fp, 'utf8')) as { act?: string; created_at?: string };
+        const msg = JSON.parse(readFileSync(fp, 'utf8')) as { act?: string };
         if (msg.act !== 'done') continue;
-        let ts = Date.parse(msg.created_at ?? '');
-        if (!Number.isFinite(ts)) {
-          try { ts = statSync(fp).mtimeMs; } catch { ts = NaN; }
-        }
+        let ts = NaN;
+        try { ts = statSync(fp).mtimeMs; } catch { /* vanished: not counted */ }
         if (Number.isFinite(ts) && ts > spawnedAt && (doneAt === null || ts > doneAt)) doneAt = ts;
       } catch { /* skip unreadable/partial */ }
     }
@@ -5067,10 +5079,12 @@ async function ephemeralWorkerTick(): Promise<void> {
     for (const [workerId, rec] of [...liveWorkers]) {
       if (rec.releasing) continue;
       const doneAt = workerDoneAt(workerId, rec.spawnedAt);
-      if (doneAt !== null) {
+      const afterDone = doneAt === null ? null : afterWorkerDone(join(hive.root() ?? '', 'agents', workerId, 'inbox'), hive.registry()?.godId ?? 'god', doneAt, Date.now());
+      rec.doneKept = afterDone === 'keep';
+      if (doneAt !== null && afterDone !== 'reengaged') {
         // Success: the worker already replied in-thread; just release it.
-        rec.releasing = true;
-        console.log(`[worker] ${workerId} signaled done — releasing`);
+        rec.releasing = afterDone === 'release';
+        if (rec.releasing) console.log(`[worker] ${workerId} signaled done — releasing`);
         // Its mailbox is finished with too. Workers seldom file their own work
         // order before signaling done, and the id is reused on every re-hire of
         // the same name, so anything left unread here would greet the next
@@ -5084,7 +5098,7 @@ async function ephemeralWorkerTick(): Promise<void> {
         // which requests/queries were filed unread, so none vanishes silently.
         const settled = hive.settleInbox(workerId, doneAt);
         if (settled.moved > 0) console.log(`[worker] ${workerId}: filed ${settled.moved} unread inbox message(s) under inbox/.done`);
-        if (settled.kept > 0) console.log(`[worker] ${workerId}: left ${settled.kept} message(s) that arrived after its done signal pending`);
+        if (settled.kept > 0 && rec.releasing) console.log(`[worker] ${workerId}: left ${settled.kept} message(s) that arrived after its done signal pending`);
         // The worker's own work order is dispatched in conversation
         // `worker-<reqId>` (processSpawnRequest) and is exactly what it just
         // completed: reporting it "filed unread" on every release would cost
@@ -5096,15 +5110,18 @@ async function ephemeralWorkerTick(): Promise<void> {
           const lines = unanswered.map((m) => `- ${m.act} ${oneLine(m.id)} from ${oneLine(m.from)}: "${oneLine(m.subject)}"`);
           informGod(
             `[worker released — mail filed unread] ${workerId}`,
-            `Worker ${workerId} signaled done and was released. These messages were still unread in its inbox and were filed under inbox/.done without an answer:\n`
+            `Worker ${workerId} signaled done and is being released. These messages were still unread in its inbox and were filed under inbox/.done without an answer:\n`
             + lines.join('\n')
             + `\nIf one of them is not the order it just completed, nobody is working on it — resend it to another agent or re-hire the worker.`,
             rec.slack
           );
         }
-        ptyManager.kill(workerId);
-        teardownPty(workerId);
-        continue;
+        // Inside the window it stays reachable, its old mail settled above so the inbox-wake watchdog cannot nudge it to redo it.
+        if (afterDone === 'release') {
+          ptyManager.kill(workerId);
+          teardownPty(workerId);
+          continue;
+        }
       }
       // Token-cap reap (default-off plumbing). An effective cap > 0 → reap when the
       // worker's cumulative token use exceeds it; its committed work is preserved.
@@ -5114,9 +5131,11 @@ async function ephemeralWorkerTick(): Promise<void> {
         if (used > tokenCap) {
           rec.releasing = true;
           console.warn(`[worker] reaping ${workerId} — token cap (${used.toLocaleString()} > ${tokenCap.toLocaleString()})`);
+          const unpushedAtCap = await unpushedWorkerBranches(worktreePaths.get(workerId), rec.baseBranch);
+          rec.unpushedNamed = true;
           informGod(
             `[worker reaped — token cap] ${workerId}`,
-            `Worker ${workerId} used ${used.toLocaleString()} tokens (> its cap of ${tokenCap.toLocaleString()}) and was reaped. Any committed work on its branch is preserved for you.`,
+            `Worker ${workerId} used ${used.toLocaleString()} tokens (> its cap of ${tokenCap.toLocaleString()}) and was reaped. Any committed work on its branch is preserved for you. ${describeUnpushed(unpushedAtCap)}`,
             rec.slack
           );
           ptyManager.kill(workerId);
@@ -5124,6 +5143,7 @@ async function ephemeralWorkerTick(): Promise<void> {
           continue;
         }
       }
+      if (afterDone === 'keep') continue; // the token cap above still applies; the idle reaper does not
       const idleMs = ptyManager.idleFor(workerId);
       if (idleMs === undefined) continue; // PTY already gone; teardownPty cleans up
       // Silent but waiting on a job it launched (a long test run) is not idle.
@@ -5131,9 +5151,11 @@ async function ephemeralWorkerTick(): Promise<void> {
       if (shouldReapIdle(rec, { ptyIdleMs: idleMs, limitMs: idleTimeoutMs, ceilingMs: idleCeilingMs, now: Date.now(), hasLiveJob })) {
         rec.releasing = true;
         console.warn(`[worker] reaping idle ${workerId} (${Math.round(idleMs / 60000)}min idle)`);
+        const unpushedAtIdle = await unpushedWorkerBranches(worktreePaths.get(workerId), rec.baseBranch);
+        rec.unpushedNamed = true;
         informGod(
           `[worker reaped — idle] ${workerId}`,
-          `Worker ${workerId} produced no output for ${Math.round(idleMs / 60000)} min (> the ${Math.round(idleTimeoutMs / 60000)} min cap) and never signaled done, so it was reaped. Any committed work on its branch is preserved for you.`,
+          `Worker ${workerId} produced no output for ${Math.round(idleMs / 60000)} min (> the ${Math.round(idleTimeoutMs / 60000)} min cap) and never signaled done, so it was reaped. Any committed work on its branch is preserved for you. ${describeUnpushed(unpushedAtIdle)}`,
           rec.slack
         );
         ptyManager.kill(workerId);
@@ -5202,7 +5224,7 @@ interface WorkerSnapshot {
   tokenCap: number | null;      // effective cap (per-request or config default); null = unlimited
   hasSlack: boolean;
   releasing: boolean;
-  status: 'releasing' | 'working';
+  status: 'releasing' | 'done' | 'working';
 }
 /** Snapshot of a preserved-but-not-yet-GC'd worktree for the tab. */
 interface PreservedSnapshot {
@@ -5233,7 +5255,7 @@ ipcMain.handle('workers:list', (): { live: WorkerSnapshot[]; preserved: Preserve
       tokenCap: effCap > 0 ? effCap : null,
       hasSlack: !!rec.slack,
       releasing: !!rec.releasing,
-      status: rec.releasing ? 'releasing' : 'working'
+      status: rec.releasing ? 'releasing' : rec.doneKept ? 'done' : 'working'
     };
   });
   const preserved: PreservedSnapshot[] = [...preservedWorktrees.values()].map((e) => ({
@@ -5267,6 +5289,7 @@ ipcMain.handle('workers:stop', (_evt, workerId: string): { ok: boolean; error?: 
  *  (config:changeHome tears these down before copying). No-op without a home. */
 function bootstrapHiveServices(): void {
   if (!hive.enabled()) return;
+  hive.setGitCommitsDisabled(gitCommitsDisabled(readConfig().disableHiveGitCommits));
   hive.ensureHive();
   hive.refreshGeneratedDocs();
   // Tell the hive what it is running inside, BEFORE anything spawns: the prompt

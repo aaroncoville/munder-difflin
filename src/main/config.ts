@@ -270,11 +270,15 @@ export interface HarnessConfig {
   /** Agent ids whose automatic inbox/queue delivery is paused. Pending messages
    *  stay durable until the operator explicitly resumes delivery. */
   autoDeliveryPausedAgents?: string[];
+  /** Stop committing the hive folder to git on every state change, and stop creating a repository
+   *  for a new one. An existing repository is left as it is. Off by default. */
+  disableHiveGitCommits?: boolean;
   /** Passed to every spawned agent as `--max-turns <n>` when set; unset = no cap
    *  (Claude Code's default). A coarse runaway guard independent of the breaker. */
   maxTurns?: number;
   /** Max concurrent god-triggered ephemeral Slack workers; extra spawn-requests
-   *  wait in the queue (natural backpressure, a resource backstop). Default 4. */
+   *  wait in the queue (natural backpressure, a resource backstop). Default 4.
+   *  A worker that reported done holds its slot for its 3-minute grace window. */
   maxConcurrentWorkers?: number;
   /** Minutes an ephemeral worker may produce NO output before the reaper kills it
    *  — idle-based, never wall-clock, so an actively-working worker is never reaped.
@@ -408,6 +412,9 @@ export interface HarnessConfig {
    *  @deprecated The port is a property of the shared server, not of any one
    *  trigger; `webhookTriggers` are multiplexed over it by id. */
   webhookPort?: number;
+  /** Bind the Slack and webhook listeners to every interface instead of
+   *  loopback (default false). Tunnels do not need it; LAN or router forwarding does. */
+  inboundBindAllInterfaces?: boolean;
 
   // ─── Triggers (src/shared/triggers.ts owns every type here) ────────────────
   /** Auto-compaction / auto-clearing of agent terminal context. Both halves ship
@@ -493,6 +500,7 @@ const DEFAULTS: HarnessConfig = {
   webhookEnabled: false,
   webhookSecret: undefined,
   webhookPort: undefined,
+  inboundBindAllInterfaces: false,
   // Triggers. These three are the ONLY object/array defaults that get handed
   // straight back out of `readConfig` for a config that never persisted them, so
   // `withTriggerDefaults` re-copies them on every read — see the note there.

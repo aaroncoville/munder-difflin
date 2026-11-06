@@ -21,6 +21,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { inboundListenHost } from './inboundBind';
 // NOTE: `tunnelmole` is an ESM-only package. The Electron main process is bundled
 // as CommonJS, so a static `import` gets externalized into `require('tunnelmole')`
 // and throws ERR_REQUIRE_ESM at load. It is imported dynamically inside
@@ -71,6 +72,8 @@ type _SlackEventFile = SlackEventFile;
 export interface SlackWebhookServerOptions {
   /** Local TCP port the HTTP server binds to (and the tunnel forwards to). */
   port: number;
+  /** Bind every interface instead of loopback, for LAN or router forwarding. */
+  bindAllInterfaces?: boolean;
   /** Slack app signing secret (Basic Information → Signing Secret). Required. */
   signingSecret: string;
   /** Optional channel id filter — when set, events from other channels are dropped. */
@@ -115,6 +118,7 @@ export class SlackWebhookServer {
   private server: Server | null = null;
   private tunnelUrl: string | null = null;
   private readonly port: number;
+  private readonly host: string | undefined;
   private readonly signingSecret: string;
   private readonly channelId?: string;
   private readonly onMessage: (m: SlackInboundMessage) => void | Promise<void>;
@@ -132,6 +136,7 @@ export class SlackWebhookServer {
 
   constructor(opts: SlackWebhookServerOptions) {
     this.port = opts.port;
+    this.host = inboundListenHost(opts.bindAllInterfaces);
     this.signingSecret = opts.signingSecret;
     this.channelId = opts.channelId?.trim() || undefined;
     this.onMessage = opts.onMessage;
@@ -178,7 +183,7 @@ export class SlackWebhookServer {
       const server = createServer((req, res) => this.handleRequest(req, res));
       const onError = (e: Error): void => reject(e);
       server.once('error', onError);
-      server.listen(this.port, () => {
+      server.listen(this.port, this.host, () => {
         server.off('error', onError);
         this.server = server;
         resolve();

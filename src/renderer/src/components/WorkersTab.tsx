@@ -59,7 +59,7 @@ function StatusBadge({ w }: { w: WorkerSnapshot }) {
       background: releasing ? 'var(--cth-ink-700)' : 'var(--cth-green, #2f8f4e)',
       boxShadow: releasing ? 'none' : 'inset 0 0 0 1px var(--cth-ink-100)'
     }}>
-      {releasing ? t('workersTab.stopping') : t('workersTab.working')}
+      {releasing ? t('workersTab.stopping') : w.status === 'done' ? t('workersTab.done') : t('workersTab.working')}
     </span>
   );
 }

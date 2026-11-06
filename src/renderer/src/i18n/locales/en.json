@@ -1174,6 +1174,7 @@
   "workersTab": {
     "stopping": "stopping",
     "working": "working",
+    "done": "done",
     "liveWorkers": "Live workers",
     "liveIntro": "Isolated workers {{godName}} spins up to handle Slack messages — they run to completion, reply in-thread, then tear down.",
     "noneRunning": "No workers running right now.",
