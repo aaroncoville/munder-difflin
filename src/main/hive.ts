@@ -46,6 +46,7 @@ import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde } from './fs';
 import { refreshMineIgnoresOnce } from './hiveMineIgnore';
 import { agentFolderId, hasExactFolder, isAppSender, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, rosterIdFor, shortTarget } from './messageTarget';
+import { nodeLauncherScript } from './nodeLauncher';
 import { codexTrustEntry } from '../shared/codexTrust';
 import { withCodexWritableRoots } from '../shared/codexWritableRoots';
 import { resolveGodName } from '../shared/godIdentity';
@@ -542,12 +543,9 @@ export class HiveManager {
     const p = this.nodeLauncherPath();
     if (!p) return;
     try {
-      if (process.platform === 'win32') {
-        writeFileSync(p, `@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"${process.execPath}" %*\r\n`, 'utf8');
-      } else {
-        writeFileSync(p, `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec "${process.execPath}" "$@"\n`, 'utf8');
-        chmodSync(p, 0o755);
-      }
+      const runtimeNode = join(this.runtimeBinDir() ?? '', process.platform === 'win32' ? 'node.cmd' : 'node');
+      writeFileSync(p, nodeLauncherScript(process.execPath, process.platform, runtimeNode), 'utf8');
+      if (process.platform !== 'win32') chmodSync(p, 0o755);
     } catch (e) {
       console.error('[hive] writeNodeLauncher failed:', e);
     }
