@@ -1174,6 +1174,7 @@
   "workersTab": {
     "stopping": "停止中",
     "working": "工作中",
+    "done": "已完成",
     "liveWorkers": "活跃工人",
     "liveIntro": "{{godName}} 为处理 Slack 消息而启动的隔离工人——它们运行到完成、在会话线程中回复，然后自动拆除。",
     "noneRunning": "当前没有运行中的工人。",

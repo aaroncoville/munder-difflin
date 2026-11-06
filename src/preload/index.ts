@@ -571,7 +571,7 @@ export interface WorkerSnapshot {
   tokenCap: number | null;      // effective cap; null = unlimited (the default)
   hasSlack: boolean;
   releasing: boolean;
-  status: 'releasing' | 'working';
+  status: 'releasing' | 'done' | 'working';
 }
 /** A worker worktree preserved at teardown, awaiting integration + GC. */
 export interface PreservedWorktreeSnapshot {

@@ -277,7 +277,8 @@ export interface HarnessConfig {
    *  (Claude Code's default). A coarse runaway guard independent of the breaker. */
   maxTurns?: number;
   /** Max concurrent god-triggered ephemeral Slack workers; extra spawn-requests
-   *  wait in the queue (natural backpressure, a resource backstop). Default 4. */
+   *  wait in the queue (natural backpressure, a resource backstop). Default 4.
+   *  A worker that reported done holds its slot for its 3-minute grace window. */
   maxConcurrentWorkers?: number;
   /** Minutes an ephemeral worker may produce NO output before the reaper kills it
    *  — idle-based, never wall-clock, so an actively-working worker is never reaped.
