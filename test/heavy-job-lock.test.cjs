@@ -376,12 +376,28 @@ test('bulk shutdown frees every holder and tells nobody, because the waiters are
   assert.deepEqual(x.told, []);
 });
 
-test('a notifier that throws does not break the release', () => {
-  const x = lock(1, { notify: () => { throw new Error('no'); } });
+test('a waiter that cannot be told is dropped and the slot goes to the next one, whether the notifier throws or reports failure', () => {
+  for (const fail of [() => { throw new Error('no'); }, () => false]) {
+    const told = [];
+    const x = lock(1, { notify: (id) => { if (id === 'b') return fail(); told.push(id); return true; } });
+    take(x, 'a');
+    take(x, 'b');
+    take(x, 'c');
+    x.l.callDone('a', 'a');
+    assert.deepEqual(told, ['c'], 'in the same pass');
+    assert.deepEqual(x.l.queueSnapshot().reservations.map((r) => r.agentId), ['c']);
+    assert.deepEqual(x.l.queueSnapshot().waiting, []);
+    assert.ok(x.logs.some((r) => r.action === 'notice-failed' && r.agentId === 'b'));
+  }
+});
+
+test('with nobody left to tell, the slot stays free rather than reserved', () => {
+  const x = lock(1, { notify: () => false });
   take(x, 'a');
   take(x, 'b');
   x.l.callDone('a', 'a');
-  assert.equal(x.l.snapshot().length, 0);
+  assert.deepEqual(x.l.queueSnapshot().reservations, []);
+  assert.equal(take(x, 'late').allow, true);
 });
 
 test('heavySlotNotice names the job and the deadline, and asks for no reply', () => {

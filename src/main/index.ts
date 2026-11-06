@@ -333,8 +333,10 @@ const heavyLock = new HeavyJobLock({
   alive: (agentId) => [...ptyToAgent.values()].includes(agentId),
   notify: (agentId, kind, until) => {
     const notice = heavySlotNotice(kind, until);
-    try { hive.send({ to: agentId, act: 'inform', requires_reply: false, ...notice }, 'system'); } catch { /* best effort */ }
-    try { control.steer(agentId, notice.subject); } catch { /* best effort */ }
+    let told = false;
+    try { hive.send({ to: agentId, act: 'inform', requires_reply: false, ...notice }, 'system'); told = true; } catch { /* the steer may still land */ }
+    try { control.steer(agentId, notice.subject); told = true; } catch { /* the mail may have landed */ }
+    return told;
   }
 });
 hookServer.setHeavyLock(heavyLock);

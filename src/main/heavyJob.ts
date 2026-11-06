@@ -281,8 +281,9 @@ export interface HeavyLockDeps {
   log?: (row: Record<string, unknown>) => void;
   /** Whether a queued agent still has a PTY. Absent = assume so. */
   alive?: (agentId: string) => boolean;
-  /** Tell a queued agent that a slot is reserved for it until `until`. */
-  notify?: (agentId: string, kind: HeavyKind, until: number) => void;
+  /** Tell a queued agent that a slot is reserved for it until `until`. Returns whether any channel
+   *  took the message. */
+  notify?: (agentId: string, kind: HeavyKind, until: number) => boolean;
 }
 
 export const HEAVY_TTL_MS = 60 * 60_000;
@@ -441,9 +442,12 @@ export class HeavyJobLock {
       const w = this.queue.shift()!;
       if (this.d.alive && !this.d.alive(w.agentId)) { this.log({ kind: 'heavy-lock', action: 'queue-dropped', agentId: w.agentId }); continue; }
       const until = this.now() + HEAVY_RESERVE_MS;
+      // Told first: a reservation for an agent that will never hear of it would just strand the slot.
+      let told = true;
+      try { if (this.d.notify) told = this.d.notify(w.agentId, w.kind, until) !== false; } catch { told = false; }
+      if (!told) { this.log({ kind: 'heavy-lock', action: 'notice-failed', agentId: w.agentId, heavyKind: w.kind }); continue; }
       this.reservations.set(w.agentId, { kind: w.kind, until });
       this.log({ kind: 'heavy-lock', action: 'reserve', agentId: w.agentId, heavyKind: w.kind, until });
-      try { this.d.notify?.(w.agentId, w.kind, until); } catch { /* best effort: the reservation still lapses */ }
       this.arm();
     }
   }
