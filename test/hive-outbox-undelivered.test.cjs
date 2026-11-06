@@ -155,3 +155,66 @@ test('a file that cannot be set aside is logged and does not notify on every pas
   assert.equal(hive.inbox('worker-1').length, 0);
   assert.ok(log().some((r) => r.kind === 'outbox-error' && r.quarantine === 'failed' && r.file === 'stuck.json'));
 });
+
+test('a second failed file of the same name does not overwrite the first', async (t) => {
+  const { hive, agent, write } = await floor(t);
+  const sentDir = path.join(agent('worker-1'), 'outbox', '.sent');
+  // Both parse but are not messages, and the second reuses the first's file name.
+  write('worker-1', 'again.json', 'null');
+  hive.routeOnce();
+  write('worker-1', 'again.json', ' null');
+  hive.routeOnce();
+
+  const kept = fs.readdirSync(sentDir).filter((f) => f.includes('again.json'));
+  assert.equal(kept.length, 2);
+  assert.deepEqual(kept.map((f) => fs.readFileSync(path.join(sentDir, f), 'utf8')).sort(), [' null', 'null']);
+  const notices = hive.inbox('worker-1').map((m) => m.body).join('\n');
+  for (const f of kept) assert.ok(notices.includes(f), `the sender is told where ${f} is`);
+});
+
+test('a second malformed file of the same name does not overwrite the first', async (t) => {
+  const { hive, agent, write } = await floor(t);
+  const sentDir = path.join(agent('worker-1'), 'outbox', '.sent');
+  const T0 = 1_000_000;
+  write('worker-1', 'broken.json', '{ first');
+  hive.routeOnce(T0);
+  hive.routeOnce(T0 + 10_000);
+  write('worker-1', 'broken.json', '{ second');
+  hive.routeOnce(T0 + 20_000);
+  hive.routeOnce(T0 + 30_000);
+
+  const kept = fs.readdirSync(sentDir).filter((f) => f.includes('broken.json'));
+  assert.deepEqual(kept.map((f) => fs.readFileSync(path.join(sentDir, f), 'utf8')).sort(), ['{ first', '{ second']);
+  const notices = hive.inbox('worker-1').map((m) => m.body).join('\n');
+  for (const f of kept) assert.ok(notices.includes(f), `the sender is told where ${f} is`);
+});
+
+test('a directory with a message-like name can still be set aside', async (t) => {
+  const { hive, agent, sent, pending } = await floor(t);
+  fs.mkdirSync(path.join(agent('worker-1'), 'outbox', 'dir.json'));
+
+  hive.routeOnce();
+
+  assert.equal(pending('worker-1', 'dir.json'), false);
+  assert.equal(sent('worker-1', 'bad-dir.json'), true);
+});
+
+test('a sender at the relay limit gets no new budget when its archive step fails', async (t) => {
+  const { hive, agent, write } = await floor(t);
+  fs.mkdirSync(path.join(agent('hopless-1'), 'outbox', '.sent', 'cap.json', 'x'), { recursive: true });
+  write('hopless-1', 'cap.json', { to: 'worker-1', act: 'inform', subject: 's', body: 'b', hops: 12 });
+
+  hive.routeOnce();
+
+  assert.equal(hive.inbox('worker-1').length, 1, 'it was delivered');
+  assert.equal(hive.inbox('god-1').length, 0, 'the notice to a hookless sender at the limit must not bounce on');
+});
+
+test('a sender at the relay limit gets no new budget when routing throws', async (t) => {
+  const { hive, agent, write } = await floor(t);
+  write('hopless-1', 'cap.json', { to: 'worker-1', act: 'inform', subject: 's', body: 'b', hops: 12 });
+
+  routeWithBlockedInbox(hive, agent('worker-1'));
+
+  assert.equal(hive.inbox('god-1').length, 0, 'the notice to a hookless sender at the limit must not bounce on');
+});

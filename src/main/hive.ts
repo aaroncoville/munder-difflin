@@ -28,7 +28,7 @@ import { homedir } from 'node:os';
 import { spawnSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
 import type { AgentUsageSample } from './usage';
-import { reportOutboxFailure, type OutboxStage } from './outboxFailure';
+import { quarantineOutboxFile, reportOutboxFailure, type OutboxStage } from './outboxFailure';
 import { COMMAND_GROUPS } from '../shared/claudeCommands';
 import { ensureCodexShortHome } from '../shared/codexRemote';
 import {
@@ -1905,12 +1905,13 @@ export class HiveManager {
     if (now - since < MALFORMED_RETRY_MS) return;
     this.malformedSince.delete(full);
     this.appendLog({ kind: 'drop', reason: 'malformed-json', from: id, file: f });
-    try { renameSync(full, join(outbox, '.sent', `bad-${f}`)); } catch { /* noop */ }
+    let quarantined = `bad-${f}`;
+    try { quarantined = quarantineOutboxFile(outbox, f); } catch { /* noop */ }
     this.deliver(this.normalize({
       from: 'router', to: id, act: 'inform', requires_reply: false,
       subject: `Undelivered: ${f} is not valid JSON`,
       body: `Your outbox file ${f} still did not parse as JSON after a retry, so it was not delivered. `
-        + `It was moved to outbox/.sent/bad-${f}. Fix it and write it to your outbox again `
+        + `It was moved to outbox/.sent/${quarantined}. Fix it and write it to your outbox again `
         + `(write to a .tmp name and rename it into place so it is never read half-written).`
     }, 'router'), id);
   }
@@ -1919,7 +1920,7 @@ export class HiveManager {
   private outboxFailed(stage: OutboxStage, outbox: string, f: string, id: string, error: unknown, hops = 0): void {
     reportOutboxFailure(stage, f, id, error, {
       log: (row) => this.appendLog(row),
-      quarantine: () => renameSync(join(outbox, f), join(outbox, '.sent', `bad-${f}`)),
+      quarantine: () => quarantineOutboxFile(outbox, f),
       notify: (subject, body) => { this.routeMessage(this.normalize({ to: id, act: 'inform', requires_reply: false, hops, subject, body }, 'system')); }
     });
   }
@@ -1940,6 +1941,7 @@ export class HiveManager {
         if (!f.endsWith('.json')) continue;
         const full = join(outbox, f);
         let stage: OutboxStage = 'read';
+        let hops = 0;
         try {
           const raw = readFileSync(full, 'utf8');
           let partial: Partial<HiveMessage>;
@@ -1968,14 +1970,15 @@ export class HiveManager {
           stage = 'normalize';
           const msg = this.normalize(partial, id);
           msg.from = id; // sender is authoritative — the owning directory
+          hops = msg.hops;
           stage = 'route';
-          if (!this.routeMessage(msg)) { this.outboxFailed('not-delivered', outbox, f, id, undefined, msg.hops); continue; }
+          if (!this.routeMessage(msg)) { this.outboxFailed('not-delivered', outbox, f, id, undefined, hops); continue; }
           stage = 'archive';
           renameSync(full, join(outbox, '.sent', f)); // archive, don't reprocess
           routed++;
         } catch (error) {
           // Set it aside so we don't spin on it, and say so.
-          this.outboxFailed(stage, outbox, f, id, error);
+          this.outboxFailed(stage, outbox, f, id, error, hops);
         }
       }
     }
