@@ -70,7 +70,7 @@ const NODE_VALUE_FLAGS = new Set(['--test-name-pattern', '--test-skip-pattern', 
 const VITEST_VALUE_FLAGS = new Set(['--config', '-c', '--dir', '--root', '-r', '--project', '--reporter', '--mode', '--outputFile', '--testNamePattern', '-t']);
 const MAKE_VALUE_FLAGS = new Set(['-C', '-f', '-o', '-W', '-I']);
 const BUILD_SCRIPT = /^(build|compile|dist|package)([-_.][^/]*)?\.(sh|bash)$/i;
-const SUITE_SCRIPT = /^((run[-_.])?tests?|ci)([-_.][^/]*)?\.(sh|bash)$/i;
+const SUITE_SCRIPT = /^((run[-_.])?tests?|ci|verify|check)([-_.][^/]*)?\.(sh|bash)$/i;
 
 function classifyScript(file: string): HeavyClass | null {
   const name = file.replace(/\\/g, '/').split('/').pop()!;

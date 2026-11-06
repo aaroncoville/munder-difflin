@@ -35,7 +35,7 @@ const WRAPPED_HEAVY = [
   ['yarn build', 'build'], ['pnpm build', 'build'], ['yarn dist:mac', 'build'], ['pnpm test:unit', 'suite'],
   ['make', 'build'], ['make all', 'build'], ['make -j8 build', 'build'], ['make -j 8 test', 'suite'], ['make -C sub check', 'suite'], ['make CC=clang test', 'suite'],
   ['cargo build --release', 'build'], ['cargo +nightly check', 'build'], ['cargo run', 'build'], ['cargo clippy', 'build'], ['cargo test', 'suite'], ['cargo bench', 'bench'], ['cargo install ripgrep', 'install'],
-  ['./build.sh', 'build'], ['bash build.sh', 'build'], ['sh -x scripts/compile.sh', 'build'], ['scripts/ci.sh', 'suite'], ['./test.sh', 'suite'], ['./run-tests.sh', 'suite'],
+  ['./build.sh', 'build'], ['bash build.sh', 'build'], ['sh -x scripts/compile.sh', 'build'], ['scripts/ci.sh', 'suite'], ['./test.sh', 'suite'], ['./run-tests.sh', 'suite'], ['./scripts/verify.sh', 'suite'], ['scripts/check.sh', 'suite'],
   ['npx vitest --config vitest.config.ts run', 'suite'], ['npx vitest run --reporter dot', 'suite'],
   ['result=$(npm test)', 'suite'], ['echo "$(dotnet build)"', 'build'], ['x=`npm ci`', 'install']
 ];
