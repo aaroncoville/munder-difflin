@@ -335,7 +335,7 @@ const heavyLock = new HeavyJobLock({
   notify: (agentId, kind, until) => {
     const notice = heavySlotNotice(kind, until);
     let told = false;
-    try { hive.send({ to: agentId, act: 'inform', requires_reply: false, ...notice }, 'system'); told = true; } catch { /* the steer may still land */ }
+    try { hive.send({ to: agentId, act: 'inform', requires_reply: false, ...notice }, 'system'); told = true; } catch (e) { console.error('[heavy-job] notice not sent:', e); /* the steer may still land */ }
     try { control.steer(agentId, notice.subject); told = true; } catch { /* the mail may have landed */ }
     return told;
   }
@@ -1237,7 +1237,16 @@ function godActionableInboxCount(): number {
  *  working god instead of interrupting him. */
 function reengageGod(digest: string): void {
   if (!hive.enabled()) return;
-  hive.send({ to: 'god', act: 'request', subject: 'Heartbeat', body: digest }, 'heartbeat');
+  sendOrLog({ to: 'god', act: 'request', subject: 'Heartbeat', body: digest }, 'heartbeat');
+}
+
+/** For a caller on a timer, where a throw would escape to the process. A failed send already has its log row. */
+function sendOrLog(partial: Partial<HiveMessage>, from: string): void {
+  try {
+    hive.send(partial, from);
+  } catch (e) {
+    console.error(`[hive] "${partial.subject}" not sent:`, e instanceof Error ? e.message : e);
+  }
 }
 
 /** A native toast for breaker constrain/stop, gated on the notifications setting. */
@@ -1319,10 +1328,10 @@ function runBreakerBeat(progressWindowMs: number): void {
     const name = reg.agents[d.state.agentId]?.name ?? d.state.agentId;
     const reason = d.state.reason;
     if (d.action === 'steer') {
-      hive.send({ to: d.state.agentId, act: 'request', subject: 'Circuit breaker: steer',
+      sendOrLog({ to: d.state.agentId, act: 'request', subject: 'Circuit breaker: steer',
         body: `Automated guardrail: ${reason}. Re-check your approach — if you're looping or stuck, STOP repeating, summarize what you've tried, and ask god for direction.` }, 'breaker');
     } else if (d.action === 'constrain') {
-      hive.send({ to: d.state.agentId, act: 'request', subject: 'Circuit breaker: constrain',
+      sendOrLog({ to: d.state.agentId, act: 'request', subject: 'Circuit breaker: constrain',
         body: `Automated guardrail escalated: ${reason}. Stop active work now: switch to read-only/plan, write a short plan of your next step, and send it to god for sign-off BEFORE running more tools.` }, 'breaker');
       breakerToast(`${name} constrained`, reason);
     } else if (d.action === 'stop') {
@@ -3660,7 +3669,13 @@ ipcMain.handle('hive:messages', (_evt, opts: unknown) =>
 ipcMain.handle('hive:send', (_evt, partial: Partial<HiveMessage>, from: unknown) => {
   if (!hive.enabled()) return { ok: false, error: 'hive disabled (no harnessHome)' };
   const sender = typeof from === 'string' ? from : 'system';
-  const msg = hive.send(partial ?? {}, sender);
+  let msg: HiveMessage;
+  try {
+    msg = hive.send(partial ?? {}, sender);
+  } catch (e) {
+    if (e instanceof RegistryUnreadable) return { ok: false, code: e.code, error: e.message };
+    throw e;
+  }
   // Count only what a PERSON sent. Every renderer surface that dispatches on a
   // human's behalf passes 'human' (Command Center dispatch, thread replies, ASK
   // ME answers); agent-to-agent traffic passes the agent id and would swamp the

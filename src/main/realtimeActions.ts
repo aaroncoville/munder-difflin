@@ -295,8 +295,9 @@ function attribute(deps: RealtimeActionDeps, verb: string, target: string, extra
       },
       VOICE_ACTOR
     );
-  } catch {
+  } catch (e) {
     /* god cross-notify is best-effort — never block the action */
+    console.error('[realtime] god notice not sent:', e);
   }
 }
 

@@ -78,7 +78,9 @@ export function newRosterIdRefusal(agents: Record<string, unknown>, id: unknown,
 }
 
 /** The registry could not be read, so nothing can safely be written to it or decided from it. */
-export class RegistryUnreadable extends Error {}
+export class RegistryUnreadable extends Error {
+  readonly code = 'registry-unreadable';
+}
 
 /** Provisioning refused an agent id, which unlike other provisioning errors must stop the spawn. */
 export class RefusedRosterId extends Error {}

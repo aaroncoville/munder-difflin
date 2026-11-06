@@ -4,7 +4,7 @@
  * registry() answers a failed read with an empty roster. ensureAgent then added its one agent to that and replaced the
  * file, so a transient bad read lost every other agent and god's id for good. send() read the same empty roster, could
  * deliver neither the message nor its refusal notice, and the body was gone. A failed read now refuses the write, and a
- * send waits for a pass that can read the registry.
+ * send fails where its caller can see.
  */
 
 const test = require('node:test');
@@ -12,6 +12,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const vm = require('node:vm');
+const ts = require('typescript');
 const loadTs = require('./load-ts.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
@@ -113,120 +115,157 @@ for (const [label, write] of [
 }
 
 // ---- send ----
+// A send has only one copy of its body, in the caller's hands. Holding it in memory would report success for something
+// a restart loses, and a file under the hive root could carry any sender, so a bad read fails where the caller can see.
 
 const message = (to, body = 'the unique body') => ({ to, act: 'inform', subject: 'subject', body });
-const everywhere = (f) => fs.readdirSync(f.agents).flatMap((id) => f.hive.inbox(id)).map((m) => m.body);
 
-test('a send with an unreadable registry waits, and its body arrives once a pass can read it', async (t) => {
+for (const [label, content] of Object.entries(BAD)) {
+  test(`with a registry that is ${label}, a send fails visibly and claims nothing`, async (t) => {
+    const f = await setup(t);
+    fs.writeFileSync(f.file, content);
+    assert.throws(() => f.hive.send(message('worker-2', 'SECRET-BODY'), 'worker-1'), (e) => {
+      assert.ok(e instanceof RegistryUnreadable);
+      assert.equal(e.code, 'registry-unreadable');
+      assert.equal(e.message.includes(f.home), false, 'no path');
+      assert.equal(e.message.includes('SECRET-BODY'), false);
+      return true;
+    });
+    const [row, ...others] = rows(f.hive, 'send-refused');
+    assert.deepEqual(others, [], 'one row');
+    assert.deepEqual([row.from, row.to], ['"worker-1"', '"worker-2"']);
+    assert.ok(row.id);
+    assert.equal(JSON.stringify(row).includes('SECRET-BODY'), false, 'the log does not hold the body');
+    assert.equal(fs.readFileSync(f.file, 'utf8'), content);
+  });
+}
+
+test('nothing is kept to go out later: a repaired registry delivers only what is sent again', async (t) => {
   const f = await setup(t);
   fs.writeFileSync(f.file, '{');
+  assert.throws(() => f.hive.send(message('worker-2', 'first'), 'worker-1'), RegistryUnreadable);
+  f.repair();
+  f.hive.routeOnce();
+  assert.deepEqual(f.hive.inbox('worker-2'), []);
+  f.hive.send(message('worker-2', 'second'), 'worker-1');
+  assert.deepEqual(f.hive.inbox('worker-2').map((m) => m.body), ['second']);
+});
 
+test('with a readable registry a send goes straight out, as ever', async (t) => {
+  const f = await setup(t);
   const sent = f.hive.send(message('worker-2'), 'worker-1');
-
-  assert.equal(sent.body, 'the unique body');
-  assert.equal(f.hive.routeOnce(), 0, 'nothing to judge it by yet');
-  f.repair();
-  assert.deepEqual(everywhere(f), [], 'not delivered before a pass');
-  f.hive.routeOnce();
-  assert.deepEqual(f.hive.inbox('worker-2').map((m) => [m.id, m.from, m.body]), [[sent.id, 'worker-1', 'the unique body']]);
-  assert.equal(rows(f.hive, 'send-waiting').length, 1);
-  f.hive.routeOnce();
-  assert.equal(f.hive.inbox('worker-2').length, 1, 'delivered once');
+  assert.deepEqual(f.hive.inbox('worker-2').map((m) => [m.id, m.body]), [[sent.id, 'the unique body']]);
+  assert.deepEqual(rows(f.hive, 'send-refused'), []);
 });
 
-test('the log says a send is waiting without holding its body', async (t) => {
+test('a send to an unknown target with a readable registry still tells its sender, with the body', async (t) => {
   const f = await setup(t);
-  fs.writeFileSync(f.file, '{');
-  f.hive.send(message('worker-2', 'SECRET-BODY'), 'worker-1');
-  const [row] = rows(f.hive, 'send-waiting');
-  assert.equal(row.from, '"worker-1"');
-  assert.equal(JSON.stringify(row).includes('SECRET-BODY'), false);
-});
-
-test('waiting sends go out in order', async (t) => {
-  const f = await setup(t);
-  fs.writeFileSync(f.file, '{');
-  for (const n of [1, 2, 3]) f.hive.send({ ...message('worker-2', `body ${n}`), id: `m-${n}`, created_at: `2026-01-01T00:00:0${n}.000Z` }, 'worker-1');
-  f.repair();
-  const order = [];
-  f.hive.setRoutedObserver((m) => order.push(m.id));
-  f.hive.routeOnce();
-  assert.deepEqual(order, ['m-1', 'm-2', 'm-3']);
-});
-
-test('a waiting send to a target that turns out unknown still reaches its sender as a notice, with the body', async (t) => {
-  const f = await setup(t);
-  fs.writeFileSync(f.file, '{');
   f.hive.send(message('nobody'), 'worker-1');
-  f.repair();
-  f.hive.routeOnce();
   const [notice] = f.hive.inbox('worker-1');
   assert.match(notice.subject, /not delivered/);
   assert.match(notice.body, /the unique body/);
 });
 
-test('a send from an app sender, which has no folder, also survives', async (t) => {
-  const f = await setup(t);
-  fs.writeFileSync(f.file, '{');
-  f.hive.send(message('god'), 'scheduler');
-  f.repair();
-  f.hive.routeOnce();
-  assert.deepEqual(f.hive.inbox('god-1').map((m) => [m.from, m.body]), [['scheduler', 'the unique body']]);
-});
-
-test('a waiting send cannot be injected: nothing is read from disk to deliver it', async (t) => {
-  const f = await setup(t);
-  fs.writeFileSync(f.file, '{');
-  f.hive.send(message('worker-2'), 'worker-1');
-  const before = fs.readdirSync(f.hive.root()).sort();
-  f.repair();
-  assert.deepEqual(fs.readdirSync(f.hive.root()).sort(), before);
-  assert.equal(fs.readdirSync(f.hive.root()).some((n) => /wait|pending|spool/i.test(n)), false, 'a folder here is writable by agents, who could then forge a sender');
-});
-
-test('a waiting send that throws stays waiting, and does not hold up other mail or the next pass', async (t) => {
-  const f = await setup(t);
-  fs.writeFileSync(f.file, '{');
-  f.hive.send({ ...message('worker-2', 'held body'), id: 'held-1' }, 'worker-1');
-  f.hive.send({ ...message('worker-2', 'second held body'), id: 'held-2' }, 'worker-1');
-  f.repair();
-  fs.writeFileSync(path.join(f.agents, 'worker-1', 'outbox', 'x.json'), JSON.stringify(message('worker-2', 'outbox body')));
-  const route = f.hive.routeMessage;
-  let failures = 1;
-  f.hive.routeMessage = function (msg) {
-    if (msg.id === 'held-1' && failures-- > 0) throw new Error('disk full');
-    return route.call(this, msg);
-  };
-
-  assert.equal(f.hive.routeOnce(), 1, 'outbox mail is not held up');
-
-  assert.deepEqual(f.hive.inbox('worker-2').map((m) => m.body), ['outbox body']);
-  assert.deepEqual(rows(f.hive, 'send-failed').map((r) => r.id), ['held-1']);
-  f.hive.routeOnce();
-  assert.deepEqual(f.hive.inbox('worker-2').map((m) => m.body).sort(), ['held body', 'outbox body', 'second held body'], 'nothing lost, nothing repeated');
-});
-
-test('past its limit a send fails visibly rather than growing forever or vanishing', async (t) => {
-  const f = await setup(t);
-  fs.writeFileSync(f.file, '{');
-  const LIMIT = 1000;
-  for (let n = 0; n < LIMIT; n++) f.hive.send(message('worker-2', `body ${n}`), 'worker-1');
-  assert.throws(() => f.hive.send(message('worker-2', 'one too many'), 'worker-1'), RegistryUnreadable);
-  assert.equal(rows(f.hive, 'send-refused').length, 1);
-  f.repair();
-  f.hive.routeOnce();
-  assert.equal(f.hive.inbox('worker-2').length, LIMIT, 'none of the waiting ones were lost');
-});
-
-test('with a readable registry a send goes straight out, as ever', async (t) => {
-  const f = await setup(t);
-  f.hive.send(message('worker-2'), 'worker-1');
-  assert.deepEqual(f.hive.inbox('worker-2').map((m) => m.body), ['the unique body']);
-  assert.deepEqual(rows(f.hive, 'send-waiting'), []);
-});
-
 test('a hive with no home still takes a send without throwing', () => {
   const hive = new HiveManager(() => null);
-  // Nothing can ever release a send here, so nothing may be held: the limit would make the next one throw.
-  for (let n = 0; n < 1001; n++) assert.doesNotThrow(() => hive.send(message('worker-2'), 'worker-1'));
+  assert.doesNotThrow(() => hive.send(message('worker-2'), 'worker-1'));
+});
+
+// ---- the callers ----
+
+function ast(file) {
+  const source = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
+  return { source, tree: ts.createSourceFile(file, source, ts.ScriptTarget.ES2022, true) };
+}
+
+/** Every `<receiver>.send(` on the hive that is not inside a try block, by enclosing line text. */
+function unguardedSends(file) {
+  const { tree } = ast(file);
+  const found = [];
+  const visit = (node, guarded) => {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === 'send') {
+      const receiver = node.expression.expression.getText(tree);
+      if ((receiver === 'hive' || receiver === 'this.hive') && !guarded) found.push(node.getText(tree).slice(0, 60));
+    }
+    if (ts.isTryStatement(node)) {
+      visit(node.tryBlock, true);
+      if (node.catchClause) visit(node.catchClause, guarded);
+      if (node.finallyBlock) visit(node.finallyBlock, guarded);
+      return;
+    }
+    ts.forEachChild(node, (child) => visit(child, guarded));
+  };
+  visit(tree, false);
+  return found;
+}
+
+test('every hive.send in the main process is guarded, so a failed send cannot escape a timer', () => {
+  assert.deepEqual(unguardedSends('src/main/index.ts').filter((c) => !c.startsWith('hive.send(partial, from)')), [],
+    'the realtime dependency is the one exception: its callers are inside the action handler\'s own try');
+  // closing time's conclusion runs from the routed observer, inside a pass, which never fails on a read.
+  // Its first message is guarded by start(), around begin(), so that is not a try at the call site either.
+  assert.deepEqual(unguardedSends('src/main/closingTime.ts').map((c) => c.split('\n')[0]), ['this.hive.send({', 'this.hive.send({']);
+});
+
+function statement(file, startsWith) {
+  const { tree } = ast(file);
+  const node = tree.statements.find((n) => n.getText(tree).startsWith(startsWith));
+  assert.ok(node, `${startsWith} in ${file}`);
+  return ts.transpileModule(node.getText(tree), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+}
+
+test('the hive:send handler answers ok:false with the code, and counts nothing as sent', async (t) => {
+  const f = await setup(t);
+  fs.writeFileSync(f.file, '{');
+  let handler;
+  let counted = 0;
+  vm.runInNewContext(statement('src/main/index.ts', "ipcMain.handle('hive:send'"), {
+    hive: { enabled: () => true, send: (...a) => f.hive.send(...a) },
+    analytics: { trackMessageSent: () => { counted += 1; } },
+    RegistryUnreadable,
+    ipcMain: { handle: (_c, fn) => { handler = fn; } }
+  });
+  const result = await handler({}, message('worker-2'), 'human');
+  assert.deepEqual({ ...result }, { ok: false, code: 'registry-unreadable', error: result.error });
+  assert.match(result.error, /registry/i);
+  assert.equal(counted, 0, 'a refused message is never counted');
+});
+
+test('the hive:send handler does not disguise any other failure as an unreadable registry', async () => {
+  let handler;
+  vm.runInNewContext(statement('src/main/index.ts', "ipcMain.handle('hive:send'"), {
+    hive: { enabled: () => true, send: () => { throw new Error('disk full'); } },
+    analytics: { trackMessageSent() {} },
+    RegistryUnreadable,
+    ipcMain: { handle: (_c, fn) => { handler = fn; } }
+  });
+  assert.throws(() => handler({}, message('worker-2'), 'human'), /disk full/);
+});
+
+test('sendOrLog logs a failed send instead of throwing into its timer', () => {
+  const errors = [];
+  const js = ts.transpileModule(`${ast('src/main/index.ts').tree.statements.find((n) => ts.isFunctionDeclaration(n) && n.name?.text === 'sendOrLog').getFullText()}\n;sendOrLog`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const sendOrLog = vm.runInNewContext(js, {
+    hive: { send: () => { throw new RegistryUnreadable('The registry could not be read.'); } },
+    console: { error: (...a) => errors.push(a.join(' ')) }
+  });
+  assert.doesNotThrow(() => sendOrLog({ subject: 'Heartbeat' }, 'heartbeat'));
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /Heartbeat/);
+  assert.match(errors[0], /could not be read/);
+});
+
+test('closing time does not start, or stay stuck active, when its first message cannot be sent', async (t) => {
+  const f = await setup(t);
+  const { ClosingTimeController } = loadTs('src/main/closingTime.ts');
+  const closing = new ClosingTimeController({
+    registry: () => f.hive.registry(),
+    send: () => { throw new RegistryUnreadable('The registry could not be read.'); }
+  }, () => ['god-1', 'worker-1'], () => null, () => {});
+  t.after(() => closing.cancel());
+  const result = closing.start();
+  assert.equal(result.ok, false);
+  assert.match(result.error, /could not be read/);
+  assert.equal(closing.isActive(), false);
 });

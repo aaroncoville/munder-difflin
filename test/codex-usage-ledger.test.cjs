@@ -388,12 +388,12 @@ function breakerBeatHarness({ provider, cap }) {
   const beat = new Function(
     'hive', 'usageProvider', 'usesCumulativeGate', 'grokLedgerGate', 'breakerBaseline', 'ptyForAgent',
     'telemetry', 'lastCoordinationAt', 'lastWorkAt', 'breaker', 'liveWebContents', 'breakerToast',
-    'ptyManager', 'teardownPty',
+    'ptyManager', 'teardownPty', 'sendOrLog',
     `${body}\nreturn runBreakerBeat;`
   )(
     hive, { getAgentUsage: () => next }, usesCumulativeGate, new CumulativeSampleGate(), new RunBaseline(), () => 'pty-1',
     { getSpans: () => [] }, () => Date.now(), () => Date.now(), breaker, () => null, () => {},
-    { kill: () => {} }, () => {}
+    { kill: () => {} }, () => {}, (m) => hive.send(m)
   );
   return {
     ledger,
