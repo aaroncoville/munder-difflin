@@ -16,7 +16,7 @@ function folderKey(id: string): string {
   return id.normalize('NFC').toUpperCase().toLowerCase().normalize('NFC');
 }
 
-function isAppSender(id: string): boolean {
+export function isAppSender(id: string): boolean {
   return APP_SENDERS.has(folderKey(id));
 }
 

@@ -16,10 +16,10 @@ const loadTs = require('./load-ts.cjs');
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { isKnownTarget, isRosterId } = loadTs('src/main/messageTarget.ts');
 
-async function floor(t) {
+async function floor(t, emit) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-message-target-'));
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
-  const hive = new HiveManager(() => home);
+  const hive = new HiveManager(() => home, emit);
   await hive.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: home, isGod: true });
   await hive.ensureAgent({ id: 'worker-1', name: 'Helper', provider: 'claude', cwd: home });
   await hive.ensureAgent({ id: 'worker-2', name: 'Other', provider: 'claude', cwd: home });
@@ -371,4 +371,71 @@ test('an inexact spelling matching two roster entries is refused', async (t) => 
 
   assert.equal(sent('bad-m.json'), true);
   assert.deepEqual(fs.readdirSync(path.join(agents, 'Agent', 'inbox')).filter((f) => f.endsWith('.json')), []);
+});
+
+// The terminal handoff hands the whole message to a renderer before the inbox sink
+// is ever reached, so a check only at the inbox leaves that channel open.
+function handoffs() {
+  const sent = [];
+  const emit = (channel, payload) => {
+    if (channel === 'hive:terminalHandoff') sent.push(payload);
+    return true;
+  };
+  return { sent, emit };
+}
+
+for (const [label, id, extra, to] of [
+  ['a hookless entry', 'heartbeat', { provider: 'custom' }, 'heartbeat'],
+  ['a proxy-tier entry', 'scheduler', { provider: 'qwen' }, 'scheduler'],
+  ['an archived entry', 'breaker', { provider: 'custom', archived: true }, 'breaker'],
+  ['an assistant entry', 'router', { provider: 'custom', isAssistant: true }, 'router'],
+  ['an entry in another case, named exactly', 'HEARTBEAT', { provider: 'custom' }, 'HEARTBEAT'],
+  ['an entry in another case, named differently', 'HEARTBEAT', { provider: 'custom' }, 'heartbeat']
+]) {
+  test(`a reply to an app sender surfaces to god and reaches no channel of ${label}`, async (t) => {
+    const { sent, emit } = handoffs();
+    const { hive, agents, write } = await floor(t, emit);
+    addRosterEntry(hive, id, extra);
+    const inbox = path.join(agents, id, 'inbox');
+    fs.mkdirSync(path.join(inbox, '.done'), { recursive: true });
+
+    write('m.json', to);
+    assert.equal(hive.routeOnce(), 1);
+
+    assert.deepEqual(sent, [], 'the whole message went to a terminal under the app\'s name');
+    assert.deepEqual(fs.readdirSync(inbox).filter((f) => f.endsWith('.json')), []);
+    const mail = hive.inbox('god-1');
+    assert.equal(mail.length, 1, 'the name means the app, so it surfaces to god');
+    assert.equal(mail[0].body, 'b', 'with its content, which nobody else now has');
+  });
+}
+
+test('a reply to an app sender with no roster entry is not counted as handed to a terminal', async (t) => {
+  const { sent, emit } = handoffs();
+  const { hive, write } = await floor(t, emit);
+  write('m.json', 'webhook');
+  assert.equal(hive.routeOnce(), 1);
+  assert.deepEqual(sent, []);
+  assert.equal(hive.inbox('god-1').length, 1);
+});
+
+test('a broadcast hands nothing to a hookless entry named after an app sender, and still reaches a real one', async (t) => {
+  const { sent, emit } = handoffs();
+  const { hive, write } = await floor(t, emit);
+  addRosterEntry(hive, 'scheduler', { provider: 'custom' });
+  addRosterEntry(hive, 'real-hookless', { provider: 'custom' });
+  write('m.json', 'broadcast');
+  hive.routeOnce();
+  assert.deepEqual(sent.map((m) => m.to), ['real-hookless']);
+  assert.equal(hive.inbox('god-1').filter((m) => m.subject.includes('scheduler')).length, 0, 'a skip, not a bounce per broadcast');
+});
+
+test('a hookless agent with an ordinary name still gets its terminal handoff', async (t) => {
+  const { sent, emit } = handoffs();
+  const { hive, write } = await floor(t, emit);
+  addRosterEntry(hive, 'real-hookless', { provider: 'custom' });
+  write('m.json', 'real-hookless');
+  assert.equal(hive.routeOnce(), 1);
+  assert.deepEqual(sent.map((m) => m.to), ['real-hookless']);
+  assert.deepEqual(hive.inbox('god-1'), []);
 });

@@ -45,7 +45,7 @@ import { preferredAgentRole } from '../shared/agentRole';
 import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde } from './fs';
 import { refreshMineIgnoresOnce } from './hiveMineIgnore';
-import { hasExactFolder, isKnownTarget, isRosterId, newRosterIdRefusal, rosterIdFor, shortTarget } from './messageTarget';
+import { hasExactFolder, isAppSender, isKnownTarget, isRosterId, newRosterIdRefusal, rosterIdFor, shortTarget } from './messageTarget';
 import { codexTrustEntry } from '../shared/codexTrust';
 import { withCodexWritableRoots } from '../shared/codexWritableRoots';
 import { resolveGodName } from '../shared/godIdentity';
@@ -1758,7 +1758,7 @@ export class HiveManager {
       // NOT skipped — the per-target path below already serves them a terminal
       // work order, so excluding them here only made a broadcast invisible to an
       // agent that direct mail reaches fine. See selectBroadcastTargets.
-      ? selectBroadcastTargets(reg.agents, msg.from)
+      ? selectBroadcastTargets(reg.agents, msg.from).filter((t) => !isAppSender(t))
       // Never deliver to self — guards a god → "human" message looping back to god.
       : [resolveTo(msg.to)].filter((t) => t !== msg.from);
     // Targets that actually took delivery. The log below reports these instead of
@@ -1773,6 +1773,11 @@ export class HiveManager {
     const bounce = (subject: string): void => { if (this.bounceToGod(msg, godId, subject)) bounced = true; };
     try {
     for (const t of targets) {
+      // Before every channel, because a terminal handoff hands over the whole message without reaching deliver().
+      if (isAppSender(t)) {
+        bounce(`[reply to "${t}", one of the app's own names, which has no inbox] ${msg.subject}`);
+        continue;
+      }
       // The send-only prep assistant must never be a delivery target: it doesn't
       // drain an inbox, so direct mail to it would rot unread (observed live: a
       // task brief plus the follow-up reprimand about the unread inbox, both
