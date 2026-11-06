@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { lstat, mkdir, readdir, readlink, realpath, rmdir, symlink, unlink } from 'node:fs/promises';
+import { copyFile, lstat, mkdir, readdir, readFile, readlink, realpath, rmdir, symlink, unlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
 export type DepLink =
@@ -10,12 +10,24 @@ export type DepUnlink =
   | { ok: true; removed: boolean }
   | { ok: false; error: string };
 
+/** The folders npm writes inside rather than replacing. Through a link to one of these, `npm uninstall @scope/a` would
+ *  delete the base's package and removing a package's bin would delete the base's. */
+function npmWritesInside(name: string): boolean {
+  return name === '.bin' || name.startsWith('@');
+}
+
+function linkEntry(target: string, link: string): Promise<void> {
+  return symlink(target, link, process.platform === 'win32' ? 'junction' : null);
+}
+
 /**
- * Link the base checkout's dependencies into an isolated worktree: a real node_modules directory with each entry a
+ * Link the base checkout's dependencies into an isolated worktree: a real node_modules directory with each package a
  * link into the base. A link to the base's whole folder is not safe, because `npm ci` empties node_modules by listing
- * it and removing each entry, so through that link it empties the base. Removing an entry link removes only the link.
- * This costs no more than one link per package, where a copy would cost the whole install on every spawn. Plain files
- * such as npm's .package-lock.json are left out, because a Windows junction cannot point at a file.
+ * it and removing each entry, so through that link it empties the base. npm only ever removes or replaces a package
+ * link itself, so @scope folders and .bin are real folders too, holding a link per entry. This costs no more than one
+ * link per package, where a copy would cost the whole install on every spawn. Plain files are not linked, because a
+ * Windows junction cannot point at a file: npm's .package-lock.json is left out, and .bin's shims are copied, which
+ * works because they find their package relative to themselves.
  */
 export async function linkWorktreeDeps(baseDir: string, worktreeDir: string): Promise<DepLink> {
   const baseNodeModules = join(baseDir, 'node_modules');
@@ -34,7 +46,17 @@ export async function linkWorktreeDeps(baseDir: string, worktreeDir: string): Pr
     await mkdir(worktreeNodeModules);
     for (const entry of entries) {
       if (entry.isFile()) continue;
-      await symlink(join(baseNodeModules, entry.name), join(worktreeNodeModules, entry.name), process.platform === 'win32' ? 'junction' : null);
+      const from = join(baseNodeModules, entry.name);
+      const to = join(worktreeNodeModules, entry.name);
+      if (!npmWritesInside(entry.name)) {
+        await linkEntry(from, to);
+        continue;
+      }
+      await mkdir(to);
+      for (const inner of await readdir(from, { withFileTypes: true })) {
+        if (inner.isFile()) await copyFile(join(from, inner.name), join(to, inner.name));
+        else await linkEntry(join(from, inner.name), join(to, inner.name));
+      }
     }
     return { ok: true, skipped: false };
   } catch (error) {
@@ -42,18 +64,32 @@ export async function linkWorktreeDeps(baseDir: string, worktreeDir: string): Pr
   }
 }
 
-/** Remove the entries linkWorktreeDeps made, and the folder if that empties it. A link only counts when it goes from
- *  a name to the same name in the base, so anything else the worktree put there stays. */
-async function unlinkEntries(baseNodeModules: string, worktreeNodeModules: string): Promise<DepUnlink> {
-  let removed = false;
-  for (const entry of await readdir(worktreeNodeModules, { withFileTypes: true })) {
-    if (!entry.isSymbolicLink()) continue;
-    const link = join(worktreeNodeModules, entry.name);
-    if (resolve(worktreeNodeModules, await readlink(link)) !== join(baseNodeModules, entry.name)) continue;
-    await unlink(link);
-    removed = true;
+/** Whether `here` is what linkWorktreeDeps put there for `base`: a link from a name to the same name in the base, or
+ *  an unchanged copy of a plain file. */
+async function isOurs(base: string, here: string, isLink: boolean): Promise<boolean> {
+  if (isLink) return resolve(here, '..', await readlink(here)) === base;
+  try {
+    return (await readFile(here)).equals(await readFile(base));
+  } catch {
+    return false;
   }
-  if (removed && (await readdir(worktreeNodeModules)).length === 0) await rmdir(worktreeNodeModules);
+}
+
+/** Remove what linkWorktreeDeps made, and any folder that empties. Anything else the worktree put there stays. */
+async function unlinkEntries(base: string, here: string, nested = false): Promise<DepUnlink> {
+  let removed = false;
+  for (const entry of await readdir(here, { withFileTypes: true })) {
+    const entryBase = join(base, entry.name);
+    const entryHere = join(here, entry.name);
+    if (entry.isDirectory() && !nested && npmWritesInside(entry.name)) {
+      const inner = await unlinkEntries(entryBase, entryHere, true);
+      if (inner.ok && inner.removed) removed = true;
+    } else if ((entry.isSymbolicLink() || (nested && entry.isFile())) && await isOurs(entryBase, entryHere, entry.isSymbolicLink())) {
+      await unlink(entryHere);
+      removed = true;
+    }
+  }
+  if (removed && (await readdir(here)).length === 0) await rmdir(here);
   return { ok: true, removed };
 }
 

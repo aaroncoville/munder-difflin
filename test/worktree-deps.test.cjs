@@ -52,9 +52,8 @@ test('gives a worktree a real node_modules whose entries link into the base', as
   const worktreeNodeModules = path.join(wtPath, 'node_modules');
   assert.equal(fs.lstatSync(worktreeNodeModules).isSymbolicLink(), false, 'a link to the base directory is what npm ci empties');
   assert.equal(fs.lstatSync(worktreeNodeModules).isDirectory(), true);
-  for (const entry of ['pkg', '@scope', '.bin']) {
-    assert.equal(fs.lstatSync(path.join(worktreeNodeModules, entry)).isSymbolicLink(), true, entry);
-  }
+  assert.equal(fs.lstatSync(path.join(worktreeNodeModules, 'pkg')).isSymbolicLink(), true);
+  assert.equal(fs.lstatSync(path.join(worktreeNodeModules, '@scope', 'pkg')).isSymbolicLink(), true);
   assert.equal(fs.readFileSync(path.join(worktreeNodeModules, 'pkg', 'sentinel.txt'), 'utf8'), 'base\n');
   assert.equal(fs.readFileSync(path.join(worktreeNodeModules, '@scope', 'pkg', 'scoped.txt'), 'utf8'), 'scoped\n');
   assert.equal(fs.existsSync(path.join(worktreeNodeModules, '.package-lock.json')), false, 'a plain file is left out: a junction cannot point at one');
@@ -273,60 +272,155 @@ test('recovers from a stale registration left by rm -rf instead of git worktree 
 });
 
 // The property that matters, against real npm: `npm ci` empties node_modules by listing it and removing each entry.
-// Through a link to the base folder, that listing is the base's, so the base is what gets emptied.
+// Through a link to the base folder, that listing is the base's, so the base is what gets emptied. The same goes for
+// any folder npm writes inside: a linked @scope let `npm uninstall @scope/old` delete the base's package.
 function npmFixture(t) {
   const { repo, wtRoot } = makeHarness();
   const npmEnv = { ...process.env, npm_config_cache: path.join(wtRoot, '.npm-cache'), npm_config_audit: 'false', npm_config_fund: 'false', npm_config_update_notifier: 'false' };
   const npm = (cwd, ...args) => execFileSync('npm', [...args, '--offline', '--silent'], { cwd, env: npmEnv, encoding: 'utf8' });
-  const pkg = path.join(wtRoot, '.pkg');
-  fs.mkdirSync(pkg);
-  fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: 'leftish', version: '1.0.0', bin: { leftish: 'index.js' } }));
-  fs.writeFileSync(path.join(pkg, 'index.js'), '#!/usr/bin/env node\nmodule.exports = 1;\n');
-  npm(pkg, 'pack');
-  fs.copyFileSync(path.join(pkg, 'leftish-1.0.0.tgz'), path.join(repo, 'leftish-1.0.0.tgz'));
-  fs.writeFileSync(path.join(repo, 'package.json'), JSON.stringify({ name: 'base', version: '1.0.0', dependencies: { leftish: 'file:leftish-1.0.0.tgz' } }));
+  const packed = (name, bin) => {
+    const dir = fs.mkdtempSync(path.join(wtRoot, '.pkg-'));
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name, version: '1.0.0', ...(bin ? { bin: { [bin]: 'index.js' } } : {}) }));
+    fs.writeFileSync(path.join(dir, 'index.js'), '#!/usr/bin/env node\nmodule.exports = 1;\n');
+    const file = npm(dir, 'pack').trim().split('\n').pop();
+    return path.join(dir, file);
+  };
+  const vendor = path.join(repo, 'vendor');
+  fs.mkdirSync(vendor);
+  const dep = (name, bin) => {
+    const file = packed(name, bin);
+    fs.copyFileSync(file, path.join(vendor, path.basename(file)));
+    return `file:vendor/${path.basename(file)}`;
+  };
+  fs.writeFileSync(path.join(repo, 'package.json'), JSON.stringify({
+    name: 'base', version: '1.0.0',
+    dependencies: { leftish: dep('leftish', 'leftish'), '@scope/old': dep('@scope/old', 'scoped-old'), '@scope/kept': dep('@scope/kept') }
+  }));
   fs.writeFileSync(path.join(repo, '.gitignore'), 'node_modules\n');
   npm(repo, 'install');
   git(repo, 'add', '-A');
-  git(repo, 'commit', '-q', '-m', 'add a dependency');
-  const sentinel = path.join(repo, 'node_modules', 'leftish', 'SENTINEL');
-  fs.writeFileSync(sentinel, 'the live install\n');
+  git(repo, 'commit', '-q', '-m', 'add dependencies');
+  const baseModules = path.join(repo, 'node_modules');
+  for (const pkg of ['leftish', path.join('@scope', 'old'), path.join('@scope', 'kept')]) {
+    fs.writeFileSync(path.join(baseModules, pkg, 'SENTINEL'), `the live install of ${pkg}\n`);
+  }
   t.after(() => fs.rmSync(path.dirname(repo), { recursive: true, force: true }));
-  const snapshot = () => fs.readdirSync(path.join(repo, 'node_modules'), { recursive: true }).map(String).sort();
-  return { repo, wtRoot, npm, sentinel, snapshot };
+  // Every entry, what it is, and its content or target, without following links.
+  const inventory = () => fs.readdirSync(baseModules, { recursive: true }).map(String).sort().map((rel) => {
+    const full = path.join(baseModules, rel);
+    const stat = fs.lstatSync(full);
+    if (stat.isSymbolicLink()) return `${rel} -> ${fs.readlinkSync(full)}`;
+    return stat.isFile() ? `${rel} = ${fs.readFileSync(full, 'utf8')}` : `${rel}/`;
+  });
+  return { repo, wtRoot, npm, packed, inventory, baseModules };
 }
 
-for (const command of [['ci'], ['install'], ['install', '--force']]) {
-  test(`npm ${command.join(' ')} in a worktree leaves the base install untouched`, async (t) => {
-    const { repo, wtRoot, npm, sentinel, snapshot } = npmFixture(t);
-    const before = snapshot();
-    const wtPath = addWorktree(repo, wtRoot, 'agent-npm');
-    assert.deepEqual(await linkWorktreeDeps(repo, wtPath), { ok: true, skipped: false });
+const OPERATIONS = {
+  'ci': (f) => f.npm(f.wt, 'ci'),
+  'install': (f) => f.npm(f.wt, 'install'),
+  'install --force': (f) => f.npm(f.wt, 'install', '--force'),
+  'uninstall of a scoped package': (f) => f.npm(f.wt, 'uninstall', '@scope/old'),
+  'uninstall of the last package left in a scope': (f) => f.npm(f.wt, 'uninstall', '@scope/old', '@scope/kept'),
+  'uninstall of a package with a bin': (f) => f.npm(f.wt, 'uninstall', 'leftish'),
+  'install of a new scoped package': (f) => f.npm(f.wt, 'install', f.packed('@scope/new')),
+  'install of a package in a new scope': (f) => f.npm(f.wt, 'install', f.packed('@other/new')),
+  'install of a new package with a bin': (f) => f.npm(f.wt, 'install', f.packed('with-bin', 'with-bin')),
+  'update': (f) => f.npm(f.wt, 'update'),
+  'prune': (f) => f.npm(f.wt, 'prune')
+};
 
-    npm(wtPath, ...command);
+for (const [label, run] of Object.entries(OPERATIONS)) {
+  test(`npm ${label} in a worktree leaves the base install exactly as it was`, async (t) => {
+    const f = npmFixture(t);
+    const before = f.inventory();
+    f.wt = addWorktree(f.repo, f.wtRoot, 'agent-npm');
+    assert.deepEqual(await linkWorktreeDeps(f.repo, f.wt), { ok: true, skipped: false });
 
-    assert.equal(fs.readFileSync(sentinel, 'utf8'), 'the live install\n', 'the live install was changed through the worktree');
-    assert.deepEqual(snapshot(), before);
-    assert.equal(fs.lstatSync(path.join(wtPath, 'node_modules')).isDirectory(), true);
+    run(f);
+
+    assert.deepEqual(f.inventory(), before, 'the live install was changed through the worktree');
+    assert.equal(fs.lstatSync(path.join(f.wt, 'node_modules')).isSymbolicLink(), false);
   });
 }
 
+test('after npm in a worktree, its own view changed and the base did not', async (t) => {
+  const f = npmFixture(t);
+  const wt = addWorktree(f.repo, f.wtRoot, 'agent-view');
+  await linkWorktreeDeps(f.repo, wt);
+  f.npm(wt, 'uninstall', '@scope/old');
+  assert.equal(fs.existsSync(path.join(wt, 'node_modules', '@scope', 'old')), false);
+  assert.equal(fs.existsSync(path.join(f.baseModules, '@scope', 'old', 'SENTINEL')), true);
+  f.npm(wt, 'install', f.packed('@scope/new'));
+  assert.equal(fs.lstatSync(path.join(wt, 'node_modules', '@scope', 'new')).isSymbolicLink(), false);
+  assert.equal(fs.existsSync(path.join(f.baseModules, '@scope', 'new')), false);
+});
+
 test('npm ci in a worktree leaves it with its own real install', async (t) => {
-  const { repo, wtRoot, npm } = npmFixture(t);
-  const wtPath = addWorktree(repo, wtRoot, 'agent-own');
-  await linkWorktreeDeps(repo, wtPath);
-  npm(wtPath, 'ci');
-  const installed = path.join(wtPath, 'node_modules', 'leftish');
+  const f = npmFixture(t);
+  const wt = addWorktree(f.repo, f.wtRoot, 'agent-own');
+  await linkWorktreeDeps(f.repo, wt);
+  f.npm(wt, 'ci');
+  const installed = path.join(wt, 'node_modules', 'leftish');
   assert.equal(fs.lstatSync(installed).isSymbolicLink(), false);
   assert.equal(fs.existsSync(path.join(installed, 'SENTINEL')), false, 'not the base copy');
-  assert.deepEqual(await unlinkWorktreeDeps(repo, wtPath), { ok: true, removed: false }, 'the worktree\'s own install is not ours to remove');
+  assert.equal(fs.lstatSync(path.join(wt, 'node_modules', '@scope', 'old')).isSymbolicLink(), false);
+  assert.deepEqual(await unlinkWorktreeDeps(f.repo, wt), { ok: true, removed: false }, 'the worktree\'s own install is not ours to remove');
   assert.equal(fs.existsSync(installed), true);
 });
 
-test('code in a worktree resolves a linked dependency and its .bin entry', async (t) => {
-  const { repo, wtRoot } = npmFixture(t);
-  const wtPath = addWorktree(repo, wtRoot, 'agent-resolve');
-  await linkWorktreeDeps(repo, wtPath);
-  assert.equal(execFileSync(process.execPath, ['-e', "process.stdout.write(String(require('leftish')))"], { cwd: wtPath, encoding: 'utf8' }), '1');
-  assert.equal(fs.existsSync(path.join(wtPath, 'node_modules', '.bin', 'leftish')), true);
+test('code in a worktree resolves linked and scoped dependencies, and a .bin entry runs', async (t) => {
+  const f = npmFixture(t);
+  const wt = addWorktree(f.repo, f.wtRoot, 'agent-resolve');
+  await linkWorktreeDeps(f.repo, wt);
+  for (const name of ['leftish', '@scope/old', '@scope/kept']) {
+    assert.equal(execFileSync(process.execPath, ['-e', `process.stdout.write(String(require('${name}')))`], { cwd: wt, encoding: 'utf8' }), '1', name);
+  }
+  assert.equal(fs.existsSync(path.join(wt, 'node_modules', '.bin', 'leftish')), true);
+  execFileSync(path.join(wt, 'node_modules', '.bin', 'scoped-old'), [], { cwd: wt });
+});
+
+test('a scope and .bin are real folders in the worktree, with a link for each thing in them', async () => {
+  const { repo, wtRoot } = makeHarness();
+  const base = path.join(repo, 'node_modules');
+  fs.mkdirSync(path.join(base, '@scope', 'a'), { recursive: true });
+  fs.mkdirSync(path.join(base, '@scope', 'b'), { recursive: true });
+  fs.mkdirSync(path.join(base, '.bin'));
+  fs.symlinkSync('../@scope/a/index.js', path.join(base, '.bin', 'a'));
+  fs.writeFileSync(path.join(base, '.bin', 'a.cmd'), 'a windows shim\n');
+  const wt = addWorktree(repo, wtRoot, 'agent-scope');
+
+  await linkWorktreeDeps(repo, wt);
+
+  const here = path.join(wt, 'node_modules');
+  for (const folder of ['@scope', '.bin']) {
+    assert.equal(fs.lstatSync(path.join(here, folder)).isSymbolicLink(), false, `${folder} must not be a link npm can write through`);
+    assert.equal(fs.lstatSync(path.join(here, folder)).isDirectory(), true);
+  }
+  assert.equal(fs.lstatSync(path.join(here, '@scope', 'a')).isSymbolicLink(), true);
+  assert.equal(fs.lstatSync(path.join(here, '.bin', 'a')).isSymbolicLink(), true);
+  assert.equal(fs.lstatSync(path.join(here, '.bin', 'a.cmd')).isSymbolicLink(), false, 'a plain file is copied: a junction cannot point at one');
+  assert.equal(fs.readFileSync(path.join(here, '.bin', 'a.cmd'), 'utf8'), 'a windows shim\n');
+
+  assert.deepEqual(await unlinkWorktreeDeps(repo, wt), { ok: true, removed: true });
+  assert.throws(() => fs.lstatSync(here), /ENOENT/, 'and all of it comes out again, leaving nothing to look like work');
+  assert.equal(fs.existsSync(path.join(base, '@scope', 'a')), true);
+  assert.equal(fs.readFileSync(path.join(base, '.bin', 'a.cmd'), 'utf8'), 'a windows shim\n');
+});
+
+test('removing the links leaves what the worktree added inside a scope or .bin', async () => {
+  const { repo, wtRoot } = makeHarness();
+  const base = path.join(repo, 'node_modules');
+  fs.mkdirSync(path.join(base, '@scope', 'a'), { recursive: true });
+  fs.mkdirSync(path.join(base, '.bin'));
+  fs.writeFileSync(path.join(base, '.bin', 'a.cmd'), 'base shim\n');
+  const wt = addWorktree(repo, wtRoot, 'agent-scope-own');
+  await linkWorktreeDeps(repo, wt);
+  const here = path.join(wt, 'node_modules');
+  fs.mkdirSync(path.join(here, '@scope', 'own'));
+  fs.writeFileSync(path.join(here, '.bin', 'a.cmd'), 'changed by the worktree\n');
+
+  assert.deepEqual(await unlinkWorktreeDeps(repo, wt), { ok: true, removed: true });
+
+  assert.deepEqual(fs.readdirSync(path.join(here, '@scope')), ['own']);
+  assert.equal(fs.readFileSync(path.join(here, '.bin', 'a.cmd'), 'utf8'), 'changed by the worktree\n');
 });
