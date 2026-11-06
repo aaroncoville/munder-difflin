@@ -4807,10 +4807,11 @@ function archiveRequest(filePath: string, sub: '.done' | '.failed'): void {
  *  leave a PRIOR worker's `done` sitting in this same dir. Without a guard that
  *  stale signal would release the new worker on its very first tick — before it
  *  does anything or replies — causing a silent Slack hang. So we only count a
- *  `done` authored AFTER this worker spawned: by its `created_at` (the message's
- *  own timestamp), falling back to the file's mtime when `created_at` is missing
- *  or unparseable. When neither yields a usable timestamp we DON'T count it
- *  (fail toward keeping the worker alive — the idle reaper is the backstop). */
+ *  `done` written AFTER this worker spawned, by its file's mtime. The message's
+ *  `created_at` is not used: an agent writes it by hand, and the grace window
+ *  measured from it could be spent, or skipped, before it began. When the mtime
+ *  cannot be read we DON'T count it (fail toward keeping the worker alive — the
+ *  idle reaper is the backstop). */
 function workerDoneAt(workerId: string, spawnedAt: number): number | null {
   const root = hive.root();
   if (!root) return null;
@@ -4824,12 +4825,10 @@ function workerDoneAt(workerId: string, spawnedAt: number): number | null {
       if (!f.endsWith('.json')) continue;
       const fp = join(dir, f);
       try {
-        const msg = JSON.parse(readFileSync(fp, 'utf8')) as { act?: string; created_at?: string };
+        const msg = JSON.parse(readFileSync(fp, 'utf8')) as { act?: string };
         if (msg.act !== 'done') continue;
-        let ts = Date.parse(msg.created_at ?? '');
-        if (!Number.isFinite(ts)) {
-          try { ts = statSync(fp).mtimeMs; } catch { ts = NaN; }
-        }
+        let ts = NaN;
+        try { ts = statSync(fp).mtimeMs; } catch { /* vanished: not counted */ }
         if (Number.isFinite(ts) && ts > spawnedAt && (doneAt === null || ts > doneAt)) doneAt = ts;
       } catch { /* skip unreadable/partial */ }
     }

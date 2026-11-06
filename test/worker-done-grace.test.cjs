@@ -29,7 +29,12 @@ function inboxDir(t) {
   fs.mkdirSync(path.join(dir, '.done'));
   return dir;
 }
-const put = (dir, name, msg) => fs.writeFileSync(path.join(dir, `${name}.json`), JSON.stringify(msg));
+// What counts is when the file arrived, so each message is dated by its mtime.
+function put(dir, name, msg, at) {
+  const file = path.join(dir, `${name}.json`);
+  fs.writeFileSync(file, JSON.stringify(msg));
+  fs.utimesSync(file, new Date(at), new Date(at));
+}
 
 test('the window lasts three minutes: kept inside it, released at its end', (t) => {
   const dir = inboxDir(t);
@@ -39,46 +44,67 @@ test('the window lasts three minutes: kept inside it, released at its end', (t) 
   assert.equal(afterWorkerDone(dir, 'god', T0, T0 + GRACE), 'release');
 });
 
-// created_at is written by the agent. Nothing else ends the window (a kept
-// worker skips the idle reaper), so a future stamp must not hold it forever.
-test('a done stamped in the future releases rather than holding the worker indefinitely', (t) => {
+// A kept worker skips the idle reaper, so a clock change that dates the done
+// ahead of now must not hold the worker until the clock catches up.
+test('a done dated in the future releases rather than holding the worker indefinitely', (t) => {
   assert.equal(afterWorkerDone(inboxDir(t), 'god', T0 + 3_600_000, T0), 'release');
 });
 
 test('a request or query from the orchestrator after the done re-engages, wherever it is filed', (t) => {
   for (const act of ['request', 'query']) {
     const dir = inboxDir(t);
-    put(dir, 'f', { from: 'god', act, created_at: iso(T0 + 1) });
+    put(dir, 'f', { from: 'god', act }, T0 + 1);
     assert.equal(workerFollowUpAfter(dir, 'god', T0), true, `${act} in the inbox`);
     assert.equal(afterWorkerDone(dir, 'god', T0, T0 + GRACE + 1), 'reengaged');
     const filed = inboxDir(t);
-    put(path.join(filed, '.done'), 'f', { from: 'god', act, created_at: iso(T0 + 1) });
+    put(path.join(filed, '.done'), 'f', { from: 'god', act }, T0 + 1);
     assert.equal(workerFollowUpAfter(filed, 'god', T0), true, `${act} already filed by the worker`);
   }
 });
 
 test('mail that does not count as a follow-up leaves the window to run out', (t) => {
   const dir = inboxDir(t);
-  put(dir, 'before', { from: 'god', act: 'request', created_at: iso(T0 - 1) });
-  put(dir, 'same-instant', { from: 'god', act: 'request', created_at: iso(T0) });
-  put(dir, 'peer', { from: 'worker-other', act: 'request', created_at: iso(T0 + 1) });
+  put(dir, 'before', { from: 'god', act: 'request' }, T0 - 1);
+  put(dir, 'same-instant', { from: 'god', act: 'request' }, T0);
+  put(dir, 'peer', { from: 'worker-other', act: 'request' }, T0 + 1);
   // An inform asks for nothing. Re-engaging on one would pin the worker's slot
   // until the idle reaper, because no further done is coming.
-  put(dir, 'inform', { from: 'god', act: 'inform', created_at: iso(T0 + 1) });
+  put(dir, 'inform', { from: 'god', act: 'inform' }, T0 + 1);
   fs.writeFileSync(path.join(dir, 'partial.json'), '{"from":"go');
   fs.writeFileSync(path.join(dir, 'note.txt'), 'not a message');
   assert.equal(workerFollowUpAfter(dir, 'god', T0), false);
   assert.equal(afterWorkerDone(dir, 'god', T0, T0 + GRACE), 'release');
 });
 
-test('the orchestrator is matched by the id it was given, and a missing stamp falls back to the file time', (t) => {
+test('the orchestrator is matched by the id it was given', (t) => {
   const dir = inboxDir(t);
-  put(dir, 'f', { from: 'god-1', act: 'request' });
-  const mtime = new Date(T0 + 5_000);
-  fs.utimesSync(path.join(dir, 'f.json'), mtime, mtime);
+  put(dir, 'f', { from: 'god-1', act: 'request' }, T0 + 5_000);
   assert.equal(workerFollowUpAfter(dir, 'god', T0), false);
   assert.equal(workerFollowUpAfter(dir, 'god-1', T0), true);
-  assert.equal(workerFollowUpAfter(dir, 'god-1', T0 + 10_000), false);
+});
+
+// created_at is whatever the sender wrote, and agents write round numbers that
+// can be minutes off. The file's arrival is the app's own observation.
+test('a follow-up is dated by its arrival, not by the stamp its sender wrote', (t) => {
+  const behind = inboxDir(t);
+  put(behind, 'f', { from: 'god', act: 'request', created_at: iso(T0 - 3_600_000) }, T0 + 1);
+  assert.equal(workerFollowUpAfter(behind, 'god', T0), true, 'stamped an hour behind, arrived after the done');
+  const ahead = inboxDir(t);
+  put(ahead, 'f', { from: 'god', act: 'request', created_at: iso(T0 + 3_600_000) }, T0 - 1);
+  assert.equal(workerFollowUpAfter(ahead, 'god', T0), false, 'stamped an hour ahead, arrived before the done');
+});
+
+// Each window tick reads this folder, and inbox/.done grows across re-hires.
+test('a file older than the done is not read at all', (t) => {
+  const dir = inboxDir(t);
+  put(dir, 'old', { from: 'god', act: 'request' }, T0 - 1);
+  const read = fs.readFileSync;
+  const seen = [];
+  fs.readFileSync = (file, ...rest) => { seen.push(file); return read(file, ...rest); };
+  t.after(() => { fs.readFileSync = read; });
+  workerFollowUpAfter(dir, 'god', T0);
+  fs.readFileSync = read;
+  assert.deepEqual(seen, []);
 });
 
 test('a missing inbox is no follow-up', () => {
@@ -147,11 +173,12 @@ async function setup(t, overrides = {}) {
     ...overrides
   };
   const { ephemeralWorkerTick } = vm.runInNewContext(liveTickSource(), context);
-  const write = (dir, name, msg) => fs.writeFileSync(path.join(agentDir, dir, `${name}.json`), JSON.stringify(msg));
+  const write = (dir, name, msg, at = clock) => put(path.join(agentDir, dir), name, msg, at);
   return {
     hive, id, rec, calls, wt, commit, context, tick: ephemeralWorkerTick,
     advance: (ms) => { clock += ms; },
-    done: (name) => write('outbox/.sent', name, { from: id, to: 'god-1', act: 'done', created_at: iso(clock) }),
+    done: (name, created_at = iso(clock)) => write('outbox/.sent', name, { from: id, to: 'god-1', act: 'done', created_at }),
+    staleDone: (name, created_at) => write('outbox/.sent', name, { from: id, to: 'god-1', act: 'done', created_at }, T0 - 700_000),
     fromGod: (name, act = 'request', conversation = 'c') => write('inbox', name,
       { id: name, from: 'god-1', to: id, act, subject: name, conversation, created_at: iso(clock) })
   };
@@ -169,6 +196,28 @@ test('tick: a done worker stays alive through the window, then is released', asy
   assert.deepEqual(f.calls.kill, [f.id]);
   assert.deepEqual(f.calls.gone, [f.id]);
   assert.equal(f.rec.releasing, true);
+});
+
+for (const [name, offset] of [['ahead', 3_600_000], ['behind', -3_600_000]]) {
+  test(`tick: a done stamped an hour ${name} still gets the full window from when it arrived`, async (t) => {
+    const f = await setup(t);
+    f.done('d1', iso(T0 + offset));
+    f.advance(GRACE - 1);
+    await f.tick();
+    assert.deepEqual(f.calls.kill, [], 'the stamp must not shorten or spend the window');
+    f.advance(1);
+    await f.tick();
+    assert.deepEqual(f.calls.kill, [f.id], 'and must not lengthen it either');
+  });
+}
+
+test('tick: a done left by an earlier worker with this id does not count, whatever its stamp says', async (t) => {
+  const f = await setup(t);
+  f.staleDone('old', iso(T0 + 3_600_000));
+  f.advance(GRACE + 1);
+  await f.tick();
+  assert.deepEqual(f.calls.kill, []);
+  assert.deepEqual(f.calls.notices, []);
 });
 
 test('tick: a follow-up keeps the worker past the window, and its next done starts a new one', async (t) => {
