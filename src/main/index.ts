@@ -1762,6 +1762,7 @@ async function startSlackServer(): Promise<{ ok: boolean; url?: string; error?: 
   slackServer?.stop();
   slackServer = new SlackWebhookServer({
     port: cfg.slackPort && cfg.slackPort > 0 ? cfg.slackPort : 3847,
+    bindAllInterfaces: cfg.inboundBindAllInterfaces,
     signingSecret: cfg.slackSigningSecret,
     channelId: cfg.slackChannelId,
     // Fires from the HTTP server's event loop (not the IPC thread); route through
@@ -2170,6 +2171,7 @@ async function startWebhookServer(): Promise<{ ok: boolean; url?: string; error?
   const cfg = readConfig();
   const server = new WebhookServer({
     port: cfg.webhookPort && cfg.webhookPort > 0 ? cfg.webhookPort : WEBHOOK_DEFAULT_PORT,
+    bindAllInterfaces: cfg.inboundBindAllInterfaces,
     endpoints,
     onMessage: handleWebhookMessage,
     lookupStatus: lookupWebhookStatus
