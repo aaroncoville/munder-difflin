@@ -387,7 +387,7 @@ test('routing a message records it against the Codex worker’s thread', (t) => 
   let observer;
   const closing = [];
   const hive = {
-    registry: () => ({ godId: 'god', agents: { god: {}, [WORKER]: { provider: 'codex' } } }),
+    routingRegistry: () => ({ godId: 'god', agents: { god: {}, [WORKER]: { provider: 'codex' } } }),
     setRoutedObserver: (cb) => { observer = cb; },
     inbox: () => [request('review-1')]
   };

@@ -187,7 +187,7 @@ export class ClosingTimeController {
       // so a premature COMPLETE must not close the floor. Workers whose
       // terminal died mid-protocol (tab closed, crash) are excused: their
       // ACK can never arrive and their session is gone either way.
-      const reg = this.hive.registry();
+      const reg = this.hive.routingRegistry();
       const liveNow = new Set(this.getLiveAgentIds());
       const pending = [...this.workers].filter(
         (id) => !this.acked.has(id) && liveNow.has(id) && !reg.agents[id]?.archived

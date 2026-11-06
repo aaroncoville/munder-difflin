@@ -1709,7 +1709,7 @@ export class HiveManager {
    *  Returns false when the recipient has no inbox, so the caller can bounce and
    *  log the drop rather than let the message vanish. */
   private deliver(msg: HiveMessage, toId: string): boolean {
-    if (!isRosterId(this.registry().agents, toId)) return false; // never build a path from anything else
+    if (!isRosterId(this.routingRegistry().agents, toId)) return false; // never build a path from anything else
     if (!hasExactFolder(join(this.root()!, 'agents'), toId)) return false; // nor open a near match's folder
     const inbox = join(this.agentDir(toId), 'inbox');
     if (!existsSync(inbox)) return false; // unknown recipient — the caller reports it
@@ -1740,7 +1740,7 @@ export class HiveManager {
   /** Inject a message directly (used by the orchestrator / UI / tests). */
   send(partial: Partial<HiveMessage>, from = 'system'): HiveMessage {
     const msg = this.normalize(partial, from);
-    if (!this.routeMessage(msg) && !isKnownTarget(this.registry().agents, msg.to, this.agentsDir())) this.reportRefusedSend(msg);
+    if (!this.routeMessage(msg) && !isKnownTarget(this.routingRegistry().agents, msg.to, this.agentsDir())) this.reportRefusedSend(msg);
     this.commit(`hive: msg ${msg.from}→${msg.to} (${msg.act})`);
     return msg;
   }
@@ -1748,7 +1748,7 @@ export class HiveManager {
   /** Returns false only when the message landed nowhere. No target at all is not a failure: that is how god's
    *  mail to the human routes. */
   private routeMessage(msg: HiveMessage): boolean {
-    const reg = this.registry();
+    const reg = this.routingRegistry();
     const godId = reg.godId ?? 'god';
     if (!isKnownTarget(reg.agents, msg.to, this.agentsDir())) {
       this.appendLog({ kind: 'drop', reason: 'unknown-recipient', from: msg.from, to: shortTarget(msg.to), id: msg.id });
@@ -1964,7 +1964,7 @@ export class HiveManager {
   /** A send() has no file to set aside, so the content goes with the notice. Mail from the app's own senders, which
    *  have no inbox, goes to god, so a mistyped target still surfaces to someone. */
   private reportRefusedSend(msg: HiveMessage): void {
-    const reg = this.registry();
+    const reg = this.routingRegistry();
     const to = isRosterId(reg.agents, msg.from) ? msg.from : (reg.godId ?? 'god');
     this.routeMessage(this.normalize({
       to,
@@ -1983,7 +1983,7 @@ export class HiveManager {
       quarantine: () => quarantineOutboxFile(outbox, f),
       notify: (subject, body) => {
         // Only an exact roster id is told directly: a near match would hand this folder's notice to another agent.
-        const reg = this.registry();
+        const reg = this.routingRegistry();
         const own = isRosterId(reg.agents, id);
         this.routeMessage(this.normalize({
           to: own ? id : reg.godId ?? 'god', act: 'inform', requires_reply: false, hops, subject,
@@ -1994,6 +1994,14 @@ export class HiveManager {
   }
 
   private registryUnreadable = false;
+  private passRegistry: Registry | null = null;
+
+  /** The registry to decide by. Inside a routing pass that is the pass's one read, including for the routed observer
+   *  and a send it makes: registry() would treat a failed later read as an empty roster and refuse valid mail. For
+   *  reading only. Anything that writes the registry goes on using registry(), so it never writes a stale copy. */
+  routingRegistry(): Registry {
+    return this.passRegistry ?? this.registry();
+  }
 
   private readableRegistry(): Registry | null {
     try {
@@ -2019,6 +2027,15 @@ export class HiveManager {
       return 0;
     }
     this.registryUnreadable = false;
+    this.passRegistry = roster;
+    try {
+      return this.drainOutboxes(agentsDir, roster, now);
+    } finally {
+      this.passRegistry = null;
+    }
+  }
+
+  private drainOutboxes(agentsDir: string, roster: Registry, now: number): number {
     // A sender may remove or rename a half-written file itself; forget it, so a
     // later file of the same name starts its own retry window.
     for (const p of this.malformedSince.keys()) if (!existsSync(p)) this.malformedSince.delete(p);
@@ -2067,7 +2084,7 @@ export class HiveManager {
           hops = msg.hops;
           stage = 'route';
           if (!this.routeMessage(msg)) {
-            this.outboxFailed(isKnownTarget(this.registry().agents, msg.to, this.agentsDir()) ? 'not-delivered' : 'recipient', outbox, f, id, undefined, hops);
+            this.outboxFailed(isKnownTarget(this.routingRegistry().agents, msg.to, this.agentsDir()) ? 'not-delivered' : 'recipient', outbox, f, id, undefined, hops);
             continue;
           }
           stage = 'archive';
@@ -2159,7 +2176,8 @@ export class HiveManager {
   }
   /** The roster id a caller's `id` means. Throws AgentIdError otherwise; IPC handlers run this so the caller sees why. */
   checkAgentId(id: unknown): string {
-    return agentFolderId(this.registry().agents, this.registry().godId, join(this.root() ?? '', 'agents'), id);
+    const reg = this.routingRegistry();
+    return agentFolderId(reg.agents, reg.godId, join(this.root() ?? '', 'agents'), id);
   }
   /** The agents a read naming no agent covers: the roster, not whatever folders exist. A folder with no entry can hold
    *  anything, so it is left out and logged, once per folder since the voice layer reads often. */

@@ -4039,7 +4039,7 @@ const closingTime = new ClosingTimeController(
 );
 hive.setRoutedObserver((msg, targets, replaced) => {
   closingTime.onRouted(msg, targets);
-  const agents = hive.registry().agents;
+  const agents = hive.routingRegistry().agents;
   codexThreads.observe(msg, targets, (id) => agents[id]?.provider === 'codex', (id) => !!agents[id], (id) => hive.inbox(id), replaced);
 });
 ipcMain.handle('app:startClosingTime', () => closingTime.start());
