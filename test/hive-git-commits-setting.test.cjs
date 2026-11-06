@@ -138,6 +138,42 @@ test('turning commits back on while running creates the repository and commits r
   assert.notEqual(head(root), before);
 });
 
+// Settings send this value on every save, and ensureHive rewrites the shims that live agents are running through.
+for (const [label, startedOff, saved, expected] of [
+  ['saving with commits already on', false, false, 0],
+  ['saving with no setting at all', false, undefined, 0],
+  ['saving with commits already off', true, true, 0],
+  ['turning commits off', false, true, 0],
+  ['turning commits back on', true, false, 1]
+]) {
+  test(`${label} prepares the hive ${expected} time(s)`, () => {
+    let disabled = startedOff;
+    let prepared = 0;
+    const hive = {
+      gitCommitsAreDisabled: () => disabled,
+      setGitCommitsDisabled: (on) => { disabled = on; },
+      ensureHive: () => { prepared += 1; }
+    };
+    applyGitCommitsSetting(hive, saved);
+    applyGitCommitsSetting(hive, saved);
+    assert.equal(prepared, expected);
+    assert.equal(disabled, saved === true);
+  });
+}
+
+test('repeat saves leave the launcher file alone on a real hive, and only turning commits on rewrites it', async (t) => {
+  const dir = home(t);
+  const hive = await floor(t, dir, false);
+  const launcher = path.join(dir, 'hive', 'bin', process.platform === 'win32' ? 'hive-node.cmd' : 'hive-node');
+  fs.writeFileSync(launcher, 'MARKER');
+  applyGitCommitsSetting(hive, false);
+  applyGitCommitsSetting(hive, undefined);
+  assert.equal(fs.readFileSync(launcher, 'utf8'), 'MARKER', 'a save rewrote a shim live agents are using');
+  applyGitCommitsSetting(hive, true);
+  applyGitCommitsSetting(hive, false);
+  assert.notEqual(fs.readFileSync(launcher, 'utf8'), 'MARKER');
+});
+
 test('turning commits off while running stops them and leaves the repository', async (t) => {
   const dir = home(t);
   const hive = await floor(t, dir, false);

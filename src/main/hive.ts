@@ -460,6 +460,7 @@ export class HiveManager {
   /** Whether config.disableHiveGitCommits is on: no commits and no new repository. Mirrored like the spawn gate below. */
   private _gitCommitsDisabled = false;
   setGitCommitsDisabled(on: boolean): void { this._gitCommitsDisabled = on; }
+  gitCommitsAreDisabled(): boolean { return this._gitCommitsDisabled; }
 
   /** Whether config.orchestratorMaySpawn is on, mirrored here so the prompt
    *  builder can decide whether to tell god the spawn queue is available. Set at
