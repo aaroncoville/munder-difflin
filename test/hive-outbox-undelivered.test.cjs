@@ -13,6 +13,8 @@ const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
+const outboxFailure = loadTs('src/main/outboxFailure.ts');
+const ts = require('typescript');
 
 async function floor(t) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-undelivered-'));
@@ -40,6 +42,11 @@ function routeWithBlockedInbox(hive, agentDir) {
   } finally {
     fs.chmodSync(inbox, 0o755);
   }
+}
+
+/** The archive step fails once, as when the disk refuses it, and the file can still be set aside. */
+function failArchiveOnce(t) {
+  t.mock.method(outboxFailure, 'archiveOutboxFile', () => { throw Object.assign(new Error('refused'), { code: 'EIO' }); }, { times: 1 });
 }
 
 const MESSAGE = { to: 'god', act: 'inform', subject: 'hello', body: 'world' };
@@ -130,9 +137,8 @@ test('a failure report does not quote the error text', async (t) => {
 });
 
 test('when only the archive step fails the sender is told not to resend', async (t) => {
-  const { hive, agent, write, sent, log } = await floor(t);
-  // A directory with something in it cannot be renamed over.
-  fs.mkdirSync(path.join(agent('worker-1'), 'outbox', '.sent', 'arch.json', 'x'), { recursive: true });
+  const { hive, write, sent, log } = await floor(t);
+  failArchiveOnce(t);
   write('worker-1', 'arch.json', MESSAGE);
 
   assert.equal(hive.routeOnce(), 0);
@@ -201,7 +207,7 @@ test('a directory with a message-like name can still be set aside', async (t) =>
 
 test('a sender at the relay limit gets no new budget when its archive step fails', async (t) => {
   const { hive, agent, write } = await floor(t);
-  fs.mkdirSync(path.join(agent('hopless-1'), 'outbox', '.sent', 'cap.json', 'x'), { recursive: true });
+  failArchiveOnce(t);
   write('hopless-1', 'cap.json', { to: 'worker-1', act: 'inform', subject: 's', body: 'b', hops: 12 });
 
   hive.routeOnce();
@@ -217,4 +223,76 @@ test('a sender at the relay limit gets no new budget when routing throws', async
   routeWithBlockedInbox(hive, agent('worker-1'));
 
   assert.equal(hive.inbox('god-1').length, 0, 'the notice to a hookless sender at the limit must not bounce on');
+});
+
+test('a second delivered file of the same name keeps the first in .sent', async (t) => {
+  const { hive, agent, write } = await floor(t);
+  const sentDir = path.join(agent('worker-1'), 'outbox', '.sent');
+  write('worker-1', 'report.json', { ...MESSAGE, id: 'first', body: 'one' });
+  assert.equal(hive.routeOnce(), 1);
+  write('worker-1', 'report.json', { ...MESSAGE, id: 'second', body: 'two' });
+  assert.equal(hive.routeOnce(), 1);
+
+  const bodies = fs.readdirSync(sentDir).filter((f) => f.endsWith('.json'))
+    .map((f) => JSON.parse(fs.readFileSync(path.join(sentDir, f), 'utf8')).body).sort();
+  assert.deepEqual(bodies, ['one', 'two']);
+});
+
+test('a message with no recipient copy keeps its only record when the file name is reused', async (t) => {
+  const { hive, agent, write } = await floor(t);
+  write('god-1', 'ask.json', { to: 'human', act: 'query', subject: 'first question', body: 'b', id: 'q1' });
+  hive.routeOnce();
+  write('god-1', 'ask.json', { to: 'human', act: 'query', subject: 'second question', body: 'b', id: 'q2' });
+  hive.routeOnce();
+
+  const ids = hive.voiceMessages({ agentId: 'god-1' }).map((m) => m.id).sort();
+  assert.deepEqual(ids, ['q1', 'q2']);
+  assert.equal(fs.readdirSync(path.join(agent('god-1'), 'outbox')).filter((f) => f.endsWith('.json')).length, 0);
+});
+
+test('the voice reader finds an archived message under a suffixed name', async (t) => {
+  const { hive, write } = await floor(t);
+  write('worker-1', 'r.json', { ...MESSAGE, id: 'first' });
+  hive.routeOnce();
+  write('worker-1', 'r.json', { ...MESSAGE, id: 'second' });
+  hive.routeOnce();
+
+  assert.equal(hive.voiceMessages({ agentId: 'worker-1', id: 'second' }).length, 1, 'read from the sending agent archive');
+  assert.equal(hive.voiceMessages({ agentId: 'worker-1', id: 'first' }).length, 1, 'read from the sending agent archive');
+});
+
+/** The app's entry point cannot be loaded outside Electron, so this runs the real function's own text. */
+function loadWorkerDoneAt(hiveRoot) {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.ts'), 'utf8');
+  const file = ts.createSourceFile('index.ts', source, ts.ScriptTarget.ES2022, true);
+  const fn = file.statements.find((n) => ts.isFunctionDeclaration(n) && n.name?.text === 'workerDoneAt');
+  const js = ts.transpileModule(fn.getText(file), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const { existsSync, readdirSync, readFileSync, statSync } = fs;
+  return new Function('hive', 'join', 'existsSync', 'readdirSync', 'readFileSync', 'statSync', `${js}; return workerDoneAt;`)(
+    { root: () => hiveRoot }, path.join, existsSync, readdirSync, readFileSync, statSync
+  );
+}
+
+test('the worker reader finds the newest done under a suffixed name', async (t) => {
+  const { hive, agent, write } = await floor(t);
+  const first = '2026-01-01T00:00:00.000Z';
+  const second = '2026-01-02T00:00:00.000Z';
+  write('worker-1', 'done.json', { to: 'god', act: 'done', subject: 'a', body: 'b', created_at: first });
+  hive.routeOnce();
+  write('worker-1', 'done.json', { to: 'god', act: 'done', subject: 'a', body: 'c', created_at: second });
+  hive.routeOnce();
+
+  const workerDoneAt = loadWorkerDoneAt(path.dirname(path.dirname(agent('worker-1'))));
+  assert.equal(workerDoneAt('worker-1', 0), Date.parse(second));
+});
+
+test('a directory at the archive name does not stop the file being archived', async (t) => {
+  const { hive, agent, write, pending } = await floor(t);
+  fs.mkdirSync(path.join(agent('worker-1'), 'outbox', '.sent', 'taken.json', 'x'), { recursive: true });
+  write('worker-1', 'taken.json', MESSAGE);
+
+  assert.equal(hive.routeOnce(), 1);
+
+  assert.equal(pending('worker-1', 'taken.json'), false);
+  assert.equal(hive.inbox('worker-1').length, 0);
 });

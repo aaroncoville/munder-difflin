@@ -22,14 +22,14 @@ const OUTCOME: Record<OutboxStage, string> = {
 };
 
 /**
- * Moves `file` from `outbox` to a new name under `outbox/.sent`: `bad-<file>`, or `bad-<n>-<file>` when that is taken,
- * because senders reuse file names and an earlier failed message must not be overwritten. Each name is claimed with
- * an exclusive create before the rename replaces the claim. Returns the name used.
+ * Moves `file` from `outbox` to the first free name that `nameFor` gives under `outbox/.sent`. Senders reuse file
+ * names and these files are read later, so an earlier one must not be overwritten. Each name is claimed with an
+ * exclusive create before the rename replaces the claim. Returns the name used.
  */
-export function quarantineOutboxFile(outbox: string, file: string): string {
+function moveToSent(outbox: string, file: string, nameFor: (n: number) => string): string {
   const source = join(outbox, file);
   for (let n = 0; n < 10_000; n++) {
-    const name = n === 0 ? `bad-${file}` : `bad-${n}-${file}`;
+    const name = nameFor(n);
     const target = join(outbox, '.sent', name);
     try {
       closeSync(openSync(target, 'wx'));
@@ -47,7 +47,17 @@ export function quarantineOutboxFile(outbox: string, file: string): string {
     }
     return name;
   }
-  throw new Error('no free quarantine name');
+  throw new Error('no free name under .sent');
+}
+
+/** Files a delivered message as `<file>`, or `<n>-<file>` when that is taken. Returns the name used. */
+export function archiveOutboxFile(outbox: string, file: string): string {
+  return moveToSent(outbox, file, (n) => (n === 0 ? file : `${n}-${file}`));
+}
+
+/** Sets a failed message aside as `bad-<file>`, or `bad-<n>-<file>` when that is taken. Returns the name used. */
+export function quarantineOutboxFile(outbox: string, file: string): string {
+  return moveToSent(outbox, file, (n) => (n === 0 ? `bad-${file}` : `bad-${n}-${file}`));
 }
 
 /** A filesystem error code only: error text can quote message bodies and absolute paths. */

@@ -28,7 +28,7 @@ import { homedir } from 'node:os';
 import { spawnSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
 import type { AgentUsageSample } from './usage';
-import { quarantineOutboxFile, reportOutboxFailure, type OutboxStage } from './outboxFailure';
+import { archiveOutboxFile, quarantineOutboxFile, reportOutboxFailure, type OutboxStage } from './outboxFailure';
 import { COMMAND_GROUPS } from '../shared/claudeCommands';
 import { ensureCodexShortHome } from '../shared/codexRemote';
 import {
@@ -1974,7 +1974,7 @@ export class HiveManager {
           stage = 'route';
           if (!this.routeMessage(msg)) { this.outboxFailed('not-delivered', outbox, f, id, undefined, hops); continue; }
           stage = 'archive';
-          renameSync(full, join(outbox, '.sent', f)); // archive, don't reprocess
+          archiveOutboxFile(outbox, f); // archive, don't reprocess
           routed++;
         } catch (error) {
           // Set it aside so we don't spin on it, and say so.
