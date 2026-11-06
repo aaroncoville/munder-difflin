@@ -220,6 +220,7 @@ export interface SpawnInjection {
 }
 
 const HOP_CAP = 12;
+const ARCHIVE_PENDING = '.archive-pending';
 /** How long an unparseable outbox file is given to be finished by its sender
  *  before the router drops it. */
 const MALFORMED_RETRY_MS = 2_000;
@@ -845,6 +846,7 @@ export class HiveManager {
     // The write replaces the whole file, so it must not replace a change made since the read above.
     if (JSON.stringify(this.readableRegistry()) !== asRead) this.refuseRegistryWrite(meta.id);
     this.atomicWriteJson(join(root, 'registry.json'), reg);
+    rmSync(join(dir, ARCHIVE_PENDING), { force: true }); // running again, so an archive still waiting no longer applies
 
     this.appendLog({ kind: 'spawn', agentId: meta.id, name: meta.name, isGod: !!meta.isGod });
     // Only logs on an invalid cwd (rare) — not a per-spawn line, so no log spam.
@@ -1104,6 +1106,15 @@ export class HiveManager {
     const root = this.root();
     if (!root) return;
     try {
+      // This cannot be recorded yet, and a roster entry still reading as live would go on taking work. The marker names
+      // only the folder it is in, and an agent able to forge one could as easily edit the registry.
+      if (archived && !this.readableRegistry()) {
+        if (hasExactFolder(this.agentsDir(), id)) {
+          writeFileSync(join(this.agentDir(id), ARCHIVE_PENDING), '');
+          this.appendLog({ kind: 'archive-pending', agentId: shortTarget(id) });
+        }
+        return;
+      }
       const reg = this.registry();
       const agent = reg.agents[id];
       if (!agent || agent.archived === archived) return;
@@ -1787,7 +1798,7 @@ export class HiveManager {
       // NOT skipped — the per-target path below already serves them a terminal
       // work order, so excluding them here only made a broadcast invisible to an
       // agent that direct mail reaches fine. See selectBroadcastTargets.
-      ? selectBroadcastTargets(reg.agents, msg.from).filter((t) => !isAppSender(t))
+      ? selectBroadcastTargets(reg.agents, msg.from).filter((t) => !isAppSender(t) && !this.archivePending(t))
       // Never deliver to self — guards a god → "human" message looping back to god.
       : [resolveTo(msg.to)].filter((t) => t !== msg.from);
     // Targets that actually took delivery. The log below reports these instead of
@@ -1829,7 +1840,7 @@ export class HiveManager {
       // work order to, whatever the engine — the inbox is the only place left.
       // The notice itself is ROUTED, not dropped into an inbox, so a sender on
       // a hookless or proxy-tier engine gets it the way it gets any mail.
-      if (t !== godId && reg.agents[t]?.archived) {
+      if (t !== godId && (reg.agents[t]?.archived || this.archivePending(t))) {
         if (this.deliver(msg, t)) delivered.push(t);
         this.appendLog({ kind: 'archived-recipient', from: msg.from, to: t, id: msg.id, act: msg.act });
         const sender = reg.agents[msg.from];
@@ -2032,6 +2043,30 @@ export class HiveManager {
     }
   }
 
+  private archivePending(id: string): boolean {
+    return isRosterId(this.routingRegistry().agents, id) && existsSync(join(this.agentDir(id), ARCHIVE_PENDING));
+  }
+
+  /** Record what setArchived could not, now the registry can be read, and say so: the notice about why the worker ended
+   *  could not be delivered at the time. The marker goes only once the record has landed. */
+  private applyPendingArchives(roster: Registry): void {
+    for (const id of readdirSync(this.agentsDir())) {
+      const marker = join(this.agentsDir(), id, ARCHIVE_PENDING);
+      if (!existsSync(marker)) continue;
+      try {
+        if (isRosterId(roster.agents, id)) {
+          this.setArchived(id, true);
+          if (this.readableRegistry()?.agents[id]?.archived !== true) continue;
+          (roster.agents[id] as { archived?: boolean }).archived = true;
+          this.send({ to: 'god', act: 'inform', subject: `[worker archived after registry repair] ${id}`, body: `${id} ended while the registry could not be read, so it is only now recorded as archived. Check the log for why it ended.` }, 'system');
+        }
+        rmSync(marker, { force: true });
+      } catch (e) {
+        console.error('[hive] pending archive not applied:', e);
+      }
+    }
+  }
+
   private refuseRegistryWrite(agentId: unknown): never {
     this.appendLog({ kind: 'registry-write-refused', agentId: shortTarget(agentId) });
     throw new RegistryUnreadable('The agent registry could not be read, or changed while this agent was being added, so it was not added.');
@@ -2073,6 +2108,7 @@ export class HiveManager {
     this.registryUnreadable = false;
     this.passRegistry = roster;
     try {
+      this.applyPendingArchives(roster);
       return this.drainOutboxes(agentsDir, roster, now);
     } finally {
       this.passRegistry = null;

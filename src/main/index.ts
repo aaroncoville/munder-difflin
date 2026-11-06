@@ -413,6 +413,7 @@ interface WorkerRec {
   tokenCap?: number;
   /** When a job the worker launched was last seen alive (see workerIdleJobs). */
   jobSeenAt?: number;
+  stopFailed?: boolean;   // a kill failed: the tick retries it, and nothing is torn down around a live process
 }
 /** Live ephemeral workers by id. Populated by the spawn-request watcher; consulted
  *  by teardownPty so a finished/crashed/reaped worker's worktree is PRESERVED (not
@@ -4907,6 +4908,24 @@ function workerDoneAt(workerId: string, spawnedAt: number): number | null {
   return doneAt;
 }
 
+/** Stop a worker and tear it down, or, if its process survives the kill, keep it tracked so the tick can try again:
+ *  teardown drops the only bookkeeping that could still stop it. A process already gone counts as stopped. */
+function stopWorker(workerId: string): void {
+  const rec = liveWorkers.get(workerId);
+  if (rec) rec.releasing = true;
+  const session = ptyManager.list().find((p) => p.id === workerId);
+  let stopped = !session;
+  if (session) {
+    try { stopped = ptyManager.kill(workerId).ok; } catch { stopped = false; }
+  }
+  if (stopped) {
+    teardownPty(workerId);
+  } else if (rec && !rec.stopFailed) {
+    rec.stopFailed = true;
+    hive.appendLog({ kind: 'worker-kill-failed', workerId, pid: session?.pid, code: 'kill-failed' });
+  }
+}
+
 /** Spin up one ephemeral worker from a spawn-request. Terminal failures (bad
  *  request, missing CLI, spawn error) archive to .failed and inform god WITH the
  *  Slack coords so god can post a 'couldn't start' reply. On success the worker is
@@ -5052,10 +5071,7 @@ async function processSpawnRequest(filePath: string): Promise<void> {
     // idle reaper. The code goes in the log because the notice below cannot reach god if the registry is the problem.
     const code = e instanceof RegistryUnreadable ? e.code : 'send-failed';
     hive.appendLog({ kind: 'worker-dispatch-failed', workerId, request: basename(filePath), code });
-    const rec = liveWorkers.get(workerId);
-    if (rec) rec.releasing = true;
-    ptyManager.kill(workerId);
-    teardownPty(workerId);
+    stopWorker(workerId);
     fail(`objective not delivered (${code})`);
     return;
   }
@@ -5147,6 +5163,7 @@ async function ephemeralWorkerTick(): Promise<void> {
     //     kept mailing dead agents (seen live 2026-08-16 with worker-business/
     //     worker-qa/worker-bizreview). A double teardown is a harmless no-op.
     for (const [workerId, rec] of [...liveWorkers]) {
+      if (rec.stopFailed) stopWorker(workerId);
       if (rec.releasing) continue;
       const doneAt = workerDoneAt(workerId, rec.spawnedAt);
       const afterDone = doneAt === null ? null : afterWorkerDone(join(hive.root() ?? '', 'agents', workerId, 'inbox'), hive.registry()?.godId ?? 'god', doneAt, Date.now());

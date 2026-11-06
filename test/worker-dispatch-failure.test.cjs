@@ -22,7 +22,7 @@ const { RegistryUnreadable } = loadTs('src/main/messageTarget.ts');
 function liveFunctions() {
   const source = fs.readFileSync(path.resolve(__dirname, '..', 'src/main/index.ts'), 'utf8');
   const tree = ts.createSourceFile('index.ts', source, ts.ScriptTarget.ES2022, true);
-  const bodies = ['processSpawnRequest', 'archiveRequest', 'spawnRequestsDir'].map((name) => {
+  const bodies = ['processSpawnRequest', 'archiveRequest', 'spawnRequestsDir', 'stopWorker'].map((name) => {
     const node = tree.statements.find((n) => ts.isFunctionDeclaration(n) && n.name?.text === name);
     assert.ok(node, `${name} is a top-level function of index.ts`);
     return node.getText(tree);
@@ -65,7 +65,7 @@ async function setup(t, { sendThrows } = {}) {
       if (!sendThrows && t.corruptAfterSpawn) fs.writeFileSync(registry, '{"agents":');
       return { ok: true };
     },
-    ptyManager: { isCommandAvailable: () => true, kill: (id) => calls.killed.push(id) },
+    ptyManager: { isCommandAvailable: () => true, list: () => [{ id: 'worker-w1', pid: 1 }], kill: (id) => { calls.killed.push(id); return { ok: true }; } },
     // As teardownPty does: it is what ends tracking.
     teardownPty: (id) => { calls.tornDown.push(id); calls.releasingAtTeardown.push(liveWorkers.get(id)?.releasing); liveWorkers.delete(id); },
     informGod: (subject, body) => calls.notices.push({ subject, body })
