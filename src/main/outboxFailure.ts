@@ -16,7 +16,7 @@ export interface OutboxFailureActions {
 const OUTCOME: Record<OutboxStage, string> = {
   read: 'It was not delivered. Correct the problem and write a new file.',
   normalize: 'It was not delivered. Correct the problem and write a new file.',
-  sender: 'It was not delivered: this folder is not an agent on the roster, though its name folds onto one, so it cannot send as that agent.',
+  sender: 'It was not delivered: only an agent on the roster can send.',
   recipient: 'Its "to" is not an agent on the roster or a known name, so nothing was delivered. Check it against the roster and write a new file.',
   route: 'Routing failed, and this message may have reached some recipients. Check before you resend it.',
   archive: 'It was delivered, but could not be filed as sent. Do not resend it.',

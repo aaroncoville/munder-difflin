@@ -469,7 +469,7 @@ test('a stale folder that folds onto a live id does not get its failure notice i
   assert.deepEqual(f.mail('i'), [], 'a notice for the stale folder crossed into the live agent');
   const god = f.mail('god-1');
   assert.equal(god.length, 1, 'god is told, since the folder has no one to tell');
-  assert.match(god[0].body, /not on the roster/);
+  assert.match(god[0].body, /not an agent on the roster/);
   assert.equal(fs.existsSync(path.join(f.stale, 'outbox', '.sent', 'bad-poc.json')), true);
   assert.equal(f.refused().length, 1, 'and it is logged');
 });
@@ -541,14 +541,95 @@ test('a folded lookup refuses when the one folder with the key is not the entry\
   assert.equal(rosterIdFor({ i: {} }, 'I', dir), null, 'only a stale twin is on disk, so the entry has no folder of its own');
 });
 
-// Refusing these would quarantine every outbox the first time the registry could not be read.
-test('a folder simply not on the roster, folding onto nobody, still has its mail routed', async (t) => {
+// A sender is taken from its folder name, so only an agent the roster accepts may send. Anything else could put
+// any name in `from`, including the app's own.
+function outboxIn(agents, folder, file = 'x.json', to = 'worker-2') {
+  const dir = path.join(agents, folder, 'outbox');
+  fs.mkdirSync(path.join(dir, '.sent'), { recursive: true });
+  fs.writeFileSync(path.join(dir, file), JSON.stringify({ to, act: 'inform', subject: 'off roster', body: 'from the folder' }));
+  return dir;
+}
+const senderRefusals = (hive) => hive.logTail(500).filter((e) => e.kind === 'outbox-error' && e.stage === 'sender');
+
+test('a folder not on the roster cannot send, even when it folds onto nobody', async (t) => {
   const f = await floor(t);
-  const stale = path.join(f.agents, 'departed');
-  fs.mkdirSync(path.join(stale, 'outbox', '.sent'), { recursive: true });
-  fs.writeFileSync(path.join(stale, 'outbox', 'x.json'), JSON.stringify({ to: 'worker-2', act: 'inform', subject: 's', body: 'b' }));
-  assert.equal(f.hive.routeOnce(), 1);
-  assert.deepEqual(f.hive.inbox('worker-2').map((m) => m.from), ['departed']);
+  const dir = outboxIn(f.agents, 'departed');
+  assert.equal(f.hive.routeOnce(), 0);
+  assert.deepEqual(f.hive.inbox('worker-2'), []);
+  assert.equal(fs.existsSync(path.join(dir, '.sent', 'bad-x.json')), true);
+  assert.equal(senderRefusals(f.hive).length, 1);
+  const god = f.hive.inbox('god-1');
+  assert.equal(god.length, 1);
+  assert.match(god[0].body, /"departed".*not an agent on the roster/);
+  assert.equal(god.some((m) => m.body === 'from the folder'), false, 'its content is not relayed as if an agent sent it');
+});
+
+for (const id of ['heartbeat', 'HEARTBEAT', 'system', 'webhook']) {
+  test(`a roster entry named ${id} cannot send as the app, even with its exact folder`, async (t) => {
+    const f = await floor(t);
+    addRosterEntry(f.hive, id);
+    const dir = outboxIn(f.agents, id);
+    assert.equal(fs.readdirSync(f.agents).includes(id), true, 'the exact folder exists');
+    assert.equal(f.hive.routeOnce(), 0);
+    assert.deepEqual(f.hive.inbox('worker-2'), [], 'a recipient saw mail from one of the app\'s names');
+    assert.equal(fs.existsSync(path.join(dir, '.sent', 'bad-x.json')), true);
+    assert.equal(senderRefusals(f.hive).length, 1);
+  });
+}
+
+test('agents on the roster still send, including an archived one and god', async (t) => {
+  const f = await floor(t);
+  f.hive.setArchived('worker-2', true);
+  outboxIn(f.agents, 'worker-2', 'a.json', 'worker-1');
+  outboxIn(f.agents, 'god-1', 'b.json', 'worker-1');
+  assert.equal(f.hive.routeOnce(), 2);
+  assert.deepEqual(f.hive.inbox('worker-1').map((m) => m.from).sort(), ['god-1', 'worker-2']);
+  assert.deepEqual(senderRefusals(f.hive), []);
+});
+
+// An unreadable registry says nothing about who may send, so nothing is admitted and nothing is refused.
+for (const [label, content] of [
+  ['not JSON', '{"agents":'],
+  ['empty', ''],
+  ['an array', '[]'],
+  ['null', 'null'],
+  ['a roster that is not an object', '{"godId":null,"agents":null}'],
+  ['a roster that is an array', '{"godId":null,"agents":[]}'],
+  ['a missing file', null]
+]) {
+  test(`a registry that is ${label} leaves mail pending, logs once, and a later good read delivers it`, async (t) => {
+    const f = await floor(t);
+    const file = path.join(f.hive.root(), 'registry.json');
+    const good = fs.readFileSync(file, 'utf8');
+    if (content === null) fs.rmSync(file); else fs.writeFileSync(file, content);
+    const dir = outboxIn(f.agents, 'worker-1');
+    const unreadable = () => f.hive.logTail(500).filter((e) => e.kind === 'outbox-registry-unreadable');
+
+    assert.equal(f.hive.routeOnce(), 0);
+    assert.equal(f.hive.routeOnce(), 0);
+
+    assert.equal(fs.existsSync(path.join(dir, 'x.json')), true, 'the mail stays in the outbox');
+    assert.deepEqual(fs.readdirSync(path.join(dir, '.sent')), [], 'never quarantined for a failed read');
+    assert.equal(unreadable().length, 1, 'one row, however many passes');
+    assert.deepEqual(senderRefusals(f.hive), []);
+
+    fs.writeFileSync(file, good);
+    assert.equal(f.hive.routeOnce(), 1);
+    assert.deepEqual(f.hive.inbox('worker-2').map((m) => m.from), ['worker-1']);
+
+    fs.writeFileSync(file, '{');
+    f.hive.routeOnce();
+    assert.equal(unreadable().length, 2, 'a new outage gets its own row');
+  });
+}
+
+test('a valid empty roster is not an unreadable one: a folder is refused, not left waiting', async (t) => {
+  const f = await floor(t);
+  fs.writeFileSync(path.join(f.hive.root(), 'registry.json'), '{"godId":null,"agents":{}}');
+  const dir = outboxIn(f.agents, 'worker-1');
+  assert.equal(f.hive.routeOnce(), 0);
+  assert.equal(fs.existsSync(path.join(dir, '.sent', 'bad-x.json')), true);
+  assert.deepEqual(f.hive.logTail(500).filter((e) => e.kind === 'outbox-registry-unreadable'), []);
 });
 
 test('a failure notice for a folder not on the roster at all goes to god, where it used to vanish', async (t) => {
@@ -559,6 +640,6 @@ test('a failure notice for a folder not on the roster at all goes to god, where 
   f.hive.routeOnce();
   const god = f.hive.inbox('god-1');
   assert.equal(god.length, 1);
-  assert.match(god[0].body, /not on the roster/);
+  assert.match(god[0].body, /not an agent on the roster/);
   assert.equal(fs.existsSync(path.join(stale, 'outbox', '.sent', 'bad-x.json')), true);
 });

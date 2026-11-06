@@ -45,7 +45,7 @@ import { preferredAgentRole } from '../shared/agentRole';
 import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde } from './fs';
 import { refreshMineIgnoresOnce } from './hiveMineIgnore';
-import { hasExactFolder, isAppSender, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, rosterIdFor, shadowsRosterId, shortTarget } from './messageTarget';
+import { hasExactFolder, isAppSender, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, rosterIdFor, shortTarget } from './messageTarget';
 import { codexTrustEntry } from '../shared/codexTrust';
 import { withCodexWritableRoots } from '../shared/codexWritableRoots';
 import { resolveGodName } from '../shared/godIdentity';
@@ -1985,10 +1985,22 @@ export class HiveManager {
         const own = isRosterId(reg.agents, id);
         this.routeMessage(this.normalize({
           to: own ? id : reg.godId ?? 'god', act: 'inform', requires_reply: false, hops, subject,
-          body: own ? body : `From the folder ${shortTarget(id)}, which is not on the roster. ${body}`
+          body: own ? body : `From the folder ${shortTarget(id)}, which is not an agent on the roster. ${body}`
         }, 'system'));
       }
     });
+  }
+
+  private registryUnreadable = false;
+
+  private readableRegistry(): Registry | null {
+    try {
+      const parsed = JSON.parse(readFileSync(join(this.root()!, 'registry.json'), 'utf8')) as Partial<Registry> | null;
+      const agents = parsed?.agents;
+      return agents && typeof agents === 'object' && !Array.isArray(agents) ? parsed as Registry : null;
+    } catch {
+      return null;
+    }
   }
 
   routeOnce(now = Date.now()): number {
@@ -1996,6 +2008,15 @@ export class HiveManager {
     if (!root) return 0;
     const agentsDir = join(root, 'agents');
     if (!existsSync(agentsDir)) return 0;
+    // Who may send cannot be judged without a roster, so an unreadable one leaves all mail where it is until a later
+    // pass can read it. registry() cannot serve here: it reads a failure as an empty roster, which refuses everyone.
+    const roster = this.readableRegistry();
+    if (!roster) {
+      if (!this.registryUnreadable) this.appendLog({ kind: 'outbox-registry-unreadable' });
+      this.registryUnreadable = true;
+      return 0;
+    }
+    this.registryUnreadable = false;
     // A sender may remove or rename a half-written file itself; forget it, so a
     // later file of the same name starts its own retry window.
     for (const p of this.malformedSince.keys()) if (!existsSync(p)) this.malformedSince.delete(p);
@@ -2005,7 +2026,8 @@ export class HiveManager {
       if (!existsSync(outbox)) continue;
       for (const f of readdirSync(outbox)) {
         if (!f.endsWith('.json')) continue;
-        if (shadowsRosterId(this.registry().agents, id)) {
+        // The sender comes from this folder's name, read from disk, so an exact roster id has its exact folder.
+        if (!isRosterId(roster.agents, id)) {
           this.outboxFailed('sender', outbox, f, id, undefined);
           continue;
         }

@@ -57,13 +57,6 @@ export function rosterIdFor(agents: Record<string, unknown>, to: unknown, agents
   return folders.length === 1 && folders[0] === matches[0] ? matches[0] : null;
 }
 
-/** Whether a folder named `id` is not on `agents` yet folds onto an id that is, so it must not act as that agent. */
-export function shadowsRosterId(agents: Record<string, unknown>, id: string): boolean {
-  if (Object.prototype.hasOwnProperty.call(agents, id)) return false;
-  const key = folderKey(id);
-  return Object.keys(agents).some((other) => folderKey(other) === key);
-}
-
 /** Whether `to` may go on to routing: a roster id, a name for god, `broadcast`, or one of the app's own senders. */
 export function isKnownTarget(agents: Record<string, unknown>, to: unknown, agentsDir: string): to is string {
   if (typeof to !== 'string') return false;
