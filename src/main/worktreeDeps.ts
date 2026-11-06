@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { lstat, readlink, realpath, symlink, unlink } from 'node:fs/promises';
+import { copyFile, lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rename, rm, rmdir, symlink, unlink, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
 export type DepLink =
@@ -10,7 +10,39 @@ export type DepUnlink =
   | { ok: true; removed: boolean }
   | { ok: false; error: string };
 
-/** Link the base checkout's dependencies into an isolated worktree. */
+/** The folders npm writes inside rather than replacing. Through a link to one of these, `npm uninstall @scope/a` would
+ *  delete the base's package and removing a package's bin would delete the base's. */
+function npmWritesInside(name: string): boolean {
+  return name === '.bin' || name.startsWith('@');
+}
+
+function linkEntry(target: string, link: string): Promise<void> {
+  return symlink(target, link, process.platform === 'win32' ? 'junction' : null);
+}
+
+const STAGING_PREFIX = '.node_modules.';
+const STAGING_STAMP = '.worktree-deps-staging';
+
+/** Remove staging folders a crashed setup left. A folder counts only if its stamp names this base, which a folder that
+ *  merely has this name, or a stamp committed elsewhere, does not. A recursive rm removes a link without following it. */
+async function clearStagingLeftovers(worktreeDir: string, baseNodeModules: string): Promise<void> {
+  for (const entry of await readdir(worktreeDir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith(STAGING_PREFIX)) continue;
+    const folder = join(worktreeDir, entry.name);
+    const stamp = await readFile(join(folder, STAGING_STAMP), 'utf8').catch(() => null);
+    if (stamp === baseNodeModules) await rm(folder, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Link the base checkout's dependencies into an isolated worktree: a real node_modules directory with each package a
+ * link into the base. A link to the base's whole folder is not safe, because `npm ci` empties node_modules by listing
+ * it and removing each entry, so through that link it empties the base. npm only ever removes or replaces a package
+ * link itself, so @scope folders and .bin are real folders too, holding a link per entry. This costs no more than one
+ * link per package, where a copy would cost the whole install on every spawn. Plain files are not linked, because a
+ * Windows junction cannot point at a file: npm's .package-lock.json is left out, and .bin's shims are copied, which
+ * works because they find their package relative to themselves.
+ */
 export async function linkWorktreeDeps(baseDir: string, worktreeDir: string): Promise<DepLink> {
   const baseNodeModules = join(baseDir, 'node_modules');
   const worktreeNodeModules = join(worktreeDir, 'node_modules');
@@ -23,21 +55,75 @@ export async function linkWorktreeDeps(baseDir: string, worktreeDir: string): Pr
     // node_modules does not exist in this worktree yet.
   }
 
+  // Built aside and moved into place, because a node_modules that exists is never built again, so a partial one would
+  // stay partial. The folder is one this run creates, so no name a repository uses can be taken over.
+  let partial: string | null = null;
   try {
-    await symlink(baseNodeModules, worktreeNodeModules, process.platform === 'win32' ? 'junction' : null);
+    await clearStagingLeftovers(worktreeDir, baseNodeModules);
+    partial = await mkdtemp(join(worktreeDir, STAGING_PREFIX));
+    await writeFile(join(partial, STAGING_STAMP), baseNodeModules);
+    for (const entry of await readdir(baseNodeModules, { withFileTypes: true })) {
+      if (entry.isFile()) continue;
+      const from = join(baseNodeModules, entry.name);
+      const to = join(partial, entry.name);
+      if (!npmWritesInside(entry.name)) {
+        await linkEntry(from, to);
+        continue;
+      }
+      await mkdir(to);
+      for (const inner of await readdir(from, { withFileTypes: true })) {
+        if (inner.isFile()) await copyFile(join(from, inner.name), join(to, inner.name));
+        else await linkEntry(join(from, inner.name), join(to, inner.name));
+      }
+    }
+    // The stamp comes off last, so anything not yet moved into place can always be recognised as ours.
+    await rename(partial, worktreeNodeModules);
+    partial = null;
+    await unlink(join(worktreeNodeModules, STAGING_STAMP));
     return { ok: true, skipped: false };
   } catch (error) {
+    if (partial) await rm(partial, { recursive: true, force: true }).catch(() => undefined);
     return { ok: false, error: String(error) };
   }
 }
 
-/** Remove the dependency link before testing whether a worktree is dirty. */
+/** Whether `here` is what linkWorktreeDeps put there for `base`: a link from a name to the same name in the base, or
+ *  an unchanged copy of a plain file. */
+async function isOurs(base: string, here: string, isLink: boolean): Promise<boolean> {
+  if (isLink) return resolve(here, '..', await readlink(here)) === base;
+  try {
+    return (await readFile(here)).equals(await readFile(base));
+  } catch {
+    return false;
+  }
+}
+
+/** Remove what linkWorktreeDeps made, and any folder that empties. Anything else the worktree put there stays. */
+async function unlinkEntries(base: string, here: string, nested = false): Promise<DepUnlink> {
+  let removed = false;
+  for (const entry of await readdir(here, { withFileTypes: true })) {
+    const entryBase = join(base, entry.name);
+    const entryHere = join(here, entry.name);
+    if (entry.isDirectory() && !nested && npmWritesInside(entry.name)) {
+      const inner = await unlinkEntries(entryBase, entryHere, true);
+      if (inner.ok && inner.removed) removed = true;
+    } else if ((entry.isSymbolicLink() || (nested && entry.isFile())) && await isOurs(entryBase, entryHere, entry.isSymbolicLink())) {
+      await unlink(entryHere);
+      removed = true;
+    }
+  }
+  if (removed && (await readdir(here)).length === 0) await rmdir(here);
+  return { ok: true, removed };
+}
+
+/** Remove the dependency links before testing whether a worktree is dirty. */
 export async function unlinkWorktreeDeps(baseDir: string, worktreeDir: string): Promise<DepUnlink> {
   const baseNodeModules = join(baseDir, 'node_modules');
   const worktreeNodeModules = join(worktreeDir, 'node_modules');
 
   try {
     const stat = await lstat(worktreeNodeModules);
+    if (stat.isDirectory()) return await unlinkEntries(baseNodeModules, worktreeNodeModules);
     if (!stat.isSymbolicLink()) return { ok: true, removed: false };
     const linkTarget = await readlink(worktreeNodeModules);
     const [baseTarget, worktreeTarget] = await Promise.all([

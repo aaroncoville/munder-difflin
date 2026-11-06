@@ -9,14 +9,16 @@ export function gitCommitsDisabled(value: unknown, warn: (line: string) => void 
 
 /**
  * Applies a config change. Turning commits back on prepares the hive again, because a hive that started with them off
- * has no repository and commit() does nothing without one.
+ * has no repository and commit() does nothing without one. Only that flip does: this value comes with every settings
+ * save, and preparing the hive rewrites the shims that live agents are running through.
  */
 export function applyGitCommitsSetting(
-  hive: { setGitCommitsDisabled: (on: boolean) => void; ensureHive: () => void },
+  hive: { gitCommitsAreDisabled: () => boolean; setGitCommitsDisabled: (on: boolean) => void; ensureHive: () => void },
   value: unknown,
   warn?: (line: string) => void
 ): void {
   const disabled = gitCommitsDisabled(value, warn);
+  const turnedOn = hive.gitCommitsAreDisabled() && !disabled;
   hive.setGitCommitsDisabled(disabled);
-  if (!disabled) hive.ensureHive();
+  if (turnedOn) hive.ensureHive();
 }
