@@ -38,6 +38,9 @@ interface HookPayload {
   tool_name?: string;
   tool_input?: unknown;
   tool_use_id?: string;
+  /** The provider session a tool call or idle event belongs to, where one PTY runs several. Not
+   *  session_id, which is the session the agent resumes. */
+  tool_session_id?: string;
   stop_hook_active?: boolean;
   prompt?: string;
   source?: string;

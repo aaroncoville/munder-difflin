@@ -576,3 +576,14 @@ test('a backgrounded job that ended before any scan saw it is freed, since its P
   assert.equal(x.l.snapshot().length, 0);
   assert.equal(x.logs.at(-1).reason, 'process-exit');
 });
+
+test('turnOver scoped to a session frees only that session\'s calls, and a background call in it stays', () => {
+  const x = lock(3);
+  x.l.acquire('a', H, 'npm test', 'c1', false, 'root');
+  x.l.acquire('a', H, 'npm ci', 'c2', false, 'child');
+  x.l.acquire('a', H, 'npm run build', 'c3', true, 'child');
+  x.l.turnOver('a', 'child');
+  assert.deepEqual(x.l.snapshot().map((h) => h.background), [false, true]);
+  x.l.turnOver('a');
+  assert.deepEqual(x.l.snapshot().map((h) => h.background), [true], 'unscoped, as from a provider with one session');
+});

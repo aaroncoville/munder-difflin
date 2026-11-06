@@ -299,9 +299,9 @@ for (const provider of ['opencode', 'pi']) {
 test('opencode: a call with no callID still runs, and the turn ending frees it', async (t) => {
   const ctx = await server(t);
   const b = await bridge(t, ctx, 'opencode', loadOpenCode);
-  await b.fire('tool.execute.before', { tool: 'bash' }, { args: { command: 'npm test' } });
+  await b.fire('tool.execute.before', { tool: 'bash', sessionID: 'root' }, { args: { command: 'npm test' } });
   assert.equal(ctx.lock.snapshot().length, 1);
-  await b.fire('event', { event: { type: 'session.idle' } });
+  await b.fire('event', { event: { type: 'session.idle', properties: { sessionID: 'root' } } });
   await b.reached(2);
   assert.equal(ctx.lock.snapshot().length, 0);
 });
@@ -321,4 +321,61 @@ test('an operator pause now reaches these providers too, through the same block 
   const b = await bridge(t, ctx, 'pi', loadPi);
   ctx.control.toolDecision = () => ({ deny: true, reason: 'paused' });
   assert.deepEqual(await native.pi.call(b, 'c1', 'git status'), { block: true, reason: 'paused' });
+});
+
+// A subagent is a child session under the same PTY, and it goes idle while its parent is still busy.
+const opencodeCall = (b, sessionID, callID, command = 'npm test') => b.fire('tool.execute.before', { tool: 'bash', sessionID, callID }, { args: { command } });
+const opencodeEvent = (b, type, properties) => b.fire('event', { event: { type, properties } });
+
+test('opencode: a child session going idle leaves its parent\'s two slots held, and a third call waits', async (t) => {
+  const ctx = await server(t, 2);
+  const b = await bridge(t, ctx, 'opencode', loadOpenCode);
+  await opencodeCall(b, 'root', 'c1');
+  await opencodeCall(b, 'root', 'c2');
+  assert.equal(ctx.lock.snapshot().length, 2);
+  await opencodeEvent(b, 'session.created', { info: { id: 'child', parentID: 'root' } });
+  await opencodeEvent(b, 'session.idle', { sessionID: 'child' });
+  await b.reached(3);
+  assert.equal(b.frames.at(-1).hook_event_name, 'SubagentStop', 'a child ending is not the agent\'s turn ending');
+  assert.equal(b.frames.at(-1).session_id, undefined, 'a child id must not become the session the agent resumes');
+  assert.equal(ctx.lock.snapshot().length, 2);
+  assert.equal(decision(ctx.fire('a1', 'PreToolUse', 'npm ci')), 'deny');
+  await b.fire('tool.execute.after', { tool: 'bash', sessionID: 'root', callID: 'c1' }, {});
+  await b.reached(4);
+  assert.equal(ctx.lock.snapshot().length, 1, 'each is freed by its own completion');
+});
+
+test('opencode: a child going idle frees only the child\'s own call', async (t) => {
+  const ctx = await server(t, 2);
+  const b = await bridge(t, ctx, 'opencode', loadOpenCode);
+  await opencodeEvent(b, 'session.updated', { info: { id: 'child', parentID: 'root' } });
+  await opencodeCall(b, 'root', 'c1', 'npm test');
+  await opencodeCall(b, 'child', 'c2', 'npm run build');
+  await opencodeEvent(b, 'session.idle', { sessionID: 'child' });
+  await b.reached(3);
+  assert.equal(b.frames.at(-1).hook_event_name, 'SubagentStop', 'recognised as a child from session.updated');
+  assert.deepEqual(ctx.lock.snapshot().map((h) => h.job), ['npm test']);
+});
+
+test('opencode: the root going idle ends the turn but leaves a child\'s running call held', async (t) => {
+  const ctx = await server(t, 2);
+  const b = await bridge(t, ctx, 'opencode', loadOpenCode);
+  await opencodeEvent(b, 'session.created', { info: { id: 'root' } });
+  await opencodeEvent(b, 'session.created', { info: { id: 'child', parentID: 'root' } });
+  await opencodeCall(b, 'root', 'c1', 'npm test');
+  await opencodeCall(b, 'child', 'c2', 'npm run build');
+  await opencodeEvent(b, 'session.idle', { sessionID: 'root' });
+  await b.reached(3);
+  assert.equal(b.frames.at(-1).hook_event_name, 'Stop');
+  assert.deepEqual(ctx.lock.snapshot().map((h) => h.job), ['npm run build']);
+});
+
+test('opencode: an idle from a session the bridge never heard about, or with no session, frees nobody else\'s slots', async (t) => {
+  const ctx = await server(t, 2);
+  const b = await bridge(t, ctx, 'opencode', loadOpenCode);
+  await opencodeCall(b, 'root', 'c1');
+  await opencodeEvent(b, 'session.idle', { sessionID: 'stranger' });
+  await opencodeEvent(b, 'session.idle', {});
+  await b.reached(3);
+  assert.equal(ctx.lock.snapshot().length, 1);
 });

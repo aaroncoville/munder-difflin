@@ -254,6 +254,8 @@ export interface HeavyCall {
   /** The raw command, kept in memory only, to recognise the job in a process listing. */
   command: string;
   why?: string;
+  /** The provider session that made the call, for providers that run several under one PTY. */
+  session?: string;
   since: number;
   /** Last acquire or sighting in a process listing: the TTL runs from here. */
   touched: number;
@@ -334,7 +336,7 @@ export class HeavyJobLock {
   }
 
   /** PreToolUse: a heavy call from `agentId`. Take a slot, or queue it. */
-  acquire(agentId: string, cls: HeavyClass, command: string, callId: string, background: boolean): HeavyDecision {
+  acquire(agentId: string, cls: HeavyClass, command: string, callId: string, background: boolean, session?: string): HeavyDecision {
     const limit = this.d.limit();
     if (limit === 'off' || !cls.heavy || !cls.kind) {
       if (limit === 'off') this.dropWaiting(agentId);
@@ -346,7 +348,7 @@ export class HeavyJobLock {
     if (!reserved && this.calls.size + this.reservations.size >= limit) return this.refuse(agentId, cls, limit);
     const now = this.now();
     const key = this.nextKey++;
-    this.calls.set(key, { key, agentId, callId, kind: cls.kind, label: cls.why ?? cls.kind, command: command.slice(0, COMMAND_KEEP), why: cls.why, since: now, touched: now, background, posted: false, seen: false, misses: 0 });
+    this.calls.set(key, { key, agentId, callId, kind: cls.kind, label: cls.why ?? cls.kind, command: command.slice(0, COMMAND_KEEP), why: cls.why, session, since: now, touched: now, background, posted: false, seen: false, misses: 0 });
     this.log({ kind: 'heavy-lock', action: 'acquire', agentId, heavyKind: cls.kind, job: cls.why, background, limit, reserved });
     this.arm();
     return { allow: true, acquired: true };
@@ -382,9 +384,11 @@ export class HeavyJobLock {
 
   /** The agent's turn ended, so no foreground call of its can still be running. This catches the
    *  calls that never get a PostToolUse: one the user rejected at the permission prompt (which
-   *  comes after PreToolUse) and one that was interrupted. */
-  turnOver(agentId: string): void {
+   *  comes after PreToolUse) and one that was interrupted. With `session`, only that provider
+   *  session's turn ended, and the agent's other sessions may still be running calls. */
+  turnOver(agentId: string, session?: string): void {
     for (const c of this.callsOf(agentId)) {
+      if (session !== undefined && c.session !== session) continue;
       if (c.background) c.posted = true;
       else this.release(c.key, 'turn-end');
     }
@@ -514,7 +518,7 @@ export class HeavyJobLock {
 
 // — the hook boundary —
 
-interface HeavyHookPayload { tool_name?: string; tool_input?: unknown; tool_use_id?: unknown; notification_type?: string }
+interface HeavyHookPayload { tool_name?: string; tool_input?: unknown; tool_use_id?: unknown; notification_type?: string; tool_session_id?: string }
 
 
 /** The id that pairs a call's PreToolUse with its PostToolUse: the provider's tool-use id when it
@@ -530,7 +534,7 @@ function heavyCallId(p: HeavyHookPayload): string {
 export function gateHeavyCall(lock: HeavyJobLock, agentId: string, p: HeavyHookPayload): string | null {
   const cls = classifyHeavy(p.tool_name, p.tool_input);
   if (!cls.heavy) return null;
-  const d = lock.acquire(agentId, cls, commandFromToolInput(p.tool_input) ?? '', heavyCallId(p), isBackground(p.tool_input));
+  const d = lock.acquire(agentId, cls, commandFromToolInput(p.tool_input) ?? '', heavyCallId(p), isBackground(p.tool_input), p.tool_session_id);
   return d.allow ? null : d.reason;
 }
 
@@ -538,7 +542,8 @@ export function gateHeavyCall(lock: HeavyJobLock, agentId: string, p: HeavyHookP
  *  PostToolUseFailure instead), or the turn ending or being replaced by a new prompt. */
 export function settleHeavyCall(lock: HeavyJobLock, agentId: string, event: string, p: HeavyHookPayload): void {
   if (event === 'PostToolUse' || event === 'PostToolUseFailure') lock.callDone(agentId, heavyCallId(p));
-  else if (event === 'Stop' || event === 'UserPromptSubmit') lock.turnOver(agentId);
+  else if (event === 'Stop' || event === 'UserPromptSubmit') lock.turnOver(agentId, p.tool_session_id);
+  else if (event === 'SubagentStop' && p.tool_session_id !== undefined) lock.turnOver(agentId, p.tool_session_id);
   else if (event === 'Notification' && (p.notification_type === 'idle' || p.notification_type === 'idle_prompt')) lock.turnOver(agentId);
 }
 

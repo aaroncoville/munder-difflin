@@ -3502,12 +3502,19 @@ function denial(payload) {
   });
 }
 export const HiveBridge = async () => {
+  const children = new Set();
   return {
     event: async (input) => {
-      try { if (input && input.event && input.event.type === 'session.idle') post({ hook_event_name: 'Stop' }); } catch (e) {}
+      try {
+        const ev = (input && input.event) || {};
+        const props = ev.properties || {};
+        if ((ev.type === 'session.created' || ev.type === 'session.updated') && props.info && props.info.parentID) children.add(props.info.id);
+        // A subagent is a child session under this PTY, and goes idle while its parent is still busy.
+        if (ev.type === 'session.idle') post({ hook_event_name: children.has(props.sessionID) ? 'SubagentStop' : 'Stop', tool_session_id: props.sessionID || 'unknown' });
+      } catch (e) {}
     },
     'tool.execute.before': async (input, output) => {
-      const reason = await denial({ hook_event_name: 'PreToolUse', tool_name: input && (input.tool || input.name), tool_use_id: input && input.callID, tool_input: (output && output.args) || (input && input.args) });
+      const reason = await denial({ hook_event_name: 'PreToolUse', tool_name: input && (input.tool || input.name), tool_use_id: input && input.callID, tool_session_id: input && input.sessionID, tool_input: (output && output.args) || (input && input.args) });
       if (reason) throw new Error(reason);
     },
     'tool.execute.after': async (input) => {
