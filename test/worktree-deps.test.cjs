@@ -424,3 +424,37 @@ test('removing the links leaves what the worktree added inside a scope or .bin',
   assert.deepEqual(fs.readdirSync(path.join(here, '@scope')), ['own']);
   assert.equal(fs.readFileSync(path.join(here, '.bin', 'a.cmd'), 'utf8'), 'changed by the worktree\n');
 });
+
+test('a failed setup leaves nothing that looks finished, and a later run builds the whole view', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async (t) => {
+  const { repo, wtRoot } = makeHarness();
+  const base = path.join(repo, 'node_modules');
+  fs.mkdirSync(path.join(base, 'aaa-before'), { recursive: true });
+  fs.mkdirSync(path.join(base, '@scope', 'a'), { recursive: true });
+  fs.mkdirSync(path.join(base, 'zzz-after'), { recursive: true });
+  const scope = path.join(base, '@scope');
+  fs.chmodSync(scope, 0o000);
+  t.after(() => fs.chmodSync(scope, 0o755));
+  const wt = addWorktree(repo, wtRoot, 'agent-partial');
+
+  const failed = await linkWorktreeDeps(repo, wt);
+
+  assert.equal(failed.ok, false);
+  assert.throws(() => fs.lstatSync(path.join(wt, 'node_modules')), /ENOENT/, 'a partial view would be skipped by every later run');
+  assert.deepEqual(fs.readdirSync(wt).filter((n) => n.includes('node_modules')), [], 'and no scaffolding is left');
+
+  fs.chmodSync(scope, 0o755);
+  assert.deepEqual(await linkWorktreeDeps(repo, wt), { ok: true, skipped: false });
+  assert.deepEqual(fs.readdirSync(path.join(wt, 'node_modules')).sort(), ['@scope', 'aaa-before', 'zzz-after']);
+  assert.deepEqual(fs.readdirSync(path.join(wt, 'node_modules', '@scope')), ['a']);
+});
+
+test('setup left unfinished by a crash does not stop a later run', async () => {
+  const { repo, wtRoot } = makeHarness();
+  fs.mkdirSync(path.join(repo, 'node_modules', 'pkg'), { recursive: true });
+  const wt = addWorktree(repo, wtRoot, 'agent-crash');
+  await linkWorktreeDeps(repo, wt);
+  fs.renameSync(path.join(wt, 'node_modules'), path.join(wt, '.node_modules.partial'));
+  assert.deepEqual(await linkWorktreeDeps(repo, wt), { ok: true, skipped: false });
+  assert.deepEqual(fs.readdirSync(wt).filter((n) => n.includes('node_modules')), ['node_modules']);
+  assert.equal(fs.existsSync(path.join(repo, 'node_modules', 'pkg')), true, 'clearing the leftovers did not follow a link');
+});

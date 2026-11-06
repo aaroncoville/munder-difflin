@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { copyFile, lstat, mkdir, readdir, readFile, readlink, realpath, rmdir, symlink, unlink } from 'node:fs/promises';
+import { copyFile, lstat, mkdir, readdir, readFile, readlink, realpath, rename, rm, rmdir, symlink, unlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
 export type DepLink =
@@ -41,13 +41,16 @@ export async function linkWorktreeDeps(baseDir: string, worktreeDir: string): Pr
     // node_modules does not exist in this worktree yet.
   }
 
+  // Built aside and moved into place, because a node_modules that exists is never built again, so a partial one would
+  // stay partial. Removing leftovers cannot reach the base: a recursive rm removes a link without following it.
+  const partial = join(worktreeDir, '.node_modules.partial');
   try {
-    const entries = await readdir(baseNodeModules, { withFileTypes: true });
-    await mkdir(worktreeNodeModules);
-    for (const entry of entries) {
+    await rm(partial, { recursive: true, force: true });
+    await mkdir(partial);
+    for (const entry of await readdir(baseNodeModules, { withFileTypes: true })) {
       if (entry.isFile()) continue;
       const from = join(baseNodeModules, entry.name);
-      const to = join(worktreeNodeModules, entry.name);
+      const to = join(partial, entry.name);
       if (!npmWritesInside(entry.name)) {
         await linkEntry(from, to);
         continue;
@@ -58,8 +61,10 @@ export async function linkWorktreeDeps(baseDir: string, worktreeDir: string): Pr
         else await linkEntry(join(from, inner.name), join(to, inner.name));
       }
     }
+    await rename(partial, worktreeNodeModules);
     return { ok: true, skipped: false };
   } catch (error) {
+    await rm(partial, { recursive: true, force: true }).catch(() => undefined);
     return { ok: false, error: String(error) };
   }
 }
