@@ -32,9 +32,10 @@ function findFile(dir, name) {
   return null;
 }
 
-/** Install the real generated bridge for `provider`, load it, and collect what it sends over a
- *  real socket. `load` hands back a way to fire the provider's native events. */
-async function bridge(t, ctx, provider, load) {
+/** Install the real generated bridge for `provider`, load it, and connect it over a real socket to
+ *  the hook server's real connection handler. Hands back the provider's native events, and returns
+ *  what the provider itself would see from them. */
+async function bridge(t, ctx, provider, load, options = {}) {
   const id = `${provider}-agent`;
   const injection = await ctx.hive.ensureAgent({ id, name: id, provider, cwd: ctx.home });
   const generated = findFile(provider === 'pi' ? injection.env.PI_CODING_AGENT_DIR : ctx.home, 'hive-bridge.js');
@@ -42,37 +43,36 @@ async function bridge(t, ctx, provider, load) {
   const short = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-'));
   t.after(() => fs.rmSync(short, { recursive: true, force: true }));
   const frames = [];
-  let onFrame = () => {};
+  const handle = ctx.hooks.handle.bind(ctx.hooks);
+  ctx.hooks.handle = (p) => { if (p.agent_id === id) frames.push(p); return handle(p); };
   const sock = path.join(short, 's');
-  const srv = net.createServer((c) => {
-    let buf = '';
-    c.on('data', (d) => { buf += d; });
-    c.on('end', () => { frames.push(JSON.parse(buf)); onFrame(); });
-  });
-  await new Promise((r) => srv.listen(sock, r));
-  t.after(() => srv.close());
-  const env = { sock: process.env.HIVE_SOCK, agent: process.env.AGENT_ID };
+  const srv = net.createServer((c) => ctx.hooks.serve(c));
+  if (!options.noServer) {
+    await new Promise((r) => srv.listen(sock, r));
+    t.after(() => srv.close());
+  }
+  const env = { sock: process.env.HIVE_SOCK, agent: process.env.AGENT_ID, auto: process.env.HIVE_AUTO_APPROVE };
   process.env.HIVE_SOCK = sock; process.env.AGENT_ID = id;
+  if (options.auto) process.env.HIVE_AUTO_APPROVE = '1'; else delete process.env.HIVE_AUTO_APPROVE;
   t.after(() => {
-    if (env.sock === undefined) delete process.env.HIVE_SOCK; else process.env.HIVE_SOCK = env.sock;
-    if (env.agent === undefined) delete process.env.AGENT_ID; else process.env.AGENT_ID = env.agent;
+    for (const [name, value] of [['HIVE_SOCK', env.sock], ['AGENT_ID', env.agent], ['HIVE_AUTO_APPROVE', env.auto]]) {
+      if (value === undefined) delete process.env[name]; else process.env[name] = value;
+    }
   });
   const fire = await load(generated, short);
-  /** Fire a native event, wait for its frame, and run it through the real hook handler. */
-  const send = async (...args) => {
-    const arrived = new Promise((r) => { onFrame = r; });
-    await fire(...args);
-    await arrived;
-    const frame = frames.at(-1);
-    return { frame, reply: ctx.hooks.handle(frame) };
+  /** Wait for a fire-and-forget frame to reach the handler. */
+  const reached = async (count) => {
+    const until = Date.now() + 2000;
+    while (frames.length < count && Date.now() < until) await new Promise((r) => setTimeout(r, 5));
+    assert.equal(frames.length, count, 'frames reached the hook server');
   };
-  return { id, send };
+  return { id, fire, frames, reached };
 }
 
 const loadOpenCode = async (file, dir) => {
   const copy = path.join(dir, 'bridge.mjs');
   fs.copyFileSync(file, copy);
-  const { HiveBridge } = await import(require('node:url').pathToFileURL(copy).href);
+  const { HiveBridge } = await import(`${require('node:url').pathToFileURL(copy).href}?${Math.random()}`);
   const plugin = await HiveBridge();
   return (event, input, output) => plugin[event](input, output);
 };
@@ -82,7 +82,7 @@ const loadPi = async (file, dir) => {
   const handlers = new Map();
   globalThis.pi = { on: (name, fn) => handlers.set(name, fn) };
   try { require(copy); } finally { delete globalThis.pi; }
-  return async (event, ev) => { handlers.get(event)(ev); };
+  return (event, ev) => handlers.get(event)(ev);
 };
 
 async function server(t, limit = 1) {
@@ -236,50 +236,89 @@ test('the default is two slots, in the shipped config', () => {
   assert.match(liveSource('src/main/config.ts'), /^\s*heavyJobsAtOnce: 2,$/m);
 });
 
-// These two bridges send and forget, so a deny could never reach the provider. Their jobs are counted
-// without being refused: other agents wait for that capacity, and no denial is recorded that the
-// provider would ignore.
-test('OpenCode: the bridge forwards the command, the job is counted against the limit and never denied', async (t) => {
+// These two bridges must ask and wait, because each provider's own block path is the only thing that
+// stops the job. Each assertion is on what the provider's callback does, not on the socket's reply.
+const native = {
+  opencode: {
+    load: loadOpenCode,
+    call: (b, id, command) => b.fire('tool.execute.before', { tool: 'bash', sessionID: 's', callID: id }, { args: { command } }),
+    done: (b, id) => b.fire('tool.execute.after', { tool: 'bash', sessionID: 's', callID: id }, { output: '' })
+  },
+  pi: {
+    load: loadPi,
+    call: (b, id, command) => b.fire('tool_call', { toolName: 'bash', toolCallId: id, input: { command } }),
+    done: (b, id, command) => b.fire('tool_result', { toolName: 'bash', toolCallId: id, input: { command } })
+  }
+};
+const blocked = {
+  opencode: async (p) => { await assert.rejects(p, /heavy-job lock.*held by a1/); },
+  pi: async (p) => { const r = await p; assert.equal(r.block, true); assert.match(r.reason, /heavy-job lock.*held by a1/); }
+};
+
+for (const provider of ['opencode', 'pi']) {
+  const n = native[provider];
+
+  test(`${provider}: at the limit the provider's own block path fires, nothing runs past the limit, and the agent is queued`, async (t) => {
+    const ctx = await server(t);
+    const b = await bridge(t, ctx, provider, n.load);
+    ctx.fire('a1', 'PreToolUse', 'npm ci');
+    await blocked[provider](n.call(b, 'c1', 'npm test'));
+    assert.deepEqual(ctx.lock.snapshot().map((h) => h.agentId), ['a1'], 'no holder past the limit');
+    assert.deepEqual(ctx.lock.queueSnapshot().waiting.map((w) => w.agentId), [b.id]);
+    assert.deepEqual(b.frames[0].tool_input, { command: 'npm test' });
+    assert.equal(b.frames[0].tool_use_id, 'c1');
+    ctx.fire('a1', 'PostToolUse', 'npm ci');
+    assert.deepEqual(ctx.told, [b.id], 'told when the slot frees');
+  });
+
+  test(`${provider}: below the limit the job runs, holds a slot, and its result frees it by the call id`, async (t) => {
+    const ctx = await server(t);
+    const b = await bridge(t, ctx, provider, n.load);
+    assert.equal(await n.call(b, 'c1', 'npm test'), undefined);
+    assert.deepEqual(ctx.lock.snapshot().map((h) => h.agentId), [b.id]);
+    assert.equal(decision(ctx.fire('a1', 'PreToolUse', 'dotnet build')), 'deny', 'other agents wait for it');
+    await n.done(b, 'c1', 'npm test');
+    await b.reached(2);
+    assert.deepEqual(ctx.lock.snapshot().map((h) => h.agentId), []);
+  });
+
+  test(`${provider}: light work passes straight through`, async (t) => {
+    const ctx = await server(t);
+    const b = await bridge(t, ctx, provider, n.load);
+    ctx.fire('a1', 'PreToolUse', 'npm ci');
+    assert.equal(await n.call(b, 'c1', 'git status'), undefined);
+  });
+
+  test(`${provider}: an unreachable hook server lets the call through rather than wedging the agent`, async (t) => {
+    const ctx = await server(t);
+    const b = await bridge(t, ctx, provider, n.load, { noServer: true });
+    assert.equal(await n.call(b, 'c1', 'npm test'), undefined);
+  });
+}
+
+test('opencode: a call with no callID still runs, and the turn ending frees it', async (t) => {
   const ctx = await server(t);
   const b = await bridge(t, ctx, 'opencode', loadOpenCode);
-  const { frame, reply } = await b.send('tool.execute.before', { tool: 'bash', callID: 'c7' }, { args: { command: 'npm test' } });
-  assert.deepEqual(frame.tool_input, { command: 'npm test' });
-  assert.equal(frame.tool_use_id, 'c7');
-  assert.equal(decision(reply), undefined);
-  assert.deepEqual(ctx.lock.snapshot().map((h) => h.agentId), [b.id]);
-  assert.equal(decision(ctx.fire('a1', 'PreToolUse', 'dotnet build')), 'deny', 'other agents wait for it');
-  await b.send('tool.execute.after', { tool: 'bash', callID: 'c7' }, {});
-  assert.deepEqual(ctx.lock.snapshot().map((h) => h.agentId), [], 'paired by the call id');
+  await b.fire('tool.execute.before', { tool: 'bash' }, { args: { command: 'npm test' } });
+  assert.equal(ctx.lock.snapshot().length, 1);
+  await b.fire('event', { event: { type: 'session.idle' } });
+  await b.reached(2);
+  assert.equal(ctx.lock.snapshot().length, 0);
 });
 
-test('OpenCode: at the limit the job still runs, is counted over it, and does not join the queue', async (t) => {
+test('pi: auto-approval still reaches the provider when the call is allowed, and a block overrides it', async (t) => {
   const ctx = await server(t);
-  const b = await bridge(t, ctx, 'opencode', loadOpenCode);
+  const b = await bridge(t, ctx, 'pi', loadPi, { auto: true });
+  assert.deepEqual(await native.pi.call(b, 'c1', 'git status'), { approve: true });
   ctx.fire('a1', 'PreToolUse', 'npm ci');
-  const { reply } = await b.send('tool.execute.before', { tool: 'bash', callID: 'c8' }, { args: { command: 'npm test' } });
-  assert.equal(decision(reply), undefined);
-  assert.equal(ctx.lock.snapshot().length, 2);
-  assert.deepEqual(ctx.lock.queueSnapshot().waiting, []);
-  ctx.fire('a1', 'PostToolUse', 'npm ci');
-  assert.equal(decision(ctx.fire('a2', 'PreToolUse', 'npm ci')), 'deny', 'one job still running at a limit of one');
+  const r = await native.pi.call(b, 'c2', 'npm test');
+  assert.equal(r.block, true);
+  assert.equal(r.approve, undefined);
 });
 
-test('Pi: the job is counted against the limit, never denied, and its result frees it', async (t) => {
+test('an operator pause now reaches these providers too, through the same block path', async (t) => {
   const ctx = await server(t);
   const b = await bridge(t, ctx, 'pi', loadPi);
-  ctx.fire('a1', 'PreToolUse', 'npm ci');
-  const { frame, reply } = await b.send('tool_call', { name: 'Bash', input: { command: 'npm test' } });
-  assert.deepEqual(frame.tool_input, { command: 'npm test' });
-  assert.equal(frame.heavy_count_only, undefined, 'decided from the registry, not by the frame');
-  assert.equal(decision(reply), undefined);
-  assert.equal(ctx.lock.snapshot().length, 2);
-  assert.deepEqual(ctx.lock.queueSnapshot().waiting, []);
-  await b.send('tool_result', { name: 'Bash', input: { command: 'npm test' } });
-  assert.deepEqual(ctx.lock.snapshot().map((h) => h.agentId), ['a1']);
-});
-
-test('a provider that can honour a deny is still denied', async (t) => {
-  const { fire } = await server(t);
-  fire('a1', 'PreToolUse', 'npm ci');
-  assert.equal(decision(fire('a2', 'PreToolUse', 'npm ci')), 'deny');
+  ctx.control.toolDecision = () => ({ deny: true, reason: 'paused' });
+  assert.deepEqual(await native.pi.call(b, 'c1', 'git status'), { block: true, reason: 'paused' });
 });

@@ -541,7 +541,7 @@ export class HookServer {
     // would stay held. Slow approval at Claude's own prompt comes after this hook, and a rejection
     // there is caught when the turn ends.
     if (event === 'PreToolUse' && agentId && this.heavyLock) {
-      const reason = gateHeavyCall(this.heavyLock, agentId, p, () => this.hive.registry().agents[agentId]?.provider);
+      const reason = gateHeavyCall(this.heavyLock, agentId, p);
       if (reason) {
         this.emitControl(agentId, p.tool_name, reason);
         this.emit(agentId, event, p);
