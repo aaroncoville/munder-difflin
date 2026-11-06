@@ -43,6 +43,7 @@ import { selectBroadcastTargets } from '../shared/broadcast';
 import { preferredAgentRole } from '../shared/agentRole';
 import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde } from './fs';
+import { isSafeMessageId, unusedMessageId } from './messageId';
 import { codexTrustEntry } from '../shared/codexTrust';
 import { withCodexWritableRoots } from '../shared/codexWritableRoots';
 import { resolveGodName } from '../shared/godIdentity';
@@ -1664,8 +1665,9 @@ export class HiveManager {
   /** Normalize a partial message into a full HiveMessage. */
   private normalize(partial: Partial<HiveMessage>, from: string): HiveMessage {
     const act = (partial.act ?? 'inform') as MessageAct;
+    if (partial.id != null && !isSafeMessageId(partial.id)) this.appendLog({ kind: 'message-id-replaced', reason: 'invalid', from });
     return {
-      id: partial.id ?? `${stamp()}-${shortRand()}`,
+      id: isSafeMessageId(partial.id) ? partial.id : `${stamp()}-${shortRand()}`,
       conversation: partial.conversation ?? `conv-${shortRand()}`,
       in_reply_to: partial.in_reply_to ?? null,
       from: partial.from ?? from,
@@ -1693,7 +1695,9 @@ export class HiveManager {
   private deliver(msg: HiveMessage, toId: string): boolean {
     const inbox = join(this.agentDir(toId), 'inbox');
     if (!existsSync(inbox)) return false; // unknown recipient — the caller reports it
-    this.atomicWriteJson(join(inbox, `${msg.id}.json`), msg);
+    const id = unusedMessageId(msg.id, inbox, () => `${stamp()}-${shortRand()}`);
+    if (id !== msg.id) this.appendLog({ kind: 'message-id-replaced', reason: 'duplicate', from: msg.from, to: toId, id });
+    this.atomicWriteJson(join(inbox, `${id}.json`), { ...msg, id });
     return true;
   }
 
