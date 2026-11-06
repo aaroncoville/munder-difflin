@@ -106,14 +106,11 @@ test('tool input shapes (Claude Bash command, Codex argv, non-command tools) and
   assert.equal(isBackground({ command: 'a && b' }), false);
 });
 
-test('heavyLimit: off, N clamped to 16, and a default of 2 for anything unreadable', () => {
+test('heavyLimit accepts exactly "off" or an integer from 1 to 16, and anything else gets the default', () => {
   assert.equal(heavyLimit('off'), 'off');
-  assert.equal(heavyLimit(0), 'off');
-  assert.equal(heavyLimit(undefined), 2);
   assert.equal(heavyLimit(1), 1);
-  assert.equal(heavyLimit('3'), 3);
-  assert.equal(heavyLimit(99), 16);
-  assert.equal(heavyLimit(-1), 2);
+  assert.equal(heavyLimit(16), 16);
+  for (const bad of [undefined, null, false, true, 0, -1, 17, 99, 1.5, NaN, '3', 'OFF', '', {}, []]) assert.equal(heavyLimit(bad), 2, JSON.stringify(bad));
 });
 
 test('parsePsOutput reads pid, parent pid and the full command line, and skips what it cannot read', () => {

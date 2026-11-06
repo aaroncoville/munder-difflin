@@ -213,7 +213,8 @@ export interface HarnessConfig {
    *  request sits in HIVE_ROOT/spawn-requests until the toggle is turned on. */
   orchestratorMaySpawn: boolean;
   /** How many heavy jobs (installs, builds, full test suites) agents may run at once; another is
-   *  refused and queued. 'off' = no limit. Read on every hook, so a change applies at once. */
+   *  refused and queued. An integer 1..16, or 'off' for no limit; anything else means the default.
+   *  Read on every hook, so a change applies at once. */
   heavyJobsAtOnce?: number | 'off';
   /** The command we run when spawning a new agent. */
   defaultCommand: string;

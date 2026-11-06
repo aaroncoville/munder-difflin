@@ -233,11 +233,11 @@ export function isBackground(input: unknown): boolean {
 
 export type HeavyLimit = number | 'off';
 export const HEAVY_DEFAULT_LIMIT = 2;
-/** The config value, normalised: 'off', or an integer 1..16. */
+/** The config value: exactly 'off' or an integer 1..16. Anything else gets the default, so a
+ *  mistyped value cannot quietly switch the lock off or change its size. */
 export function heavyLimit(v: unknown): HeavyLimit {
-  if (v === 'off' || v === false || v === 0) return 'off';
-  const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN;
-  return Number.isInteger(n) && n >= 1 ? Math.min(16, n) : HEAVY_DEFAULT_LIMIT;
+  if (v === 'off') return 'off';
+  return typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= 16 ? v : HEAVY_DEFAULT_LIMIT;
 }
 
 export interface HeavyCall {
