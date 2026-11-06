@@ -28,6 +28,7 @@ import { homedir } from 'node:os';
 import { spawnSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
 import type { AgentUsageSample } from './usage';
+import { reportOutboxFailure, type OutboxStage } from './outboxFailure';
 import { COMMAND_GROUPS } from '../shared/claudeCommands';
 import { ensureCodexShortHome } from '../shared/codexRemote';
 import {
