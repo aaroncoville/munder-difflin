@@ -49,7 +49,7 @@ import { codexTrustEntry } from '../shared/codexTrust';
 import { withCodexWritableRoots } from '../shared/codexWritableRoots';
 import { resolveGodName } from '../shared/godIdentity';
 import { appendSession } from './codexActivity';
-import { isSafeMessageId, publishMessage } from './messageId';
+import { isSafeMessageId, publishMessage, sweepInboxLeftovers } from './messageId';
 
 /** The subset of HarnessConfig the hive consumes for the default-MCP merge.
  *  Kept as a local shape so hive.ts never imports the foundation-owned config
@@ -712,7 +712,7 @@ export class HiveManager {
     // …and the PATH-visible `node` fallback for the agent's OWN subprocesses.
     this.writeRuntimeShims();
 
-    refreshMineIgnoresOnce(this, root, ensureMineIgnore);
+    refreshMineIgnoresOnce(this, root, (dir) => { ensureMineIgnore(dir); sweepInboxLeftovers(join(dir, 'inbox')); });
     if (!this._gitCommitsDisabled && !existsSync(join(root, '.git'))) {
       this.git(['init', '-q'], root);
       this.commit('hive: init');
@@ -1755,8 +1755,14 @@ export class HiveManager {
     // Targets that actually took delivery. The log below reports these instead of
     // intent, so a bounced or dropped message can never read as delivered.
     const delivered: string[] = [];
+    const tellObserver = (landed: string[]): void => {
+      const replaced = this.replacedIds.get(msg.id) ?? {};
+      this.replacedIds.delete(msg.id);
+      try { this.routedObserver?.(msg, landed, replaced); } catch { /* observer error */ }
+    };
     let bounced = false;
     const bounce = (subject: string): void => { if (this.bounceToGod(msg, godId, subject)) bounced = true; };
+    try {
     for (const t of targets) {
       // The send-only prep assistant must never be a delivery target: it doesn't
       // drain an inbox, so direct mail to it would rot unread (observed live: a
@@ -1834,13 +1840,16 @@ export class HiveManager {
         bounce(`[undeliverable — no agent "${t}" on this floor; check the id against the roster] ${msg.subject}`);
       }
     }
+    } catch (error) {
+      // Copies that landed before this still have to be known by their ids.
+      tellObserver(delivered);
+      throw error;
+    }
     this.appendLog({ kind: 'message', from: msg.from, to: msg.to, act: msg.act, subject: msg.subject, id: msg.id, delivered });
     this.emitMessage(msg, targets);
     // Main-process observer (e.g. the closing-time controller watching for the
     // team's ACKs and the god's COMPLETE). Best-effort, never breaks routing.
-    const replaced = this.replacedIds.get(msg.id) ?? {};
-    this.replacedIds.delete(msg.id);
-    try { this.routedObserver?.(msg, targets, replaced); } catch { /* observer error */ }
+    tellObserver(targets);
     return targets.length === 0 || delivered.length > 0 || bounced;
   }
 
