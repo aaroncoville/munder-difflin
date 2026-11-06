@@ -1,0 +1,499 @@
+/**
+ * A machine-wide limit on heavy jobs (installs, builds, full test suites, benchmarks) enforced at
+ * the PreToolUse boundary. Several agents starting these at once can make the machine unresponsive,
+ * and a prose rule asking them to take turns does not hold.
+ *
+ *  - classifyHeavy: a pure, table-driven classifier of a tool call's command (no model). It will be
+ *    wrong in both directions now and then. That is acceptable: this is a courtesy against overload,
+ *    not a security boundary.
+ *  - HeavyJobLock: a counting semaphore of `limit` slots, held per agent. A slot is freed by the
+ *    call's PostToolUse, by the end of the agent's turn, by the job's processes exiting, by the
+ *    agent's PTY exiting, or by a TTL.
+ *  - A refused agent joins a first-in, first-out queue. A freed slot is reserved for the oldest live
+ *    waiter for a few minutes and the waiter is told, so that agents do not write pollers.
+ *
+ * No Electron dependency: every piece is injectable, so tests never inspect the real machine.
+ *
+ * The classifier and the lock are adapted from Agent Stage (https://github.com/jdell64/agent-stage,
+ * MIT, Copyright (c) 2026 Richard J Tindell II), which ported them from guppyos (MIT).
+ */
+import { execFile } from 'node:child_process';
+
+export type HeavyKind = 'install' | 'build' | 'suite' | 'bench';
+export interface HeavyClass { heavy: boolean; kind?: HeavyKind; why?: string }
+
+/** The command in a tool call's input, in the shapes the providers send it. */
+export function commandFromToolInput(input: unknown): string | null {
+  if (typeof input === 'string') return input;
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+  const r = input as Record<string, unknown>;
+  const v = r.command ?? r.cmd ?? r.script;
+  if (Array.isArray(v) && v.every((x) => typeof x === 'string')) return (v as string[]).join(' ');
+  return typeof v === 'string' ? v : null;
+}
+
+/** Split a command line into words, honouring simple quotes (not a full shell parser). */
+function words(s: string): string[] {
+  const out: string[] = [];
+  const re = /"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s))) out.push(m[1] ?? m[2] ?? m[3]);
+  return out;
+}
+
+/** The segments a shell would run: split on ; && || | and newlines, outside quotes. */
+function segments(cmd: string): string[] {
+  const out: string[] = [];
+  let cur = ''; let q: string | null = null;
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i];
+    if (q) { cur += c; if (c === q && cmd[i - 1] !== '\\') q = null; continue; }
+    if (c === '"' || c === "'") { q = c; cur += c; continue; }
+    if (c === ';' || c === '\n' || c === '|' || c === '&') {
+      if (c === '&' && cmd[i + 1] !== '&' && cmd[i - 1] !== '&') { cur += ' &'; out.push(cur); cur = ''; continue; } // a lone & = background
+      out.push(cur); cur = '';
+      if ((c === '&' || c === '|') && cmd[i + 1] === c) i++;
+      continue;
+    }
+    cur += c;
+  }
+  out.push(cur);
+  return out.map((s) => s.trim()).filter(Boolean);
+}
+
+const WRAPPERS = new Set(['bash', 'sh', 'zsh', 'cmd', 'cmd.exe', 'powershell', 'powershell.exe', 'pwsh', 'pwsh.exe', 'bash.exe']);
+const BENCH_SCRIPT = /(mutant|mutation|replay|bench|backfill|parity|speed|stress|soak)[^\\/]*\.(c?m?js|ts)$/i;
+export const SUITE_MANY_FILES = 20;
+/** node flags that take their value as the next argument (so that value is not a test file). */
+const NODE_VALUE_FLAGS = new Set(['--test-name-pattern', '--test-skip-pattern', '--test-reporter', '--test-reporter-destination', '--test-concurrency', '--test-timeout', '--test-shard', '--import', '--require', '-r', '--loader', '--experimental-loader', '--env-file', '--conditions', '-C', '--input-type']);
+
+/** Strip the prefixes that do not change what runs: VAR=x, env [-u X]..., timeout N, nice, cd x. */
+function leading(ws: string[]): string[] {
+  let i = 0;
+  while (i < ws.length) {
+    const w = ws[i];
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) { i++; continue; }
+    if (w === 'env') { i++; while (i < ws.length && (ws[i].startsWith('-') || /^[A-Za-z_][A-Za-z0-9_]*=/.test(ws[i]))) { if (ws[i] === '-u') i++; i++; } continue; }
+    if (w === 'timeout' || w === 'nice') { i++; while (i < ws.length && (/^-/.test(ws[i]) || /^\d+[smhd]?$/.test(ws[i]))) i++; continue; }
+    if (w === 'cd' || w === 'pushd') return []; // `cd x` alone is its own segment
+    break;
+  }
+  return ws.slice(i);
+}
+
+/** dotnet's heavy subcommands. A filtered or listing test run mirrors the single-test-file rule,
+ *  and --no-build skips the compile that makes `dotnet run` heavy. Anything after a bare `--` is
+ *  the program's, not dotnet's, so it cannot make a run light. */
+function classifyDotnet(args: string[]): HeavyClass {
+  const sep = args.indexOf('--');
+  const own = sep >= 0 ? args.slice(0, sep) : args;
+  if (own.some((a) => a === '--help' || a === '-h' || a === '-?')) return { heavy: false };
+  const sub = own.find((a) => !a.startsWith('-'));
+  if (sub === 'restore') return { heavy: true, kind: 'install', why: 'dotnet restore' };
+  if (sub === 'build' || sub === 'publish' || sub === 'pack') return { heavy: true, kind: 'build', why: `dotnet ${sub}` };
+  if (sub === 'run') return own.includes('--no-build') ? { heavy: false } : { heavy: true, kind: 'build', why: 'dotnet run' };
+  if (sub === 'test') {
+    const narrow = own.some((a) => /^--filter([:=]|$)/.test(a) || a === '--list-tests' || a === '-t');
+    return narrow ? { heavy: false } : { heavy: true, kind: 'suite', why: 'dotnet test' };
+  }
+  return { heavy: false };
+}
+
+function classifyWords(ws0: string[], depth: number): HeavyClass {
+  const ws = leading(ws0);
+  if (!ws.length) return { heavy: false };
+  const bin = ws[0].replace(/\\/g, '/').split('/').pop()!.toLowerCase().replace(/\.(exe|cmd)$/, '');
+  const args = ws.slice(1);
+  // One level of a shell wrapper: bash -c "...", cmd /c ..., powershell -Command ...
+  if (WRAPPERS.has(bin) && depth === 0) {
+    const k = args.findIndex((a) => /^(-c|\/\/?c|\/\/?k|-command)$/i.test(a));
+    if (k >= 0) return classifyCommand(args.slice(k + 1).join(' '), depth + 1);
+    return { heavy: false };
+  }
+  if (bin === 'dotnet') return classifyDotnet(args);
+  if (bin === 'npm' || bin === 'pnpm' || bin === 'yarn') {
+    const sub = args.find((a) => !a.startsWith('-')) ?? (bin === 'yarn' ? 'install' : '');
+    if (sub === 'ci' || sub === 'rebuild') return { heavy: true, kind: 'install', why: `${bin} ${sub}` };
+    if (sub === 'install' || sub === 'i' || sub === 'add') return { heavy: true, kind: 'install', why: `${bin} ${sub}` };
+    if (sub === 'test' || sub === 't') return { heavy: true, kind: 'suite', why: `${bin} test` };
+    if (sub === 'run' || sub === 'run-script') {
+      const script = args.slice(args.indexOf(sub) + 1).find((a) => !a.startsWith('-')) ?? '';
+      if (/^(build|dist)(:.*)?$/.test(script)) return { heavy: true, kind: 'build', why: `${bin} run ${script}` };
+      if (/^test(:.*)?$/.test(script)) return { heavy: true, kind: 'suite', why: `${bin} run ${script}` };
+    }
+    return { heavy: false };
+  }
+  if (bin === 'npx') return classifyWords(args.filter((a) => !a.startsWith('-')), depth);
+  if (bin === 'electron-rebuild' || bin === 'node-gyp') return { heavy: true, kind: 'install', why: bin };
+  if (bin === 'electron-builder') return { heavy: true, kind: 'build', why: bin };
+  if (bin === 'electron-vite' && args.includes('build')) return { heavy: true, kind: 'build', why: 'electron-vite build' };
+  if (bin === 'vitest') {
+    const files = args.filter((a) => !a.startsWith('-') && a !== 'run');
+    return files.length ? { heavy: false } : { heavy: true, kind: 'suite', why: 'vitest (all)' };
+  }
+  if (bin === 'node' || bin === 'electron') {
+    if (args.includes('--test')) {
+      // Positional args only: the value of a flag that takes one is not a test file.
+      const files: string[] = [];
+      for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a.startsWith('-')) { if (NODE_VALUE_FLAGS.has(a)) i++; continue; }
+        files.push(a);
+      }
+      if (!files.length) return { heavy: true, kind: 'suite', why: 'node --test (all)' };
+      if (files.some((f) => /[*?]/.test(f) || !/\.[cm]?[jt]s$/.test(f))) return { heavy: true, kind: 'suite', why: 'node --test (a glob or a directory)' };
+      if (files.length >= SUITE_MANY_FILES) return { heavy: true, kind: 'suite', why: `node --test (${files.length} files)` };
+      return { heavy: false };
+    }
+    const script = args.find((a) => !a.startsWith('-'));
+    if (script && BENCH_SCRIPT.test(script)) return { heavy: true, kind: 'bench', why: `node ${script.replace(/\\/g, '/').split('/').pop()}` };
+    return { heavy: false };
+  }
+  return { heavy: false };
+}
+
+/** Classify a command line: heavy if any segment it runs is heavy. */
+export function classifyCommand(cmd: string, depth = 0): HeavyClass {
+  for (const seg of segments(cmd)) {
+    const c = classifyWords(words(seg.replace(/\s&$/, '')), depth);
+    if (c.heavy) return c;
+  }
+  return { heavy: false };
+}
+
+/** Classify a tool call (any provider: the command-shaped input only). */
+export function classifyHeavy(_toolName: string | undefined, input: unknown): HeavyClass {
+  const cmd = commandFromToolInput(input);
+  return cmd ? classifyCommand(cmd) : { heavy: false };
+}
+
+/** Does this tool call leave the job running after the call returns? */
+export function isBackground(input: unknown): boolean {
+  if (input && typeof input === 'object' && (input as Record<string, unknown>).run_in_background === true) return true;
+  const cmd = commandFromToolInput(input) ?? '';
+  return /(^|[^&])&\s*$/.test(cmd.trim()) || /\bnohup\b|\bStart-Job\b|\bsetsid\b/.test(cmd);
+}
+
+// — the lock —
+
+export type HeavyLimit = number | 'off';
+export const HEAVY_DEFAULT_LIMIT = 2;
+/** The config value, normalised: 'off', or an integer 1..16. */
+export function heavyLimit(v: unknown): HeavyLimit {
+  if (v === 'off' || v === false || v === 0) return 'off';
+  const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN;
+  return Number.isInteger(n) && n >= 1 ? Math.min(16, n) : HEAVY_DEFAULT_LIMIT;
+}
+
+export interface HeavyHolder {
+  agentId: string;
+  kind: HeavyKind;
+  /** The classifier's label. Shown to other agents and logged, unlike the command itself, which
+   *  can carry secrets (`TOKEN=x npm test`). */
+  label: string;
+  /** The raw commands, kept in memory only, to recognise the job in a process listing. */
+  commands: Set<string>;
+  since: number;
+  /** Last acquire or re-entry: the TTL runs from here. */
+  touched: number;
+  /** Heavy calls still running. */
+  calls: Set<string>;
+  /** A backgrounded job: its PostToolUse says nothing about whether it has finished. */
+  background: boolean;
+  /** Consecutive watcher scans that found no job of this holder. */
+  misses: number;
+}
+
+export interface ProcRow { pid: number; parentPid: number; commandLine: string }
+export interface HeavyLockDeps {
+  limit: () => HeavyLimit;
+  now?: () => number;
+  setTimer?: (fn: () => void, ms: number) => unknown;
+  clearTimer?: (t: unknown) => void;
+  /** The PTY root pid of each agent. */
+  roots?: () => Array<{ agentId: string; pid: number }>;
+  /** A process listing (only ever called while a slot is held). */
+  probe?: () => Promise<ProcRow[]>;
+  log?: (row: Record<string, unknown>) => void;
+  /** Whether a queued agent still has a PTY. Absent = assume so. */
+  alive?: (agentId: string) => boolean;
+  /** Tell a queued agent that a slot is reserved for it until `until`. */
+  notify?: (agentId: string, kind: HeavyKind, until: number) => void;
+}
+
+export const HEAVY_TTL_MS = 60 * 60_000;
+export const HEAVY_SCAN_MS = 20_000;
+export const HEAVY_SCAN_MISSES = 2;
+export const HEAVY_RESERVE_MS = 5 * 60_000;
+const COMMAND_KEEP = 200;
+
+export type HeavyDecision = { allow: true; acquired: boolean } | { allow: false; reason: string };
+type ReleaseReason = 'posttool' | 'turn-end' | 'process-exit' | 'pty-exit' | 'ttl';
+const clock = (ms: number): string => `${new Date(ms).toISOString().slice(11, 19)}Z`;
+
+export class HeavyJobLock {
+  private readonly holders = new Map<string, HeavyHolder>();
+  private readonly queue: Array<{ agentId: string; kind: HeavyKind; since: number }> = [];
+  private readonly reservations = new Map<string, { kind: HeavyKind; until: number }>();
+  private timer: unknown = null;
+  private readonly now: () => number;
+  private readonly setTimer: (fn: () => void, ms: number) => unknown;
+  private readonly clearTimer: (t: unknown) => void;
+
+  constructor(private readonly d: HeavyLockDeps) {
+    this.now = d.now ?? Date.now;
+    this.setTimer = d.setTimer ?? ((fn, ms) => { const t = setTimeout(fn, ms); (t as { unref?: () => void }).unref?.(); return t; });
+    this.clearTimer = d.clearTimer ?? ((t) => clearTimeout(t as NodeJS.Timeout));
+  }
+
+  /** The current holders. Expired ones are released first. */
+  snapshot(): Array<{ agentId: string; kind: HeavyKind; job: string; since: string; background: boolean }> {
+    this.expire();
+    return [...this.holders.values()].map((h) => ({ agentId: h.agentId, kind: h.kind, job: h.label, since: new Date(h.since).toISOString(), background: h.background }));
+  }
+
+  /** Who is waiting, and which slots are set aside for whom. */
+  queueSnapshot(): { waiting: Array<{ agentId: string; kind: HeavyKind; since: string }>; reservations: Array<{ agentId: string; kind: HeavyKind; until: string }> } {
+    return {
+      waiting: this.queue.map((w) => ({ agentId: w.agentId, kind: w.kind, since: new Date(w.since).toISOString() })),
+      reservations: [...this.reservations].map(([agentId, r]) => ({ agentId, kind: r.kind, until: new Date(r.until).toISOString() }))
+    };
+  }
+
+  /** The whole picture, for fleet.json. */
+  status(): { limit: HeavyLimit; holders: ReturnType<HeavyJobLock['snapshot']> } & ReturnType<HeavyJobLock['queueSnapshot']> {
+    const holders = this.snapshot();
+    return { limit: this.d.limit(), holders, ...this.queueSnapshot() };
+  }
+
+  /** PreToolUse: a heavy call from `agentId`. Take a slot, share the agent's own, or queue it. */
+  acquire(agentId: string, cls: HeavyClass, command: string, callId: string, background: boolean): HeavyDecision {
+    const limit = this.d.limit();
+    if (limit === 'off' || !cls.heavy || !cls.kind) {
+      if (limit === 'off') this.dropWaiting(agentId);
+      return { allow: true, acquired: false };
+    }
+    this.expire();
+    const mine = this.holders.get(agentId);
+    if (mine) {
+      // Re-entrant: an agent's heavy calls share its one slot (and refresh its TTL).
+      mine.calls.add(callId); mine.commands.add(command.slice(0, COMMAND_KEEP));
+      mine.background = mine.background || background; mine.touched = this.now(); mine.misses = 0;
+      this.log({ kind: 'heavy-lock', action: 'reenter', agentId, heavyKind: cls.kind, job: cls.why });
+      this.arm();
+      return { allow: true, acquired: false };
+    }
+    this.serve(); // a raised limit serves the queue before anyone new
+    const reserved = this.reservations.delete(agentId);
+    if (!reserved && this.holders.size + this.reservations.size >= limit) return this.refuse(agentId, cls, limit);
+    this.holders.set(agentId, {
+      agentId, kind: cls.kind, label: cls.why ?? cls.kind, commands: new Set([command.slice(0, COMMAND_KEEP)]),
+      since: this.now(), touched: this.now(), calls: new Set([callId]), background, misses: 0
+    });
+    this.log({ kind: 'heavy-lock', action: 'acquire', agentId, heavyKind: cls.kind, job: cls.why, background, limit, reserved });
+    this.arm();
+    return { allow: true, acquired: true };
+  }
+
+  private refuse(agentId: string, cls: HeavyClass, limit: number): HeavyDecision {
+    let at = this.queue.findIndex((w) => w.agentId === agentId);
+    if (at < 0) at = this.queue.push({ agentId, kind: cls.kind!, since: this.now() }) - 1;
+    const holders = [...this.holders.values()];
+    const taken: string[] = [];
+    if (holders.length) taken.push(`held by ${holders.map((h) => `${h.agentId} (${h.kind}: ${h.label}, since ${clock(h.since)})`).join('; ')}`);
+    if (this.reservations.size) taken.push(`reserved for ${[...this.reservations.keys()].join(', ')}`);
+    const one = holders.length + this.reservations.size === 1;
+    const reason = `Denied by the heavy-job lock: this machine allows ${limit} heavy job${limit === 1 ? '' : 's'} at once and ${one ? 'it is' : 'they are'} ${taken.join(' and ')}. `
+      + `You are queued (position ${at + 1}): when a slot frees it is reserved for you for ${Math.round(HEAVY_RESERVE_MS / 60_000)} minutes and you will get a message saying so. `
+      + 'Do not retry or poll in the meantime; carry on with light work (single test files, reads and edits are not limited) until you are told.';
+    this.log({ kind: 'heavy-lock', action: 'deny', agentId, heavyKind: cls.kind, position: at + 1, holders: holders.map((h) => h.agentId), limit });
+    return { allow: false, reason };
+  }
+
+  /** PostToolUse of a heavy call. The slot is freed when the agent has no call left and no
+   *  background job. */
+  callDone(agentId: string, callId: string): void {
+    const h = this.holders.get(agentId);
+    if (!h || !h.calls.delete(callId)) return;
+    if (!h.calls.size && !h.background) this.release(agentId, 'posttool');
+  }
+
+  /** The agent's turn ended, so no foreground call of its can still be running. This catches the
+   *  calls that never get a PostToolUse: one the user rejected at the permission prompt (which
+   *  comes after PreToolUse) and one that was interrupted. */
+  turnOver(agentId: string): void {
+    const h = this.holders.get(agentId);
+    if (!h) return;
+    h.calls.clear();
+    if (!h.background) this.release(agentId, 'turn-end');
+  }
+
+  /** The agent's PTY exited: its jobs are gone with it, and it is no longer waiting. */
+  agentGone(agentId: string): void {
+    this.dropWaiting(agentId);
+    if (this.holders.has(agentId)) this.release(agentId, 'pty-exit');
+    else this.serve();
+  }
+
+  /** Several PTYs are closing together (quit, reset, change of home), which skips their exit
+   *  callbacks. Every waiter among them is dropped first, so no agent that is itself going away
+   *  gets told that a slot just freed up. */
+  agentsGone(agentIds: Iterable<string>): void {
+    const ids = new Set(agentIds);
+    for (const id of ids) this.dropWaiting(id);
+    for (const id of ids) this.agentGone(id);
+  }
+
+  private dropWaiting(agentId: string): void {
+    const at = this.queue.findIndex((w) => w.agentId === agentId);
+    if (at >= 0) { this.queue.splice(at, 1); this.log({ kind: 'heavy-lock', action: 'queue-dropped', agentId }); }
+    if (this.reservations.delete(agentId)) this.log({ kind: 'heavy-lock', action: 'reserve-dropped', agentId });
+  }
+
+  private release(agentId: string, reason: ReleaseReason): void {
+    const h = this.holders.get(agentId);
+    if (!h) return;
+    this.holders.delete(agentId);
+    this.log({ kind: 'heavy-lock', action: 'release', agentId, heavyKind: h.kind, reason, heldMs: this.now() - h.since });
+    this.serve();
+    if (!this.holders.size && !this.reservations.size && this.timer) { this.clearTimer(this.timer); this.timer = null; }
+  }
+
+  /** Hand free slots to the oldest live waiters. */
+  private serve(): void {
+    const limit = this.d.limit();
+    while (this.queue.length && (limit === 'off' || this.holders.size + this.reservations.size < limit)) {
+      const w = this.queue.shift()!;
+      if (this.d.alive && !this.d.alive(w.agentId)) { this.log({ kind: 'heavy-lock', action: 'queue-dropped', agentId: w.agentId }); continue; }
+      const until = this.now() + HEAVY_RESERVE_MS;
+      this.reservations.set(w.agentId, { kind: w.kind, until });
+      this.log({ kind: 'heavy-lock', action: 'reserve', agentId: w.agentId, heavyKind: w.kind, until });
+      try { this.d.notify?.(w.agentId, w.kind, until); } catch { /* best effort: the reservation still lapses */ }
+      this.arm();
+    }
+  }
+
+  private expire(): void {
+    const t = this.now();
+    for (const h of [...this.holders.values()]) if (t - h.touched >= HEAVY_TTL_MS) this.release(h.agentId, 'ttl');
+    for (const [agentId, r] of [...this.reservations]) {
+      if (t < r.until) continue;
+      this.reservations.delete(agentId);
+      this.log({ kind: 'heavy-lock', action: 'reserve-expired', agentId, heavyKind: r.kind });
+    }
+    this.serve();
+  }
+
+  /** The watcher runs only while a slot is held or reserved. */
+  private arm(): void {
+    if (this.timer || (!this.holders.size && !this.reservations.size)) return;
+    this.timer = this.setTimer(() => { this.timer = null; void this.scan().finally(() => this.arm()); }, HEAVY_SCAN_MS);
+  }
+
+  /** One watcher tick: expiry for everyone, and a process check for any call that may not get a
+   *  PostToolUse. A job counts as still running when a descendant of the agent's PTY classifies as
+   *  heavy or carries the command the agent ran, since the shell wrapper keeps that text even when
+   *  the process doing the work looks like `node x/y.mjs`. The PTY root is left out: its arguments
+   *  can quote the command without running it. A failed probe is no evidence either way. */
+  async scan(): Promise<void> {
+    this.expire();
+    const watched = [...this.holders.values()].filter((h) => h.background || h.calls.size > 0);
+    if (!watched.length || !this.d.probe || !this.d.roots) return;
+    let procs: ProcRow[];
+    try { procs = await this.d.probe(); } catch { return; }
+    const parent = new Map(procs.map((p) => [p.pid, p.parentPid]));
+    const rootOf = new Map(this.d.roots().map((r) => [r.pid, r.agentId]));
+    const ownerOf = (pid: number): string | null => {
+      const seen = new Set<number>(); let cur: number | undefined = pid;
+      while (cur !== undefined && !seen.has(cur)) { seen.add(cur); const a = rootOf.get(cur); if (a) return a; cur = parent.get(cur); }
+      return null;
+    };
+    const under = new Map<string, string[]>();
+    for (const p of procs) {
+      if (rootOf.has(p.pid)) continue;
+      const a = ownerOf(p.pid);
+      if (a) under.set(a, [...(under.get(a) ?? []), p.commandLine]);
+    }
+    for (const h of watched) {
+      if (!this.holders.has(h.agentId)) continue;
+      const lines = under.get(h.agentId) ?? [];
+      if (lines.some((l) => classifyCommand(l).heavy || [...h.commands].some((c) => c && l.includes(c)))) { h.misses = 0; continue; }
+      h.misses++;
+      if (h.misses >= HEAVY_SCAN_MISSES) this.release(h.agentId, 'process-exit');
+    }
+  }
+
+  private log(row: Record<string, unknown>): void { try { this.d.log?.(row); } catch { /* best effort */ } }
+}
+
+// — the hook boundary —
+
+interface HeavyHookPayload { tool_name?: string; tool_input?: unknown; tool_use_id?: unknown }
+
+/** The id that pairs a call's PreToolUse with its PostToolUse: the provider's tool-use id when it
+ *  sends one, else the command itself (identical in both hooks). */
+function heavyCallId(p: HeavyHookPayload): string {
+  if (typeof p.tool_use_id === 'string' && p.tool_use_id) return `id:${p.tool_use_id}`;
+  return `cmd:${(commandFromToolInput(p.tool_input) ?? '').slice(0, 500)}`;
+}
+
+/** PreToolUse: take a slot for a heavy call. Returns the reason to deny it with, or null to let it
+ *  through. Call this only after any gate that can still deny the call: a denied call gets no
+ *  PostToolUse, so a slot taken earlier would stay held. */
+export function gateHeavyCall(lock: HeavyJobLock, agentId: string, p: HeavyHookPayload): string | null {
+  const cls = classifyHeavy(p.tool_name, p.tool_input);
+  if (!cls.heavy) return null;
+  const d = lock.acquire(agentId, cls, commandFromToolInput(p.tool_input) ?? '', heavyCallId(p), isBackground(p.tool_input));
+  return d.allow ? null : d.reason;
+}
+
+/** The hook events that end a call: its PostToolUse (a command that exits non-zero fires
+ *  PostToolUseFailure instead), or the turn ending or being replaced by a new prompt. */
+export function settleHeavyCall(lock: HeavyJobLock, agentId: string, event: string, p: HeavyHookPayload): void {
+  if (event === 'PostToolUse' || event === 'PostToolUseFailure') lock.callDone(agentId, heavyCallId(p));
+  else if (event === 'Stop' || event === 'UserPromptSubmit') lock.turnOver(agentId);
+}
+
+/** What a queued agent is told when its slot comes free. */
+export function heavySlotNotice(kind: HeavyKind, until: number): { subject: string; body: string } {
+  const at = `${new Date(until).toISOString().slice(11, 16)}Z`;
+  return {
+    subject: `Heavy-job slot free: the ${kind} you were refused can run now, reserved for you until ${at}`,
+    body: `A heavy-job slot is reserved for you until ${at}. Run your ${kind} now if you still need it. If you do not start it by then, the slot passes to the next agent in the queue. No reply is needed.`
+  };
+}
+
+// — process listing —
+
+/** Parse `ps -axo pid=,ppid=,command=`. */
+export function parsePsOutput(out: string): ProcRow[] {
+  const rows: ProcRow[] = [];
+  for (const line of out.split('\n')) {
+    const m = /^\s*(\d+)\s+(\d+)\s+(.*?)\s*$/.exec(line);
+    if (m) rows.push({ pid: Number(m[1]), parentPid: Number(m[2]), commandLine: m[3] });
+  }
+  return rows;
+}
+
+/** The default process listing. Rejects when it cannot read one, which the watcher treats as no
+ *  evidence, so a broken listing leaves slots to the TTL rather than freeing them under a live job.
+ *  The win32 branch comes with the port and has not been run on this codebase. */
+export function probeProcesses(): Promise<ProcRow[]> {
+  const options = { windowsHide: true, timeout: 10_000, maxBuffer: 16 * 1024 * 1024 };
+  if (process.platform !== 'win32') {
+    return new Promise((resolve, reject) => execFile('ps', ['-axo', 'pid=,ppid=,command='], options, (err, stdout) => {
+      if (err) return reject(err);
+      const rows = parsePsOutput(stdout);
+      if (rows.length) resolve(rows); else reject(new Error('Process probe returned no rows'));
+    }));
+  }
+  const script = 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress';
+  return new Promise((resolve, reject) => execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], options, (err, stdout) => {
+    if (err) return reject(err);
+    try {
+      const rows = JSON.parse(stdout) as Array<{ ProcessId: number; ParentProcessId: number; CommandLine: string | null }>;
+      const procs = (Array.isArray(rows) ? rows : [rows]).filter((r) => r && Number.isInteger(r.ProcessId)).map((r) => ({ pid: r.ProcessId, parentPid: r.ParentProcessId, commandLine: r.CommandLine ?? '' }));
+      if (procs.length) resolve(procs); else reject(new Error('Process probe returned no rows'));
+    } catch (e) { reject(e); }
+  }));
+}
