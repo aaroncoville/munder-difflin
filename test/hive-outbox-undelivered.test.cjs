@@ -31,6 +31,17 @@ async function floor(t) {
   return { hive, agent, write, sent, pending, log };
 }
 
+/** Routes one pass with a read-only inbox, which makes the real write fail. Restored so the temporary folder can be removed. */
+function routeWithBlockedInbox(hive, agentDir) {
+  const inbox = path.join(agentDir, 'inbox');
+  fs.chmodSync(inbox, 0o555);
+  try {
+    return hive.routeOnce();
+  } finally {
+    fs.chmodSync(inbox, 0o755);
+  }
+}
+
 const MESSAGE = { to: 'god', act: 'inform', subject: 'hello', body: 'world' };
 
 test('a hop-capped message is not filed as sent, is logged, and its sender is told', async (t) => {
@@ -83,11 +94,9 @@ test('a message from god to the human has no delivery target and is not a failur
 
 test('a routing failure is logged and the sender is told it may have partly delivered', async (t) => {
   const { hive, agent, write, sent, log } = await floor(t);
-  // A directory where the delivered file belongs makes the real write fail.
-  fs.mkdirSync(path.join(agent('god-1'), 'inbox', 'boom.json'));
-  write('worker-1', 'fails.json', { ...MESSAGE, id: 'boom' });
+  write('worker-1', 'fails.json', MESSAGE);
 
-  assert.equal(hive.routeOnce(), 0);
+  assert.equal(routeWithBlockedInbox(hive, agent('god-1')), 0);
 
   assert.equal(sent('worker-1', 'fails.json'), false);
   assert.equal(sent('worker-1', 'bad-fails.json'), true);
@@ -110,10 +119,9 @@ test('a file that parses but is not a message is reported, not silently set asid
 
 test('a failure report does not quote the error text', async (t) => {
   const { hive, agent, write, log } = await floor(t);
-  fs.mkdirSync(path.join(agent('god-1'), 'inbox', 'boom.json'));
-  write('worker-1', 'fails.json', { ...MESSAGE, id: 'boom' });
+  write('worker-1', 'fails.json', MESSAGE);
 
-  hive.routeOnce();
+  routeWithBlockedInbox(hive, agent('god-1'));
 
   const home = path.dirname(path.dirname(agent('god-1')));
   assert.equal(hive.inbox('worker-1')[0].body.includes(home), false, 'the notice holds no absolute path');
