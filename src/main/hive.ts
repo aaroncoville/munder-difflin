@@ -45,7 +45,7 @@ import { preferredAgentRole } from '../shared/agentRole';
 import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde } from './fs';
 import { refreshMineIgnoresOnce } from './hiveMineIgnore';
-import { agentFolderId, hasExactFolder, isAppSender, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, rosterIdFor, shortTarget } from './messageTarget';
+import { agentFolderId, hasExactFolder, isAppSender, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, RegistryUnreadable, rosterIdFor, shortTarget } from './messageTarget';
 import { nodeLauncherScript } from './nodeLauncher';
 import { codexTrustEntry } from '../shared/codexTrust';
 import { withCodexWritableRoots } from '../shared/codexWritableRoots';
@@ -777,6 +777,12 @@ export class HiveManager {
       extraWritableDirs?: string[];
     } = {}
   ): Promise<SpawnInjection> {
+    // registry() reads a failure as an empty roster, and this would then replace the file with this one agent. A file
+    // that does not exist yet is a new hive, which has nothing to lose.
+    if (this.root() && existsSync(join(this.root()!, 'registry.json')) && !this.readableRegistry()) {
+      this.appendLog({ kind: 'registry-write-refused', agentId: shortTarget(meta.id) });
+      throw new RegistryUnreadable('The agent registry could not be read, so no agent can be added until it is repaired.');
+    }
     const refusal = newRosterIdRefusal(this.registry().agents, meta.id, meta.isGod === true);
     if (refusal) throw new RefusedRosterId(`Agent id ${shortTarget(meta.id)}: ${refusal}`);
     const root = this.root();
