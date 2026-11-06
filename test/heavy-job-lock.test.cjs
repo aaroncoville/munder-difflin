@@ -223,9 +223,13 @@ test('the process check runs only while something is held, and frees a started f
 });
 
 test('a failed process probe is not evidence that the job exited', async () => {
-  const x = lock(1, { roots: () => [{ agentId: 'a', pid: 10 }], probe: async () => { throw new Error('denied'); } });
+  let probe = async () => [{ pid: 11, parentPid: 10, commandLine: 'npm ci' }];
+  const x = lock(1, { roots: () => [{ agentId: 'a', pid: 10 }], probe: () => probe() });
   x.l.acquire('a', H, 'npm ci', '1', false);
-  await x.l.scan(); await x.l.scan();
+  await x.l.scan();
+  assert.equal(x.l.status().holders[0].started, true, 'a started job, which empty scans could free');
+  probe = async () => { throw new Error('denied'); };
+  for (let i = 0; i < HEAVY_SCAN_MISSES + 1; i++) await x.l.scan();
   assert.equal(x.l.snapshot().length, 1);
 });
 
