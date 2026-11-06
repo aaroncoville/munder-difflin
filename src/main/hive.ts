@@ -47,7 +47,7 @@ import { codexTrustEntry } from '../shared/codexTrust';
 import { withCodexWritableRoots } from '../shared/codexWritableRoots';
 import { resolveGodName } from '../shared/godIdentity';
 import { appendSession } from './codexActivity';
-import { isSafeMessageId, unusedMessageId } from './messageId';
+import { isSafeMessageId, publishMessage } from './messageId';
 
 /** The subset of HarnessConfig the hive consumes for the default-MCP merge.
  *  Kept as a local shape so hive.ts never imports the foundation-owned config
@@ -1695,9 +1695,8 @@ export class HiveManager {
   private deliver(msg: HiveMessage, toId: string): boolean {
     const inbox = join(this.agentDir(toId), 'inbox');
     if (!existsSync(inbox)) return false; // unknown recipient — the caller reports it
-    const id = unusedMessageId(msg.id, inbox, () => `${stamp()}-${shortRand()}`);
+    const id = publishMessage(inbox, msg, () => `${stamp()}-${shortRand()}`);
     if (id !== msg.id) this.appendLog({ kind: 'message-id-replaced', reason: 'duplicate', from: msg.from, to: toId, id });
-    this.atomicWriteJson(join(inbox, `${id}.json`), { ...msg, id });
     return true;
   }
 
