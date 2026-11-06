@@ -281,8 +281,10 @@ export class HeavyJobLock {
     return { limit: this.d.limit(), holders, ...this.queueSnapshot() };
   }
 
-  /** PreToolUse: a heavy call from `agentId`. Take a slot, share the agent's own, or queue it. */
-  acquire(agentId: string, cls: HeavyClass, command: string, callId: string, background: boolean): HeavyDecision {
+  /** PreToolUse: a heavy call from `agentId`. Take a slot, share the agent's own, or queue it.
+   *  `countOnly` is for a provider that cannot be refused: its job runs either way, so it is counted
+   *  even past the limit, which makes other agents wait for that capacity. */
+  acquire(agentId: string, cls: HeavyClass, command: string, callId: string, background: boolean, countOnly = false): HeavyDecision {
     const limit = this.d.limit();
     if (limit === 'off' || !cls.heavy || !cls.kind) {
       if (limit === 'off') this.dropWaiting(agentId);
@@ -300,12 +302,12 @@ export class HeavyJobLock {
     }
     this.serve(); // a raised limit serves the queue before anyone new
     const reserved = this.reservations.delete(agentId);
-    if (!reserved && this.holders.size + this.reservations.size >= limit) return this.refuse(agentId, cls, limit);
+    if (!reserved && !countOnly && this.holders.size + this.reservations.size >= limit) return this.refuse(agentId, cls, limit);
     this.holders.set(agentId, {
       agentId, kind: cls.kind, label: cls.why ?? cls.kind, commands: new Set([command.slice(0, COMMAND_KEEP)]),
       since: this.now(), touched: this.now(), calls: addCall(new Map(), callId, command, cls), background, misses: 0
     });
-    this.log({ kind: 'heavy-lock', action: 'acquire', agentId, heavyKind: cls.kind, job: cls.why, background, limit, reserved });
+    this.log({ kind: 'heavy-lock', action: 'acquire', agentId, heavyKind: cls.kind, job: cls.why, background, limit, reserved, countOnly });
     this.arm();
     return { allow: true, acquired: true };
   }
@@ -455,6 +457,9 @@ export class HeavyJobLock {
 
 interface HeavyHookPayload { tool_name?: string; tool_input?: unknown; tool_use_id?: unknown; notification_type?: string }
 
+/** Providers whose bridges send and forget, so a deny could never reach them. */
+const UNDENIABLE_PROVIDERS = new Set(['opencode', 'pi']);
+
 /** The id that pairs a call's PreToolUse with its PostToolUse: the provider's tool-use id when it
  *  sends one, else the command itself (identical in both hooks). */
 function heavyCallId(p: HeavyHookPayload): string {
@@ -465,10 +470,10 @@ function heavyCallId(p: HeavyHookPayload): string {
 /** PreToolUse: take a slot for a heavy call. Returns the reason to deny it with, or null to let it
  *  through. Call this only after any gate that can still deny the call: a denied call gets no
  *  PostToolUse, so a slot taken earlier would stay held. */
-export function gateHeavyCall(lock: HeavyJobLock, agentId: string, p: HeavyHookPayload): string | null {
+export function gateHeavyCall(lock: HeavyJobLock, agentId: string, p: HeavyHookPayload, provider?: () => string | undefined): string | null {
   const cls = classifyHeavy(p.tool_name, p.tool_input);
   if (!cls.heavy) return null;
-  const d = lock.acquire(agentId, cls, commandFromToolInput(p.tool_input) ?? '', heavyCallId(p), isBackground(p.tool_input));
+  const d = lock.acquire(agentId, cls, commandFromToolInput(p.tool_input) ?? '', heavyCallId(p), isBackground(p.tool_input), UNDENIABLE_PROVIDERS.has(provider?.() ?? ''));
   return d.allow ? null : d.reason;
 }
 

@@ -3454,11 +3454,11 @@ export const HiveBridge = async () => {
     event: async (input) => {
       try { if (input && input.event && input.event.type === 'session.idle') post({ hook_event_name: 'Stop' }); } catch (e) {}
     },
-    'tool.execute.before': async (input) => {
-      try { post({ hook_event_name: 'PreToolUse', tool_name: input && (input.tool || input.name) }); } catch (e) {}
+    'tool.execute.before': async (input, output) => {
+      try { post({ hook_event_name: 'PreToolUse', tool_name: input && (input.tool || input.name), tool_use_id: input && input.callID, tool_input: (output && output.args) || (input && input.args) }); } catch (e) {}
     },
     'tool.execute.after': async (input) => {
-      try { post({ hook_event_name: 'PostToolUse', tool_name: input && (input.tool || input.name) }); } catch (e) {}
+      try { post({ hook_event_name: 'PostToolUse', tool_name: input && (input.tool || input.name), tool_use_id: input && input.callID, tool_input: input && input.args }); } catch (e) {}
     }
   };
 };
