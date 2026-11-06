@@ -2690,16 +2690,21 @@ function spawnFailReason(error?: string): SpawnFailReason {
 }
 
 /** A refused id must not start as a process with no prompt, environment, hooks or
- *  roster entry. Its worktree goes too, since no process will ever tear it down. */
-function refuseSpawn(ptyId: string, agentId: string, provider: string, refusal: RefusedRosterId): { ok: false; error: string } {
+ *  roster entry. Its worktree goes too, since no process will ever tear it down. One
+ *  that cannot be removed is logged and stays tracked, because it is still on disk. */
+async function refuseSpawn(ptyId: string, agentId: string, provider: string, refusal: RefusedRosterId): Promise<{ ok: false; error: string }> {
   hive.appendLog({ kind: 'spawn-refused', agentId: shortTarget(agentId), reason: refusal.message });
   analytics.track('agent_spawn_failed', { provider, reason: 'spawn_error' });
   const wtPath = worktreePaths.get(ptyId);
   if (wtPath) {
-    void removeWorktree(worktreeOrigins.get(ptyId) ?? wtPath, wtPath)
-      .catch((e) => console.error('[worktree] removeWorktree threw:', e));
-    worktreePaths.delete(ptyId);
-    worktreeOrigins.delete(ptyId);
+    const removed = await removeWorktree(worktreeOrigins.get(ptyId) ?? wtPath, wtPath)
+      .catch((e: unknown) => ({ ok: false, error: String(e) }));
+    if (removed.ok) {
+      worktreePaths.delete(ptyId);
+      worktreeOrigins.delete(ptyId);
+    } else {
+      console.error(`[worktree] could not remove ${wtPath} after a refused spawn:`, removed.error);
+    }
   }
   return { ok: false, error: refusal.message };
 }

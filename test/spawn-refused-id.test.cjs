@@ -52,20 +52,23 @@ async function setup(t, overrides = {}) {
   const removed = [];
   const worktreePaths = new Map();
   const worktreeOrigins = new Map();
+  const errors = [];
+  let removal = async () => ({ ok: true });
   const context = {
-    console: { error() {}, warn() {}, log() {} },
+    console: { error: (...a) => errors.push(a.join(' ')), warn() {}, log() {} },
     hive: { enabled: () => true, ensureAgent: (...a) => real.ensureAgent(...a), appendLog: (row) => real.appendLog(row), ...overrides },
     memory: { active: () => false, env: () => ({}) },
     knowledge: { active: () => false, env: () => ({}) },
     readConfig: () => ({}), skillsResourceDir: () => '', breakerToast() {},
     analytics: { track: (name, props) => events.push([name, { ...props }]) },
     worktreePaths, worktreeOrigins,
-    removeWorktree: async (origin, wt) => { removed.push([origin, wt]); return { ok: true }; },
+    removeWorktree: (origin, wt) => { removed.push([origin, wt]); return removal(); },
     RefusedRosterId, shortTarget: loadTs('src/main/messageTarget.ts').shortTarget
   };
   const run = vm.runInNewContext(liveProvisioning(), context);
   const spawn = (id) => run({ id: `pty-${id}`, cwd: home, hive: { id, name: 'x' } }, 'claude');
-  return { real, home, events, removed, worktreePaths, worktreeOrigins, spawn };
+  const removalDoes = (fn) => { removal = fn; };
+  return { real, home, events, removed, errors, worktreePaths, worktreeOrigins, spawn, removalDoes };
 }
 
 const rows = (hive) => hive.logTail(500).filter((e) => e.kind === 'spawn-refused');
@@ -89,14 +92,46 @@ for (const [label, id, why] of [
   });
 }
 
-test('a refused id leaves no worktree behind, since no process will ever tear it down', async (t) => {
+test('a refused id has its worktree removed, since no process will ever tear it down', async (t) => {
   const f = await setup(t);
   f.worktreePaths.set('pty-heartbeat', '/wt/heartbeat');
   f.worktreeOrigins.set('pty-heartbeat', '/repo');
-  await f.spawn('heartbeat');
+  assert.equal((await f.spawn('heartbeat')).ok, false);
   assert.deepEqual(f.removed, [['/repo', '/wt/heartbeat']]);
   assert.equal(f.worktreePaths.has('pty-heartbeat'), false);
   assert.equal(f.worktreeOrigins.has('pty-heartbeat'), false);
+  assert.deepEqual(f.errors, []);
+});
+
+for (const [label, removal, shown] of [
+  ['reports failure', async () => ({ ok: false, error: 'still registered' }), /still registered/],
+  ['throws', async () => { throw new Error('git is gone'); }, /git is gone/]
+]) {
+  test(`when removing the worktree ${label}, it is logged, stays tracked, and the spawn still fails`, async (t) => {
+    const f = await setup(t);
+    f.removalDoes(removal);
+    f.worktreePaths.set('pty-heartbeat', '/wt/heartbeat');
+    f.worktreeOrigins.set('pty-heartbeat', '/repo');
+    const result = await f.spawn('heartbeat');
+    assert.equal(result.ok, false);
+    assert.match(result.error, /reserved/, 'the caller still hears why the spawn was refused');
+    assert.equal(f.errors.length, 1);
+    assert.match(f.errors[0], shown);
+    assert.match(f.errors[0], /\/wt\/heartbeat/, 'and which worktree is left over');
+    assert.equal(f.worktreePaths.get('pty-heartbeat'), '/wt/heartbeat', 'a worktree still on disk stays tracked');
+    assert.equal(f.worktreeOrigins.get('pty-heartbeat'), '/repo');
+  });
+}
+
+test('a legacy roster entry under an app name fails its spawn when restored', async (t) => {
+  const f = await setup(t);
+  const file = path.join(f.real.root(), 'registry.json');
+  const reg = JSON.parse(fs.readFileSync(file, 'utf8'));
+  reg.agents.heartbeat = { id: 'heartbeat', name: 'x', provider: 'claude', cwd: '.' };
+  fs.writeFileSync(file, JSON.stringify(reg));
+  const result = await f.spawn('heartbeat');
+  assert.notEqual(result, 'started a process');
+  assert.match(result.error, /reserved/);
 });
 
 test('the log row stays bounded whatever the id or the agent it collides with', async (t) => {
