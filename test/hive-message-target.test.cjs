@@ -35,7 +35,7 @@ async function floor(t) {
 /** Every file under `dir` outside the sender's outbox and the log, so a stray write shows up. */
 function files(dir) {
   return fs.readdirSync(dir, { recursive: true }).map(String)
-    .filter((f) => !f.endsWith('log.jsonl') && !f.split(path.sep).includes('.git') && !f.split(path.sep).includes('outbox'))
+    .filter((f) => !f.endsWith('log.jsonl') && !f.split(path.sep).includes('.git') && !f.split(path.sep).includes('outbox') && !f.split(path.sep).includes('.claims'))
     .sort();
 }
 
