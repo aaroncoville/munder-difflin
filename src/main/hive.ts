@@ -29,6 +29,7 @@ import { spawnSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
 import type { AgentUsageSample } from './usage';
 import { archiveOutboxFile, moveWithoutReplacing, quarantineOutboxFile, reportOutboxFailure, type OutboxStage } from './outboxFailure';
+import { isKnownTarget, isRosterId, shortTarget } from './messageTarget';
 import { COMMAND_GROUPS } from '../shared/claudeCommands';
 import { ensureCodexShortHome } from '../shared/codexRemote';
 import {
@@ -1700,6 +1701,7 @@ export class HiveManager {
    *  Returns false when the recipient has no inbox, so the caller can bounce and
    *  log the drop rather than let the message vanish. */
   private deliver(msg: HiveMessage, toId: string): boolean {
+    if (!isRosterId(this.registry().agents, toId)) return false; // never build a path from anything else
     const inbox = join(this.agentDir(toId), 'inbox');
     if (!existsSync(inbox)) return false; // unknown recipient — the caller reports it
     const id = publishMessage(inbox, msg, () => `${stamp()}-${shortRand()}`);
@@ -1729,7 +1731,7 @@ export class HiveManager {
   /** Inject a message directly (used by the orchestrator / UI / tests). */
   send(partial: Partial<HiveMessage>, from = 'system'): HiveMessage {
     const msg = this.normalize(partial, from);
-    this.routeMessage(msg);
+    if (!this.routeMessage(msg) && !isKnownTarget(this.registry().agents, msg.to)) this.reportRefusedSend(msg);
     this.commit(`hive: msg ${msg.from}→${msg.to} (${msg.act})`);
     return msg;
   }
@@ -1739,6 +1741,10 @@ export class HiveManager {
   private routeMessage(msg: HiveMessage): boolean {
     const reg = this.registry();
     const godId = reg.godId ?? 'god';
+    if (!isKnownTarget(reg.agents, msg.to)) {
+      this.appendLog({ kind: 'drop', reason: 'unknown-recipient', from: msg.from, to: shortTarget(msg.to), id: msg.id });
+      return false;
+    }
     // The hive has no separate human-approval queue — approvals are native to
     // each agent's Claude Code session (and approvable remotely). A message aimed
     // at "human" is handled by the god/orchestrator, the human's proxy here.
@@ -1941,6 +1947,21 @@ export class HiveManager {
     }, 'router'), id);
   }
 
+  /** A send() has no file to set aside, so the content goes with the notice. Mail from the app's own senders, which
+   *  have no inbox, goes to god, so a mistyped target still surfaces to someone. */
+  private reportRefusedSend(msg: HiveMessage): void {
+    const reg = this.registry();
+    const to = isRosterId(reg.agents, msg.from) ? msg.from : (reg.godId ?? 'god');
+    this.routeMessage(this.normalize({
+      to,
+      act: 'inform',
+      requires_reply: false,
+      hops: msg.hops,
+      subject: `[not delivered] ${msg.subject}`,
+      body: `A message from ${msg.from} was not delivered: its recipient ${shortTarget(msg.to)} is not an agent on the roster or a known name.\n\n${msg.body}`
+    }, 'system'));
+  }
+
   /** See reportOutboxFailure. The notice carries `hops`, so the relay limit still bounds a sender that bounces. */
   private outboxFailed(stage: OutboxStage, outbox: string, f: string, id: string, error: unknown, hops = 0): void {
     reportOutboxFailure(stage, f, id, error, {
@@ -1997,7 +2018,10 @@ export class HiveManager {
           msg.from = id; // sender is authoritative — the owning directory
           hops = msg.hops;
           stage = 'route';
-          if (!this.routeMessage(msg)) { this.outboxFailed('not-delivered', outbox, f, id, undefined, hops); continue; }
+          if (!this.routeMessage(msg)) {
+            this.outboxFailed(isKnownTarget(this.registry().agents, msg.to) ? 'not-delivered' : 'recipient', outbox, f, id, undefined, hops);
+            continue;
+          }
           stage = 'archive';
           archiveOutboxFile(outbox, f); // archive, don't reprocess
           routed++;
