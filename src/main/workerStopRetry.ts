@@ -6,7 +6,9 @@
 export const STOP_RETRY_FIRST_MS = 3_000;
 export const STOP_RETRY_MAX_MS = 5 * 60_000;
 /** Also how long a kill must keep failing before the first notice, so a failure
- *  that clears on a retry does not raise an alarm. */
+ *  that clears on a retry does not raise an alarm. The period restarts only when a
+ *  notice is delivered: the registry being unreadable, which can be why the worker
+ *  is being stopped at all, must not use one up. */
 export const STUCK_NOTICE_EVERY_MS = 15 * 60_000;
 
 export interface StopRetry {
@@ -23,9 +25,13 @@ export function stopFailedAgain(previous: StopRetry | undefined, now: number): {
   const notify = now - lastNoticeAt >= STUCK_NOTICE_EVERY_MS;
   const delay = Math.min(STOP_RETRY_FIRST_MS * 2 ** (failures - 1), STOP_RETRY_MAX_MS);
   return {
-    retry: { failures, firstFailedAt, nextAttemptAt: now + delay, lastNoticeAt: notify ? now : lastNoticeAt },
+    retry: { failures, firstFailedAt, nextAttemptAt: now + delay, lastNoticeAt },
     notify
   };
+}
+
+export function noticeDelivered(retry: StopRetry, now: number): StopRetry {
+  return { ...retry, lastNoticeAt: now };
 }
 
 export function stopRetryDue(retry: StopRetry | undefined, now: number): boolean {

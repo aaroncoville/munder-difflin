@@ -9,7 +9,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const loadTs = require('./load-ts.cjs');
 
-const { STOP_RETRY_FIRST_MS, STOP_RETRY_MAX_MS, STUCK_NOTICE_EVERY_MS, stopFailedAgain, stopRetryDue } = loadTs('src/main/workerStopRetry.ts');
+const { STOP_RETRY_FIRST_MS, STOP_RETRY_MAX_MS, STUCK_NOTICE_EVERY_MS, stopFailedAgain, stopRetryDue, noticeDelivered } = loadTs('src/main/workerStopRetry.ts');
 
 test('the delay doubles from the first and stays at the cap', () => {
   let retry;
@@ -41,7 +41,7 @@ test('an attempt is due at its time, and a worker with no failure yet is due', (
   assert.equal(stopRetryDue(undefined, 0), true);
 });
 
-test('the notice period runs from the first failure and restarts at each notice', () => {
+test('the notice period runs from the first failure and restarts at each delivered notice', () => {
   const start = 1_000_000;
   let { retry, notify } = stopFailedAgain(undefined, start);
   assert.equal(notify, false, 'not on the first failure');
@@ -50,8 +50,24 @@ test('the notice period runs from the first failure and restarts at each notice'
   ({ retry, notify } = stopFailedAgain(retry, start + STUCK_NOTICE_EVERY_MS));
   assert.equal(notify, true);
   assert.equal(retry.firstFailedAt, start, 'still dated from the first failure');
+  retry = noticeDelivered(retry, start + STUCK_NOTICE_EVERY_MS);
   ({ retry, notify } = stopFailedAgain(retry, start + STUCK_NOTICE_EVERY_MS + 1));
   assert.equal(notify, false);
   ({ retry, notify } = stopFailedAgain(retry, start + STUCK_NOTICE_EVERY_MS * 2));
   assert.equal(notify, true);
+});
+
+test('a notice stays due on every attempt until one is delivered', () => {
+  const start = 1_000_000;
+  let { retry } = stopFailedAgain(undefined, start);
+  let notify;
+  for (const later of [1, 2, 3]) {
+    ({ retry, notify } = stopFailedAgain(retry, start + STUCK_NOTICE_EVERY_MS * later));
+    assert.equal(notify, true);
+  }
+});
+
+test('recording a delivery changes nothing but the notice time', () => {
+  const { retry } = stopFailedAgain(undefined, 1000);
+  assert.deepEqual(noticeDelivered(retry, 5000), { ...retry, lastNoticeAt: 5000 });
 });

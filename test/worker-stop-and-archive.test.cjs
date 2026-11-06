@@ -22,7 +22,7 @@ const { workerExitEvent } = loadTs('src/main/workerExitLog.ts');
 const stopRetry = loadTs('src/main/workerStopRetry.ts');
 const { PtyManager } = loadTs('src/main/pty.ts');
 
-const FUNCTIONS = ['processSpawnRequest', 'archiveRequest', 'spawnRequestsDir', 'teardownPty', 'stopWorker', 'workerDoneAt', 'ephemeralWorkerTick'];
+const FUNCTIONS = ['informGod', 'processSpawnRequest', 'archiveRequest', 'spawnRequestsDir', 'teardownPty', 'stopWorker', 'workerDoneAt', 'ephemeralWorkerTick'];
 
 function live() {
   const source = fs.readFileSync(path.resolve(__dirname, '..', 'src/main/index.ts'), 'utf8');
@@ -102,7 +102,12 @@ async function setup(t, { kill } = {}) {
     },
     workerDoneAtStub: null, workerTokensUsed: () => 0, shouldReapIdle: () => false, workerHasLiveJob: () => false,
     afterWorkerDone: () => null, describeUnpushed: () => '', unpushedWorkerBranches: async () => [], spawnRequestsDirStub: null,
-    informGod: (subject, body) => { try { hive.send({ to: 'god', act: 'inform', subject, body }, 'ephemeral-worker'); calls.informed.push(subject); } catch { /* as informGod does */ } }
+  };
+  const send = hive.send.bind(hive);
+  hive.send = (message, from) => {
+    const sent = send(message, from);
+    if (from === 'ephemeral-worker') calls.informed.push(message.subject);
+    return sent;
   };
   const fns = vm.runInNewContext(live(), context);
   const repair = () => fs.writeFileSync(registry, good);
@@ -424,6 +429,28 @@ test('god hears once per notice period while a worker stays stuck, and not after
   await tickAfter(stopRetry.STOP_RETRY_MAX_MS);
   await tickAfter(stopRetry.STUCK_NOTICE_EVERY_MS);
   assert.equal(stuckNotices(f).length, 2, 'nothing once it has stopped');
+});
+
+test('a notice that could not be sent is sent on the next attempt after the registry is repaired', async (t) => {
+  const f = await setup(t, { kill: STUCK });
+  await f.run(); // leaves the registry unreadable
+  const tickAfter = async (ms) => { f.advance(ms); await f.fns.ephemeralWorkerTick(); };
+  const landed = () => f.hive.inbox('god-1').filter((m) => m.subject.includes('could not be stopped')).length;
+
+  await tickAfter(stopRetry.STUCK_NOTICE_EVERY_MS);
+  await tickAfter(stopRetry.STOP_RETRY_MAX_MS);
+  assert.equal(stuckNotices(f).length, 0, 'the notice cannot land while the registry is unreadable');
+
+  f.repair();
+  assert.equal(landed(), 0);
+  await tickAfter(stopRetry.STOP_RETRY_MAX_MS);
+  assert.equal(landed(), 1, 'the failed send must not use up the notice period');
+
+  await tickAfter(stopRetry.STOP_RETRY_MAX_MS);
+  assert.equal(landed(), 1, 'once delivered, the next is a full period away');
+
+  await tickAfter(stopRetry.STUCK_NOTICE_EVERY_MS);
+  assert.equal(landed(), 2);
 });
 
 test('retrying a failed kill schedules no sweep timer, and a kill that works schedules one', (t) => {

@@ -75,7 +75,7 @@ import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WakeSkipLog, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
 import { shouldReapIdle, workerHasLiveJob } from './workerIdleJobs';
 import { afterWorkerDone } from './workerDoneGrace';
-import { stopFailedAgain, stopRetryDue, stuckWorkerNotice, type StopRetry } from './workerStopRetry';
+import { noticeDelivered, stopFailedAgain, stopRetryDue, stuckWorkerNotice, type StopRetry } from './workerStopRetry';
 import { describeUnpushed, unpushedWorkerBranches } from './workerUnpushed';
 import {
   CODEX_ACTIVITY_TTL_MS,
@@ -560,7 +560,7 @@ function teardownPty(id: string): void {
  *  controller uses this to surface every terminal failure AND to carry the Slack
  *  {channel,thread_ts} so god can post a 'couldn't complete' reply — closing the
  *  Slack loop (the success path is the worker replying in-thread itself). */
-function informGod(subject: string, body: string, slack?: { channel: string; thread_ts: string }): void {
+function informGod(subject: string, body: string, slack?: { channel: string; thread_ts: string }): boolean {
   try {
     const slackLine = slack
       // The bundled-node launcher, spelled as an ABSOLUTE PATH — NOT bare `node`
@@ -570,8 +570,10 @@ function informGod(subject: string, body: string, slack?: { channel: string; thr
       ? `\n\n[SLACK] Close the loop — post a reply to channel ${slack.channel} thread ${slack.thread_ts} via:\n  "${hive.nodeCommand()}" "${slackReplyScriptPath()}" --channel ${slack.channel} --thread ${slack.thread_ts} --text "<your message>"`
       : '';
     hive.send({ to: 'god', act: 'inform', subject, body: body + slackLine }, 'ephemeral-worker');
+    return true;
   } catch (e) {
     console.error('[worker] informGod failed:', e);
+    return false;
   }
 }
 
@@ -4926,9 +4928,13 @@ function stopWorker(workerId: string): void {
   } else if (rec) {
     if (!rec.stopFailed) hive.appendLog({ kind: 'worker-kill-failed', workerId, pid: session?.pid, code: 'kill-failed' });
     rec.stopFailed = true;
-    const { retry, notify } = stopFailedAgain(rec.stopRetry, Date.now());
+    const now = Date.now();
+    const { retry, notify } = stopFailedAgain(rec.stopRetry, now);
     rec.stopRetry = retry;
-    if (notify) { const n = stuckWorkerNotice(workerId, session?.pid, retry, Date.now()); informGod(n.subject, n.body); }
+    if (notify) {
+      const n = stuckWorkerNotice(workerId, session?.pid, retry, now);
+      if (informGod(n.subject, n.body)) rec.stopRetry = noticeDelivered(retry, now);
+    }
   }
 }
 
