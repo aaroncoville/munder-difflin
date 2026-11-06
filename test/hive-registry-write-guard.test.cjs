@@ -171,6 +171,110 @@ test('a hive with no home still takes a send without throwing', () => {
   assert.doesNotThrow(() => hive.send(message('worker-2'), 'worker-1'));
 });
 
+// ---- one read per operation ----
+// A guard that reads and a consumer that reads again can disagree. These change the file in the gap.
+
+function changeFileAfterNextRead(f, content) {
+  const read = f.hive.readableRegistry.bind(f.hive);
+  f.hive.readableRegistry = () => {
+    const roster = read();
+    fs.writeFileSync(f.file, content);
+    f.hive.readableRegistry = read;
+    return roster;
+  };
+}
+
+test('a send whose registry goes bad right after it is read is delivered from that read, not lost', async (t) => {
+  const f = await setup(t);
+  changeFileAfterNextRead(f, '{"agents":');
+  const sent = f.hive.send(message('worker-2'), 'worker-1');
+  f.repair();
+  assert.deepEqual(f.hive.inbox('worker-2').map((m) => [m.id, m.body]), [[sent.id, 'the unique body']]);
+  assert.deepEqual(f.hive.inbox('worker-1'), [], 'no refusal: its target was on the roster it read');
+  assert.deepEqual(rows(f.hive, 'drop'), []);
+});
+
+test('a send to an unknown target in that gap still reaches its sender, from the same read', async (t) => {
+  const f = await setup(t);
+  changeFileAfterNextRead(f, '{"agents":');
+  f.hive.send(message('nobody'), 'worker-1');
+  f.repair();
+  assert.match(f.hive.inbox('worker-1')[0].body, /the unique body/);
+});
+
+test('the read does not outlive the send, even one that throws', async (t) => {
+  const f = await setup(t);
+  const route = f.hive.routeMessage;
+  f.hive.routeMessage = () => { throw new Error('disk full'); };
+  assert.throws(() => f.hive.send(message('worker-2'), 'worker-1'), /disk full/);
+  f.hive.routeMessage = route;
+  await f.hive.ensureAgent({ id: 'worker-3', name: 'Three', provider: 'claude', cwd: f.home });
+  f.hive.send(message('worker-3'), 'worker-1');
+  assert.equal(f.hive.inbox('worker-3').length, 1, 'a later send sees the current roster');
+});
+
+test('a send made inside a routing pass uses the pass\'s read, and does not fail on the file', async (t) => {
+  const f = await setup(t);
+  fs.writeFileSync(path.join(f.agents, 'worker-1', 'outbox', 'x.json'), JSON.stringify(message('worker-2', 'routed')));
+  let once = false;
+  f.hive.setRoutedObserver(() => {
+    if (once) return;
+    once = true;
+    fs.writeFileSync(f.file, '{"agents":');
+    f.hive.send(message('worker-1', 'from the observer'), 'god-1');
+  });
+  assert.equal(f.hive.routeOnce(), 1);
+  f.repair();
+  assert.deepEqual(f.hive.inbox('worker-1').map((m) => m.body), ['from the observer']);
+  assert.deepEqual(rows(f.hive, 'send-refused'), []);
+});
+
+test('a nested send inside a send keeps the outer read, and the outer read ends with the outer send', async (t) => {
+  const f = await setup(t);
+  let once = false;
+  f.hive.setRoutedObserver(() => {
+    if (once) return;
+    once = true;
+    fs.writeFileSync(f.file, '{"agents":');
+    f.hive.send(message('worker-1', 'nested'), 'god-1');
+  });
+  f.hive.send(message('worker-2', 'outer'), 'worker-1');
+  f.hive.setRoutedObserver(null);
+  assert.throws(() => f.hive.send(message('worker-2', 'after'), 'worker-1'), RegistryUnreadable, 'the file is read again once the outer send is over');
+  f.repair();
+  assert.deepEqual(f.hive.inbox('worker-1').map((m) => m.body), ['nested']);
+});
+
+for (const [label, content] of [
+  ['corrupted', '{"agents":'],
+  ['replaced by another valid roster', '{"godId":"other","agents":{"other":{"id":"other"}}}'],
+  ['emptied to a valid empty roster', '{"godId":null,"agents":{}}']
+]) {
+  test(`ensureAgent writes nothing to a registry ${label} since it read it`, async (t) => {
+    const f = await setup(t);
+    const read = f.hive.readableRegistry.bind(f.hive);
+    f.hive.readableRegistry = () => {
+      const roster = read();
+      fs.writeFileSync(f.file, content);
+      f.hive.readableRegistry = read;
+      return roster;
+    };
+
+    await assert.rejects(f.hive.ensureAgent({ id: 'worker-3', name: 'Three', provider: 'claude', cwd: f.home }), RegistryUnreadable);
+
+    assert.equal(fs.readFileSync(f.file, 'utf8'), content, 'someone else\'s change was overwritten');
+    assert.equal(rows(f.hive, 'registry-write-refused').length, 1);
+  });
+}
+
+test('ensureAgent reads the registry once: its check and its write use the same roster', async (t) => {
+  const f = await setup(t);
+  await f.hive.ensureAgent({ id: 'worker-3', name: 'Three', provider: 'claude', cwd: f.home });
+  const onDisk = JSON.parse(fs.readFileSync(f.file, 'utf8'));
+  assert.deepEqual(Object.keys(onDisk.agents).sort(), ['god-1', 'worker-1', 'worker-2', 'worker-3']);
+  assert.equal(onDisk.godId, 'god-1');
+});
+
 // ---- the callers ----
 
 function ast(file) {

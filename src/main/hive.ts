@@ -777,17 +777,18 @@ export class HiveManager {
       extraWritableDirs?: string[];
     } = {}
   ): Promise<SpawnInjection> {
-    // registry() reads a failure as an empty roster, and this would then replace the file with this one agent. A file
-    // that does not exist yet is a new hive, which has nothing to lose.
-    if (this.root() && existsSync(join(this.root()!, 'registry.json')) && !this.readableRegistry()) {
-      this.appendLog({ kind: 'registry-write-refused', agentId: shortTarget(meta.id) });
-      throw new RegistryUnreadable('The agent registry could not be read, so no agent can be added until it is repaired.');
-    }
-    const refusal = newRosterIdRefusal(this.registry().agents, meta.id, meta.isGod === true);
+    // One read for the whole operation. registry() reads a failure as an empty roster, and this would then replace the
+    // file with this one agent. A file that does not exist yet is a new hive, which has nothing to lose.
+    let roster = this.root() ? this.readableRegistry() : null;
+    if (this.root() && !roster && existsSync(join(this.root()!, 'registry.json'))) this.refuseRegistryWrite(meta.id);
+    const refusal = newRosterIdRefusal(roster?.agents ?? {}, meta.id, meta.isGod === true);
     if (refusal) throw new RefusedRosterId(`Agent id ${shortTarget(meta.id)}: ${refusal}`);
     const root = this.root();
     if (!root) return { args: [], env: {} };
     this.ensureHive();
+    roster = roster ?? this.readableRegistry();
+    if (!roster) this.refuseRegistryWrite(meta.id);
+    const asRead = JSON.stringify(roster);
 
     const dir = this.agentDir(meta.id);
     mkdirSync(join(dir, 'inbox', '.done'), { recursive: true });
@@ -796,7 +797,7 @@ export class HiveManager {
     // Resolve role BEFORE writing identity.md. A restart passes the floor
     // roster's `description`, which can be a status caption ("on standby").
     // identity.md and registry.role are the durable job from the hire.
-    const reg = this.registry();
+    const reg = roster;
     const prev = reg.agents[meta.id];
     if (meta.cwd) meta = { ...meta, cwd: expandTilde(meta.cwd) };
     const role = preferredAgentRole(meta.role, prev?.role, !!meta.isGod);
@@ -841,6 +842,8 @@ export class HiveManager {
       lastSeen: Date.now()
     };
     if (meta.isGod) reg.godId = meta.id;
+    // The write replaces the whole file, so it must not replace a change made since the read above.
+    if (JSON.stringify(this.readableRegistry()) !== asRead) this.refuseRegistryWrite(meta.id);
     this.atomicWriteJson(join(root, 'registry.json'), reg);
 
     this.appendLog({ kind: 'spawn', agentId: meta.id, name: meta.name, isGod: !!meta.isGod });
@@ -1746,14 +1749,22 @@ export class HiveManager {
   /** Inject a message directly (used by the orchestrator / UI / tests). */
   send(partial: Partial<HiveMessage>, from = 'system'): HiveMessage {
     const msg = this.normalize(partial, from);
-    // With no roster to judge by, routing would refuse this and could not deliver the notice either, losing the body.
-    // The caller holds the only copy, so it is the one to hear.
-    if (this.root() && !this.readableRegistry()) {
+    // One read for the whole send, or the read of the pass or send it is inside. With no roster to judge by, routing
+    // would refuse this and could not deliver the notice either, losing the body. The caller holds the only copy, so it
+    // is the one to hear.
+    const outer = this.passRegistry;
+    const roster = outer ?? (this.root() ? this.readableRegistry() : null);
+    if (this.root() && !roster) {
       this.appendLog({ kind: 'send-refused', id: msg.id, from: shortTarget(msg.from), to: shortTarget(msg.to) });
       throw new RegistryUnreadable('The agent registry could not be read, so this message was not sent.');
     }
-    if (!this.routeMessage(msg) && !isKnownTarget(this.routingRegistry().agents, msg.to, this.agentsDir())) this.reportRefusedSend(msg);
-    this.commit(`hive: msg ${msg.from}→${msg.to} (${msg.act})`);
+    this.passRegistry = roster;
+    try {
+      if (!this.routeMessage(msg) && !isKnownTarget(this.routingRegistry().agents, msg.to, this.agentsDir())) this.reportRefusedSend(msg);
+      this.commit(`hive: msg ${msg.from}→${msg.to} (${msg.act})`);
+    } finally {
+      this.passRegistry = outer;
+    }
     return msg;
   }
 
@@ -2005,10 +2016,15 @@ export class HiveManager {
     });
   }
 
+  private refuseRegistryWrite(agentId: unknown): never {
+    this.appendLog({ kind: 'registry-write-refused', agentId: shortTarget(agentId) });
+    throw new RegistryUnreadable('The agent registry could not be read, or changed while this agent was being added, so it was not added.');
+  }
+
   private registryUnreadable = false;
   private passRegistry: Registry | null = null;
 
-  /** The registry to decide by. Inside a routing pass that is the pass's one read, including for the routed observer
+  /** The registry to decide by. Inside a routing pass or a send that is its one read, including for the routed observer
    *  and a send it makes: registry() would treat a failed later read as an empty roster and refuse valid mail. For
    *  reading only. Anything that writes the registry goes on using registry(), so it never writes a stale copy. */
   routingRegistry(): Registry {
