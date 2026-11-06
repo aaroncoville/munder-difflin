@@ -567,3 +567,12 @@ test('turnOver frees all of the agent\'s foreground calls, and PTY exit frees ev
   x.l.agentGone('a');
   assert.deepEqual(x.l.snapshot(), []);
 });
+
+test('a backgrounded job that ended before any scan saw it is freed, since its PostToolUse put it past any prompt', async () => {
+  const x = lock(1, { roots: () => [{ agentId: 'a', pid: 10 }], probe: async () => [] });
+  x.l.acquire('a', H, 'npm test', 'c1', true);
+  x.l.callDone('a', 'c1');
+  for (let i = 0; i < HEAVY_SCAN_MISSES; i++) await x.l.scan();
+  assert.equal(x.l.snapshot().length, 0);
+  assert.equal(x.logs.at(-1).reason, 'process-exit');
+});

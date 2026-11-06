@@ -371,11 +371,10 @@ export class HeavyJobLock {
     return [...this.calls.values()].filter((c) => c.agentId === agentId);
   }
 
-  /** PostToolUse of a heavy call. When several calls share an id, the one already seen running is
-   *  the one that finished, not one still at a permission prompt. */
+  /** PostToolUse of a heavy call. Calls that share an id share a command, and scans bind the oldest
+   *  first, so the oldest is the one that can be running. */
   callDone(agentId: string, callId: string): void {
-    const open = this.callsOf(agentId).filter((c) => c.callId === callId && !c.posted);
-    const call = open.find((c) => c.seen) ?? open[0];
+    const call = this.callsOf(agentId).find((c) => c.callId === callId && !c.posted);
     if (!call) return;
     if (call.background) call.posted = true;
     else this.release(call.key, 'posttool');
