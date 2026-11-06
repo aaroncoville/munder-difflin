@@ -35,20 +35,29 @@ function addWorktree(repo, wtRoot, name) {
   return wtPath;
 }
 
-test('links the base node_modules into an isolated worktree', async () => {
+test('gives a worktree a real node_modules whose entries link into the base', async () => {
   const { repo, wtRoot } = makeHarness();
   const baseNodeModules = path.join(repo, 'node_modules');
-  fs.mkdirSync(baseNodeModules);
-  fs.writeFileSync(path.join(baseNodeModules, 'sentinel.txt'), 'base\n');
+  fs.mkdirSync(path.join(baseNodeModules, 'pkg'), { recursive: true });
+  fs.mkdirSync(path.join(baseNodeModules, '@scope', 'pkg'), { recursive: true });
+  fs.mkdirSync(path.join(baseNodeModules, '.bin'));
+  fs.writeFileSync(path.join(baseNodeModules, 'pkg', 'sentinel.txt'), 'base\n');
+  fs.writeFileSync(path.join(baseNodeModules, '@scope', 'pkg', 'scoped.txt'), 'scoped\n');
+  fs.writeFileSync(path.join(baseNodeModules, '.package-lock.json'), '{}');
   const wtPath = addWorktree(repo, wtRoot, 'agent-a');
 
   const result = await linkWorktreeDeps(repo, wtPath);
 
   assert.deepEqual(result, { ok: true, skipped: false });
   const worktreeNodeModules = path.join(wtPath, 'node_modules');
-  assert.equal(fs.lstatSync(worktreeNodeModules).isSymbolicLink(), true);
-  assert.equal(fs.readlinkSync(worktreeNodeModules), baseNodeModules);
-  assert.equal(fs.readFileSync(path.join(worktreeNodeModules, 'sentinel.txt'), 'utf8'), 'base\n');
+  assert.equal(fs.lstatSync(worktreeNodeModules).isSymbolicLink(), false, 'a link to the base directory is what npm ci empties');
+  assert.equal(fs.lstatSync(worktreeNodeModules).isDirectory(), true);
+  for (const entry of ['pkg', '@scope', '.bin']) {
+    assert.equal(fs.lstatSync(path.join(worktreeNodeModules, entry)).isSymbolicLink(), true, entry);
+  }
+  assert.equal(fs.readFileSync(path.join(worktreeNodeModules, 'pkg', 'sentinel.txt'), 'utf8'), 'base\n');
+  assert.equal(fs.readFileSync(path.join(worktreeNodeModules, '@scope', 'pkg', 'scoped.txt'), 'utf8'), 'scoped\n');
+  assert.equal(fs.existsSync(path.join(worktreeNodeModules, '.package-lock.json')), false, 'a plain file is left out: a junction cannot point at one');
 });
 
 test('skips linking when the base checkout has no node_modules', async () => {
@@ -79,14 +88,13 @@ test('does not replace an existing worktree node_modules entry', async () => {
 test('does not follow the dependency symlink when removing a worktree', async () => {
   const { repo, wtRoot } = makeHarness();
   const baseNodeModules = path.join(repo, 'node_modules');
-  fs.mkdirSync(baseNodeModules);
-  const sentinel = path.join(baseNodeModules, 'must-survive.txt');
+  fs.mkdirSync(path.join(baseNodeModules, 'pkg'), { recursive: true });
+  const sentinel = path.join(baseNodeModules, 'pkg', 'must-survive.txt');
   fs.writeFileSync(sentinel, 'still here\n');
   const wtPath = addWorktree(repo, wtRoot, 'agent-d');
 
   assert.deepEqual(await linkWorktreeDeps(repo, wtPath), { ok: true, skipped: false });
-  const worktreeNodeModules = path.join(wtPath, 'node_modules');
-  assert.equal(fs.lstatSync(worktreeNodeModules).isSymbolicLink(), true, 'symlink must exist before removal');
+  assert.equal(fs.lstatSync(path.join(wtPath, 'node_modules', 'pkg')).isSymbolicLink(), true, 'a link must exist before removal');
   assert.deepEqual(await removeWorktree(repo, wtPath), { ok: true });
 
   assert.equal(fs.existsSync(wtPath), false);
@@ -121,7 +129,8 @@ test('reports a failed link without throwing', async () => {
 test('removes only the linked dependencies before checking worktree status', async () => {
   const { repo, wtRoot } = makeHarness();
   const baseNodeModules = path.join(repo, 'node_modules');
-  fs.mkdirSync(baseNodeModules);
+  fs.mkdirSync(path.join(baseNodeModules, 'pkg'), { recursive: true });
+  fs.writeFileSync(path.join(baseNodeModules, 'pkg', 'index.js'), 'base\n');
   const wtPath = addWorktree(repo, wtRoot, 'agent-f');
   const worktreeNodeModules = path.join(wtPath, 'node_modules');
 
@@ -131,7 +140,62 @@ test('removes only the linked dependencies before checking worktree status', asy
   assert.deepEqual(await unlinkWorktreeDeps(repo, wtPath), { ok: true, removed: true });
   assert.throws(() => fs.lstatSync(worktreeNodeModules), /ENOENT/);
   assert.equal(git(wtPath, 'status', '--porcelain'), '', 'removing the link restores a clean worktree');
-  assert.equal(fs.existsSync(baseNodeModules), true, 'the base dependencies must remain');
+  assert.equal(fs.readFileSync(path.join(baseNodeModules, 'pkg', 'index.js'), 'utf8'), 'base\n', 'the base dependencies must remain');
+});
+
+test('removing the links leaves whatever else the worktree put there, and a link it made elsewhere', async () => {
+  const { repo, wtRoot } = makeHarness();
+  const baseNodeModules = path.join(repo, 'node_modules');
+  fs.mkdirSync(path.join(baseNodeModules, 'pkg'), { recursive: true });
+  fs.mkdirSync(path.join(baseNodeModules, 'other'), { recursive: true });
+  const wtPath = addWorktree(repo, wtRoot, 'agent-mixed');
+  await linkWorktreeDeps(repo, wtPath);
+  const worktreeNodeModules = path.join(wtPath, 'node_modules');
+  fs.mkdirSync(path.join(worktreeNodeModules, 'own'));
+  const elsewhere = path.join(repo, 'elsewhere');
+  fs.mkdirSync(elsewhere);
+  fs.symlinkSync(elsewhere, path.join(worktreeNodeModules, 'linked-elsewhere'));
+  fs.rmSync(path.join(worktreeNodeModules, 'other'));
+  fs.symlinkSync(path.join(baseNodeModules, 'pkg'), path.join(worktreeNodeModules, 'other'));
+
+  assert.deepEqual(await unlinkWorktreeDeps(repo, wtPath), { ok: true, removed: true });
+
+  assert.deepEqual(fs.readdirSync(worktreeNodeModules).sort(), ['linked-elsewhere', 'other', 'own'],
+    'only a link from a name to the same name in the base is ours');
+  assert.equal(fs.existsSync(path.join(baseNodeModules, 'pkg')), true);
+});
+
+test('removing the links works after the base entries they point at have gone', async () => {
+  const { repo, wtRoot } = makeHarness();
+  const baseNodeModules = path.join(repo, 'node_modules');
+  fs.mkdirSync(path.join(baseNodeModules, 'pkg'), { recursive: true });
+  const wtPath = addWorktree(repo, wtRoot, 'agent-gone');
+  await linkWorktreeDeps(repo, wtPath);
+  fs.rmSync(baseNodeModules, { recursive: true });
+
+  assert.deepEqual(await unlinkWorktreeDeps(repo, wtPath), { ok: true, removed: true });
+  assert.throws(() => fs.lstatSync(path.join(wtPath, 'node_modules')), /ENOENT/);
+});
+
+test('a worktree from before this change, with a link to the whole folder, still has it removed', async () => {
+  const { repo, wtRoot } = makeHarness();
+  const baseNodeModules = path.join(repo, 'node_modules');
+  fs.mkdirSync(path.join(baseNodeModules, 'pkg'), { recursive: true });
+  const wtPath = addWorktree(repo, wtRoot, 'agent-legacy');
+  fs.symlinkSync(baseNodeModules, path.join(wtPath, 'node_modules'));
+
+  assert.deepEqual(await unlinkWorktreeDeps(repo, wtPath), { ok: true, removed: true });
+  assert.throws(() => fs.lstatSync(path.join(wtPath, 'node_modules')), /ENOENT/);
+  assert.equal(fs.existsSync(path.join(baseNodeModules, 'pkg')), true);
+});
+
+test('does not remove an empty node_modules the worktree made itself', async () => {
+  const { repo, wtRoot } = makeHarness();
+  fs.mkdirSync(path.join(repo, 'node_modules'));
+  const wtPath = addWorktree(repo, wtRoot, 'agent-empty');
+  fs.mkdirSync(path.join(wtPath, 'node_modules'));
+  assert.deepEqual(await unlinkWorktreeDeps(repo, wtPath), { ok: true, removed: false });
+  assert.equal(fs.lstatSync(path.join(wtPath, 'node_modules')).isDirectory(), true);
 });
 
 test('does not remove a real worktree node_modules directory', async () => {
@@ -206,4 +270,63 @@ test('recovers from a stale registration left by rm -rf instead of git worktree 
   const result = await addWorktreeTS(repo, wtPath, 'main');
   assert.deepEqual(result, { ok: true }, 'addWorktree must succeed after pruning the stale entry');
   assert.equal(fs.existsSync(wtPath), true, 'worktree directory must exist after recreation');
+});
+
+// The property that matters, against real npm: `npm ci` empties node_modules by listing it and removing each entry.
+// Through a link to the base folder, that listing is the base's, so the base is what gets emptied.
+function npmFixture(t) {
+  const { repo, wtRoot } = makeHarness();
+  const npmEnv = { ...process.env, npm_config_cache: path.join(wtRoot, '.npm-cache'), npm_config_audit: 'false', npm_config_fund: 'false', npm_config_update_notifier: 'false' };
+  const npm = (cwd, ...args) => execFileSync('npm', [...args, '--offline', '--silent'], { cwd, env: npmEnv, encoding: 'utf8' });
+  const pkg = path.join(wtRoot, '.pkg');
+  fs.mkdirSync(pkg);
+  fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: 'leftish', version: '1.0.0', bin: { leftish: 'index.js' } }));
+  fs.writeFileSync(path.join(pkg, 'index.js'), '#!/usr/bin/env node\nmodule.exports = 1;\n');
+  npm(pkg, 'pack');
+  fs.copyFileSync(path.join(pkg, 'leftish-1.0.0.tgz'), path.join(repo, 'leftish-1.0.0.tgz'));
+  fs.writeFileSync(path.join(repo, 'package.json'), JSON.stringify({ name: 'base', version: '1.0.0', dependencies: { leftish: 'file:leftish-1.0.0.tgz' } }));
+  fs.writeFileSync(path.join(repo, '.gitignore'), 'node_modules\n');
+  npm(repo, 'install');
+  git(repo, 'add', '-A');
+  git(repo, 'commit', '-q', '-m', 'add a dependency');
+  const sentinel = path.join(repo, 'node_modules', 'leftish', 'SENTINEL');
+  fs.writeFileSync(sentinel, 'the live install\n');
+  t.after(() => fs.rmSync(path.dirname(repo), { recursive: true, force: true }));
+  const snapshot = () => fs.readdirSync(path.join(repo, 'node_modules'), { recursive: true }).map(String).sort();
+  return { repo, wtRoot, npm, sentinel, snapshot };
+}
+
+for (const command of [['ci'], ['install'], ['install', '--force']]) {
+  test(`npm ${command.join(' ')} in a worktree leaves the base install untouched`, async (t) => {
+    const { repo, wtRoot, npm, sentinel, snapshot } = npmFixture(t);
+    const before = snapshot();
+    const wtPath = addWorktree(repo, wtRoot, 'agent-npm');
+    assert.deepEqual(await linkWorktreeDeps(repo, wtPath), { ok: true, skipped: false });
+
+    npm(wtPath, ...command);
+
+    assert.equal(fs.readFileSync(sentinel, 'utf8'), 'the live install\n', 'the live install was changed through the worktree');
+    assert.deepEqual(snapshot(), before);
+    assert.equal(fs.lstatSync(path.join(wtPath, 'node_modules')).isDirectory(), true);
+  });
+}
+
+test('npm ci in a worktree leaves it with its own real install', async (t) => {
+  const { repo, wtRoot, npm } = npmFixture(t);
+  const wtPath = addWorktree(repo, wtRoot, 'agent-own');
+  await linkWorktreeDeps(repo, wtPath);
+  npm(wtPath, 'ci');
+  const installed = path.join(wtPath, 'node_modules', 'leftish');
+  assert.equal(fs.lstatSync(installed).isSymbolicLink(), false);
+  assert.equal(fs.existsSync(path.join(installed, 'SENTINEL')), false, 'not the base copy');
+  assert.deepEqual(await unlinkWorktreeDeps(repo, wtPath), { ok: true, removed: false }, 'the worktree\'s own install is not ours to remove');
+  assert.equal(fs.existsSync(installed), true);
+});
+
+test('code in a worktree resolves a linked dependency and its .bin entry', async (t) => {
+  const { repo, wtRoot } = npmFixture(t);
+  const wtPath = addWorktree(repo, wtRoot, 'agent-resolve');
+  await linkWorktreeDeps(repo, wtPath);
+  assert.equal(execFileSync(process.execPath, ['-e', "process.stdout.write(String(require('leftish')))"], { cwd: wtPath, encoding: 'utf8' }), '1');
+  assert.equal(fs.existsSync(path.join(wtPath, 'node_modules', '.bin', 'leftish')), true);
 });
