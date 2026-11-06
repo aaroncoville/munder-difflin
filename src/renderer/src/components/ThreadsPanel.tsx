@@ -54,6 +54,7 @@ export function ThreadsPanel({ agentId }: ThreadsPanelProps) {
   const [openThreads, setOpenThreads] = useState<Record<string, boolean>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [sendErrors, setSendErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     let alive = true;
@@ -73,11 +74,13 @@ export function ThreadsPanel({ agentId }: ThreadsPanelProps) {
   const sendReply = async (last: HiveMessage) => {
     const body = (drafts[last.conversation] ?? '').trim();
     if (!body) return;
-    await window.cth.hiveSend({
+    // The draft is the only copy, so it goes only once the reply has.
+    const sent = await window.cth.hiveSend({
       to: last.from, act: 'inform', conversation: last.conversation,
       in_reply_to: last.id, subject: 'Re: ' + last.subject, body
-    }, 'human');
-    setDrafts(d => ({ ...d, [last.conversation]: '' }));
+    }, 'human').catch((e: unknown) => ({ ok: false, error: e instanceof Error ? e.message : String(e) }));
+    setSendErrors(s => ({ ...s, [last.conversation]: sent.ok ? '' : t('threads.sendFailed', { error: sent.error ?? '?' }) }));
+    if (sent.ok) setDrafts(d => ({ ...d, [last.conversation]: '' }));
   };
 
   if (threads.length === 0) {
@@ -159,6 +162,9 @@ export function ThreadsPanel({ agentId }: ThreadsPanelProps) {
                       border: 'none', boxShadow: 'inset 0 0 0 2px var(--cth-ink-700)'
                     }}
                   />
+                  {sendErrors[thread.conversation] && (
+                    <div style={{ fontSize: 12, color: 'var(--cth-coral)' }}>{sendErrors[thread.conversation]}</div>
+                  )}
                   <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
                     <PixelButton size="sm" onClick={() => sendReply(last)} disabled={!(drafts[thread.conversation] ?? '').trim()}>
                       {t('threads.send')}

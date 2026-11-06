@@ -45,7 +45,7 @@ import { preferredAgentRole } from '../shared/agentRole';
 import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde } from './fs';
 import { refreshMineIgnoresOnce } from './hiveMineIgnore';
-import { agentFolderId, hasExactFolder, isAppSender, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, rosterIdFor, shortTarget } from './messageTarget';
+import { agentFolderId, hasExactFolder, isAppSender, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, RegistryUnreadable, rosterIdFor, shortTarget } from './messageTarget';
 import { nodeLauncherScript } from './nodeLauncher';
 import { codexTrustEntry } from '../shared/codexTrust';
 import { withCodexWritableRoots } from '../shared/codexWritableRoots';
@@ -220,6 +220,7 @@ export interface SpawnInjection {
 }
 
 const HOP_CAP = 12;
+const ARCHIVE_PENDING = '.archive-pending';
 /** How long an unparseable outbox file is given to be finished by its sender
  *  before the router drops it. */
 const MALFORMED_RETRY_MS = 2_000;
@@ -667,7 +668,7 @@ export class HiveManager {
     }
 
     const registry = join(root, 'registry.json');
-    if (!existsSync(registry)) {
+    if (!existsSync(registry) && !this.hiveIsEstablished()) {
       this.writeJson(registry, { godId: null, agents: {} } as Registry);
     }
     const userCodexHome = join(homedir(), '.codex');
@@ -777,11 +778,18 @@ export class HiveManager {
       extraWritableDirs?: string[];
     } = {}
   ): Promise<SpawnInjection> {
-    const refusal = newRosterIdRefusal(this.registry().agents, meta.id, meta.isGod === true);
+    // One read for the whole operation. registry() reads a failure as an empty roster, and this would then replace the
+    // file with this one agent. A missing file is only safe in a new hive, which has nothing to lose.
+    let roster = this.root() ? this.readableRegistry() : null;
+    if (this.root() && !roster && existsSync(join(this.root()!, 'registry.json'))) this.refuseRegistryWrite(meta.id);
+    const refusal = newRosterIdRefusal(roster?.agents ?? {}, meta.id, meta.isGod === true);
     if (refusal) throw new RefusedRosterId(`Agent id ${shortTarget(meta.id)}: ${refusal}`);
     const root = this.root();
     if (!root) return { args: [], env: {} };
     this.ensureHive();
+    roster = roster ?? this.readableRegistry();
+    if (!roster) this.refuseRegistryWrite(meta.id);
+    const asRead = JSON.stringify(roster);
 
     const dir = this.agentDir(meta.id);
     mkdirSync(join(dir, 'inbox', '.done'), { recursive: true });
@@ -790,7 +798,7 @@ export class HiveManager {
     // Resolve role BEFORE writing identity.md. A restart passes the floor
     // roster's `description`, which can be a status caption ("on standby").
     // identity.md and registry.role are the durable job from the hire.
-    const reg = this.registry();
+    const reg = roster;
     const prev = reg.agents[meta.id];
     if (meta.cwd) meta = { ...meta, cwd: expandTilde(meta.cwd) };
     const role = preferredAgentRole(meta.role, prev?.role, !!meta.isGod);
@@ -835,7 +843,10 @@ export class HiveManager {
       lastSeen: Date.now()
     };
     if (meta.isGod) reg.godId = meta.id;
+    // The write replaces the whole file, so it must not replace a change made since the read above.
+    if (JSON.stringify(this.readableRegistry()) !== asRead) this.refuseRegistryWrite(meta.id);
     this.atomicWriteJson(join(root, 'registry.json'), reg);
+    rmSync(join(dir, ARCHIVE_PENDING), { force: true }); // running again, so an archive still waiting no longer applies
 
     this.appendLog({ kind: 'spawn', agentId: meta.id, name: meta.name, isGod: !!meta.isGod });
     // Only logs on an invalid cwd (rare) — not a per-spawn line, so no log spam.
@@ -1095,11 +1106,24 @@ export class HiveManager {
     const root = this.root();
     if (!root) return;
     try {
-      const reg = this.registry();
-      const agent = reg.agents[id];
-      if (!agent || agent.archived === archived) return;
-      agent.archived = archived;
-      agent.lastSeen = Date.now();
+      // One read decides, and the file must still match it just before the write replaces it. If either fails this cannot
+      // be recorded yet, and a roster entry still reading as live would go on taking work. The marker names only the
+      // folder it is in, and an agent able to forge one could as easily edit the registry.
+      const reg = this.readableRegistry();
+      const asRead = JSON.stringify(reg);
+      const agent = reg?.agents[id];
+      if (reg && (!agent || agent.archived === archived)) return;
+      if (reg && agent) {
+        agent.archived = archived;
+        agent.lastSeen = Date.now();
+      }
+      if (!reg || JSON.stringify(this.readableRegistry()) !== asRead) {
+        if (archived && hasExactFolder(this.agentsDir(), id)) {
+          writeFileSync(join(this.agentDir(id), ARCHIVE_PENDING), '');
+          this.appendLog({ kind: 'archive-pending', agentId: shortTarget(id) });
+        }
+        return;
+      }
       this.atomicWriteJson(join(root, 'registry.json'), reg);
       this.appendLog({ kind: 'archive', agentId: id, archived });
       this.commit(`hive: ${archived ? 'archive' : 'unarchive'} ${id}`);
@@ -1740,8 +1764,22 @@ export class HiveManager {
   /** Inject a message directly (used by the orchestrator / UI / tests). */
   send(partial: Partial<HiveMessage>, from = 'system'): HiveMessage {
     const msg = this.normalize(partial, from);
-    if (!this.routeMessage(msg) && !isKnownTarget(this.routingRegistry().agents, msg.to, this.agentsDir())) this.reportRefusedSend(msg);
-    this.commit(`hive: msg ${msg.from}→${msg.to} (${msg.act})`);
+    // One read for the whole send, or the read of the pass or send it is inside. With no roster to judge by, routing
+    // would refuse this and could not deliver the notice either, losing the body. The caller holds the only copy, so it
+    // is the one to hear.
+    const outer = this.passRegistry;
+    const roster = outer ?? (this.root() ? this.readableRegistry() : null);
+    if (this.root() && !roster) {
+      this.appendLog({ kind: 'send-refused', id: msg.id, from: shortTarget(msg.from), to: shortTarget(msg.to) });
+      throw new RegistryUnreadable('The agent registry could not be read, so this message was not sent.');
+    }
+    this.passRegistry = roster;
+    try {
+      if (!this.routeMessage(msg) && !isKnownTarget(this.routingRegistry().agents, msg.to, this.agentsDir())) this.reportRefusedSend(msg);
+      this.commit(`hive: msg ${msg.from}→${msg.to} (${msg.act})`);
+    } finally {
+      this.passRegistry = outer;
+    }
     return msg;
   }
 
@@ -1764,7 +1802,7 @@ export class HiveManager {
       // NOT skipped — the per-target path below already serves them a terminal
       // work order, so excluding them here only made a broadcast invisible to an
       // agent that direct mail reaches fine. See selectBroadcastTargets.
-      ? selectBroadcastTargets(reg.agents, msg.from).filter((t) => !isAppSender(t))
+      ? selectBroadcastTargets(reg.agents, msg.from).filter((t) => !isAppSender(t) && !this.archivePending(t))
       // Never deliver to self — guards a god → "human" message looping back to god.
       : [resolveTo(msg.to)].filter((t) => t !== msg.from);
     // Targets that actually took delivery. The log below reports these instead of
@@ -1806,7 +1844,7 @@ export class HiveManager {
       // work order to, whatever the engine — the inbox is the only place left.
       // The notice itself is ROUTED, not dropped into an inbox, so a sender on
       // a hookless or proxy-tier engine gets it the way it gets any mail.
-      if (t !== godId && reg.agents[t]?.archived) {
+      if (t !== godId && (reg.agents[t]?.archived || this.archivePending(t))) {
         if (this.deliver(msg, t)) delivered.push(t);
         this.appendLog({ kind: 'archived-recipient', from: msg.from, to: t, id: msg.id, act: msg.act });
         const sender = reg.agents[msg.from];
@@ -1993,10 +2031,55 @@ export class HiveManager {
     });
   }
 
+  /** Whether a hive was ever here, so a missing registry means a lost roster and not a new hive: an agent has a folder,
+   *  or the log records a spawn. An empty agents folder or log proves nothing, because setting up a hive creates them
+   *  and other rows can be logged before the first agent. */
+  private hiveIsEstablished(): boolean {
+    const root = this.root();
+    if (!root) return false;
+    try {
+      if (readdirSync(join(root, 'agents')).some((name) => !name.startsWith('.'))) return true;
+    } catch { /* no agents folder yet */ }
+    try {
+      return readFileSync(join(root, 'log.jsonl'), 'utf8').includes('"kind":"spawn"');
+    } catch {
+      return false;
+    }
+  }
+
+  private archivePending(id: string): boolean {
+    return isRosterId(this.routingRegistry().agents, id) && existsSync(join(this.agentDir(id), ARCHIVE_PENDING));
+  }
+
+  /** Record what setArchived could not, now the registry can be read, and say so: the notice about why the worker ended
+   *  could not be delivered at the time. The marker goes only once the record has landed. */
+  private applyPendingArchives(roster: Registry): void {
+    for (const id of readdirSync(this.agentsDir())) {
+      const marker = join(this.agentsDir(), id, ARCHIVE_PENDING);
+      if (!existsSync(marker)) continue;
+      try {
+        if (isRosterId(roster.agents, id)) {
+          this.setArchived(id, true);
+          if (this.readableRegistry()?.agents[id]?.archived !== true) continue;
+          (roster.agents[id] as { archived?: boolean }).archived = true;
+          this.send({ to: 'god', act: 'inform', subject: `[worker archived after registry repair] ${id}`, body: `${id} ended while the registry could not be read, so it is only now recorded as archived. Check the log for why it ended.` }, 'system');
+        }
+        rmSync(marker, { force: true });
+      } catch (e) {
+        console.error('[hive] pending archive not applied:', e);
+      }
+    }
+  }
+
+  private refuseRegistryWrite(agentId: unknown): never {
+    this.appendLog({ kind: 'registry-write-refused', agentId: shortTarget(agentId) });
+    throw new RegistryUnreadable('The agent registry could not be read, or changed while this agent was being added, so it was not added.');
+  }
+
   private registryUnreadable = false;
   private passRegistry: Registry | null = null;
 
-  /** The registry to decide by. Inside a routing pass that is the pass's one read, including for the routed observer
+  /** The registry to decide by. Inside a routing pass or a send that is its one read, including for the routed observer
    *  and a send it makes: registry() would treat a failed later read as an empty roster and refuse valid mail. For
    *  reading only. Anything that writes the registry goes on using registry(), so it never writes a stale copy. */
   routingRegistry(): Registry {
@@ -2029,6 +2112,7 @@ export class HiveManager {
     this.registryUnreadable = false;
     this.passRegistry = roster;
     try {
+      this.applyPendingArchives(roster);
       return this.drainOutboxes(agentsDir, roster, now);
     } finally {
       this.passRegistry = null;

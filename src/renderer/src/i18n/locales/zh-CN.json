@@ -93,6 +93,7 @@
     "noteAria": "{{name}} 的笔记"
   },
   "askMe": {
+    "answerNotSent": "你对\"{{title}}\"的回答已保存在卡片上，但未能发送：{{error}}",
     "emptyTitle": "现在没有需要你的事。🌿",
     "emptySub": "当团队把任务卡在你的输入上——要回答的问题，或只有你能完成的待办——就会出现在这里（也会出现在楼层的「问我」看板上）。",
     "openDetail": "打开完整任务详情",
@@ -1133,6 +1134,7 @@
     "searchFailed": "无法搜索"
   },
   "threads": {
+    "sendFailed": "失败：{{error}}",
     "noSubject": "（无主题）",
     "empty": "还没有对话。该智能体收到的消息会以对话线程的形式显示在这里。",
     "less": "收起",

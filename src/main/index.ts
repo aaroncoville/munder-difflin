@@ -70,7 +70,7 @@ import * as integrations from './integrations';
 import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
-import { RefusedRosterId, shortTarget } from './messageTarget';
+import { RefusedRosterId, RegistryUnreadable, shortTarget } from './messageTarget';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WakeSkipLog, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
 import { shouldReapIdle, workerHasLiveJob } from './workerIdleJobs';
@@ -335,7 +335,7 @@ const heavyLock = new HeavyJobLock({
   notify: (agentId, kind, until) => {
     const notice = heavySlotNotice(kind, until);
     let told = false;
-    try { hive.send({ to: agentId, act: 'inform', requires_reply: false, ...notice }, 'system'); told = true; } catch { /* the steer may still land */ }
+    try { hive.send({ to: agentId, act: 'inform', requires_reply: false, ...notice }, 'system'); told = true; } catch (e) { console.error('[heavy-job] notice not sent:', e); /* the steer may still land */ }
     try { control.steer(agentId, notice.subject); told = true; } catch { /* the mail may have landed */ }
     return told;
   }
@@ -413,6 +413,7 @@ interface WorkerRec {
   tokenCap?: number;
   /** When a job the worker launched was last seen alive (see workerIdleJobs). */
   jobSeenAt?: number;
+  stopFailed?: boolean;   // a kill failed: the tick retries it, and nothing is torn down around a live process
 }
 /** Live ephemeral workers by id. Populated by the spawn-request watcher; consulted
  *  by teardownPty so a finished/crashed/reaped worker's worktree is PRESERVED (not
@@ -1237,7 +1238,16 @@ function godActionableInboxCount(): number {
  *  working god instead of interrupting him. */
 function reengageGod(digest: string): void {
   if (!hive.enabled()) return;
-  hive.send({ to: 'god', act: 'request', subject: 'Heartbeat', body: digest }, 'heartbeat');
+  sendOrLog({ to: 'god', act: 'request', subject: 'Heartbeat', body: digest }, 'heartbeat');
+}
+
+/** For a caller on a timer, where a throw would escape to the process. A failed send already has its log row. */
+function sendOrLog(partial: Partial<HiveMessage>, from: string): void {
+  try {
+    hive.send(partial, from);
+  } catch (e) {
+    console.error(`[hive] "${partial.subject}" not sent:`, e instanceof Error ? e.message : e);
+  }
 }
 
 /** A native toast for breaker constrain/stop, gated on the notifications setting. */
@@ -1319,10 +1329,10 @@ function runBreakerBeat(progressWindowMs: number): void {
     const name = reg.agents[d.state.agentId]?.name ?? d.state.agentId;
     const reason = d.state.reason;
     if (d.action === 'steer') {
-      hive.send({ to: d.state.agentId, act: 'request', subject: 'Circuit breaker: steer',
+      sendOrLog({ to: d.state.agentId, act: 'request', subject: 'Circuit breaker: steer',
         body: `Automated guardrail: ${reason}. Re-check your approach — if you're looping or stuck, STOP repeating, summarize what you've tried, and ask god for direction.` }, 'breaker');
     } else if (d.action === 'constrain') {
-      hive.send({ to: d.state.agentId, act: 'request', subject: 'Circuit breaker: constrain',
+      sendOrLog({ to: d.state.agentId, act: 'request', subject: 'Circuit breaker: constrain',
         body: `Automated guardrail escalated: ${reason}. Stop active work now: switch to read-only/plan, write a short plan of your next step, and send it to god for sign-off BEFORE running more tools.` }, 'breaker');
       breakerToast(`${name} constrained`, reason);
     } else if (d.action === 'stop') {
@@ -2712,7 +2722,7 @@ function spawnFailReason(error?: string): SpawnFailReason {
 /** A refused id must not start as a process with no prompt, environment, hooks or
  *  roster entry. Its worktree goes too, since no process will ever tear it down. One
  *  that cannot be removed is logged and stays tracked, because it is still on disk. */
-async function refuseSpawn(ptyId: string, agentId: string, provider: string, refusal: RefusedRosterId): Promise<{ ok: false; error: string }> {
+async function refuseSpawn(ptyId: string, agentId: string, provider: string, refusal: RefusedRosterId | RegistryUnreadable): Promise<{ ok: false; error: string }> {
   hive.appendLog({ kind: 'spawn-refused', agentId: shortTarget(agentId), reason: refusal.message });
   analytics.track('agent_spawn_failed', { provider, reason: 'spawn_error' });
   const wtPath = worktreePaths.get(ptyId);
@@ -2927,7 +2937,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       // enterprise knowledge store (both no-ops / empty when their flags are off).
       opts.env = { ...(opts.env ?? {}), ...inj.env, ...memory.env(), ...knowledge.env() };
     } catch (e) {
-      if (e instanceof RefusedRosterId) return refuseSpawn(opts.id, opts.hive.id, provider, e);
+      if (e instanceof RefusedRosterId || e instanceof RegistryUnreadable) return refuseSpawn(opts.id, opts.hive.id, provider, e);
       // Hive provisioning is best-effort; never block a spawn on it.
       console.error('[hive] ensureAgent failed:', e);
     }
@@ -3660,7 +3670,13 @@ ipcMain.handle('hive:messages', (_evt, opts: unknown) =>
 ipcMain.handle('hive:send', (_evt, partial: Partial<HiveMessage>, from: unknown) => {
   if (!hive.enabled()) return { ok: false, error: 'hive disabled (no harnessHome)' };
   const sender = typeof from === 'string' ? from : 'system';
-  const msg = hive.send(partial ?? {}, sender);
+  let msg: HiveMessage;
+  try {
+    msg = hive.send(partial ?? {}, sender);
+  } catch (e) {
+    if (e instanceof RegistryUnreadable) return { ok: false, code: e.code, error: e.message };
+    throw e;
+  }
   // Count only what a PERSON sent. Every renderer surface that dispatches on a
   // human's behalf passes 'human' (Command Center dispatch, thread replies, ASK
   // ME answers); agent-to-agent traffic passes the agent id and would swamp the
@@ -4892,6 +4908,25 @@ function workerDoneAt(workerId: string, spawnedAt: number): number | null {
   return doneAt;
 }
 
+/** Stop a worker and tear it down, or, if the kill reports failure, keep it tracked so the tick can try again: teardown
+ *  drops the only bookkeeping that could still stop it. A kill that succeeds has removed the session and scheduled the
+ *  process group's sweep, which is not proof the process has already exited. No session left counts as stopped. */
+function stopWorker(workerId: string): void {
+  const rec = liveWorkers.get(workerId);
+  if (rec) rec.releasing = true;
+  const session = ptyManager.list().find((p) => p.id === workerId);
+  let stopped = !session;
+  if (session) {
+    try { stopped = ptyManager.kill(workerId).ok; } catch { stopped = false; }
+  }
+  if (stopped) {
+    teardownPty(workerId);
+  } else if (rec && !rec.stopFailed) {
+    rec.stopFailed = true;
+    hive.appendLog({ kind: 'worker-kill-failed', workerId, pid: session?.pid, code: 'kill-failed' });
+  }
+}
+
 /** Spin up one ephemeral worker from a spawn-request. Terminal failures (bad
  *  request, missing CLI, spawn error) archive to .failed and inform god WITH the
  *  Slack coords so god can post a 'couldn't start' reply. On success the worker is
@@ -5033,6 +5068,13 @@ async function processSpawnRequest(filePath: string): Promise<void> {
     hive.send({ to: workerId, conversation: `worker-${reqId}`, act: 'request', subject: meta.name, body: `${prefix}${objective}${suffix}` }, 'god');
   } catch (e) {
     console.error('[worker] dispatch send failed:', e);
+    // Spawn success includes delivering the objective: without it this worker would hold a slot, with no task, until the
+    // idle reaper. The code goes in the log because the notice below cannot reach god if the registry is the problem.
+    const code = e instanceof RegistryUnreadable ? e.code : 'send-failed';
+    hive.appendLog({ kind: 'worker-dispatch-failed', workerId, request: basename(filePath), code });
+    stopWorker(workerId);
+    fail(`objective not delivered (${code})`);
+    return;
   }
 
   console.log(`[worker] spawned ${workerId} (cwd=${cwd}, base=${baseBranch}${slack ? ', slack' : ''})`);
@@ -5122,6 +5164,7 @@ async function ephemeralWorkerTick(): Promise<void> {
     //     kept mailing dead agents (seen live 2026-08-16 with worker-business/
     //     worker-qa/worker-bizreview). A double teardown is a harmless no-op.
     for (const [workerId, rec] of [...liveWorkers]) {
+      if (rec.stopFailed) stopWorker(workerId);
       if (rec.releasing) continue;
       const doneAt = workerDoneAt(workerId, rec.spawnedAt);
       const afterDone = doneAt === null ? null : afterWorkerDone(join(hive.root() ?? '', 'agents', workerId, 'inbox'), hive.registry()?.godId ?? 'god', doneAt, Date.now());

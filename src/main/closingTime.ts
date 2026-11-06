@@ -81,6 +81,16 @@ export class ClosingTimeController {
   /** Kick off the protocol. Returns an error string when the floor cannot run
    *  it (no live god agent) so the UI can fall back to the hard quit. */
   start(): { ok: boolean; error?: string } {
+    try {
+      return this.begin();
+    } catch (e) {
+      // The protocol starts with a message to god, so a send that failed started nothing.
+      this.active = false;
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  private begin(): { ok: boolean; error?: string } {
     if (this.active) {
       // Re-pressed while running (e.g. from the timeout view): keep waiting.
       this.armTimeout();
@@ -164,7 +174,7 @@ export class ClosingTimeController {
         subject: 'CLOSING TIME CANCELLED',
         body: 'The human cancelled the shutdown — disregard the closing-time protocol and resume normal operation. Any memory saves already done are a bonus, not a problem.'
       }, 'human');
-    } catch { /* best-effort */ }
+    } catch (e) { console.error('[closing-time] cancel notice not sent:', e); /* best-effort */ }
   }
 
   /** Router observer — called by the hive for every routed message. */

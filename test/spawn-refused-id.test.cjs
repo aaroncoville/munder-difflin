@@ -20,7 +20,7 @@ const ts = require('typescript');
 const loadTs = require('./load-ts.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
-const { RefusedRosterId } = loadTs('src/main/messageTarget.ts');
+const { RefusedRosterId, RegistryUnreadable } = loadTs('src/main/messageTarget.ts');
 
 function liveProvisioning() {
   const source = fs.readFileSync(path.resolve(__dirname, '..', 'src/main/index.ts'), 'utf8');
@@ -63,7 +63,7 @@ async function setup(t, overrides = {}) {
     analytics: { track: (name, props) => events.push([name, { ...props }]) },
     worktreePaths, worktreeOrigins,
     removeWorktree: (origin, wt) => { removed.push([origin, wt]); return removal(); },
-    RefusedRosterId, shortTarget: loadTs('src/main/messageTarget.ts').shortTarget
+    RefusedRosterId, RegistryUnreadable, shortTarget: loadTs('src/main/messageTarget.ts').shortTarget
   };
   const run = vm.runInNewContext(liveProvisioning(), context);
   const spawn = (id) => run({ id: `pty-${id}`, cwd: home, hive: { id, name: 'x' } }, 'claude');
@@ -122,6 +122,18 @@ for (const [label, removal, shown] of [
     assert.equal(f.worktreeOrigins.get('pty-heartbeat'), '/repo');
   });
 }
+
+test('an unreadable registry fails the spawn, rather than starting a process with no identity', async (t) => {
+  const f = await setup(t);
+  const file = path.join(f.real.root(), 'registry.json');
+  fs.writeFileSync(file, '{"agents":');
+  const result = await f.spawn('worker-9');
+  assert.notEqual(result, 'started a process');
+  assert.equal(result.ok, false);
+  assert.match(result.error, /registry could not be read/);
+  assert.equal(rows(f.real).length, 1);
+  assert.equal(fs.readFileSync(file, 'utf8'), '{"agents":');
+});
 
 test('a legacy roster entry under an app name fails its spawn when restored', async (t) => {
   const f = await setup(t);
