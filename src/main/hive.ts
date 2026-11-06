@@ -667,7 +667,7 @@ export class HiveManager {
     }
 
     const registry = join(root, 'registry.json');
-    if (!existsSync(registry)) {
+    if (!existsSync(registry) && !this.hiveIsEstablished()) {
       this.writeJson(registry, { godId: null, agents: {} } as Registry);
     }
     const userCodexHome = join(homedir(), '.codex');
@@ -778,7 +778,7 @@ export class HiveManager {
     } = {}
   ): Promise<SpawnInjection> {
     // One read for the whole operation. registry() reads a failure as an empty roster, and this would then replace the
-    // file with this one agent. A file that does not exist yet is a new hive, which has nothing to lose.
+    // file with this one agent. A missing file is only safe in a new hive, which has nothing to lose.
     let roster = this.root() ? this.readableRegistry() : null;
     if (this.root() && !roster && existsSync(join(this.root()!, 'registry.json'))) this.refuseRegistryWrite(meta.id);
     const refusal = newRosterIdRefusal(roster?.agents ?? {}, meta.id, meta.isGod === true);
@@ -2014,6 +2014,22 @@ export class HiveManager {
         }, 'system'));
       }
     });
+  }
+
+  /** Whether a hive was ever here, so a missing registry means a lost roster and not a new hive: an agent has a folder,
+   *  or the log records a spawn. An empty agents folder or log proves nothing, because setting up a hive creates them
+   *  and other rows can be logged before the first agent. */
+  private hiveIsEstablished(): boolean {
+    const root = this.root();
+    if (!root) return false;
+    try {
+      if (readdirSync(join(root, 'agents')).some((name) => !name.startsWith('.'))) return true;
+    } catch { /* no agents folder yet */ }
+    try {
+      return readFileSync(join(root, 'log.jsonl'), 'utf8').includes('"kind":"spawn"');
+    } catch {
+      return false;
+    }
   }
 
   private refuseRegistryWrite(agentId: unknown): never {

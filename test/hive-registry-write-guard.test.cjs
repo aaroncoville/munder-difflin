@@ -43,6 +43,7 @@ const BAD = {
   'a roster that is text': '{"godId":"god-1","agents":"x"}'
 };
 const rows = (hive, kind) => hive.logTail(500).filter((e) => e.kind === kind);
+const message = (to, body = 'the unique body') => ({ to, act: 'inform', subject: 'subject', body });
 
 for (const [label, content] of Object.entries(BAD)) {
   test(`with a registry that is ${label}, a new agent is refused and the file is left exactly as it was`, async (t) => {
@@ -82,10 +83,80 @@ test('the refusal says what is wrong, and names no path', async (t) => {
   });
 });
 
+// ---- a missing file ----
+// A missing file means a new hive only if nothing shows a hive was ever here.
+
 test('a first agent on a new hive, with no file yet, still provisions', async (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-registry-guard-'));
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
   const hive = new HiveManager(() => home);
+  await hive.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: home, isGod: true });
+  assert.equal(hive.registry().godId, 'god-1');
+});
+
+test('a missing registry in an established hive is refused, recreated by nothing, and restored on repair', async (t) => {
+  const f = await setup(t);
+  fs.rmSync(f.file);
+
+  await assert.rejects(f.hive.ensureAgent({ id: 'worker-3', name: 'Three', provider: 'claude', cwd: f.home }), RegistryUnreadable);
+  assert.equal(fs.existsSync(f.file), false, 'an empty one would then read as a valid roster and lose everyone');
+  assert.equal(fs.existsSync(path.join(f.agents, 'worker-3')), false);
+
+  f.hive.ensureHive();
+  assert.equal(fs.existsSync(f.file), false, 'a bootstrap does not recreate it either');
+  assert.throws(() => f.hive.send(message('worker-2'), 'worker-1'), RegistryUnreadable);
+
+  f.repair();
+  await f.hive.ensureAgent({ id: 'worker-3', name: 'Three', provider: 'claude', cwd: f.home });
+  assert.deepEqual(Object.keys(f.hive.registry().agents).sort(), ['god-1', 'worker-1', 'worker-2', 'worker-3']);
+});
+
+test('a registry deleted between ensureAgent\'s read and its write is not recreated', async (t) => {
+  const f = await setup(t);
+  const read = f.hive.readableRegistry.bind(f.hive);
+  f.hive.readableRegistry = () => {
+    const roster = read();
+    fs.rmSync(f.file);
+    f.hive.readableRegistry = read;
+    return roster;
+  };
+  await assert.rejects(f.hive.ensureAgent({ id: 'worker-3', name: 'Three', provider: 'claude', cwd: f.home }), RegistryUnreadable);
+  assert.equal(fs.existsSync(f.file), false);
+});
+
+for (const [label, prepare, established] of [
+  ['an agent folder', (root) => fs.mkdirSync(path.join(root, 'agents', 'worker-1'), { recursive: true }), true],
+  ['a log that records a spawn', (root) => fs.writeFileSync(path.join(root, 'log.jsonl'), '{"ts":1,"kind":"spawn","agentId":"a"}\n'), true],
+  ['an empty agents folder', (root) => fs.mkdirSync(path.join(root, 'agents'), { recursive: true }), false],
+  ['an empty log', (root) => fs.writeFileSync(path.join(root, 'log.jsonl'), ''), false],
+  ['a log with only other rows', (root) => fs.writeFileSync(path.join(root, 'log.jsonl'), '{"ts":1,"kind":"outbox-registry-unreadable"}\n'), false],
+  ['only generated docs', (root) => fs.writeFileSync(path.join(root, 'board.md'), '# board\n'), false]
+]) {
+  test(`with no registry and ${label}, a new agent is ${established ? 'refused' : 'allowed'}`, async (t) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-registry-guard-'));
+    t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+    const hive = new HiveManager(() => home);
+    const root = hive.root();
+    fs.mkdirSync(root, { recursive: true });
+    prepare(root);
+    const add = hive.ensureAgent({ id: 'worker-9', name: 'Nine', provider: 'claude', cwd: home });
+    if (established) {
+      await assert.rejects(add, RegistryUnreadable);
+      assert.equal(fs.existsSync(path.join(root, 'registry.json')), false);
+    } else {
+      await add;
+      assert.deepEqual(Object.keys(hive.registry().agents), ['worker-9']);
+    }
+  });
+}
+
+test('a failed send on a brand new hive leaves it new: the refusal does not make it look established', async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-registry-guard-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const hive = new HiveManager(() => home);
+  fs.mkdirSync(hive.root(), { recursive: true });
+  assert.throws(() => hive.send(message('worker-2'), 'worker-1'), RegistryUnreadable);
+  hive.routeOnce();
   await hive.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: home, isGod: true });
   assert.equal(hive.registry().godId, 'god-1');
 });
@@ -118,7 +189,6 @@ for (const [label, write] of [
 // A send has only one copy of its body, in the caller's hands. Holding it in memory would report success for something
 // a restart loses, and a file under the hive root could carry any sender, so a bad read fails where the caller can see.
 
-const message = (to, body = 'the unique body') => ({ to, act: 'inform', subject: 'subject', body });
 
 for (const [label, content] of Object.entries(BAD)) {
   test(`with a registry that is ${label}, a send fails visibly and claims nothing`, async (t) => {
@@ -229,6 +299,21 @@ test('a send made inside a routing pass uses the pass\'s read, and does not fail
   assert.deepEqual(rows(f.hive, 'send-refused'), []);
 });
 
+test('a send made during a pass leaves the pass\'s read in place for the rest of the pass', async (t) => {
+  const f = await setup(t);
+  for (const name of ['a', 'b']) fs.writeFileSync(path.join(f.agents, 'worker-1', 'outbox', `${name}.json`), JSON.stringify(message('worker-2', name)));
+  let once = false;
+  f.hive.setRoutedObserver(() => {
+    if (once) return;
+    once = true;
+    fs.writeFileSync(f.file, '{"agents":');
+    f.hive.send(message('worker-1', 'from the observer'), 'god-1');
+  });
+  assert.equal(f.hive.routeOnce(), 2, 'the second file is still judged by the pass\'s read');
+  f.repair();
+  assert.deepEqual(f.hive.inbox('worker-2').map((m) => m.body).sort(), ['a', 'b']);
+});
+
 test('a nested send inside a send keeps the outer read, and the outer read ends with the outer send', async (t) => {
   const f = await setup(t);
   let once = false;
@@ -266,6 +351,28 @@ for (const [label, content] of [
     assert.equal(rows(f.hive, 'registry-write-refused').length, 1);
   });
 }
+
+test('ensureAgent\'s id check uses the roster it read, not the file as it is now', async (t) => {
+  const f = await setup(t);
+  const read = f.hive.readableRegistry.bind(f.hive);
+  f.hive.readableRegistry = () => {
+    const roster = read();
+    fs.writeFileSync(f.file, '{"agents":');
+    f.hive.readableRegistry = read;
+    return roster;
+  };
+  await assert.rejects(f.hive.ensureAgent({ id: 'WORKER-1', name: 'Twin', provider: 'claude', cwd: f.home }), /already has that folder/);
+});
+
+test('a corrupt registry on a hive with nothing else yet refuses before setting anything up', async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-registry-guard-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const hive = new HiveManager(() => home);
+  fs.mkdirSync(hive.root(), { recursive: true });
+  fs.writeFileSync(path.join(hive.root(), 'registry.json'), '{');
+  await assert.rejects(hive.ensureAgent({ id: 'worker-9', name: 'Nine', provider: 'claude', cwd: home }), RegistryUnreadable);
+  assert.equal(fs.existsSync(path.join(hive.root(), 'agents')), false);
+});
 
 test('ensureAgent reads the registry once: its check and its write use the same roster', async (t) => {
   const f = await setup(t);
