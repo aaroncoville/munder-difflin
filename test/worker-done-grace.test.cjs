@@ -253,6 +253,32 @@ test('tick: a done worker with nothing unpushed costs the orchestrator no notice
   assert.deepEqual(f.calls.notices, []);
 });
 
+test('tick: a worker over its token cap is reaped inside the window, and one under it is not', async (t) => {
+  let used = 500;
+  const f = await setup(t, {
+    workerTokensUsed: () => used,
+    readConfig: () => ({ orchestratorMaySpawn: false, defaultWorkerTokenCap: 1_000 })
+  });
+  f.done('d1');
+  f.advance(1_000);
+  await f.tick();
+  assert.deepEqual(f.calls.kill, [], 'under the cap: still inside its window');
+  used = 2_000;
+  f.advance(1_000);
+  await f.tick();
+  assert.deepEqual(f.calls.kill, [f.id], 'reporting done must not exempt a worker that keeps spending');
+  assert.match(f.calls.notices.at(-1).subject, /token cap/);
+});
+
+test('tick: the idle reaper leaves a worker alone inside its window', async (t) => {
+  const f = await setup(t, { shouldReapIdle: () => true });
+  f.done('d1');
+  f.advance(1_000);
+  await f.tick();
+  assert.deepEqual(f.calls.kill, []);
+  assert.deepEqual(f.calls.notices, []);
+});
+
 for (const [name, overrides, subject] of [
   ['idle', { shouldReapIdle: () => true }, /idle/],
   ['token cap', { workerTokensUsed: () => 2_000, readConfig: () => ({ orchestratorMaySpawn: false, defaultWorkerTokenCap: 1_000 }) }, /token cap/]

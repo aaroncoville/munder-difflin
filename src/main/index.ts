@@ -5105,14 +5105,15 @@ async function ephemeralWorkerTick(): Promise<void> {
             rec.slack
           );
         }
-        // Inside the window: stays reachable, its old mail settled above so the inbox-wake watchdog cannot nudge it to redo it.
-        if (afterDone === 'keep') continue;
-        // Before teardown, which can remove the worktree. Silent when clean, so a normal release sends no notice.
-        const unpushedAtDone = await unpushedWorkerBranches(worktreePaths.get(workerId), rec.baseBranch);
-        if (unpushedAtDone === null || unpushedAtDone.length > 0) informGod(`[worker released — unpushed branches] ${workerId}`, `Worker ${workerId} signaled done and is being released. ${describeUnpushed(unpushedAtDone)}`, rec.slack);
-        ptyManager.kill(workerId);
-        teardownPty(workerId);
-        continue;
+        // Inside the window it stays reachable, its old mail settled above so the inbox-wake watchdog cannot nudge it to redo it.
+        if (afterDone === 'release') {
+          // Before teardown, which can remove the worktree. Silent when clean, so a normal release sends no notice.
+          const unpushedAtDone = await unpushedWorkerBranches(worktreePaths.get(workerId), rec.baseBranch);
+          if (unpushedAtDone === null || unpushedAtDone.length > 0) informGod(`[worker released — unpushed branches] ${workerId}`, `Worker ${workerId} signaled done and is being released. ${describeUnpushed(unpushedAtDone)}`, rec.slack);
+          ptyManager.kill(workerId);
+          teardownPty(workerId);
+          continue;
+        }
       }
       // Token-cap reap (default-off plumbing). An effective cap > 0 → reap when the
       // worker's cumulative token use exceeds it; its committed work is preserved.
@@ -5133,6 +5134,7 @@ async function ephemeralWorkerTick(): Promise<void> {
           continue;
         }
       }
+      if (afterDone === 'keep') continue; // the token cap above still applies; the idle reaper does not
       const idleMs = ptyManager.idleFor(workerId);
       if (idleMs === undefined) continue; // PTY already gone; teardownPty cleans up
       // Silent but waiting on a job it launched (a long test run) is not idle.
