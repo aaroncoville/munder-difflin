@@ -4908,8 +4908,9 @@ function workerDoneAt(workerId: string, spawnedAt: number): number | null {
   return doneAt;
 }
 
-/** Stop a worker and tear it down, or, if its process survives the kill, keep it tracked so the tick can try again:
- *  teardown drops the only bookkeeping that could still stop it. A process already gone counts as stopped. */
+/** Stop a worker and tear it down, or, if the kill reports failure, keep it tracked so the tick can try again: teardown
+ *  drops the only bookkeeping that could still stop it. A kill that succeeds has removed the session and scheduled the
+ *  process group's sweep, which is not proof the process has already exited. No session left counts as stopped. */
 function stopWorker(workerId: string): void {
   const rec = liveWorkers.get(workerId);
   if (rec) rec.releasing = true;

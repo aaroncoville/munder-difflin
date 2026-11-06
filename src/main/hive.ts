@@ -1106,20 +1106,24 @@ export class HiveManager {
     const root = this.root();
     if (!root) return;
     try {
-      // This cannot be recorded yet, and a roster entry still reading as live would go on taking work. The marker names
-      // only the folder it is in, and an agent able to forge one could as easily edit the registry.
-      if (archived && !this.readableRegistry()) {
-        if (hasExactFolder(this.agentsDir(), id)) {
+      // One read decides, and the file must still match it just before the write replaces it. If either fails this cannot
+      // be recorded yet, and a roster entry still reading as live would go on taking work. The marker names only the
+      // folder it is in, and an agent able to forge one could as easily edit the registry.
+      const reg = this.readableRegistry();
+      const asRead = JSON.stringify(reg);
+      const agent = reg?.agents[id];
+      if (reg && (!agent || agent.archived === archived)) return;
+      if (reg && agent) {
+        agent.archived = archived;
+        agent.lastSeen = Date.now();
+      }
+      if (!reg || JSON.stringify(this.readableRegistry()) !== asRead) {
+        if (archived && hasExactFolder(this.agentsDir(), id)) {
           writeFileSync(join(this.agentDir(id), ARCHIVE_PENDING), '');
           this.appendLog({ kind: 'archive-pending', agentId: shortTarget(id) });
         }
         return;
       }
-      const reg = this.registry();
-      const agent = reg.agents[id];
-      if (!agent || agent.archived === archived) return;
-      agent.archived = archived;
-      agent.lastSeen = Date.now();
       this.atomicWriteJson(join(root, 'registry.json'), reg);
       this.appendLog({ kind: 'archive', agentId: id, archived });
       this.commit(`hive: ${archived ? 'archive' : 'unarchive'} ${id}`);

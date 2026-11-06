@@ -1,8 +1,8 @@
 'use strict';
 
 /**
- * Stopping a worker whose objective could not be sent has two ways to go wrong. A process that survives the kill must not
- * lose its bookkeeping, or nothing can ever stop it. And with the registry unreadable, recording the worker as archived
+ * Stopping a worker whose objective could not be sent has two ways to go wrong. A kill that reports failure must not lose
+ * the worker's bookkeeping, or nothing can ever stop it. And with the registry unreadable, recording the worker as archived
  * cannot land, so it must be remembered: a roster entry still reading as live would go on taking work into a dead inbox.
  * These run the real processSpawnRequest, teardownPty and worker tick from index.ts on a real hive, with a fake PTY manager.
  */
@@ -202,7 +202,76 @@ test('un-archiving with an unreadable registry leaves no marker', async (t) => {
   assert.equal(fs.existsSync(path.join(f.agents, 'worker-1', '.archive-pending')), false);
 });
 
-// ---- a process that survives the kill ----
+// A read that succeeds says nothing about the next one, so setArchived decides from one read and checks the file before it
+// writes. Going bad in between must leave the same marker as a read that failed outright.
+function changeFileAfterNextRead(f, content) {
+  const read = f.hive.readableRegistry.bind(f.hive);
+  f.hive.readableRegistry = () => {
+    const roster = read();
+    fs.writeFileSync(path.join(f.hive.root(), 'registry.json'), content);
+    f.hive.readableRegistry = read;
+    return roster;
+  };
+}
+
+test('a registry corrupted right after setArchived reads it leaves the marker, and the archive lands after repair', async (t) => {
+  const f = await setup(t);
+  const file = path.join(f.hive.root(), 'registry.json');
+  const good = fs.readFileSync(file, 'utf8');
+  changeFileAfterNextRead(f, '{"agents":');
+
+  f.hive.setArchived('worker-1', true);
+
+  assert.equal(fs.readFileSync(file, 'utf8'), '{"agents":', 'nothing was written over it');
+  assert.equal(fs.existsSync(path.join(f.agents, 'worker-1', '.archive-pending')), true, 'the archive would be lost');
+  assert.equal(f.rows('archive-pending').length, 1);
+
+  fs.writeFileSync(file, good);
+  f.hive.routeOnce();
+  assert.equal(f.hive.registry().agents['worker-1'].archived, true);
+  assert.equal(fs.existsSync(path.join(f.agents, 'worker-1', '.archive-pending')), false);
+  assert.equal(f.hive.inbox('god-1').filter((m) => m.subject.includes('worker-1') && m.subject.includes('archived')).length, 1);
+});
+
+test('a roster changed right after setArchived reads it is not overwritten, and the archive still lands', async (t) => {
+  const f = await setup(t);
+  const file = path.join(f.hive.root(), 'registry.json');
+  const reg = JSON.parse(fs.readFileSync(file, 'utf8'));
+  reg.agents['added-since'] = { id: 'added-since', name: 'A', provider: 'claude', cwd: '.' };
+  const changed = JSON.stringify(reg);
+  changeFileAfterNextRead(f, changed);
+
+  f.hive.setArchived('worker-1', true);
+
+  assert.equal(fs.readFileSync(file, 'utf8'), changed, 'the write would have undone this change');
+  f.hive.routeOnce();
+  const onDisk = JSON.parse(fs.readFileSync(file, 'utf8')).agents;
+  assert.equal(onDisk['worker-1'].archived, true);
+  assert.ok(onDisk['added-since'], 'and the later change survives');
+});
+
+test('un-archiving in that gap writes nothing and leaves no marker', async (t) => {
+  const f = await setup(t);
+  f.hive.setArchived('worker-1', true);
+  changeFileAfterNextRead(f, '{"agents":');
+  f.hive.setArchived('worker-1', false);
+  assert.equal(fs.readFileSync(path.join(f.hive.root(), 'registry.json'), 'utf8'), '{"agents":');
+  assert.equal(fs.existsSync(path.join(f.agents, 'worker-1', '.archive-pending')), false);
+});
+
+test('an agent already archived, or not on the roster, gets no write and no marker', async (t) => {
+  const f = await setup(t);
+  f.hive.setArchived('worker-1', true);
+  const file = path.join(f.hive.root(), 'registry.json');
+  const before = fs.readFileSync(file, 'utf8');
+  f.hive.setArchived('worker-1', true);
+  f.hive.setArchived('nobody', true);
+  assert.equal(fs.readFileSync(file, 'utf8'), before);
+  assert.deepEqual(f.rows('archive').filter((r) => r.agentId === 'nobody'), [], 'nothing happened, so nothing is logged');
+  assert.equal(fs.existsSync(path.join(f.agents, 'worker-1', '.archive-pending')), false);
+});
+
+// ---- a kill that reports failure ----
 
 const STUCK = () => ({ ok: false, error: 'EPERM' });
 
@@ -251,7 +320,7 @@ test('the worker tick retries the stop, without a new log row each time, and tea
   assert.equal(f.calls.killAttempts, attempts, 'and stops retrying');
 });
 
-test('a process already gone counts as stopped, so the retry cannot run forever', async (t) => {
+test('a session already gone counts as stopped, so the retry cannot run forever', async (t) => {
   const f = await setup(t, { kill: STUCK });
   await f.run();
   f.sessions.clear();
