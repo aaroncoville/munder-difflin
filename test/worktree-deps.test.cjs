@@ -440,7 +440,7 @@ test('a failed setup leaves nothing that looks finished, and a later run builds 
 
   assert.equal(failed.ok, false);
   assert.throws(() => fs.lstatSync(path.join(wt, 'node_modules')), /ENOENT/, 'a partial view would be skipped by every later run');
-  assert.deepEqual(fs.readdirSync(wt).filter((n) => n.includes('node_modules')), [], 'and no scaffolding is left');
+  assert.deepEqual(fs.readdirSync(wt).filter((n) => n.includes('node_modules')), [], 'and nothing of its own is left');
 
   fs.chmodSync(scope, 0o755);
   assert.deepEqual(await linkWorktreeDeps(repo, wt), { ok: true, skipped: false });
@@ -448,13 +448,87 @@ test('a failed setup leaves nothing that looks finished, and a later run builds 
   assert.deepEqual(fs.readdirSync(path.join(wt, 'node_modules', '@scope')), ['a']);
 });
 
-test('setup left unfinished by a crash does not stop a later run', async () => {
+// The staging folder sits beside node_modules, where no ignore rule covers it and a repository can have anything.
+for (const name of ['.node_modules.partial', '.node_modules.abc123', '.node_modules.']) {
+  test(`setup leaves a committed folder named ${name} alone`, async () => {
+    const { repo, wtRoot } = makeHarness();
+    fs.mkdirSync(path.join(repo, 'node_modules', 'pkg'), { recursive: true });
+    fs.mkdirSync(path.join(repo, name, 'tracked'), { recursive: true });
+    fs.writeFileSync(path.join(repo, name, 'tracked', 'KEEP.txt'), 'the repository\'s file\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-q', '-m', 'a folder of that name');
+    const wt = addWorktree(repo, wtRoot, 'agent-tracked');
+
+    assert.deepEqual(await linkWorktreeDeps(repo, wt), { ok: true, skipped: false }, 'it sidesteps the name');
+
+    assert.equal(fs.readFileSync(path.join(wt, name, 'tracked', 'KEEP.txt'), 'utf8'), 'the repository\'s file\n');
+    assert.equal(git(wt, 'status', '--porcelain'), '?? node_modules/', 'nothing tracked changed');
+    assert.equal(fs.lstatSync(path.join(wt, 'node_modules', 'pkg')).isSymbolicLink(), true);
+  });
+}
+
+// Runs a setup that dies between building and moving into place, without its cleanup, so the leftover is the real one.
+async function crashedSetup(t, repo, wt) {
+  const fsp = require('node:fs/promises');
+  const { rename, rm } = fsp;
+  fsp.rename = async () => { throw new Error('crashed'); };
+  fsp.rm = async () => { throw new Error('crashed'); };
+  t.after(() => { fsp.rename = rename; fsp.rm = rm; });
+  const result = await linkWorktreeDeps(repo, wt);
+  fsp.rename = rename;
+  fsp.rm = rm;
+  assert.equal(result.ok, false);
+  return fs.readdirSync(wt).filter((n) => n.startsWith('.node_modules.'));
+}
+
+test('a later setup clears what a crashed one left, and builds the whole view', async (t) => {
   const { repo, wtRoot } = makeHarness();
   fs.mkdirSync(path.join(repo, 'node_modules', 'pkg'), { recursive: true });
   const wt = addWorktree(repo, wtRoot, 'agent-crash');
-  await linkWorktreeDeps(repo, wt);
-  fs.renameSync(path.join(wt, 'node_modules'), path.join(wt, '.node_modules.partial'));
+  const leftovers = await crashedSetup(t, repo, wt);
+  assert.equal(leftovers.length, 1, 'the crash left its staging folder');
+
   assert.deepEqual(await linkWorktreeDeps(repo, wt), { ok: true, skipped: false });
+
   assert.deepEqual(fs.readdirSync(wt).filter((n) => n.includes('node_modules')), ['node_modules']);
   assert.equal(fs.existsSync(path.join(repo, 'node_modules', 'pkg')), true, 'clearing the leftovers did not follow a link');
+  assert.equal(git(wt, 'status', '--porcelain'), '?? node_modules/');
+});
+
+test('what a crash left in a worktree for another base is not ours to clear', async (t) => {
+  const { repo, wtRoot } = makeHarness();
+  fs.mkdirSync(path.join(repo, 'node_modules', 'pkg'), { recursive: true });
+  const wt = addWorktree(repo, wtRoot, 'agent-forged');
+  const [leftover] = await crashedSetup(t, repo, wt);
+  // The stamp names the base it was built for, which a committed copy of the folder would not.
+  const other = path.join(wtRoot, 'other-base');
+  fs.mkdirSync(path.join(other, 'node_modules', 'pkg'), { recursive: true });
+
+  assert.deepEqual(await linkWorktreeDeps(other, wt), { ok: true, skipped: false });
+
+  assert.equal(fs.existsSync(path.join(wt, leftover)), true);
+});
+
+test('a folder that only resembles a stamped leftover survives', async () => {
+  const { repo, wtRoot } = makeHarness();
+  fs.mkdirSync(path.join(repo, 'node_modules', 'pkg'), { recursive: true });
+  const wt = addWorktree(repo, wtRoot, 'agent-resembles');
+  const dir = path.join(wt, '.node_modules.lookalike');
+  fs.mkdirSync(dir);
+  fs.writeFileSync(path.join(dir, '.staging'), 'not what setup writes\n');
+  fs.writeFileSync(path.join(dir, 'KEEP.txt'), 'mine\n');
+  fs.writeFileSync(path.join(wt, '.node_modules.a-file'), 'a plain file\n');
+
+  assert.deepEqual(await linkWorktreeDeps(repo, wt), { ok: true, skipped: false });
+
+  assert.equal(fs.readFileSync(path.join(dir, 'KEEP.txt'), 'utf8'), 'mine\n');
+  assert.equal(fs.readFileSync(path.join(wt, '.node_modules.a-file'), 'utf8'), 'a plain file\n');
+});
+
+test('the finished node_modules carries no staging stamp', async () => {
+  const { repo, wtRoot } = makeHarness();
+  fs.mkdirSync(path.join(repo, 'node_modules', 'pkg'), { recursive: true });
+  const wt = addWorktree(repo, wtRoot, 'agent-stamp');
+  await linkWorktreeDeps(repo, wt);
+  assert.deepEqual(fs.readdirSync(path.join(wt, 'node_modules')), ['pkg']);
 });

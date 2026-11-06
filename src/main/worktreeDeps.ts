@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { copyFile, lstat, mkdir, readdir, readFile, readlink, realpath, rename, rm, rmdir, symlink, unlink } from 'node:fs/promises';
+import { copyFile, lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rename, rm, rmdir, symlink, unlink, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
 export type DepLink =
@@ -18,6 +18,20 @@ function npmWritesInside(name: string): boolean {
 
 function linkEntry(target: string, link: string): Promise<void> {
   return symlink(target, link, process.platform === 'win32' ? 'junction' : null);
+}
+
+const STAGING_PREFIX = '.node_modules.';
+const STAGING_STAMP = '.worktree-deps-staging';
+
+/** Remove staging folders a crashed setup left. A folder counts only if its stamp names this base, which a folder that
+ *  merely has this name, or a stamp committed elsewhere, does not. A recursive rm removes a link without following it. */
+async function clearStagingLeftovers(worktreeDir: string, baseNodeModules: string): Promise<void> {
+  for (const entry of await readdir(worktreeDir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith(STAGING_PREFIX)) continue;
+    const folder = join(worktreeDir, entry.name);
+    const stamp = await readFile(join(folder, STAGING_STAMP), 'utf8').catch(() => null);
+    if (stamp === baseNodeModules) await rm(folder, { recursive: true, force: true });
+  }
 }
 
 /**
@@ -42,11 +56,12 @@ export async function linkWorktreeDeps(baseDir: string, worktreeDir: string): Pr
   }
 
   // Built aside and moved into place, because a node_modules that exists is never built again, so a partial one would
-  // stay partial. Removing leftovers cannot reach the base: a recursive rm removes a link without following it.
-  const partial = join(worktreeDir, '.node_modules.partial');
+  // stay partial. The folder is one this run creates, so no name a repository uses can be taken over.
+  let partial: string | null = null;
   try {
-    await rm(partial, { recursive: true, force: true });
-    await mkdir(partial);
+    await clearStagingLeftovers(worktreeDir, baseNodeModules);
+    partial = await mkdtemp(join(worktreeDir, STAGING_PREFIX));
+    await writeFile(join(partial, STAGING_STAMP), baseNodeModules);
     for (const entry of await readdir(baseNodeModules, { withFileTypes: true })) {
       if (entry.isFile()) continue;
       const from = join(baseNodeModules, entry.name);
@@ -61,10 +76,13 @@ export async function linkWorktreeDeps(baseDir: string, worktreeDir: string): Pr
         else await linkEntry(join(from, inner.name), join(to, inner.name));
       }
     }
+    // The stamp comes off last, so anything not yet moved into place can always be recognised as ours.
     await rename(partial, worktreeNodeModules);
+    partial = null;
+    await unlink(join(worktreeNodeModules, STAGING_STAMP));
     return { ok: true, skipped: false };
   } catch (error) {
-    await rm(partial, { recursive: true, force: true }).catch(() => undefined);
+    if (partial) await rm(partial, { recursive: true, force: true }).catch(() => undefined);
     return { ok: false, error: String(error) };
   }
 }
