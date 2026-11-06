@@ -77,7 +77,12 @@ function collector(home, { sessionId = SESSION } = {}) {
 
 test('a Codex agent is costed from its own rollout', () => {
   const home = freshHome();
-  writeRollout(home, meta() + context('gpt-5.6-sol') + rateOnly() + tokens('2026-10-07T20:05:00.000Z', TOTALS));
+  const file = writeRollout(home, meta() + context('gpt-5.6-sol') + rateOnly() + tokens('2026-10-07T20:05:00.000Z', TOTALS));
+  // A fixed time in the past. A file written just now can carry a fraction of a
+  // millisecond that the sample's clamp to Date.now() drops, when both land in
+  // the same millisecond.
+  const changed = new Date('2026-10-07T20:10:00.000Z');
+  fs.utimesSync(file, changed, changed);
 
   const sample = collector(home).getAgentUsage(AGENT);
 
@@ -91,8 +96,7 @@ test('a Codex agent is costed from its own rollout', () => {
   assert.equal(sample.model, 'gpt-5.6-sol');
   // Dated by the rollout's last change, as the Codex activity readers date it:
   // a long tool call writes output but no token count.
-  assert.equal(sample.ts, fs.statSync(path.join(home, 'sessions', '2026', '10', '07',
-    `rollout-2026-10-07T20-00-00-${SESSION}.jsonl`)).mtimeMs);
+  assert.equal(sample.ts, changed.getTime());
   // 0.2M x $4 + 1M x $0.40 + 0.03M x $20.
   assert.equal(Number(sample.usd.toFixed(4)), 1.8);
 });
