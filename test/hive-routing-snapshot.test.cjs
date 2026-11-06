@@ -14,9 +14,12 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const vm = require('node:vm');
+const ts = require('typescript');
 const loadTs = require('./load-ts.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
+const { CodexThreads } = loadTs('src/main/codexThread.ts');
 
 async function setup(t, emit) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-routing-snapshot-'));
@@ -216,6 +219,118 @@ test('a registry write during a pass starts from the file, so it cannot undo a c
   const onDisk = JSON.parse(fs.readFileSync(f.file, 'utf8')).agents;
   assert.ok(onDisk['added-mid-pass'], 'the write put back a stale copy of the roster');
   assert.equal(onDisk['worker-2'].archived, true);
+});
+
+// ---- the production observer, with real thread records ----
+
+const WORKER = 'reviewer';
+
+/** The real observer statement from index.ts, on a real hive and real thread records. */
+async function codexFloor(t) {
+  let corruptNextMessage = false;
+  let hive;
+  const f = await setup(t, (channel) => {
+    // After delivery, before the observer: the point the observer's own reads are exposed.
+    if (channel === 'hive:message' && corruptNextMessage) {
+      corruptNextMessage = false;
+      fs.writeFileSync(path.join(hive.root(), 'registry.json'), '{"agents":');
+    }
+    return true;
+  });
+  hive = f.hive;
+  const reg = JSON.parse(f.good);
+  reg.agents[WORKER] = { id: WORKER, name: 'Reviewer', provider: 'codex', cwd: '.' };
+  const roster = JSON.stringify(reg);
+  fs.writeFileSync(f.file, roster);
+  for (const dir of ['inbox/.done', 'outbox/.sent']) fs.mkdirSync(path.join(f.agents, WORKER, dir), { recursive: true });
+
+  const source = fs.readFileSync(path.resolve(__dirname, '..', 'src/main/index.ts'), 'utf8');
+  const ast = ts.createSourceFile('index.ts', source, ts.ScriptTarget.ES2022, true);
+  const statement = ast.statements.find((n) => ts.isExpressionStatement(n) && n.getText(ast).startsWith('hive.setRoutedObserver('));
+  assert.ok(statement, 'the routed observer is registered at the top level of index.ts');
+  const js = ts.transpileModule(statement.getText(ast), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const threads = new CodexThreads((id) => path.join(f.agents, id, 'hive-thread.json'));
+  vm.runInNewContext(js, { hive, closingTime: { onRouted() {} }, codexThreads: threads });
+  threads.spawned(WORKER, false);
+
+  const fromFolder = (from, name, msg) => fs.writeFileSync(path.join(f.agents, from, 'outbox', `${name}.json`), JSON.stringify({ id: name, ...msg }));
+  const isAgent = (id) => Object.hasOwn(reg.agents, id);
+  return {
+    ...f, threads, isAgent, fromFolder,
+    repair: () => fs.writeFileSync(f.file, roster),
+    corruptOnNextDelivery: () => { corruptNextMessage = true; }
+  };
+}
+
+test('corruption before the observer leaves a Codex worker\'s outgoing id on its thread, and a reply continues it', async (t) => {
+  const f = await codexFloor(t);
+  f.fromFolder('god-1', 'review-1', { to: WORKER, act: 'request', subject: 's', body: 'b' });
+  f.hive.routeOnce();
+  assert.ok(f.threads.get(WORKER).ids.includes('review-1'));
+
+  f.fromFolder(WORKER, 'report-1', { to: 'god', act: 'done', in_reply_to: 'review-1', subject: 's', body: 'b' });
+  f.corruptOnNextDelivery();
+  f.hive.routeOnce();
+  f.repair();
+
+  assert.ok(f.threads.get(WORKER).ids.includes('report-1'), 'the outgoing id went unrecorded');
+  f.fromFolder('god-1', 'fix-1', { to: WORKER, act: 'request', in_reply_to: 'report-1', subject: 's', body: 'b' });
+  f.hive.routeOnce();
+  const pending = f.hive.inbox(WORKER).filter((m) => m.id === 'fix-1');
+  assert.equal(pending.length, 1);
+  assert.deepEqual(f.threads.due(WORKER, pending, f.isAgent), [], 'the reply would open a new thread and lose its context');
+});
+
+test('corruption before the observer still lets a request join the thread whose mail is pending', async (t) => {
+  const f = await codexFloor(t);
+  f.fromFolder('god-1', 'review-1', { to: WORKER, act: 'request', subject: 's', body: 'b' });
+  f.hive.routeOnce();
+  f.fromFolder(WORKER, 'report-1', { to: 'god', act: 'done', in_reply_to: 'review-1', subject: 's', body: 'b' });
+  f.hive.routeOnce();
+
+  f.fromFolder('god-1', 'review-2', { to: WORKER, act: 'request', subject: 's', body: 'b' });
+  f.corruptOnNextDelivery();
+  f.hive.routeOnce();
+  f.repair();
+
+  assert.ok(f.threads.get(WORKER).ids.includes('review-2'), 'the inbox read during the observer saw nothing pending');
+});
+
+test('corruption during a pass does not make an archived worker look live and hold up closing time', async (t) => {
+  let corruptOnMessage = false;
+  let hive;
+  const f = await setup(t, (channel) => {
+    if (channel === 'hive:message' && corruptOnMessage) {
+      corruptOnMessage = false;
+      fs.writeFileSync(path.join(hive.root(), 'registry.json'), '{"agents":');
+    }
+    return true;
+  });
+  hive = f.hive;
+  const { ClosingTimeController } = loadTs('src/main/closingTime.ts');
+  const closing = new ClosingTimeController(hive, () => ['god-1', 'worker-1', 'worker-2'], () => null, () => {});
+  t.after(() => closing.cancel());
+  hive.setRoutedObserver((msg, targets) => closing.onRouted(msg, targets));
+  assert.equal(closing.start().ok, true);
+  f.write('ack.json', 'god', 'worker-1', { subject: 'CLOSING-TIME-ACK' });
+  hive.routeOnce();
+  hive.setArchived('worker-2', true);
+  fs.writeFileSync(path.join(f.agents, 'god-1', 'outbox', 'complete.json'), JSON.stringify({ to: 'human', act: 'inform', subject: 'CLOSING-TIME-COMPLETE', body: 'b' }));
+  corruptOnMessage = true;
+
+  hive.routeOnce();
+
+  f.repair();
+  const rejected = hive.inbox('god-1').filter((m) => m.subject.includes('conclusion rejected'));
+  assert.deepEqual(rejected.map((m) => m.body.split('\n')[0]), [], 'worker-2 is archived on the roster this pass read, so its ACK is excused');
+});
+
+test('outside a pass, a caller\'s id is still checked against the file', async (t) => {
+  const f = await setup(t);
+  f.hive.routeOnce();
+  fs.writeFileSync(f.file, '{"agents":');
+  assert.throws(() => f.hive.checkAgentId('worker-1'), /unknown/);
+  assert.deepEqual(f.hive.inbox('worker-1'), []);
 });
 
 test('the next pass reads again: mail waits while the file is bad and goes once it is repaired', async (t) => {

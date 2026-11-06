@@ -1996,10 +1996,10 @@ export class HiveManager {
   private registryUnreadable = false;
   private passRegistry: Registry | null = null;
 
-  /** The registry routing decides by. Inside a routing pass that is the pass's one read, including for a send made from
-   *  the routed observer: registry() would treat a failed later read as an empty roster and refuse valid mail. Only
-   *  routing reads this. Anything that writes the registry goes on using registry(), so it never writes a stale copy. */
-  private routingRegistry(): Registry {
+  /** The registry to decide by. Inside a routing pass that is the pass's one read, including for the routed observer
+   *  and a send it makes: registry() would treat a failed later read as an empty roster and refuse valid mail. For
+   *  reading only. Anything that writes the registry goes on using registry(), so it never writes a stale copy. */
+  routingRegistry(): Registry {
     return this.passRegistry ?? this.registry();
   }
 
@@ -2176,7 +2176,8 @@ export class HiveManager {
   }
   /** The roster id a caller's `id` means. Throws AgentIdError otherwise; IPC handlers run this so the caller sees why. */
   checkAgentId(id: unknown): string {
-    return agentFolderId(this.registry().agents, this.registry().godId, join(this.root() ?? '', 'agents'), id);
+    const reg = this.routingRegistry();
+    return agentFolderId(reg.agents, reg.godId, join(this.root() ?? '', 'agents'), id);
   }
   /** The agents a read naming no agent covers: the roster, not whatever folders exist. A folder with no entry can hold
    *  anything, so it is left out and logged, once per folder since the voice layer reads often. */
