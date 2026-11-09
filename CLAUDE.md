@@ -144,8 +144,10 @@ current `main` with an eight-hour-old bundle has happened here.
 
 - **Never symlink the base checkout's `node_modules` into a worktree.** `npm ci` empties
   `node_modules` entry by entry, so through that link it empties the base install, including
-  the running app's Electron binary. A worktree the app creates gets a real `node_modules`
-  folder holding one link per package, which is safe; one made by hand has none. If
+  the running app's Electron binary. A worktree the app creates instead gets a real
+  `node_modules` directory with many entries linked into the base. `npm ci` can safely unlink
+  and replace those entries, but this is not a private install: writing through a linked
+  package or cache entry modifies the base. A worktree made by hand has no `node_modules`. If
   `node_modules` is a symlink, remove it first (`rm node_modules`, no trailing slash), then run
   `npm ci` in the worktree. That is also the fix when `npm run typecheck` dies with
   `TS2688: Cannot find type definition file for 'node'`.
