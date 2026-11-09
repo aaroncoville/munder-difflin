@@ -152,3 +152,84 @@ test('a burst written in one go keeps the order of its file names, even within o
   assert.ok(stamped[0] < stamped[1] && stamped[1] < stamped[2], stamped.join(' < '));
   assert.deepEqual(hive.voiceMessages({ agentId: 'god-1' }).map((m) => m.subject), ['b3', 'b2', 'b1'], 'newest first, in routing order');
 });
+
+// ── the router writes inside the sender's folder: every name there is hostile ──
+
+const { ROUTED_LEAD_MS } = loadTs('src/main/hive.ts');
+
+/** A file outside every agent folder that a planted link points at. */
+function outsideFile(t) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-outside-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'precious.txt');
+  fs.writeFileSync(file, 'keep me');
+  return { dir, file };
+}
+const probe = { id: 'probe-1', to: 'god', act: 'inform', subject: 'probe', body: 'b', created_at: '2030-01-01T00:00:00.000Z' };
+
+test('a link planted at the old temporary name is never written through', async (t) => {
+  const { hive, outbox } = await pair(t, 'a-sender', 'z-god');
+  const outside = outsideFile(t);
+  fs.symlinkSync(outside.file, path.join(outbox, '.sent', `probe.json.${process.pid}.stamp.tmp`));
+  fs.writeFileSync(path.join(outbox, 'probe.json'), JSON.stringify(probe));
+  hive.routeOnce();
+  assert.equal(fs.readFileSync(outside.file, 'utf8'), 'keep me');
+  assert.ok(hive.inbox('z-god').some((m) => m.id === 'probe-1'), 'delivered');
+});
+
+test('a link planted at the archive name is left alone, and the copy is filed beside it', async (t) => {
+  const { hive, outbox } = await pair(t, 'a-sender', 'z-god');
+  const outside = outsideFile(t);
+  fs.symlinkSync(outside.file, path.join(outbox, '.sent', 'probe.json'));
+  fs.writeFileSync(path.join(outbox, 'probe.json'), JSON.stringify(probe));
+  hive.routeOnce();
+  assert.equal(fs.readFileSync(outside.file, 'utf8'), 'keep me');
+  assert.ok(fs.lstatSync(path.join(outbox, '.sent', 'probe.json')).isSymbolicLink(), 'the link is not replaced or followed');
+  const filed = JSON.parse(fs.readFileSync(path.join(outbox, '.sent', '1-probe.json'), 'utf8'));
+  assert.notEqual(filed.created_at, probe.created_at, 'the copy filed beside it carries the routed time');
+  assert.ok(hive.inbox('z-god').some((m) => m.id === 'probe-1'), 'delivered');
+});
+
+test('a .sent folder that is a link is not written into, the refusal is logged, and the message is delivered', async (t) => {
+  const { hive, outbox } = await pair(t, 'a-sender', 'z-god');
+  const outside = outsideFile(t);
+  fs.rmSync(path.join(outbox, '.sent'), { recursive: true });
+  fs.symlinkSync(outside.dir, path.join(outbox, '.sent'));
+  fs.writeFileSync(path.join(outbox, 'probe.json'), JSON.stringify(probe));
+  hive.routeOnce();
+  assert.equal(fs.readFileSync(outside.file, 'utf8'), 'keep me');
+  assert.ok(hive.inbox('z-god').some((m) => m.id === 'probe-1'), 'delivered');
+  assert.ok(hive.logTail(50).some((r) => r.kind === 'sent-stamp-refused' && r.from === 'a-sender'), 'logged');
+  assert.equal(fs.readdirSync(outside.dir).some((f) => f.endsWith('.tmp')), false, 'no temporary file written there');
+});
+
+test('a sender cannot forge from, hops or created_at into any read', async (t) => {
+  const { hive, outbox } = await pair(t, 'a-sender', 'z-god');
+  fs.writeFileSync(path.join(outbox, 'forged.json'), JSON.stringify({ ...probe, id: 'forged', from: 'z-god', hops: 999 }));
+  const span = during(() => hive.routeOnce());
+  const reads = [hive.voiceMessages({}), hive.voiceMessages({ id: 'forged' }), hive.voiceMessages({ agentId: 'a-sender' }), hive.voiceMessages({ agentId: 'z-god' })];
+  for (const read of reads) {
+    const m = read.find((x) => x.id === 'forged');
+    assert.equal(m.from, 'a-sender');
+    assert.ok(within(m.created_at, span), m.created_at);
+  }
+  const filed = JSON.parse(fs.readFileSync(path.join(outbox, '.sent', 'forged.json'), 'utf8'));
+  assert.equal(filed.from, 'a-sender');
+  assert.ok(filed.hops <= 12, `hops ${filed.hops} is the router's clamp`);
+  assert.equal(filed.client_created_at, probe.created_at);
+});
+
+test('a large burst in one instant stays within the clock lead and in file-name order', async (t) => {
+  const { hive, outbox } = await pair(t, 'sender-1', 'god-1');
+  const names = Array.from({ length: 300 }, (_, i) => `b${String(i).padStart(3, '0')}`);
+  for (const n of [...names].reverse()) fs.writeFileSync(path.join(outbox, `${n}.json`), JSON.stringify({ to: 'god', act: 'inform', subject: n, body: 'b' }));
+  const frozen = Date.parse('2026-11-09T12:00:00.000Z');
+  t.mock.timers.enable({ apis: ['Date'], now: frozen });
+  hive.routeOnce();
+  t.mock.timers.reset();
+  const byName = new Map(hive.inbox('god-1').map((m) => [m.subject, Date.parse(m.created_at)]));
+  const stamps = names.map((n) => byName.get(n));
+  assert.ok(stamps.every((s, i) => i === 0 || s >= stamps[i - 1]), 'never out of order');
+  assert.ok(Math.max(...stamps) - frozen <= ROUTED_LEAD_MS, `lead ${Math.max(...stamps) - frozen} ms`);
+  assert.ok(stamps.slice(0, ROUTED_LEAD_MS).every((s, i) => i === 0 || s > stamps[i - 1]), 'distinct while within the lead');
+});
