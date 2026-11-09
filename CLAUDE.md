@@ -142,9 +142,15 @@ current `main` with an eight-hour-old bundle has happened here.
 
 ## Things that are easy to get wrong
 
-- **Isolated worktrees have no `node_modules`.** If `npm run typecheck` dies with
-  `TS2688: Cannot find type definition file for 'node'`, symlink the base checkout's
-  `node_modules` into your worktree before anything else.
+- **Never symlink the base checkout's `node_modules` into a worktree.** `npm ci` empties
+  `node_modules` entry by entry, so through that link it empties the base install, including
+  the running app's Electron binary. A worktree the app creates instead gets a real
+  `node_modules` directory with many entries linked into the base. `npm ci` can safely unlink
+  and replace those entries, but this is not a private install: writing through a linked
+  package or cache entry modifies the base. A worktree made by hand has no `node_modules`. If
+  `node_modules` is a symlink, remove it first (`rm node_modules`, no trailing slash), then run
+  `npm ci` in the worktree. That is also the fix when `npm run typecheck` dies with
+  `TS2688: Cannot find type definition file for 'node'`.
 - **Commit a working draft early**, then refine. An interrupted session keeps what is committed
   and loses what is not.
 - If something cannot be determined in your environment — anything needing a GPU, a running
