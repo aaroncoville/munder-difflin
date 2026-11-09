@@ -29,6 +29,7 @@ import { spawnSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
 import type { AgentUsageSample } from './usage';
 import { archiveOutboxFile, moveWithoutReplacing, quarantineOutboxFile, reportOutboxFailure, type OutboxStage } from './outboxFailure';
+import { stampSentCopy } from './sentStamp';
 import { COMMAND_GROUPS } from '../shared/claudeCommands';
 import { ensureCodexShortHome } from '../shared/codexRemote';
 import {
@@ -88,6 +89,8 @@ export interface HiveMessage {
   requires_reply: boolean;
   needs_human: boolean;
   created_at: string;
+  /** The created_at the sender wrote, kept for reference when the router stamped its own. */
+  client_created_at?: string;
 }
 
 /** One hive message reshaped for the voice read-layer (`hive:messages`): the
@@ -220,6 +223,8 @@ export interface SpawnInjection {
 }
 
 const HOP_CAP = 12;
+/** How far ahead of the real clock the router's stamps may run to keep a burst in order. */
+export const ROUTED_LEAD_MS = 100;
 const ARCHIVE_PENDING = '.archive-pending';
 /** How long an unparseable outbox file is given to be finished by its sender
  *  before the router drops it. */
@@ -1721,8 +1726,21 @@ export class HiveManager {
       hops: Math.max(0, Math.min(typeof partial.hops === 'number' ? partial.hops : 0, HOP_CAP)),
       requires_reply: partial.requires_reply ?? ['request', 'query', 'propose'].includes(act),
       needs_human: partial.needs_human ?? false,
-      created_at: partial.created_at ?? new Date().toISOString()
+      // The router's clock, not the sender's: a sender's clock can run ahead, and the stall timer and
+      // every created_at-ordered read measure from this. The sender's value is kept beside it.
+      created_at: this.routedAt(),
+      ...(typeof partial.created_at === 'string' ? { client_created_at: partial.created_at } : {})
     };
+  }
+
+  private lastRoutedAt = 0;
+  /** The router's clock, moved on by a millisecond per message so a burst routed within one
+   *  millisecond still reads in the order it was routed, but never more than ROUTED_LEAD_MS ahead
+   *  of the real clock: past that, stamps tie, and the drain's file-name order keeps the burst's. */
+  private routedAt(): string {
+    const now = Date.now();
+    this.lastRoutedAt = Math.max(now, Math.min(this.lastRoutedAt + 1, now + ROUTED_LEAD_MS));
+    return new Date(this.lastRoutedAt).toISOString();
   }
 
   private agentsDir(): string {
@@ -2127,7 +2145,7 @@ export class HiveManager {
     for (const id of readdirSync(agentsDir)) {
       const outbox = join(agentsDir, id, 'outbox');
       if (!existsSync(outbox)) continue;
-      for (const f of readdirSync(outbox)) {
+      for (const f of readdirSync(outbox).sort()) { // in name order, so a burst is stamped in the order it was written
         if (!f.endsWith('.json')) continue;
         // The sender comes from this folder's name, read from disk, so an exact roster id has its exact folder.
         if (!isRosterId(roster.agents, id)) {
@@ -2172,7 +2190,7 @@ export class HiveManager {
             continue;
           }
           stage = 'archive';
-          archiveOutboxFile(outbox, f); // archive, don't reprocess
+          const stamp = stampSentCopy(join(outbox, '.sent'), archiveOutboxFile(outbox, f), msg); if (stamp !== 'stamped') this.appendLog({ kind: `sent-stamp-${stamp}`, from: id, file: f }); // archive, don't reprocess
           routed++;
         } catch (error) {
           // Set it aside so we don't spin on it, and say so.
