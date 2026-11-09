@@ -29,6 +29,7 @@ import { spawnSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
 import type { AgentUsageSample } from './usage';
 import { archiveOutboxFile, moveWithoutReplacing, quarantineOutboxFile, reportOutboxFailure, type OutboxStage } from './outboxFailure';
+import { stampSentCopy } from './sentStamp';
 import { COMMAND_GROUPS } from '../shared/claudeCommands';
 import { ensureCodexShortHome } from '../shared/codexRemote';
 import {
@@ -1725,9 +1726,17 @@ export class HiveManager {
       needs_human: partial.needs_human ?? false,
       // The router's clock, not the sender's: a sender's clock can run ahead, and the stall timer and
       // every created_at-ordered read measure from this. The sender's value is kept beside it.
-      created_at: new Date().toISOString(),
+      created_at: this.routedAt(),
       ...(typeof partial.created_at === 'string' ? { client_created_at: partial.created_at } : {})
     };
+  }
+
+  private lastRoutedAt = 0;
+  /** The router's clock, moved on by at least a millisecond per message, so a burst routed within
+   *  one millisecond still reads in the order it was routed. */
+  private routedAt(): string {
+    this.lastRoutedAt = Math.max(Date.now(), this.lastRoutedAt + 1);
+    return new Date(this.lastRoutedAt).toISOString();
   }
 
   private agentsDir(): string {
@@ -2129,10 +2138,10 @@ export class HiveManager {
     // later file of the same name starts its own retry window.
     for (const p of this.malformedSince.keys()) if (!existsSync(p)) this.malformedSince.delete(p);
     let routed = 0;
-    for (const id of readdirSync(agentsDir)) {
+    for (const id of readdirSync(agentsDir).sort()) {
       const outbox = join(agentsDir, id, 'outbox');
       if (!existsSync(outbox)) continue;
-      for (const f of readdirSync(outbox)) {
+      for (const f of readdirSync(outbox).sort()) { // in name order, so a burst is stamped in the order it was written
         if (!f.endsWith('.json')) continue;
         // The sender comes from this folder's name, read from disk, so an exact roster id has its exact folder.
         if (!isRosterId(roster.agents, id)) {
@@ -2177,7 +2186,7 @@ export class HiveManager {
             continue;
           }
           stage = 'archive';
-          archiveOutboxFile(outbox, f); // archive, don't reprocess
+          if (!stampSentCopy(join(outbox, '.sent', archiveOutboxFile(outbox, f)), partial as Record<string, unknown>, msg.created_at)) this.appendLog({ kind: 'sent-stamp-failed', from: id, file: f }); // archive, don't reprocess
           routed++;
         } catch (error) {
           // Set it aside so we don't spin on it, and say so.

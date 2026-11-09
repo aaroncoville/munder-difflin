@@ -102,3 +102,53 @@ test('a message already in an inbox with only the old field still reads, unchang
   assert.ok(voiced.some((v) => v.id === 'legacy-1' && v.created_at === '2026-11-09T05:10:00.000Z'));
   assert.ok(voiced.some((v) => v.id === 'legacy-2'));
 });
+
+// ── the sender's archived copy, and a burst ──────────────────────────────────
+
+/** A floor whose sender and recipient folders sort in the given order, so either copy is met first. */
+async function pair(t, senderId, godId) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-created-at-pair-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const hive = new HiveManager(() => home);
+  await hive.ensureAgent({ id: godId, name: 'Boss', provider: 'claude', cwd: home, isGod: true });
+  await hive.ensureAgent({ id: senderId, name: 'Helper', provider: 'claude', cwd: home });
+  const outbox = path.join(home, 'hive', 'agents', senderId, 'outbox');
+  return { hive, outbox };
+}
+
+for (const [senderId, godId] of [['a-sender', 'z-god'], ['z-sender', 'a-god']]) {
+  test(`every read orders a routed message by its routed time, whichever copy is met first (${senderId} to ${godId})`, async (t) => {
+    const { hive, outbox } = await pair(t, senderId, godId);
+    fs.writeFileSync(path.join(outbox, 'probe.json'), JSON.stringify({ id: 'probe-1', to: 'god', act: 'inform', subject: 'probe', body: 'b', created_at: '2030-01-01T00:00:00.000Z' }));
+    const span = during(() => hive.routeOnce());
+
+    const all = hive.voiceMessages({}).filter((m) => m.id === 'probe-1');
+    assert.equal(all.length, 1, 'once');
+    assert.ok(within(all[0].created_at, span), `global read: ${all[0].created_at}`);
+    assert.ok(within(hive.voiceMessages({ id: 'probe-1' })[0].created_at, span), 'by id');
+    for (const agentId of [senderId, godId]) {
+      const mine = hive.voiceMessages({ agentId }).filter((m) => m.id === 'probe-1');
+      assert.equal(mine.length, 1, agentId);
+      assert.ok(within(mine[0].created_at, span), `${agentId}: ${mine[0].created_at}`);
+    }
+    const sent = JSON.parse(fs.readFileSync(path.join(outbox, '.sent', 'probe.json'), 'utf8'));
+    assert.equal(sent.client_created_at, '2030-01-01T00:00:00.000Z', "the sender's time is kept");
+    assert.equal(sent.subject, 'probe');
+    assert.equal(sent.id, 'probe-1', 'the id stays as the sender wrote it');
+    assert.deepEqual(fs.readdirSync(path.join(outbox, '.sent')), ['probe.json'], 'no temporary file left behind');
+  });
+}
+
+test('a burst written in one go keeps the order of its file names, even within one millisecond', async (t) => {
+  const { hive, outbox } = await pair(t, 'sender-1', 'god-1');
+  // Written newest-dated first, and stamped by the router well inside one millisecond of each other.
+  ['3', '2', '1'].forEach((n, i) => fs.writeFileSync(path.join(outbox, `b${n}.json`),
+    JSON.stringify({ to: 'god', act: 'inform', subject: `b${n}`, body: 'b', created_at: `2030-01-01T00:00:0${i}.000Z` })));
+  // A frozen clock: every stamp in this routing pass falls in the same millisecond.
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-11-09T12:00:00.000Z') });
+  hive.routeOnce();
+  t.mock.timers.reset();
+  const stamped = ['b1', 'b2', 'b3'].map((s) => hive.inbox('god-1').find((m) => m.subject === s).created_at);
+  assert.ok(stamped[0] < stamped[1] && stamped[1] < stamped[2], stamped.join(' < '));
+  assert.deepEqual(hive.voiceMessages({ agentId: 'god-1' }).map((m) => m.subject), ['b3', 'b2', 'b1'], 'newest first, in routing order');
+});
