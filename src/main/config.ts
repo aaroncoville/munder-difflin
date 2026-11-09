@@ -216,6 +216,8 @@ export interface HarnessConfig {
    *  refused and queued. An integer 1..16, or 'off' for no limit; anything else means the default.
    *  Read on every hook, so a change applies at once. */
   heavyJobsAtOnce?: number | 'off';
+  /** How many of those may be test suites at once (default 1), so two suites never load the machine together. */
+  suiteJobsAtOnce?: number | 'off';
   /** The command we run when spawning a new agent. */
   defaultCommand: string;
   /** Default model for newly spawned agents (e.g. 'claude-sonnet-4-6[1m]'); unset = CLI default. */
@@ -466,6 +468,7 @@ const DEFAULTS: HarnessConfig = {
   autoMode: true,
   orchestratorMaySpawn: false,
   heavyJobsAtOnce: 2,
+  suiteJobsAtOnce: 1,
   defaultCommand: 'claude',
   godProvider: 'claude',
   godModel: 'claude-opus-4-8',

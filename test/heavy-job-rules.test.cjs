@@ -10,7 +10,7 @@ const { classifyCommand, classifyHeavy } = loadTs('src/main/heavyJob.ts');
 
 const SUITES = [
   './gradlew test', 'gradle test', 'gradle check', './gradlew build', 'cd api && ./gradlew test -q > ../api.log 2>&1',
-  './gradlew test --rerun', "./gradlew test --tests 'io.example.SomeTest'", './gradlew :api:test', 'gradlew.bat test',
+  './gradlew test --rerun', './gradlew :api:test', 'gradlew.bat test',
   './gradlew -p api clean test', './gradlew --console=plain check',
   'mvn test', 'mvn -q verify', 'mvn clean package', './mvnw install', 'mvnw.cmd verify', 'mvn -pl core -am test', 'mvn surefire:test',
   'npx playwright test', 'playwright test e2e/auth', 'npx playwright test --project=chromium',

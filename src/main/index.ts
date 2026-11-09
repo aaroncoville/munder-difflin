@@ -32,6 +32,7 @@ import { saveAskAttachment } from './askAttachments';
 import { HiveManager, type AgentMeta, type HiveMessage, type HiveTask } from './hive';
 import { HookServer } from './hooks';
 import { HeavyJobLock, heavyLimit, heavySlotNotice, probeProcesses } from './heavyJob';
+import { suiteJobLimit } from './heavyJobRules';
 import { CircuitBreaker, type BreakerInput } from './breaker';
 import { shouldReengage, doingTaskTally, suppressionReason } from './heartbeatPolicy';
 import { CumulativeSampleGate, RunBaseline, snapshotUsageFor, usesCumulativeGate, type UsageProvider } from './usage';
@@ -329,6 +330,7 @@ const hookServer = new HookServer(
 // it: mail wakes an idle agent, and a steer reaches a busy one at its next hook.
 const heavyLock = new HeavyJobLock({
   limit: () => heavyLimit(readConfig().heavyJobsAtOnce),
+  suiteLimit: () => suiteJobLimit(readConfig().suiteJobsAtOnce),
   roots: () => ptyManager.list().flatMap((s) => { const a = ptyToAgent.get(s.id); return a && s.pid > 0 ? [{ agentId: a, pid: s.pid }] : []; }),
   probe: probeProcesses,
   log: (row) => { try { hive.appendLog(row); } catch { /* best effort */ } },

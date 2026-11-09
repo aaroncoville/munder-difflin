@@ -18,7 +18,7 @@
  * MIT, Copyright (c) 2026 Richard J Tindell II), which ported them from guppyos (MIT).
  */
 import { execFile } from 'node:child_process';
-import { classifyGradle, classifyMaven, classifyPlaywright, E2E_SCRIPT } from './heavyJobRules';
+import { carriesCommand, classifyGradle, classifyMaven, classifyPackageExtras, classifyPlaywright, classifyWorker, E2E_SCRIPT, RUN_PREFIXES, unwrapGroup } from './heavyJobRules';
 
 export type HeavyKind = 'install' | 'build' | 'suite' | 'bench';
 export interface HeavyClass { heavy: boolean; kind?: HeavyKind; why?: string }
@@ -116,6 +116,7 @@ function leading(ws: string[]): string[] {
     if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) { i++; continue; }
     if (w === 'env') { i++; while (i < ws.length && (ws[i].startsWith('-') || /^[A-Za-z_][A-Za-z0-9_]*=/.test(ws[i]))) { if (ws[i] === '-u') i++; i++; } continue; }
     if (w === 'timeout' || w === 'nice') { i++; while (i < ws.length && (/^-/.test(ws[i]) || /^\d+[smhd]?$/.test(ws[i]))) i++; continue; }
+    if (RUN_PREFIXES.has(w)) { i++; while (i < ws.length && (/^-/.test(ws[i]) || /^\d+$/.test(ws[i]))) i++; continue; }
     if (w === 'cd' || w === 'pushd') return []; // `cd x` alone is its own segment
     break;
   }
@@ -141,6 +142,7 @@ function classifyDotnet(args: string[]): HeavyClass {
 }
 
 function classifyWords(ws0: string[], depth: number): HeavyClass {
+  ws0 = unwrapGroup(ws0);
   const ws = leading(ws0);
   if (!ws.length) return { heavy: false };
   const bin = ws[0].replace(/\\/g, '/').split('/').pop()!.toLowerCase().replace(/\.(exe|cmd)$/, '');
@@ -150,18 +152,20 @@ function classifyWords(ws0: string[], depth: number): HeavyClass {
     // -c also comes bundled with other flags, as in the login shell's -lc.
     const k = args.findIndex((a) => /^(-[a-z]*c|\/\/?c|\/\/?k|-command)$/i.test(a));
     if (k >= 0) return classifyCommand(args.slice(k + 1).join(' '), depth + 1);
-    const script = args.find((a) => !a.startsWith('-'));
-    return (script && classifyScript(script)) || { heavy: false };
+    const at = args.findIndex((a) => !a.startsWith('-'));
+    return at < 0 || args.slice(0, at).some((a) => /^-[a-z]*n[a-z]*$/.test(a)) ? { heavy: false } : classifyWords(args.slice(at), depth + 1);
   }
   const script = classifyScript(ws[0]);
-  if (script) return script;
+  if (script) return args.length === 1 && (args[0] === '--help' || args[0] === '-h') ? { heavy: false } : script;
   if (bin === 'make' || bin === 'gmake') return classifyMake(args);
   if (bin === 'cargo') return classifyCargo(args);
   if (bin === 'dotnet') return classifyDotnet(args);
   if (bin === 'gradle' || bin === 'gradlew' || bin === 'gradlew.bat') return classifyGradle(args);
   if (bin === 'mvn' || bin === 'mvnw') return classifyMaven(args);
-  if (bin === 'playwright') return classifyPlaywright(args);
+  if (bin === 'playwright' || bin.startsWith('playwright@')) return classifyPlaywright(args);
+  const worker = classifyWorker(bin, args); if (worker) return worker;
   if (bin === 'npm' || bin === 'pnpm' || bin === 'yarn') {
+    const extra = classifyPackageExtras(bin, args, (w) => classifyWords(w, depth)); if (extra) return extra;
     const sub = args.find((a) => !a.startsWith('-')) ?? (bin === 'yarn' ? 'install' : '');
     if (sub === 'ci' || sub === 'rebuild') return { heavy: true, kind: 'install', why: `${bin} ${sub}` };
     if (sub === 'install' || sub === 'i' || sub === 'add') return { heavy: true, kind: 'install', why: `${bin} ${sub}` };
@@ -176,6 +180,7 @@ function classifyWords(ws0: string[], depth: number): HeavyClass {
     if (bin !== 'npm' && /^test(:.*)?$/.test(sub)) return { heavy: true, kind: 'suite', why: `${bin} ${sub}` };
     return { heavy: false };
   }
+  if (bin === 'bunx') { const at = args.findIndex((a) => !a.startsWith('-')); return at < 0 ? { heavy: false } : classifyWords(args.slice(at), depth); }
   if (bin === 'npx') { const at = args.findIndex((a) => !a.startsWith('-')); return at < 0 ? { heavy: false } : classifyWords(args.slice(at), depth); }
   if (bin === 'electron-rebuild' || bin === 'node-gyp') return { heavy: true, kind: 'install', why: bin };
   if (bin === 'electron-builder') return { heavy: true, kind: 'build', why: bin };
@@ -279,6 +284,8 @@ export interface HeavyCall {
 export interface ProcRow { pid: number; parentPid: number; commandLine: string }
 export interface HeavyLockDeps {
   limit: () => HeavyLimit;
+  /** How many of the held and reserved slots may be test suites. Absent = no limit beyond `limit`. */
+  suiteLimit?: () => HeavyLimit;
   now?: () => number;
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (t: unknown) => void;
@@ -349,6 +356,7 @@ export class HeavyJobLock {
     }
     this.expire();
     this.serve(); // a raised limit serves the queue before anyone new
+    if (cls.kind === 'suite' && this.reservations.get(agentId)?.kind !== 'suite' && !this.suiteRoom()) return this.refuse(agentId, cls, limit, true);
     const reserved = this.reservations.delete(agentId);
     if (!reserved && this.calls.size + this.reservations.size >= limit) return this.refuse(agentId, cls, limit);
     const now = this.now();
@@ -359,18 +367,32 @@ export class HeavyJobLock {
     return { allow: true, acquired: true };
   }
 
-  private refuse(agentId: string, cls: HeavyClass, limit: number): HeavyDecision {
+  /** Room for one more suite: suites held plus suite reservations stay under the suite limit. */
+  private suiteRoom(): boolean {
+    const cap = this.d.suiteLimit?.() ?? 'off';
+    if (cap === 'off') return true;
+    const held = [...this.calls.values()].filter((c) => c.kind === 'suite').length;
+    return held + [...this.reservations.values()].filter((r) => r.kind === 'suite').length < cap;
+  }
+
+  private refuse(agentId: string, cls: HeavyClass, limit: number, suites = false): HeavyDecision {
     let at = this.queue.findIndex((w) => w.agentId === agentId);
     if (at < 0) at = this.queue.push({ agentId, kind: cls.kind!, since: this.now() }) - 1;
-    const holders = [...this.calls.values()];
+    else this.queue[at].kind = cls.kind!; // it waits for what it asked for last, not what it first asked for
+    // A slot set aside for another kind of job would sit unused while this agent waits for a suite.
+    if (suites && this.reservations.delete(agentId)) { this.log({ kind: 'heavy-lock', action: 'reserve-dropped', agentId }); this.serve(); }
+    const holders = [...this.calls.values()].filter((h) => !suites || h.kind === 'suite');
+    const reserved = [...this.reservations].filter(([, r]) => !suites || r.kind === 'suite').map(([id]) => id);
     const taken: string[] = [];
     if (holders.length) taken.push(`held by ${holders.map((h) => `${h.agentId} (${h.kind}: ${h.label}, since ${clock(h.since)})`).join('; ')}`);
-    if (this.reservations.size) taken.push(`reserved for ${[...this.reservations.keys()].join(', ')}`);
-    const one = holders.length + this.reservations.size === 1;
-    const reason = `Denied by the heavy-job lock: this machine allows ${limit} heavy job${limit === 1 ? '' : 's'} at once and ${one ? 'it is' : 'they are'} ${taken.join(' and ')}. `
+    if (reserved.length) taken.push(`reserved for ${reserved.join(', ')}`);
+    const one = holders.length + reserved.length === 1;
+    const cap = suites ? this.d.suiteLimit?.() : limit;
+    const allows = suites ? `${cap} test suite${cap === 1 ? '' : 's'} at a time` : `${limit} heavy job${limit === 1 ? '' : 's'} at once`;
+    const reason = `Denied by the heavy-job lock: this machine allows ${allows} and ${one ? 'it is' : 'they are'} ${taken.join(' and ')}. `
       + `You are queued (position ${at + 1}): when a slot frees it is reserved for you for ${Math.round(HEAVY_RESERVE_MS / 60_000)} minutes and you will get a message saying so. `
       + 'Do not retry or poll in the meantime; carry on with light work (single test files, reads and edits are not limited) until you are told.';
-    this.log({ kind: 'heavy-lock', action: 'deny', agentId, heavyKind: cls.kind, position: at + 1, holders: holders.map((h) => h.agentId), limit });
+    this.log({ kind: 'heavy-lock', action: 'deny', agentId, heavyKind: cls.kind, position: at + 1, holders: holders.map((h) => h.agentId), limit, ...(suites ? { suiteLimit: cap } : {}) });
     return { allow: false, reason };
   }
 
@@ -434,7 +456,10 @@ export class HeavyJobLock {
   private serve(): void {
     const limit = this.d.limit();
     while (this.queue.length && (limit === 'off' || this.calls.size + this.reservations.size < limit)) {
-      const w = this.queue.shift()!;
+      // The oldest waiter that can run: a suite waits while the suites are full, without holding up the rest.
+      const next = this.queue.findIndex((q) => q.kind !== 'suite' || this.suiteRoom());
+      if (next < 0) break;
+      const w = this.queue.splice(next, 1)[0];
       if (this.d.alive && !this.d.alive(w.agentId)) { this.log({ kind: 'heavy-lock', action: 'queue-dropped', agentId: w.agentId }); continue; }
       const until = this.now() + HEAVY_RESERVE_MS;
       // Told first: a reservation for an agent that will never hear of it would just strand the slot.
@@ -506,7 +531,7 @@ export class HeavyJobLock {
       if (c.pid === undefined || !listed.has(c.pid)) {
         c.pid = undefined;
         const matches = (under.get(c.agentId) ?? []).filter((p) => !claimed.has(p.pid) && !lineage(p.pid).some((a) => claimed.has(a))
-          && ((!!c.command && p.commandLine.includes(c.command)) || (!!c.why && classifyCommand(p.commandLine).why === c.why)));
+          && (carriesCommand(p.commandLine, c.command, c.command.length >= COMMAND_KEEP) || (!!c.why && classifyCommand(p.commandLine).why === c.why)));
         const mine = new Set(matches.map((p) => p.pid));
         c.pid = matches.find((p) => !lineage(p.pid).some((a) => mine.has(a)))?.pid;
         if (c.pid !== undefined) claimed.add(c.pid);
