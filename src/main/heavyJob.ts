@@ -18,6 +18,7 @@
  * MIT, Copyright (c) 2026 Richard J Tindell II), which ported them from guppyos (MIT).
  */
 import { execFile } from 'node:child_process';
+import { classifyGradle, classifyMaven, classifyPlaywright, E2E_SCRIPT } from './heavyJobRules';
 
 export type HeavyKind = 'install' | 'build' | 'suite' | 'bench';
 export interface HeavyClass { heavy: boolean; kind?: HeavyKind; why?: string }
@@ -76,6 +77,7 @@ function classifyScript(file: string): HeavyClass | null {
   const name = file.replace(/\\/g, '/').split('/').pop()!;
   if (BUILD_SCRIPT.test(name)) return { heavy: true, kind: 'build', why: name };
   if (SUITE_SCRIPT.test(name)) return { heavy: true, kind: 'suite', why: name };
+  if (E2E_SCRIPT.test(name)) return { heavy: true, kind: 'suite', why: name };
   return null;
 }
 
@@ -156,6 +158,9 @@ function classifyWords(ws0: string[], depth: number): HeavyClass {
   if (bin === 'make' || bin === 'gmake') return classifyMake(args);
   if (bin === 'cargo') return classifyCargo(args);
   if (bin === 'dotnet') return classifyDotnet(args);
+  if (bin === 'gradle' || bin === 'gradlew' || bin === 'gradlew.bat') return classifyGradle(args);
+  if (bin === 'mvn' || bin === 'mvnw') return classifyMaven(args);
+  if (bin === 'playwright') return classifyPlaywright(args);
   if (bin === 'npm' || bin === 'pnpm' || bin === 'yarn') {
     const sub = args.find((a) => !a.startsWith('-')) ?? (bin === 'yarn' ? 'install' : '');
     if (sub === 'ci' || sub === 'rebuild') return { heavy: true, kind: 'install', why: `${bin} ${sub}` };
