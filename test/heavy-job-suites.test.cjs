@@ -9,7 +9,7 @@ const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 
 const { classifyCommand, HeavyJobLock, HEAVY_SCAN_MISSES, HEAVY_RESERVE_MS } = loadTs('src/main/heavyJob.ts');
-const { suiteJobLimit, SUITE_DEFAULT_LIMIT } = loadTs('src/main/heavyJobRules.ts');
+const { carriesCommand, suiteJobLimit, SUITE_DEFAULT_LIMIT } = loadTs('src/main/heavyJobRules.ts');
 
 function lock(limit, suites, extra = {}) {
   let now = 1_000_000; const logs = []; const told = [];
@@ -190,7 +190,7 @@ const SUITES = [
   'node /w/node_modules/.bin/playwright test', 'node /w/node_modules/@playwright/test/cli.js test',
   './gradlew test --tests "io.example.*"', "mvn -Dtest='Foo*' test", 'mvn -Dtest=FooTest,BarTest test',
   'npx playwright test e2e/auth', 'npx playwright test --grep @smoke', 'bash scripts/e2e.sh web/e2e/one.e2e.ts',
-  'bash scripts/e2e-allowance.sh', 'scripts/e2e-steel-thread.sh'
+  'bash scripts/e2e-payments.sh', 'scripts/e2e-smoke.sh'
 ];
 
 const LIGHT = [
@@ -222,4 +222,97 @@ test('the refusal still says single test files are not limited, and that is now 
   for (const cmd of ["./gradlew test --tests 'io.example.SomeTest'", 'mvn -Dtest=FooTest test', 'npx playwright test e2e/one.e2e.ts']) {
     assert.equal(classifyCommand(cmd).heavy, false, cmd);
   }
+});
+
+// ── a finished suite is not kept alive by single-test reruns ─────────────────
+
+/** A background suite that has ended, then six scans that see only a single-test rerun of it. */
+async function rerunAfterSuite(suite, rerunShell, rerunWorker) {
+  let procs = [{ pid: 10, parentPid: 1, commandLine: 'claude' }, { pid: 11, parentPid: 10, commandLine: `/bin/zsh -c eval '${suite}' \\< /dev/null` }];
+  const x = lock(2, 1, { roots: () => [{ agentId: 'a', pid: 10 }, { agentId: 'b', pid: 20 }], probe: async () => procs });
+  x.l.acquire('a', classifyCommand(suite), suite, 'bg', true);
+  x.l.callDone('a', 'bg');
+  await x.l.scan();
+  assert.equal(x.l.snapshot().length, 1, 'held while the suite runs');
+  procs = [procs[0], { pid: 12, parentPid: 10, commandLine: rerunShell }, { pid: 13, parentPid: 12, commandLine: rerunWorker }];
+  const held = [];
+  for (let i = 0; i < 6; i++) { await x.l.scan(); held.push(x.l.snapshot().length); }
+  assert.deepEqual(held, [1, 0, 0, 0, 0, 0], 'freed two scans after the suite ended');
+  assert.equal(x.l.acquire('b', E2E, 'bash scripts/e2e.sh', 'b1', false).allow, true, "another agent's suite runs");
+}
+
+test('a finished Gradle suite frees its slot on schedule while the same agent reruns one test class', () =>
+  rerunAfterSuite('./gradlew test',
+    "/bin/zsh -c eval './gradlew test --tests io.example.SomeTest' \\< /dev/null",
+    '/usr/bin/java -cp gradle/wrapper/gradle-wrapper.jar org.gradle.wrapper.GradleWrapperMain test --tests io.example.SomeTest'));
+
+test('a finished Playwright suite frees its slot on schedule while the same agent reruns one spec', () =>
+  rerunAfterSuite('npx playwright test',
+    "/bin/zsh -c eval 'npx playwright test e2e/one.e2e.ts' \\< /dev/null",
+    'node /w/node_modules/.bin/playwright test e2e/one.e2e.ts'));
+
+test('a process line carries a command only where the command ends', () => {
+  assert.equal(carriesCommand("/bin/zsh -c eval './gradlew test' \\< /dev/null", './gradlew test', false), true);
+  assert.equal(carriesCommand('/bin/sh ./gradlew test', './gradlew test', false), true);
+  assert.equal(carriesCommand('./gradlew test && echo done', './gradlew test', false), true);
+  assert.equal(carriesCommand("/bin/zsh -c eval './gradlew test --tests io.X'", './gradlew test', false), false);
+  assert.equal(carriesCommand('./gradlew test-fixtures', './gradlew test', false), false);
+  assert.equal(carriesCommand("eval './gradlew test --tests io.X'", './gradlew test', true), true, 'a command cut short matches anywhere, as before');
+  assert.equal(carriesCommand('anything', '', false), false);
+});
+
+// ── a queued agent waits for what it asked for last ─────────────────────────
+
+test('queued for a suite, then refused an install: it is served the next free slot for the install', () => {
+  const x = lock(2, 1);
+  x.l.acquire('a', SUITE, './gradlew test', 'a1', true);
+  x.l.acquire('x', BUILD, 'npm run build', 'x1', false);
+  assert.equal(x.l.acquire('c', E2E, 'bash scripts/e2e.sh', 'c1', false).allow, false);
+  assert.equal(x.l.acquire('c', INSTALL, 'npm ci', 'c2', false).allow, false);
+  x.l.callDone('x', 'x1');
+  assert.deepEqual(x.told.map((t) => [t.agentId, t.kind]), [['c', 'install']], 'not left waiting on the suite slot');
+});
+
+test('reserved a slot for an install, then refused a suite: the unused slot passes on at once', () => {
+  const x = lock(2, 1);
+  x.l.acquire('a', SUITE, './gradlew test', 'a1', true);
+  x.l.acquire('x', BUILD, 'npm run build', 'x1', false);
+  x.l.acquire('c', INSTALL, 'npm ci', 'c1', false);
+  x.l.acquire('d', INSTALL, 'npm ci', 'd1', false);
+  x.l.callDone('x', 'x1');
+  assert.deepEqual(x.told.map((t) => t.agentId), ['c']);
+  assert.equal(x.l.acquire('c', E2E, 'bash scripts/e2e.sh', 'c2', false).allow, false, 'suites are full');
+  assert.deepEqual(x.told.map((t) => t.agentId), ['c', 'd'], "c's install slot goes to d rather than sitting for five minutes");
+  assert.equal(x.l.acquire('d', INSTALL, 'npm ci', 'd1', false).allow, true);
+});
+
+test('a suite refusal names the suites that hold the slot, not every heavy job', () => {
+  const x = lock(2, 1);
+  x.l.acquire('a', SUITE, './gradlew test', 'a1', false);
+  x.l.acquire('x', BUILD, 'npm run build', 'x1', false);
+  const d = x.l.acquire('b', E2E, 'bash scripts/e2e.sh', 'b1', false);
+  assert.match(d.reason, /allows 1 test suite at a time and it is held by a \(suite: gradle test/);
+  assert.doesNotMatch(d.reason, /npm run build/);
+});
+
+// ── what counts as one test, and what is a session rather than a suite ──────
+
+const WIDE = [
+  './gradlew test integrationTest --tests io.X', './gradlew :api:test :web:test --tests io.X', "./gradlew test --tests io.X --tests 'io.example.*'",
+  'mvn verify -Dtest=FooTest', 'mvn install -Dtest=FooTest', 'mvn -Dtest=Foo? test', "mvn -Dtest='%regex[.+IT]' test", 'mvn test -Dtest=com/example/slow/',
+  'npx playwright test e2e.ts', 'npx playwright test spec.ts', 'npx playwright test e2e/one.e2e.ts --repeat-each 50', './test.sh -h localhost',
+  'java -classpath /opt/maven/boot/plexus-classworlds.jar org.codehaus.plexus.classworlds.launcher.Launcher verify',
+  'java -jar gradle/wrapper/gradle-wrapper.jar test'
+];
+const NOT_A_SUITE = [
+  './gradlew test --continuous', './gradlew -t test', 'npx playwright test --ui', 'npm run e2e:install', 'yarn e2e-setup', 'pnpm e2e:down',
+  'bash -xn scripts/e2e.sh', 'mvn -Dtest=FooTest test', 'mvn -Dtest=FooTest surefire:test', 'java -jar app.jar test'
+];
+
+test('a wide run that names one test is still a suite, and Maven and wrapper-jar workers are recognised', () => {
+  for (const cmd of WIDE) assert.equal(classifyCommand(cmd).kind, 'suite', cmd);
+});
+
+test('watch modes, interactive sessions, stack helpers and syntax checks are not suites', () => {
+  for (const cmd of NOT_A_SUITE) assert.equal(classifyCommand(cmd).heavy, false, cmd);
 });

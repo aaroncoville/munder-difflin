@@ -18,8 +18,7 @@
  * MIT, Copyright (c) 2026 Richard J Tindell II), which ported them from guppyos (MIT).
  */
 import { execFile } from 'node:child_process';
-import { classifyGradle, classifyMaven, classifyPlaywright, E2E_SCRIPT } from './heavyJobRules';
-import { classifyPackageExtras, classifyWorker, RUN_PREFIXES, unwrapGroup } from './heavyJobRules';
+import { carriesCommand, classifyGradle, classifyMaven, classifyPackageExtras, classifyPlaywright, classifyWorker, E2E_SCRIPT, RUN_PREFIXES, unwrapGroup } from './heavyJobRules';
 
 export type HeavyKind = 'install' | 'build' | 'suite' | 'bench';
 export interface HeavyClass { heavy: boolean; kind?: HeavyKind; why?: string }
@@ -154,10 +153,10 @@ function classifyWords(ws0: string[], depth: number): HeavyClass {
     const k = args.findIndex((a) => /^(-[a-z]*c|\/\/?c|\/\/?k|-command)$/i.test(a));
     if (k >= 0) return classifyCommand(args.slice(k + 1).join(' '), depth + 1);
     const at = args.findIndex((a) => !a.startsWith('-'));
-    return at < 0 || args.slice(0, at).includes('-n') ? { heavy: false } : classifyWords(args.slice(at), depth + 1);
+    return at < 0 || args.slice(0, at).some((a) => /^-[a-z]*n[a-z]*$/.test(a)) ? { heavy: false } : classifyWords(args.slice(at), depth + 1);
   }
   const script = classifyScript(ws[0]);
-  if (script) return args.includes('--help') || args.includes('-h') ? { heavy: false } : script;
+  if (script) return args.length === 1 && (args[0] === '--help' || args[0] === '-h') ? { heavy: false } : script;
   if (bin === 'make' || bin === 'gmake') return classifyMake(args);
   if (bin === 'cargo') return classifyCargo(args);
   if (bin === 'dotnet') return classifyDotnet(args);
@@ -379,11 +378,15 @@ export class HeavyJobLock {
   private refuse(agentId: string, cls: HeavyClass, limit: number, suites = false): HeavyDecision {
     let at = this.queue.findIndex((w) => w.agentId === agentId);
     if (at < 0) at = this.queue.push({ agentId, kind: cls.kind!, since: this.now() }) - 1;
-    const holders = [...this.calls.values()];
+    else this.queue[at].kind = cls.kind!; // it waits for what it asked for last, not what it first asked for
+    // A slot set aside for another kind of job would sit unused while this agent waits for a suite.
+    if (suites && this.reservations.delete(agentId)) { this.log({ kind: 'heavy-lock', action: 'reserve-dropped', agentId }); this.serve(); }
+    const holders = [...this.calls.values()].filter((h) => !suites || h.kind === 'suite');
+    const reserved = [...this.reservations].filter(([, r]) => !suites || r.kind === 'suite').map(([id]) => id);
     const taken: string[] = [];
     if (holders.length) taken.push(`held by ${holders.map((h) => `${h.agentId} (${h.kind}: ${h.label}, since ${clock(h.since)})`).join('; ')}`);
-    if (this.reservations.size) taken.push(`reserved for ${[...this.reservations.keys()].join(', ')}`);
-    const one = holders.length + this.reservations.size === 1;
+    if (reserved.length) taken.push(`reserved for ${reserved.join(', ')}`);
+    const one = holders.length + reserved.length === 1;
     const cap = suites ? this.d.suiteLimit?.() : limit;
     const allows = suites ? `${cap} test suite${cap === 1 ? '' : 's'} at a time` : `${limit} heavy job${limit === 1 ? '' : 's'} at once`;
     const reason = `Denied by the heavy-job lock: this machine allows ${allows} and ${one ? 'it is' : 'they are'} ${taken.join(' and ')}. `
@@ -528,7 +531,7 @@ export class HeavyJobLock {
       if (c.pid === undefined || !listed.has(c.pid)) {
         c.pid = undefined;
         const matches = (under.get(c.agentId) ?? []).filter((p) => !claimed.has(p.pid) && !lineage(p.pid).some((a) => claimed.has(a))
-          && ((!!c.command && p.commandLine.includes(c.command)) || (!!c.why && classifyCommand(p.commandLine).why === c.why)));
+          && (carriesCommand(p.commandLine, c.command, c.command.length >= COMMAND_KEEP) || (!!c.why && classifyCommand(p.commandLine).why === c.why)));
         const mine = new Set(matches.map((p) => p.pid));
         c.pid = matches.find((p) => !lineage(p.pid).some((a) => mine.has(a)))?.pid;
         if (c.pid !== undefined) claimed.add(c.pid);
