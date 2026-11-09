@@ -88,6 +88,8 @@ export interface HiveMessage {
   requires_reply: boolean;
   needs_human: boolean;
   created_at: string;
+  /** The created_at the sender wrote, kept for reference when the router stamped its own. */
+  client_created_at?: string;
 }
 
 /** One hive message reshaped for the voice read-layer (`hive:messages`): the
@@ -1721,7 +1723,10 @@ export class HiveManager {
       hops: Math.max(0, Math.min(typeof partial.hops === 'number' ? partial.hops : 0, HOP_CAP)),
       requires_reply: partial.requires_reply ?? ['request', 'query', 'propose'].includes(act),
       needs_human: partial.needs_human ?? false,
-      created_at: partial.created_at ?? new Date().toISOString()
+      // The router's clock, not the sender's: a sender's clock can run ahead, and the stall timer and
+      // every created_at-ordered read measure from this. The sender's value is kept beside it.
+      created_at: new Date().toISOString(),
+      ...(typeof partial.created_at === 'string' ? { client_created_at: partial.created_at } : {})
     };
   }
 
