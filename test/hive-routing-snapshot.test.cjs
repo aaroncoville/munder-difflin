@@ -288,7 +288,7 @@ test('corruption before the observer still lets a request join the thread whose 
   f.fromFolder(WORKER, 'report-1', { to: 'god', act: 'done', in_reply_to: 'review-1', subject: 's', body: 'b' });
   f.hive.routeOnce();
 
-  f.fromFolder('god-1', 'review-2', { to: WORKER, act: 'request', subject: 's', body: 'b' });
+  f.fromFolder('god-1', 'review-2', { to: WORKER, act: 'request', subject: 's', body: 'b2' });
   f.corruptOnNextDelivery();
   f.hive.routeOnce();
   f.repair();

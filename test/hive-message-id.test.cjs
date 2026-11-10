@@ -540,8 +540,8 @@ test('a replaced id is logged, without the id as it was written', async (t) => {
 test('a replaced duplicate is logged as a duplicate', async (t) => {
   const { hive, route } = await floor(t);
 
-  route('same');
-  route('same');
+  route('same', 'first');
+  route('same', 'second');
 
   const rows = hive.logTail(100).filter((r) => r.kind === 'message-id-replaced');
   assert.equal(rows.length, 1);
