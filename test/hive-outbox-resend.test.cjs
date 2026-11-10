@@ -103,3 +103,72 @@ test('a message that could not be delivered does not hold back the same message 
   assert.equal(post(hive, done, now + 1000), 1);
   assert.equal(got('god-1', 'finished'), 1);
 });
+
+const bare = { to: 'god', act: 'done', subject: 'bare', body: 'PR #3 open', in_reply_to: 'req-3' };
+
+test('a repeat whose sender left out the conversation is delivered once', async (t) => {
+  const { hive, post, got } = await floor(t);
+  const now = Date.now();
+  post(hive, bare, now);
+  assert.equal(post(hive, bare, now + 1000), 0);
+  assert.equal(got('god-1', 'bare'), 1);
+});
+
+test('a repeat whose sender left out the conversation is delivered once after the app restarts', async (t) => {
+  const { home, hive, post, got } = await floor(t);
+  post(hive, bare);
+  assert.equal(post(new HiveManager(() => home), bare), 0);
+  assert.equal(got('god-1', 'bare'), 1);
+});
+
+/** Files `msg` under worker-1's outbox/.sent as if it had been routed, with the given mtime. */
+function filed(agents, name, msg, mtimeMs, pad = '') {
+  const file = path.join(agents, 'worker-1', 'outbox', '.sent', name);
+  fs.writeFileSync(file, JSON.stringify(msg) + pad);
+  fs.utimesSync(file, mtimeMs / 1000, mtimeMs / 1000);
+  return file;
+}
+
+test('after a restart, a message set aside as undelivered does not hold back the same message', async (t) => {
+  const { home, hive, agents, post, got } = await floor(t);
+  const inbox = path.join(agents, 'god-1', 'inbox');
+  fs.renameSync(inbox, `${inbox}.away`);
+  assert.equal(post(hive, done), 0);
+  fs.renameSync(`${inbox}.away`, inbox);
+  assert.equal(post(new HiveManager(() => home), done), 1);
+  assert.equal(got('god-1', 'finished'), 1);
+});
+
+test('after a restart, the window runs from when the original was routed, not from a repeat filed as dup-', async (t) => {
+  const { home, hive, agents, post, got } = await floor(t);
+  const now = Date.now();
+  post(hive, done, now);
+  post(hive, done, now);
+  const sent = path.join(agents, 'worker-1', 'outbox', '.sent');
+  fs.utimesSync(path.join(sent, 'm-0.json'), (now - 9 * MINUTE) / 1000, (now - 9 * MINUTE) / 1000);
+  fs.utimesSync(path.join(sent, 'dup-m-1.json'), (now - MINUTE) / 1000, (now - MINUTE) / 1000);
+  assert.equal(post(new HiveManager(() => home), done, now + 2 * MINUTE), 1, 'the original was routed 11 minutes before');
+  assert.equal(got('god-1', 'finished'), 2);
+});
+
+test('after a restart, a link, or a copy too large to be a message, under .sent is not read back', async (t) => {
+  const { home, agents, post, got } = await floor(t);
+  const elsewhere = path.join(home, 'elsewhere.json');
+  fs.writeFileSync(elsewhere, JSON.stringify({ ...done, from: 'worker-1' }));
+  fs.symlinkSync(elsewhere, path.join(agents, 'worker-1', 'outbox', '.sent', 'linked.json'));
+  filed(agents, 'huge.json', { ...bare, from: 'worker-1' }, Date.now(), ' '.repeat(1_100_000));
+  const restarted = new HiveManager(() => home);
+  assert.equal(post(restarted, done), 1);
+  assert.equal(post(restarted, bare), 1);
+  assert.equal(got('god-1', 'finished') + got('god-1', 'bare'), 2);
+});
+
+test('after a restart, a copy dated in the future counts from now, not from its date', async (t) => {
+  const { home, agents, post, got } = await floor(t);
+  const now = Date.now();
+  filed(agents, 'ahead.json', { ...done, from: 'worker-1' }, now + 60 * MINUTE);
+  const restarted = new HiveManager(() => home);
+  post(restarted, { to: 'god', act: 'inform', subject: 'first', body: 'reads .sent back' }, now);
+  assert.equal(post(restarted, done, now + 11 * MINUTE), 1);
+  assert.equal(got('god-1', 'finished'), 1);
+});

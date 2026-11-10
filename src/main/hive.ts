@@ -2186,13 +2186,13 @@ export class HiveManager {
           const msg = this.normalize(partial, id);
           msg.from = id; // sender is authoritative — the owning directory
           hops = msg.hops;
-          if (this.recentSends.isRepeat(msg, join(outbox, '.sent'), now)) { stage = 'archive'; this.appendLog({ kind: 'outbox-duplicate', from: id, file: f, archived: moveWithoutReplacing(full, join(outbox, '.sent'), (n) => (n === 0 ? `dup-${f}` : `dup-${n}-${f}`)) }); continue; } // written again after it was routed: file it, deliver nothing
+          if (this.recentSends.isRepeat({ ...msg, conversation: partial.conversation }, join(outbox, '.sent'), now)) { stage = 'archive'; this.appendLog({ kind: 'outbox-duplicate', from: id, file: f, archived: moveWithoutReplacing(full, join(outbox, '.sent'), (n) => (n === 0 ? `dup-${f}` : `dup-${n}-${f}`)) }); continue; } // written again after it was routed: file it, deliver nothing
           stage = 'route';
           if (!this.routeMessage(msg)) {
             this.outboxFailed(isKnownTarget(this.routingRegistry().agents, msg.to, this.agentsDir()) ? 'not-delivered' : 'recipient', outbox, f, id, undefined, hops);
             continue;
           }
-          this.recentSends.routed(msg, now);
+          this.recentSends.routed({ ...msg, conversation: partial.conversation }, now);
           stage = 'archive';
           const stamp = stampSentCopy(join(outbox, '.sent'), archiveOutboxFile(outbox, f), msg); if (stamp !== 'stamped') this.appendLog({ kind: `sent-stamp-${stamp}`, from: id, file: f }); // archive, don't reprocess
           routed++;
