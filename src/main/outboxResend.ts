@@ -56,7 +56,7 @@ export class RecentSends {
     if (this.loaded.has(sender)) return;
     this.loaded.add(sender);
     let names: string[];
-    try { names = readdirSync(sentDir); } catch { return; }
+    try { if (!lstatSync(sentDir).isDirectory()) return; names = readdirSync(sentDir); } catch { return; }
     for (const name of names) {
       if (!name.endsWith('.json') || name.startsWith('.') || name.startsWith('bad-') || name.startsWith('dup-')) continue;
       const file = join(sentDir, name);

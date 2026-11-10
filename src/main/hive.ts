@@ -31,6 +31,7 @@ import type { AgentUsageSample } from './usage';
 import { archiveOutboxFile, moveWithoutReplacing, quarantineOutboxFile, reportOutboxFailure, type OutboxStage } from './outboxFailure';
 import { stampSentCopy } from './sentStamp';
 import { RecentSends } from './outboxResend';
+import { setAsideUnlessFolder } from './sentFolder';
 import { COMMAND_GROUPS } from '../shared/claudeCommands';
 import { ensureCodexShortHome } from '../shared/codexRemote';
 import {
@@ -2147,6 +2148,7 @@ export class HiveManager {
     for (const id of readdirSync(agentsDir)) {
       const outbox = join(agentsDir, id, 'outbox');
       if (!existsSync(outbox)) continue;
+      if (isRosterId(roster.agents, id)) setAsideUnlessFolder(join(outbox, '.sent'), (aside) => this.appendLog({ kind: 'sent-folder-set-aside', from: id, aside }));
       for (const f of readdirSync(outbox).sort()) { // in name order, so a burst is stamped in the order it was written
         if (!f.endsWith('.json')) continue;
         // The sender comes from this folder's name, read from disk, so an exact roster id has its exact folder.
