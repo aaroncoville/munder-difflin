@@ -30,6 +30,7 @@ import { randomBytes, createHash } from 'node:crypto';
 import type { AgentUsageSample } from './usage';
 import { archiveOutboxFile, moveWithoutReplacing, quarantineOutboxFile, reportOutboxFailure, type OutboxStage } from './outboxFailure';
 import { stampSentCopy } from './sentStamp';
+import { RecentSends } from './outboxResend';
 import { COMMAND_GROUPS } from '../shared/claudeCommands';
 import { ensureCodexShortHome } from '../shared/codexRemote';
 import {
@@ -1996,6 +1997,7 @@ export class HiveManager {
    *  The router polls, so it can read a file mid-write; such a file gets
    *  MALFORMED_RETRY_MS to be completed before it is dropped. */
   private malformedSince = new Map<string, number>();
+  private readonly recentSends = new RecentSends();
 
   /** A file that failed to parse: drop it once it has stayed unparseable for
    *  MALFORMED_RETRY_MS, telling its sender; until then leave it in place. */
@@ -2184,11 +2186,13 @@ export class HiveManager {
           const msg = this.normalize(partial, id);
           msg.from = id; // sender is authoritative — the owning directory
           hops = msg.hops;
+          if (this.recentSends.isRepeat(msg, join(outbox, '.sent'), now)) { stage = 'archive'; this.appendLog({ kind: 'outbox-duplicate', from: id, file: f, archived: moveWithoutReplacing(full, join(outbox, '.sent'), (n) => (n === 0 ? `dup-${f}` : `dup-${n}-${f}`)) }); continue; } // written again after it was routed: file it, deliver nothing
           stage = 'route';
           if (!this.routeMessage(msg)) {
             this.outboxFailed(isKnownTarget(this.routingRegistry().agents, msg.to, this.agentsDir()) ? 'not-delivered' : 'recipient', outbox, f, id, undefined, hops);
             continue;
           }
+          this.recentSends.routed(msg, now);
           stage = 'archive';
           const stamp = stampSentCopy(join(outbox, '.sent'), archiveOutboxFile(outbox, f), msg); if (stamp !== 'stamped') this.appendLog({ kind: `sent-stamp-${stamp}`, from: id, file: f }); // archive, don't reprocess
           routed++;
