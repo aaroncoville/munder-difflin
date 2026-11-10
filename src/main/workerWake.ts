@@ -278,6 +278,7 @@ export class WorkerWakeWatchdog {
     if (classifyHook(event, message) === 'needsHuman') this.lastHumanNeedsAt.set(agentId, at);
   }
 
+  /** The latest hook of the agent's open turn, or 0 when no turn is open (Stop or an idle notice closes it). */ openTurnLastAt(agentId: string): number { return this.openTurnAt.get(agentId) ?? 0; }
   /** When the agent's hooks last proved a turn, or 0 when they never have. */
   turnHookAt(agentId: string): number {
     return this.lastTurnHookAt.get(agentId) ?? 0;

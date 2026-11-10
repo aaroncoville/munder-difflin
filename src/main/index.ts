@@ -74,7 +74,7 @@ import { buildWorkerLaunch } from './workerLaunch';
 import { RefusedRosterId, RegistryUnreadable, shortTarget } from './messageTarget';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WakeSkipLog, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
-import { inboxDeliveredAt, inboxLine, lastTurnAt, splitInbox } from './inboxClaims';
+import { inboxDeliveredAt, inboxLine, openTurnClaimAt, splitInbox } from './inboxClaims';
 import { shouldReapIdle, workerHasLiveJob } from './workerIdleJobs';
 import { afterWorkerDone } from './workerDoneGrace';
 import { noticeDelivered, stopFailedAgain, stopRetryDue, stuckWorkerNotice, type StopRetry } from './workerStopRetry';
@@ -1197,7 +1197,7 @@ function buildHeartbeatDigest(quietMs: number, actionable = 0): string {
   const names = active.map(([, a]) => a.name).join(', ') || '—';
   const boardHead = hive.board().split('\n').slice(0, 10).join('\n').trim();
   const log = hive.logTail(8).map((e) => { try { return JSON.stringify(e); } catch { return ''; } }).filter(Boolean).join('\n');
-  const inboxes = active.map(([id, a]) => ({ name: a.name, ...splitInbox(inboxDeliveredAt(hive.root(), id), lastTurnAt(workerWake.turnHookAt(id), telemetry.getAgentUsage(id), telemetry.getSpans(id))) }));
+  const inboxes = active.map(([id, a]) => ({ name: a.name, ...splitInbox(inboxDeliveredAt(hive.root(), id), openTurnClaimAt(workerWake.openTurnLastAt(id), Date.now())) }));
   // When real agent/human mail is waiting, lead with an explicit call-to-action
   // instead of the "quiet" line — this beat fired BECAUSE of unread actionable
   // inbox, not because the floor went quiet, and god must read it now.
