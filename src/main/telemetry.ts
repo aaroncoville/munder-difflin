@@ -31,6 +31,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { readAgentUsage } from './transcript';
+import { transcriptWrittenAt } from './transcriptWrittenAt';
 import { normalizeModel } from './pricing';
 import { rolloutFileFor } from './codexActivity';
 import { CodexUsageReader } from './codexUsage';
@@ -48,6 +49,7 @@ export interface AgentUsageSample {
    *  double-count. Empty string on the transcript fallback when unknown. */
   sessionId: string;
   ts: number;
+  /** When the agent last did something, when that differs from `ts` (the transcript fallback's read time). */ activeAt?: number;
   input: number;
   output: number;
   cacheRead: number;
@@ -475,6 +477,7 @@ export class TelemetryCollector {
       agentId,
       sessionId: '',
       ts: Date.now(),
+      activeAt: transcriptWrittenAt(cwd, sessionId),
       input: u.inputTokens,
       output: u.outputTokens,
       cacheRead: u.cacheReadTokens,

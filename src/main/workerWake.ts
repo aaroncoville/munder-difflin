@@ -177,7 +177,7 @@ export function isStalledWorker(f: WorkerWakeFacts, now = Date.now()): boolean {
  *  hand it the collector's own types and tests can hand it literals. */
 export interface ActivityEvidence {
   /** The agent's latest usage sample (cumulative counters, ts = last update). */
-  usage?: { ts: number; input: number; output: number } | null;
+  usage?: { ts: number; activeAt?: number; input: number; output: number } | null;
   /** Tool spans the agent has run, in arrival order. */
   spans?: ReadonlyArray<{ ts: number }> | null;
 }
@@ -191,7 +191,7 @@ export interface ActivityEvidence {
  *  no transcript read as "last activity 63s ago" and was held as mid-turn. */
 export function activityEvidenceAt(ev: ActivityEvidence): number {
   const u = ev.usage;
-  const worked = u && (Number(u.input) || 0) + (Number(u.output) || 0) > 0 ? Number(u.ts) || 0 : 0;
+  const worked = u && (Number(u.input) || 0) + (Number(u.output) || 0) > 0 ? Number(u.activeAt ?? u.ts) || 0 : 0;
   let span = 0;
   for (const s of ev.spans ?? []) if (s && Number(s.ts) > span) span = Number(s.ts);
   return Math.max(worked, span);
