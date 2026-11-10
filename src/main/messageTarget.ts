@@ -20,7 +20,7 @@ export function isAppSender(id: string): boolean {
   return APP_SENDERS.has(folderKey(id));
 }
 
-function isFolderName(id: unknown): id is string {
+export function isFolderName(id: unknown): id is string {
   return typeof id === 'string' && id.length <= MAX_ID_LENGTH && !NOT_A_FOLDER_NAME.test(id);
 }
 
