@@ -199,7 +199,7 @@ test('a .sent folder that is a link is not written into, the refusal is logged, 
   hive.routeOnce();
   assert.equal(fs.readFileSync(outside.file, 'utf8'), 'keep me');
   assert.ok(hive.inbox('z-god').some((m) => m.id === 'probe-1'), 'delivered');
-  assert.ok(hive.logTail(50).some((r) => r.kind === 'sent-stamp-refused' && r.from === 'a-sender'), 'logged');
+  assert.ok(hive.logTail(50).some((r) => r.kind === 'sent-folder-set-aside' && r.from === 'a-sender'), 'logged');
   assert.equal(fs.readdirSync(outside.dir).some((f) => f.endsWith('.tmp')), false, 'no temporary file written there');
 });
 

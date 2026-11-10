@@ -1,5 +1,6 @@
 import { closeSync, openSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { assertRealFolder } from './sentFolder';
 
 /** The step of routing one outbox file that went wrong. A file only fails `not-delivered` after routing
  *  it finished without placing it anywhere. */
@@ -34,6 +35,7 @@ function moveToSent(outbox: string, file: string, nameFor: (n: number) => string
 
 /** Moves `source` into `folder` under the first free name `nameFor` gives, claiming it first. Returns the name used. */
 export function moveWithoutReplacing(source: string, folder: string, nameFor: (n: number) => string): string {
+  assertRealFolder(folder);
   for (let n = 0; n < 10_000; n++) {
     const name = nameFor(n);
     const target = join(folder, name);
