@@ -37,10 +37,9 @@ const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : nul
 // The log files sit in the hive folder, which agents can write, so nothing in
 // them is printed because it looks like an id. A printed string must be a known
 // value (trigger, status, shape, view, lock kind, canary feature or code), a
-// card in the current tasks.json, a router-minted conversation, or a keyed ref.
+// card in the current tasks.json, or a keyed ref.
 const ID = /^[A-Za-z0-9][\w.:-]{0,79}$/;
 const ASK_KEY = /^(.+)@\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-const MINTED_CONVERSATION = /^conv-[0-9a-f]{6}$/;
 const REF = /^[0-9a-f]{12}$/;
 const oneOf = <T extends string>(list: readonly T[]) => (v: unknown): T | null =>
   (typeof v === 'string' && (list as readonly string[]).includes(v) ? (v as T) : null);
@@ -77,10 +76,10 @@ export function summarize(i: DigestInput) {
     const m = typeof v === 'string' ? ASK_KEY.exec(v) : null;
     return m && cards.has(m[1]) ? (v as string) : null;
   };
-  /** A conversation as printed: a card or router-minted id, else its keyed ref. */
+  /** A turn's conversation group: its card (when in tasks.json) or its keyed
+   *  ref. A conversation value itself is never printed. */
   const conversation = (r: Row): string | null => {
-    const c = r.conversation;
-    if (typeof c === 'string' && (MINTED_CONVERSATION.test(c) || cards.has(c))) return c;
+    if (typeof r.cardId === 'string' && cards.has(r.cardId)) return r.cardId;
     return typeof r.conversationRef === 'string' && REF.test(r.conversationRef) ? `ref:${r.conversationRef}` : null;
   };
   const inWeek = (r: Row): boolean => { const t = num(r.ts); return t !== null && t >= i.start && t < i.end; };

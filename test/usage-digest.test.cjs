@@ -19,8 +19,8 @@ const j = (rows) => rows.map((r) => JSON.stringify(r));
 function week() {
   const log = j([
     { ts: MON + H, kind: 'turn', agentId: 'god', startTs: MON + H, durationMs: 10 * MIN, trigger: 'heartbeat' },
-    { ts: MON + 2 * H, kind: 'turn', agentId: 'god', startTs: MON + 2 * H, durationMs: 20 * MIN, trigger: 'mail', conversation: 'CARD-1' },
-    { ts: MON + 3 * H, kind: 'turn', agentId: 'jc', startTs: MON + 3 * H, durationMs: 30 * MIN, trigger: 'mail', conversation: 'CARD-1' },
+    { ts: MON + 2 * H, kind: 'turn', agentId: 'god', startTs: MON + 2 * H, durationMs: 20 * MIN, trigger: 'mail', cardId: 'CARD-1' },
+    { ts: MON + 3 * H, kind: 'turn', agentId: 'jc', startTs: MON + 3 * H, durationMs: 30 * MIN, trigger: 'mail', cardId: 'CARD-1' },
     // Hours in a state come from consecutive rows' own timestamps; msInState is ignored.
     { ts: MON + 2 * H, kind: 'card-transition', cardId: 'CARD-1', from: 'todo', to: 'doing' },
     { ts: MON + 4 * H, kind: 'card-transition', cardId: 'CARD-1', from: 'doing', to: 'blocked', msInState: 999 },
@@ -152,4 +152,16 @@ test('id-shaped prose is printed only when the app holds it; other conversations
   assert.doesNotMatch(md, /ORCHID/);
   assert.match(md, /ref:a1b2c3d4e5f6/);
   assert.deepEqual(s.canaryFailures, { 'memory-search': { failed: 1, runs: 1, details: ['other'] } });
+});
+
+test('conversations are grouped by card and by ref only; a conversation value is never printed', () => {
+  const log = j([
+    { ts: MON + H, kind: 'turn', agentId: 'god', startTs: MON + H, durationMs: MIN, trigger: 'mail', conversation: 'conv-c0ffee' },
+    { ts: MON + H, kind: 'turn', agentId: 'god', startTs: MON + H, durationMs: MIN, trigger: 'mail', conversation: 'CARD-1' },
+    { ts: MON + H, kind: 'turn', agentId: 'god', startTs: MON + H, durationMs: MIN, trigger: 'mail', cardId: 'CARD-9' }
+  ]);
+  const ledger = j([{ agent_id: 'god', session_id: 's', ts: MON, usd: 0 }, { agent_id: 'god', session_id: 's', ts: MON + H + 30_000, usd: 1 }]);
+  const s = D.summarize({ log, ledger, usage: [], cards: new Set(['CARD-1']), start: MON, end: MON + 7 * 86400_000 });
+  assert.deepEqual(s.usdByConversation, {}, 'a conversation field, or a card not in tasks.json, is not a group');
+  assert.doesNotMatch(D.renderDigest(s, '2026-W45'), /c0ffee|CARD-9/);
 });
