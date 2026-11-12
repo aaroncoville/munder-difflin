@@ -23,7 +23,7 @@ coordinates a whole office of agents on your own machine.
 Wraps [Claude Code](https://claude.com/claude-code), Antigravity (Gemini), OpenAI Codex,
 **xAI Grok**, **Kimi Code**, **Gemini CLI**, **Qwen**, **OpenCode**, **Crush**,
 **pi.dev**, **GitHub Copilot CLI**, and **Cursor**, with bring-your-own keys and local LLMs.
-Agents that message, route, and remember, coordinated by **your clone** (Michael) and
+Agents that message, route, and remember, coordinated by **your clone** (the Librarian, unless you rename it) and
 shown as portrait cards at work in the Study, a painted cross-section of a house.
 
 <p>
@@ -70,8 +70,8 @@ countries and as low as $100 a year. <a href="https://app.harnessmd.com/console/
 > Munder Difflin takes the terminal-agent CLIs you already run (`claude`, `agy`, `codex`, `grok`,
 > `kimi`, `qwen`, `opencode`, `crush`, `pi`, and `copilot`) and turns them
 > into a self-coordinating team: each agent gets long-term memory, a mailbox, and a reading desk in
-> the Study, and **your clone** (Michael) routes work between them while you watch. He's the
-> boss of the floor; you're still the boss of him.
+> the Study, and **your clone** (the Librarian) routes work between them while you watch. It's the
+> boss of the floor; you're still the boss of it.
 
 ## Contents
 
@@ -114,7 +114,7 @@ Plus **bring your own keys** and **local models** through Ollama, LM Studio or v
 ## What it is
 
 Munder Difflin is a desktop app that wraps **real terminal-agent CLIs** as fully-capable agents,
-wires them into a **hive mind**, and puts **your clone** in charge. Michael is the one agent *you*
+wires them into a **hive mind**, and puts **your clone** in charge. The Librarian is the one agent *you*
 talk to in order to get things done. Under the hood it runs the **fastest memory layer in the
 world** so every agent remembers what it learns and recalls it instantly.
 
@@ -133,8 +133,8 @@ world** so every agent remembers what it learns and recalls it instantly.
 ```
             you ── talk to ──►  ┌─────────────┐
                                 │  GOD agent  │  orchestrator / supervisor
-                                │ (Michael's  │  roster · routing · adjudication
-                                │   office)   │  blackboard · task ledger
+                                │ (Librarian) │  roster · routing · adjudication
+                                │             │  blackboard · task ledger
                                 └──────┬──────┘
                                        │ assigns · routes · escalates
               ┌────────────────────────┼────────────────────────┐
@@ -207,12 +207,12 @@ switch to agents and notes only.
 
 ### Talk to one agent, not twelve
 
-Michael is your clone and the only agent you brief. He assigns the work, routes the traffic, and
+The Librarian is your clone and the only agent you brief (rename it whatever you like). It assigns the work, routes the traffic, and
 escalates the few things that actually need you.
 
 </td>
 <td width="50%">
-  <a href="https://github.com/chaitanyagiri/munder-difflin/raw/main/docs/media/demo/orchestrator.mp4"><img src="./docs/media/demo/orchestrator-poster.jpg" alt="Briefing Michael, the orchestrator agent, from the Command Center" width="100%"></a>
+  <a href="https://github.com/chaitanyagiri/munder-difflin/raw/main/docs/media/demo/orchestrator.mp4"><img src="./docs/media/demo/orchestrator-poster.jpg" alt="Briefing the orchestrator agent from the Command Center" width="100%"></a>
 </td>
 </tr>
 <tr>
@@ -309,7 +309,7 @@ than sending you to a docs page.
 - **Built-in Monaco IDE**: file tree, editor tabs, save, plus CHANGES · HISTORY · COMPARE git rails with commit graph, diffs, branch compare, and guarded checkout. All fs/git access brokered through main.
 
 **Getting work in and out**
-- **Slack & webhooks**: message a channel or POST a webhook; Michael can spawn an ephemeral worker, reply in-thread, and tear it down.
+- **Slack & webhooks**: message a channel or POST a webhook; the orchestrator can spawn an ephemeral worker, reply in-thread, and tear it down.
 - **Shareable hires + Agent Gallery**: import a role from a `munderdifflin://hire` link; import only pre-fills the form, a human still spawns it. Browse roles at the [Agent Gallery](https://munderdiffl.in/hires/).
 - **Local transcription and dictation** (0.5.3): dictate into any app (Option on the Mac,
   Control+Alt+Space on Windows and Linux X11), and Stapler in Pro transcribes meetings with You and
@@ -321,7 +321,7 @@ than sending you to a docs page.
 - **BYOK keys + local LLMs**: per-provider keys in a write-only secret broker, plus Ollama / LM Studio / vLLM base URLs. Guides: [open models](https://munderdiffl.in/blog/run-munder-difflin-on-open-models/) · [Mac Mini](https://munderdiffl.in/blog/run-munder-difflin-on-a-mac-mini/).
 - **Updates in one click**: the title-bar badge runs the real update. It downloads the build for your machine, then restarts and installs it, and it reads `latest` once a check confirms you are current. A manual download is the fallback for when the updater cannot fetch the build itself. The first run afterwards opens that release's notes as a designed page rather than a version number.
 - **Your language**: English, Simplified Chinese and Arabic, with right to left layout for Arabic. English is the default and nothing changes until you pick another one in Settings. The app does not read your OS locale. All three app fonts ship inside the bundle, so nothing is fetched at boot.
-- **Prerequisites**: one Settings page showing which supporting tools (uv, git, Node, MemPalace, each agent CLI) you have, what each is for, and a button that asks Michael to install what is missing.
+- **Prerequisites**: one Settings page showing which supporting tools (uv, git, Node, MemPalace, each agent CLI) you have, what each is for, and a button that asks the orchestrator to install what is missing.
 
 > [!NOTE]
 > **Status: v0.5.3. Cancel your Granola and Wispr Flow subscriptions.**
@@ -420,7 +420,7 @@ npm run dev        # launches the Electron app with hot reload
 ```
 
 On first launch you'll go through the onboarding wizard, then land on the floor. Use **Add agent** to
-spawn your first session. The GOD agent seats itself in Michael's office automatically.
+spawn your first session. The orchestrator, the Librarian, takes its seat in the Study automatically.
 
 ### Other scripts
 
@@ -466,7 +466,7 @@ Full history in [`CHANGELOG.md`](./CHANGELOG.md).
 
 Next up:
 
-- [ ] **More chat integrations**: Telegram and richer chat bridges that pipe a channel into Michael's queue and route replies back out.
+- [ ] **More chat integrations**: Telegram and richer chat bridges that pipe a channel into the orchestrator's queue and route replies back out.
 - [ ] **More engines & integration templates**: keep growing the engine roster and the integrations registry.
 - [ ] **Durable layout & command history**: extend persistence to agent layout and per-session history.
 
