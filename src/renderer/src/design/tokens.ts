@@ -1,4 +1,7 @@
-// Design tokens — single source of truth. Mirrors tokens.css for non-styled consumers (Pixi).
+// Design tokens for non-styled consumers (Pixi). The colour families here —
+// cream, paper, ink, the accents and their -light fills, and status — mirror
+// tokens.css both ways, held by a test. The aliases that only CSS needs
+// (on-accent, hairline, gilt) live in tokens.css alone.
 // Any change here must also update tokens.css.
 
 export const colors = {
@@ -41,7 +44,11 @@ export const colors = {
     working: 0xf1fa8c,
     blocked: 0xff5555,
     success: 0x50fa7b,
-    ghost: 0x717fac
+    ghost: 0x717fac,
+    waiting: 0xbd93f9,
+    compacting: 0xff79c6,
+    looping: 0xffb86c,
+    typing: 0xf1fa8c
   },
   world: {
     grassLight: 0xd4eab0,

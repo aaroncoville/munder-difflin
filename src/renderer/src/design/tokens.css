@@ -1,4 +1,5 @@
-/* Design tokens — mirrors tokens.ts. Update both together. */
+/* Design tokens. The colour families (cream, paper, ink, accents, status) are
+   mirrored in tokens.ts, both ways, held by a test. Update both together. */
 :root {
   /* ── Panel palette ─────────────────────────────────────────────────────────
      Every colour the chrome is painted with: panels, the command centre,
@@ -155,4 +156,3 @@
   --cth-drop-sky:       #72C2DF;
   --cth-drop-maroon:    #B23A4E;
 }
-

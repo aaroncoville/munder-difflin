@@ -162,6 +162,12 @@ test('the TypeScript mirror carries the same values as the stylesheet', () => {
   ];
   const drift = pairs.filter(([n, v]) => tokens[n] !== hex(v)).map(([n, v]) => `${n}: ts ${hex(v)} css ${tokens[n]}`);
   assert.deepEqual(drift, []);
+  // And the other way: every colour in those families in the stylesheet has
+  // its TypeScript twin, so neither side can grow a token the other lacks.
+  const inTs = new Set(pairs.map(([n]) => n));
+  const family = /^--cth-(?:cream|paper|ink|coral|mint|sky|lemon|lilac|peach|status)(?:-|$)/;
+  const missing = Object.keys(baseRoot()).filter((n) => family.test(n) && !inTs.has(n));
+  assert.deepEqual(missing, [], 'colour tokens in tokens.css with no twin in tokens.ts');
 });
 
 test('the window opens on the palette ground', () => {
