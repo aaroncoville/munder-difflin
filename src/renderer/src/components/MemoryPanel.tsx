@@ -202,7 +202,7 @@ export function MemoryPanel() {
                         }} />
                         {b.title}
                       </div>
-                      <div style={{ fontSize: 11, color: 'var(--cth-ink-500)', marginTop: 3 }}>{b.detail}</div>
+                      <div style={{ fontSize: 11, color: sel ? 'var(--cth-ink-700)' : 'var(--cth-ink-500)', marginTop: 3 }}>{b.detail}</div>
                     </button>
                   );
                 })}
@@ -329,7 +329,7 @@ export function MemoryPanel() {
                           }} />
                           {t(m.titleKey)}
                         </div>
-                        <div style={{ fontSize: 11, color: 'var(--cth-ink-500)', marginTop: 3 }}>{t(m.detailKey)}</div>
+                        <div style={{ fontSize: 11, color: sel ? 'var(--cth-ink-700)' : 'var(--cth-ink-500)', marginTop: 3 }}>{t(m.detailKey)}</div>
                       </button>
                     );
                   })}

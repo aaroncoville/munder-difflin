@@ -173,6 +173,127 @@ test('every text colour that can sit on a solid accent fill is the on-accent ink
   assert.deepEqual([...new Set(hits)], []);
 });
 
+/** A tint fill: an accent's `-light` step, named or per-agent. */
+const TINT_LITERAL = new RegExp(`['"\`]var\\(--cth-${ACCENT}-light(?:,[^)]*)?\\)['"\`]|\`var\\(--cth-\\$\\{[^}]+\\}-light\\)\`|\\bcol\\.tint\\b`);
+/** The inks that read on every tint: primary 7.3:1 and up, secondary 4.7:1
+ *  and up (held by the palette test). The hint ink (3.3-4.6:1) and an accent
+ *  on its own tint (3.5:1 for red) do not. */
+const TINT_INK = /^['"`]var\(--cth-ink-(?:900|700)\)['"`]$/;
+
+/** Where the opening tag that owns a `style={{ ... }}` ends, and whether it
+ *  closes itself. `end` is just past the style object. */
+function tagEnd(src, end) {
+  let depth = 0;
+  let q = null;
+  for (let i = end; i < src.length; i++) {
+    const c = src[i];
+    if (q) { if (c === q) q = null; continue; }
+    if (c === '"' || c === "'" || c === '`') q = c;
+    else if (c === '{') depth++;
+    else if (c === '}') depth--;
+    else if (c === '>' && depth === -1) return { at: i + 1, selfClosing: src[i - 1] === '/' };
+  }
+  return null;
+}
+
+/** The end of the element whose opening tag ends at `from`: tags are counted
+ *  until the one that closes it. Fragments are skipped. Null when it cannot be
+ *  found, which the caller treats as a failure. */
+function elementEnd(src, from) {
+  const re = /<\/([A-Za-z][\w.]*)?\s*>|<([A-Za-z][\w.]*)(?=[\s/>])/g;
+  re.lastIndex = from;
+  let depth = 1;
+  let m;
+  while ((m = re.exec(src))) {
+    if (m[0].startsWith('</')) {
+      if (!m[1]) continue; // </>
+      if (--depth === 0) return m.index;
+    } else {
+      // Find this tag's own `>`, its attributes' braces balanced.
+      let d = 0, q = null, close = -1;
+      for (let i = m.index + m[0].length; i < src.length; i++) {
+        const c = src[i];
+        if (q) { if (c === q) q = null; continue; }
+        if (c === '"' || c === "'" || c === '`') q = c;
+        else if (c === '{') d++;
+        else if (c === '}') d--;
+        else if (c === '>' && d === 0) { close = i; break; }
+      }
+      if (close < 0) return null;
+      re.lastIndex = close + 1;
+      if (src[close - 1] !== '/') depth++;
+    }
+  }
+  return null;
+}
+
+/** Every inline `style={{ ... }}` object, with or without a fill. */
+function inlineStyles(src) {
+  const out = [];
+  for (const m of src.matchAll(/style=\{\{/g)) {
+    const start = m.index + 'style={'.length;
+    let depth = 0;
+    for (let j = start; j < src.length; j++) {
+      if (src[j] === '{') depth++;
+      else if (src[j] === '}' && --depth === 0) { out.push({ at: start, body: src.slice(start, j + 1) }); break; }
+    }
+  }
+  return out;
+}
+
+test('every text colour that can sit on a tint fill is the primary or secondary ink', () => {
+  // A tint element's own colour, and the colour of every element inside it
+  // that does not paint a fill of its own, must be one of the two inks that
+  // read on every tint. A tint element with no colour of its own inherits
+  // the primary ink from the page; what it contains is still checked.
+  const files = execFileSync('git', ['ls-files', 'src/renderer/src'], { cwd: ROOT, encoding: 'utf8' })
+    .split('\n').filter((f) => /\.tsx$/.test(f));
+  const hits = [];
+  let consts = {};
+  const checkText = (where, fg, fillPath, fill) => {
+    for (const raw of foregroundsFor(fg, fillPath)) {
+      // A bare name bound once in this file to a string reads as that string.
+      const text = consts[raw] ?? raw;
+      if (!TINT_INK.test(text)) hits.push(`${where} ${raw} on ${fill}`);
+    }
+  };
+  for (const f of files) {
+    const src = strip(fs.readFileSync(path.join(ROOT, f), 'utf8'));
+    consts = {};
+    for (const m of src.matchAll(/\bconst ([A-Za-z_]\w*) = (['"`][^'"`\n]*['"`]);/g)) {
+      consts[m[1]] = consts[m[1]] === undefined ? m[2] : null; // bound twice: unknown
+    }
+    for (const k of Object.keys(consts)) if (consts[k] === null) delete consts[k];
+    const objects = styleObjects(src);
+    const inline = inlineStyles(src);
+    const lineOf = (at) => `${f}:${src.slice(0, at).split('\n').length}`;
+    for (const o of objects) {
+      const own = o.body.slice(1, -1).replace(/(?<!\$)\{[^{}]*\}/g, '{}');
+      const bg = valueOf(own, 'background(?:Color)?');
+      if (!bg) continue;
+      const tints = leaves(bg).filter((l) => TINT_LITERAL.test(l.value));
+      if (!tints.length) continue;
+      const fg = valueOf(own, 'color');
+      for (const fill of tints) if (fg) checkText(lineOf(o.at), fg, fill.path, fill.value);
+      // Only a style attribute has children to follow.
+      if (!/^\s*\}/.test(src.slice(o.at + o.body.length))) continue;
+      const open = tagEnd(src, o.at + o.body.length);
+      if (!open) { hits.push(`${lineOf(o.at)} element cannot be followed`); continue; }
+      if (open.selfClosing) continue;
+      const close = elementEnd(src, open.at);
+      if (close === null) { hits.push(`${lineOf(o.at)} element cannot be followed`); continue; }
+      for (const inner of inline) {
+        if (inner.at <= open.at || inner.at >= close) continue;
+        const innerOwn = inner.body.slice(1, -1).replace(/(?<!\$)\{[^{}]*\}/g, '{}');
+        if (valueOf(innerOwn, 'background(?:Color)?')) continue; // its own fill, checked as such
+        const innerFg = valueOf(innerOwn, 'color');
+        if (innerFg) for (const fill of tints) checkText(lineOf(inner.at), innerFg, fill.path, fill.value);
+      }
+    }
+  }
+  assert.deepEqual([...new Set(hits)], []);
+});
+
 test('the quiet status colours are never a fill behind text', () => {
   // --cth-on-accent is held to 4.5:1 on the accents only: on idle and ghost it
   // reads below that, so those two may colour a dot or an outline, never a
@@ -213,4 +334,23 @@ test('an "on" chip in the triggers tab is lettered for its fill', () => {
   const chip = src.slice(src.indexOf('export function Chip'), src.indexOf('export function Chip') + 600);
   assert.match(chip, /'var\(--cth-lemon\)'/, 'the chip no longer fills its "on" tone');
   assert.doesNotMatch(chip, /color:\s*'var\(--cth-ink-900\)'/, 'the "on" chip letters lemon in near-white');
+});
+
+test('a disabled control looks disabled without going faint', () => {
+  // Dimming a control with opacity, or keeping its enabled fill, either takes
+  // its text under 4.5:1 or makes it look enabled. Disabled is drawn as an
+  // empty dashed slot lettered in the hint ink, which reads on every surface.
+  const ui = strip(fs.readFileSync(path.join(ROOT, CHIP), 'utf8'));
+  const mini = ui.slice(ui.indexOf('export function MiniButton'), ui.indexOf('export function Select'));
+  const own = mini.slice(mini.indexOf('style={{'));
+  const at = (key) => leaves(valueOf(own, key) ?? 'null').filter((l) => l.path.includes('disabled=1')).map((l) => l.value);
+  assert.deepEqual(at('background'), ["'transparent'"], 'a disabled button keeps a fill');
+  assert.deepEqual(at('border'), ["'1px dashed var(--cth-ink-300)'"], 'a disabled button has no dashed edge');
+  assert.deepEqual(at('color'), ["'var(--cth-ink-500)'"], 'a disabled button is not lettered in the hint ink');
+
+  const wiz = strip(fs.readFileSync(path.join(ROOT, 'src/renderer/src/components/OnboardingWizard.tsx'), 'utf8'));
+  const row = wiz.slice(wiz.indexOf('workersOnly.map'), wiz.indexOf('workersOnly.map') + 900);
+  assert.doesNotMatch(row, /opacity\s*:/, 'the workers-only rows are dimmed with opacity again');
+  assert.match(row, /background:\s*'transparent'/, 'the workers-only rows have a fill like a pickable row');
+  assert.match(row, /border:\s*'1px dashed var\(--cth-ink-300\)'/, 'the workers-only rows lost their dashed edge');
 });

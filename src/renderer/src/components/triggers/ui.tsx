@@ -105,12 +105,14 @@ export function MiniButton({ children, onClick, tone = 'plain', disabled }: {
       onClick={onClick}
       disabled={disabled}
       style={{
-        flexShrink: 0, padding: '2px 7px 1px', border: 'none',
+        flexShrink: 0, padding: disabled ? '1px 6px 0' : '2px 7px 1px',
         cursor: disabled ? 'default' : 'pointer',
-        background: tone === 'good' ? 'var(--cth-mint)' : 'var(--cth-cream-200)',
-        boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)',
+        // Disabled, in any tone: no fill, a dashed edge, the hint ink.
+        border: disabled ? '1px dashed var(--cth-ink-300)' : 'none',
+        background: disabled ? 'transparent' : tone === 'good' ? 'var(--cth-mint)' : 'var(--cth-cream-200)',
+        boxShadow: disabled ? 'none' : 'inset 0 0 0 1px var(--cth-ink-100)',
         fontFamily: 'var(--cth-font-ui)', fontSize: 11,
-        color: tone === 'good' ? 'var(--cth-on-accent)' : disabled ? 'var(--cth-ink-300)' : tone === 'danger' ? 'var(--cth-coral)' : 'var(--cth-ink-900)'
+        color: disabled ? 'var(--cth-ink-500)' : tone === 'good' ? 'var(--cth-on-accent)' : tone === 'danger' ? 'var(--cth-coral)' : 'var(--cth-ink-900)'
       }}
     >{children}</button>
   );
