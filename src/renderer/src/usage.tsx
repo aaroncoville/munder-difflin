@@ -2,7 +2,7 @@
  * Renderer side of the local usage log (docs/usage-log.md): which screens are
  * open and for how long, and when asks are first seen and answered. Ids, enums
  * and durations only; the main process allowlists every event again and writes
- * it to <hive>/usage. Nothing is sent anywhere.
+ * it to <userData>/usage, the app's own data folder. Nothing is sent anywhere.
  */
 import { useEffect, useRef } from 'react';
 import { answerShape } from '@shared/answerShape';

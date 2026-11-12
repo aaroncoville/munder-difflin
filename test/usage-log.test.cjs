@@ -10,7 +10,7 @@ const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 
-const { UsageLog, RETENTION_DAYS } = loadTs('src/main/usageLog.ts');
+const { UsageLog, RETENTION_DAYS, recordFromRenderer } = loadTs('src/main/usageLog.ts');
 
 function setup(t, { enabled = true, now = Date.parse('2026-11-12T15:00:00Z') } = {}) {
   // The app's own data folder; the hive is a separate folder agents can write.
@@ -134,4 +134,61 @@ test('the hive ignores a usage folder, so no usage file can enter its git histor
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
   new HiveManager(() => home).ensureHive();
   assert.ok(fs.readFileSync(path.join(home, 'hive', '.gitignore'), 'utf8').split('\n').includes('usage/'));
+});
+
+// ── hostile input: a refusal, never a throw ─────────────────────────────────
+
+const HOSTILE_VALUES = [
+  'constructor', '__proto__', 'toString', 'hasOwnProperty',
+  'CARD-1@2026-99-99T99:99:99.999Z', 'CARD-1@+275760-09-13T00:00:00.001Z', 'CARD-1@',
+  42, -1, 1.5, NaN, Infinity, true, null, undefined,
+  { nested: { deeper: 'x' } }, ['settings'], 'x'.repeat(1_000_000), Symbol('s'), () => 1, 10n
+];
+const FIELDS = ['kind', 'view', 'askKey', 'agentId', 'cardId', 'dwellMs', 'ageMs', 'answerLen', 'answerShape', 'surface', 'state', 'focused'];
+
+test('record() refuses every hostile value in every field and never throws', (t) => {
+  const { log, dir } = setup(t);
+  // Fields each kind declares; any other field is dropped, not refused.
+  const DECLARED = {
+    'ui-view': ['kind', 'view', 'focused'],
+    'ask-shown': ['kind', 'askKey', 'ageMs', 'surface', 'focused'],
+    'ask-submitted': ['kind', 'askKey', 'answerLen', 'answerShape', 'surface', 'focused']
+  };
+  const bases = [
+    { kind: 'ui-view', view: 'settings' },
+    { kind: 'ask-shown', askKey: 'CARD-1@2026-11-12T10:00:00.000Z', surface: 'ask-me' },
+    { kind: 'ask-submitted', askKey: 'CARD-1@2026-11-12T10:00:00.000Z', surface: 'ask-me', answerLen: 4, answerShape: 'done-ack' }
+  ];
+  for (const base of bases) for (const f of FIELDS) for (const v of HOSTILE_VALUES) {
+    let out;
+    assert.doesNotThrow(() => { out = log.record({ ...base, [f]: v }); }, `${base.kind}.${f} = ${String(v).slice(0, 40)}`);
+    assert.equal(typeof out, 'boolean');
+    // agentId/cardId off the roster are dropped and the row is kept; anything else must be refused.
+    const legitimate = (f === 'focused' && typeof v === 'boolean') || (['ageMs', 'answerLen'].includes(f) && Number.isSafeInteger(v) && v >= 0);
+    if (DECLARED[base.kind].includes(f) && v !== undefined && !legitimate) assert.equal(out, false, `${base.kind}.${f} = ${String(v).slice(0, 40)}`);
+  }
+  const written = fs.readdirSync(dir).map((n) => fs.readFileSync(path.join(dir, n), 'utf8')).join('');
+  assert.doesNotMatch(written, /constructor|__proto__|99:99|nested|xxxxxxxxxx/);
+  for (const v of HOSTILE_VALUES) assert.doesNotThrow(() => log.record(v), String(v).slice(0, 40));
+});
+
+test('the renderer entry point refuses hostile payloads and never throws', (t) => {
+  const { log, read } = setup(t);
+  const ctx = { session: 'sess-1', win: 1, focused: true };
+  const payloads = [...HOSTILE_VALUES, Object.create(null), new Proxy({}, { get() { throw new Error('trap'); }, ownKeys() { throw new Error('trap'); } })];
+  for (const f of FIELDS) for (const v of HOSTILE_VALUES) payloads.push({ kind: 'ui-view', view: 'settings', [f]: v });
+  for (const p of payloads) {
+    let out;
+    assert.doesNotThrow(() => { out = recordFromRenderer(log, p, ctx); });
+    assert.equal(typeof out, 'boolean');
+  }
+  assert.equal(recordFromRenderer(log, { kind: 'ui-view', view: 'settings', session: 'spoofed' }, ctx), true);
+  assert.equal(read().at(-1).session, 'sess-1', 'the main process sets session, not the renderer');
+});
+
+test('a bare ask-submitted is refused; counts must be whole numbers', (t) => {
+  const { log } = setup(t);
+  assert.equal(log.record({ kind: 'ask-submitted', askKey: 'CARD-1@2026-11-12T10:00:00.000Z' }), false);
+  assert.equal(log.record({ kind: 'ask-submitted', askKey: 'CARD-1@2026-11-12T10:00:00.000Z', surface: 'ask-me', answerLen: 4, answerShape: 'done-ack' }), true);
+  assert.equal(log.record({ kind: 'ui-view-end', view: 'settings', dwellMs: 1.5 }), false);
 });

@@ -54,7 +54,8 @@ const EVENTS: Record<string, Record<string, FieldType>> = {
 };
 /** Fields a kind cannot be written without. */
 const REQUIRED: Record<string, string[]> = {
-  'ui-view': ['view'], 'ui-view-end': ['view', 'dwellMs'], 'ask-shown': ['askKey'], 'ask-submitted': ['askKey'], 'app-focus': ['state']
+  'ui-view': ['view'], 'ui-view-end': ['view', 'dwellMs'], 'ask-shown': ['askKey', 'surface'],
+  'ask-submitted': ['askKey', 'surface', 'answerLen', 'answerShape'], 'app-focus': ['state']
 };
 
 function valid(type: FieldType, v: unknown, known: KnownIds): boolean {
@@ -63,10 +64,12 @@ function valid(type: FieldType, v: unknown, known: KnownIds): boolean {
   if (type === 'card') return typeof v === 'string' && known.isCard(v);
   if (type === 'askKey') {
     const m = typeof v === 'string' ? ASK_KEY.exec(v) : null;
-    return !!m && known.isCard(m[1]) && new Date(m[2]).toISOString() === m[2];
+    if (!m) return false;
+    const t = Date.parse(m[2]);
+    return Number.isFinite(t) && new Date(t).toISOString() === m[2] && known.isCard(m[1]);
   }
   if (type === 'id') return typeof v === 'string' && ID.test(v);
-  if (type === 'count') return typeof v === 'number' && Number.isFinite(v) && v >= 0;
+  if (type === 'count') return Number.isSafeInteger(v) && (v as number) >= 0;
   if (type === 'bool') return typeof v === 'boolean';
   return typeof v === 'string' && type.oneOf.includes(v);
 }
@@ -116,6 +119,12 @@ export class UsageLog {
 
   /** Append one event if the log is on and the event passes the allowlist. */
   record(event: Record<string, unknown>): boolean {
+    // Total over any input: bad input is refused, never thrown.
+    try { return this.write(event); } catch { return false; }
+  }
+
+  private write(event: Record<string, unknown>): boolean {
+    if (!event || typeof event !== 'object' || Array.isArray(event)) return false;
     if (!this.d.enabled()) return false;
     const clean = sanitize(event, { isAgent: (id) => this.d.isAgent?.(id) ?? false, isCard: (id) => this.d.isCard?.(id) ?? false });
     if (!clean) return false;
@@ -154,4 +163,20 @@ export class UsageLog {
     }
     return removed;
   }
+}
+
+/**
+ * The renderer's usage:event payload, recorded with the fields only the main
+ * process may set (session, window, focus). Any bad payload is refused: this
+ * never throws.
+ */
+export function recordFromRenderer(
+  log: UsageLog,
+  event: unknown,
+  ctx: { session: string; win: number; focused: boolean }
+): boolean {
+  try {
+    if (!event || typeof event !== 'object' || Array.isArray(event)) return false;
+    return log.record({ ...(event as Record<string, unknown>), session: ctx.session, win: ctx.win, focused: ctx.focused });
+  } catch { return false; }
 }
