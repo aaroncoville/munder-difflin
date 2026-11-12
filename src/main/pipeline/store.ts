@@ -35,7 +35,11 @@
  * A crash can leave a torn last line, or a complete line whose anchor update did
  * not land. Neither is tampering: a torn tail is dropped and the repair logged when
  * the anchor points at the line before it; a complete line exactly one past the
- * anchor is kept, the first line included. That also means a single well-formed
+ * anchor is kept, the first line included. The repair writes a marker (`repair.json`:
+ * the line it keeps up to and the bytes it drops) before it drops anything, and
+ * removes it only once the `log-repaired` fact is on disk; an open that finds the
+ * marker finishes the repair first, so a second fault cannot lose the record. Every
+ * write carries on after a short write until all its bytes are down. That also means a single well-formed
  * line added while the app is closed is adopted, which needs write access to the
  * app's data directory, where the anchor could be rewritten as well; a transition
  * line is a record, not evidence on its own.
@@ -81,6 +85,7 @@ export class LogTamperError extends Error {
 /** `behind`: the export copy is a whole-line prefix of the log (a crash between the two writes). */
 export type MirrorStatus = 'same' | 'behind' | 'missing' | 'differs';
 
+interface RepairMarker { seq: number; dropped_bytes: number }
 interface Anchor { seq: number; hash: string }
 
 const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
@@ -113,6 +118,16 @@ function fsyncDir(dir: string): void {
   }
 }
 
+/** Writes all of [data] at the file's position: a short write carries on from where it stopped. */
+function writeAll(fd: number, data: string): void {
+  const buf = Buffer.from(data);
+  for (let off = 0; off < buf.length;) {
+    const n = writeSync(fd, buf, off, buf.length - off);
+    if (n <= 0) throw Object.assign(new Error('EIO: the write made no progress'), { code: 'EIO' });
+    off += n;
+  }
+}
+
 /** Makes [dir] and any missing folders above it, each synced in its parent, top down. */
 function mkdirDurable(dir: string): void {
   const missing: string[] = [];
@@ -126,6 +141,8 @@ export class CardLog {
   private readonly authDir: string;
   private readonly authFile: string;
   private readonly anchorFile: string;
+  /** Present only while a torn-tail repair is under way: what it drops, written before it drops it. */
+  private readonly markerFile: string;
   private readonly exportDir: string;
   private readonly exportFile: string;
   private readonly now: () => Date;
@@ -141,6 +158,7 @@ export class CardLog {
     this.authDir = join(opts.authRoot, opts.card);
     this.authFile = join(this.authDir, 'log.jsonl');
     this.anchorFile = join(this.authDir, 'head.json');
+    this.markerFile = join(this.authDir, 'repair.json');
     this.exportDir = join(opts.authRoot, EXPORT_DIR, opts.card);
     this.exportFile = join(this.exportDir, 'log.jsonl');
     this.now = opts.now ?? (() => new Date());
@@ -171,7 +189,7 @@ export class CardLog {
       const created = !existsSync(this.authFile);
       const fd = openSync(this.authFile, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT, 0o600);
       try {
-        writeSync(fd, `${text}\n`);
+        writeAll(fd, `${text}\n`);
         fsyncSync(fd);
       } finally {
         closeSync(fd);
@@ -216,7 +234,7 @@ export class CardLog {
     try {
       const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW, 0o644);
       try {
-        writeSync(fd, this.authText());
+        writeAll(fd, this.authText());
         fsyncSync(fd);
       } finally {
         closeSync(fd);
@@ -247,16 +265,40 @@ export class CardLog {
       if (!checked.ok || !sameAnchor(headOf(checked.count, checked.last), anchor)) {
         throw new LogTamperError(this.card, prefix.split('\n').length, 'the last line is incomplete and the head anchor does not point at the line before it');
       }
-      const dropped = text.length - cut;
+      // The repair is a transaction: the marker says what is dropped before it is dropped,
+      // and goes only once the repair fact is on disk. An open that finds it finishes the job.
+      const marker: RepairMarker = { seq: checked.count, dropped_bytes: Buffer.byteLength(text) - Buffer.byteLength(prefix) };
+      this.writeDurable(this.markerFile, marker);
       const fd = openSync(this.authFile, constants.O_WRONLY);
       try { ftruncateSync(fd, Buffer.byteLength(prefix)); fsyncSync(fd); } finally { closeSync(fd); }
       text = prefix;
-      this.adopt(text);
-      this.append({ type: 'fact', fact: 'log-repaired', dropped_bytes: dropped });
-      return;
     }
     this.check(text, true);
     this.adopt(text);
+    this.finishRepair(text);
+  }
+
+  /** Completes a torn-tail repair the marker shows was under way: the fact appended once, then the marker removed. */
+  private finishRepair(text: string): void {
+    const marker = this.readMarker();
+    if (!marker) return;
+    const lastLine = text === '' ? null : JSON.parse(text.slice(0, -1).split('\n').pop() as string) as LogLine;
+    if (this.seq === marker.seq) {
+      this.append({ type: 'fact', fact: 'log-repaired', dropped_bytes: marker.dropped_bytes });
+    } else if (!(this.seq === marker.seq + 1 && lastLine?.fact === 'log-repaired')) {
+      throw new LogTamperError(this.card, this.seq, `a repair marker for line ${marker.seq} does not match a log ending at line ${this.seq}`);
+    }
+    rmSync(this.markerFile);
+    fsyncDir(this.authDir);
+  }
+
+  private readMarker(): RepairMarker | null {
+    if (!existsSync(this.markerFile)) return null;
+    try {
+      const m = JSON.parse(readFileSync(this.markerFile, 'utf8')) as RepairMarker;
+      if (Number.isInteger(m.seq) && m.seq >= 0 && Number.isInteger(m.dropped_bytes) && m.dropped_bytes > 0) return { seq: m.seq, dropped_bytes: m.dropped_bytes };
+    } catch { /* fall through */ }
+    throw new LogTamperError(this.card, 0, 'the repair marker is not readable');
   }
 
   /** Throws unless [text] verifies and ends at the anchor. With [fixAnchor], a complete line one past the anchor is kept. */
@@ -294,11 +336,16 @@ export class CardLog {
   }
 
   private writeAnchor(a: Anchor): void {
-    const tmp = join(this.authDir, `.head.${randomBytes(8).toString('hex')}.tmp`);
+    this.writeDurable(this.anchorFile, a);
+  }
+
+  /** Replaces [file] in the card folder with [a] as JSON: whole, synced, renamed in, folder synced. */
+  private writeDurable(file: string, a: object): void {
+    const tmp = join(this.authDir, `.${randomBytes(8).toString('hex')}.tmp`);
     try {
       const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW, 0o600);
-      try { writeSync(fd, JSON.stringify(a)); fsyncSync(fd); } finally { closeSync(fd); }
-      renameSync(tmp, this.anchorFile);
+      try { writeAll(fd, JSON.stringify(a)); fsyncSync(fd); } finally { closeSync(fd); }
+      renameSync(tmp, file);
     } catch (e) {
       rmSync(tmp, { force: true });
       throw e;

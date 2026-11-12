@@ -475,3 +475,19 @@ test('an open that fails while writing the genesis anchor or repairing a torn ta
   assert.deepEqual(again.lines().map((l) => l.fact ?? l.n), [1, 'log-repaired']);
   assert.equal(again.append({ type: 'fact', n: 2 }).seq, 3);
 });
+
+test('a repair marker that does not match the log, or cannot be read, will not open', () => {
+  const r = roots();
+  const log = open(r);
+  log.append({ type: 'fact', n: 1 });
+  log.append({ type: 'fact', n: 2 });
+  const marker = path.join(r.authRoot, 'WF-FB-VEHICLES', 'repair.json');
+  fs.writeFileSync(marker, JSON.stringify({ seq: 0, dropped_bytes: 5 }));
+  assert.throws(() => open(r), LogTamperError, 'a marker for another line');
+  fs.writeFileSync(marker, '{"seq":');
+  assert.throws(() => open(r), LogTamperError, 'an unreadable marker');
+  fs.writeFileSync(marker, JSON.stringify({ seq: 2, dropped_bytes: 5 }));
+  const fixed = open(r);
+  assert.deepEqual(fixed.lines().map((l) => l.fact ?? l.n), [1, 2, 'log-repaired'], 'a marker at the log\'s end finishes its repair');
+  assert.equal(fs.existsSync(marker), false);
+});
