@@ -127,6 +127,19 @@ function fsyncDir(dir: string): void {
   }
 }
 
+/**
+ * The file's text, or null only when it does not exist. Any other error is thrown:
+ * a log, anchor or marker that cannot be read is never taken for one that is absent.
+ */
+function readIfThere(file: string): string | null {
+  try {
+    return readFileSync(file, 'utf8');
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw e;
+  }
+}
+
 /** Writes all of [data] at the file's position: a short write carries on from where it stopped. */
 function writeAll(fd: number, data: string): void {
   const buf = Buffer.from(data);
@@ -188,13 +201,13 @@ export class CardLog {
    */
   append(entry: LogEntry): LogLine {
     if (this.failed) throw new LogTamperError(this.card, this.seq + 1, 'an earlier append on this writer failed; reopen the log');
-    if (!sameAnchor(this.readAnchor(), headOf(this.seq, this.last))) {
-      throw new LogTamperError(this.card, this.seq + 1, 'the log moved under this writer (another writer, or an edit)');
-    }
     const line: LogLine = { ...entry, v: 1, seq: this.seq + 1, at: this.now().toISOString(), card: this.card, prev: this.last };
     const text = JSON.stringify(line);
     let done = false;
     try {
+      if (!sameAnchor(this.readAnchor(), headOf(this.seq, this.last))) {
+        throw new LogTamperError(this.card, this.seq + 1, 'the log moved under this writer (another writer, or an edit)');
+      }
       const created = !existsSync(this.authFile);
       const fd = openSync(this.authFile, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT, 0o600);
       try {
@@ -327,9 +340,10 @@ export class CardLog {
   }
 
   private readMarker(): RepairMarker | null {
-    if (!existsSync(this.markerFile)) return null;
+    const raw = readIfThere(this.markerFile);
+    if (raw === null) return null;
     try {
-      const m = JSON.parse(readFileSync(this.markerFile, 'utf8')) as RepairMarker;
+      const m = JSON.parse(raw) as RepairMarker;
       const ints = [m.seq, m.keep_bytes, m.size, m.dropped_bytes].every((x) => Number.isInteger(x) && x >= 0);
       if (ints && m.dropped_bytes > 0 && m.size > m.keep_bytes && typeof m.tail === 'string' && /^[0-9a-f]{64}$/.test(m.tail)) {
         return { seq: m.seq, keep_bytes: m.keep_bytes, size: m.size, tail: m.tail, dropped_bytes: m.dropped_bytes };
@@ -363,9 +377,10 @@ export class CardLog {
   }
 
   private readAnchor(): Anchor | null {
-    if (!existsSync(this.anchorFile)) return null;
+    const raw = readIfThere(this.anchorFile);
+    if (raw === null) return null;
     try {
-      const a = JSON.parse(readFileSync(this.anchorFile, 'utf8')) as Anchor;
+      const a = JSON.parse(raw) as Anchor;
       if (a.seq === 0 && a.hash === core.GENESIS) return { seq: 0, hash: core.GENESIS };
       if (Number.isInteger(a.seq) && a.seq > 0 && typeof a.hash === 'string') return { seq: a.seq, hash: a.hash };
     } catch { /* fall through */ }
@@ -391,7 +406,7 @@ export class CardLog {
   }
 
   private authText(): string {
-    return existsSync(this.authFile) ? readFileSync(this.authFile, 'utf8') : '';
+    return readIfThere(this.authFile) ?? '';
   }
 
   // — the export copy —

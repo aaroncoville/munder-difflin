@@ -521,3 +521,22 @@ test('a repair marker for another line than the torn tail follows will not open'
   fs.writeFileSync(path.join(r.authRoot, 'WF-FB-VEHICLES', 'repair.json'), JSON.stringify({ seq: 1, keep_bytes: size, size: size + 4, tail: 'b'.repeat(64), dropped_bytes: 4 }));
   assert.throws(() => open(r), LogTamperError);
 });
+
+test('a write that makes no progress fails the append instead of trying forever', () => {
+  const r = roots();
+  const log = open(r);
+  log.append({ type: 'fact', n: 1 });
+  const real = fs.writeSync;
+  let zeros = 0;
+  fs.writeSync = (...args) => {
+    if (++zeros > 3) throw new Error('LOOPED: the write was retried after making no progress');
+    return 0;
+  };
+  try {
+    assert.throws(() => log.append({ type: 'fact', n: 2 }), /made no progress/);
+  } finally {
+    fs.writeSync = real;
+  }
+  assert.throws(() => log.append({ type: 'fact', n: 2 }), LogTamperError);
+  assert.deepEqual(open(r).lines().map((l) => l.n), [1]);
+});
