@@ -346,6 +346,10 @@ export interface HarnessConfig {
    *  without an injected key and environments with DO_NOT_TRACK set never send
    *  regardless of this flag. (Mirrored in preload + renderer config.) */
   telemetryEnabled?: boolean;
+  /** Local-only usage log of the owner's side of the app (screens opened, asks
+   *  seen and answered), written to <userData>/usage (the app's data folder, not the hive) and never sent anywhere. Default
+   *  ON; Settings has the switch and a delete button. See docs/usage-log.md. */
+  usageLog?: boolean;
   /** Master flag for the TV-show office themes feature (Settings theme picker +
    *  destructive switch flow). Default false = the picker is hidden and the
    *  office renders as today (zero behavior change). */
@@ -494,6 +498,7 @@ const DEFAULTS: HarnessConfig = {
   strongKeepalive: false,
   autoUpdate: true,
   telemetryEnabled: true,
+  usageLog: true,
   multiWindow: true,
   tvShowOffices: false,
   officeTheme: 'office',

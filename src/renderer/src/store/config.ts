@@ -98,6 +98,8 @@ export interface HarnessConfig {
   /** Anonymous product analytics (default ON, opt-out; see TELEMETRY.md).
    *  Mirrors the main-process field (src/main/config.ts). */
   telemetryEnabled?: boolean;
+  /** Local-only usage log (default ON). Mirrors main HarnessConfig. */
+  usageLog?: boolean;
   slackEnabled?: boolean;
   slackSigningSecret?: string;
   slackBotToken?: string;

@@ -293,6 +293,8 @@ export interface HarnessConfig {
   /** Anonymous product analytics (default ON, opt-out; see TELEMETRY.md).
    *  Mirrors main + renderer HarnessConfig. */
   telemetryEnabled?: boolean;
+  /** Local-only usage log (default ON). Mirrors main HarnessConfig. */
+  usageLog?: boolean;
   slackEnabled?: boolean;
   slackSigningSecret?: string;
   slackBotToken?: string;
@@ -988,6 +990,10 @@ const api = {
    *  Study's hearth. Always opens the confirmation; `window.close()` from a
    *  floor window, or with no PTY alive, quits with nothing asked. */
   requestQuit: (): Promise<void> => ipcRenderer.invoke('app:requestQuit'),
+  /** Local usage log: one allowlisted UI event (ids, enums, durations only). Fire and forget. */
+  usageEvent: (event: Record<string, unknown>): void => { ipcRenderer.send('usage:event', event); },
+  /** Delete every local usage file; resolves to how many were removed. */
+  usageDelete: (): Promise<number> => ipcRenderer.invoke('usage:delete'),
   confirmClose: (): Promise<void> => ipcRenderer.invoke('app:confirmClose'),
   cancelClose: (): Promise<void> => ipcRenderer.invoke('app:cancelClose'),
 

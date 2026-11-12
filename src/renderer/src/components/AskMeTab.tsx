@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { AskSeen, noteAskSubmitted } from '@/usage';
+import { askKeyOf } from '@shared/askKey';
 import { useTranslation } from 'react-i18next';
 import { PixelButton } from './PixelButton';
 import { PixelBadge } from './PixelBadge';
@@ -216,6 +218,8 @@ export function AskMeTab() {
         : { ok: false };
       if (!result.ok) throw new Error('task changed before answer could be saved');
       setTasks(next);
+      const askKey = askKeyOf(task.id, open.askedAt);
+      if (askKey) noteAskSubmitted(askKey, answer);
       // 2) Tell the god, so the card gets unblocked and work continues.
       const told = await window.cth.hiveSend({
         to: 'god',
@@ -298,6 +302,7 @@ export function AskMeTab() {
             background: 'var(--cth-paper-100)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)',
             display: 'flex', flexDirection: 'column'
           }}>
+            {askKeyOf(t.id, open.askedAt) && <AskSeen askKey={askKeyOf(t.id, open.askedAt)!} askedAt={open.askedAt} />}
             {/* header: title + assignee */}
             <div style={{
               display: 'flex', alignItems: 'center', gap: 8, padding: '6px 9px',

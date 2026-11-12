@@ -57,3 +57,20 @@ test('a fresh install is not reported as a reset', (t) => {
   loadUsageSecret(tmp(t), () => resets++);
   assert.equal(resets, 0);
 });
+
+test('a short write is completed before the secret is put in place', (t) => {
+  const dir = tmp(t);
+  const real = fs.writeSync;
+  // At most 10 bytes per call, as a disk under pressure may do.
+  fs.writeSync = (fd, data, ...rest) => {
+    if (typeof data === 'string') return real(fd, data.slice(0, 10));
+    const [off = 0, len = data.length - off] = rest;
+    return real(fd, data, off, Math.min(len, 10));
+  };
+  let key;
+  try { key = loadUsageSecret(dir); } finally { fs.writeSync = real; }
+  assert.match(fs.readFileSync(path.join(dir, 'usage-ref-secret'), 'utf8'), /^[0-9a-f]{64}$/);
+  let resets = 0;
+  assert.deepEqual(loadUsageSecret(dir, () => resets++), key, 'the stored secret is the one in use');
+  assert.equal(resets, 0);
+});

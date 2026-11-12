@@ -28,7 +28,15 @@ function storeKey(dir: string, path: string, key: Buffer): boolean {
   try {
     mkdirSync(dir, { recursive: true });
     const fd = openSync(tmp, 'wx', 0o600);
-    try { writeSync(fd, key.toString('hex')); } finally { closeSync(fd); }
+    try {
+      // writeSync may write fewer bytes than asked; finish before the rename.
+      const data = Buffer.from(key.toString('hex'), 'utf8');
+      for (let off = 0; off < data.length;) {
+        const n = writeSync(fd, data, off, data.length - off);
+        if (n <= 0) throw new Error('secret write made no progress');
+        off += n;
+      }
+    } finally { closeSync(fd); }
     renameSync(tmp, path);
     return true;
   } catch {

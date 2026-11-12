@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useUsageView } from '@/usage';
 import { useTranslation } from 'react-i18next';
 import { PixelPanel } from './PixelPanel';
 import { PixelButton } from './PixelButton';
@@ -43,6 +44,7 @@ const MODELS: { id: ModelId; titleKey: string; detailKey: string }[] = [
  * the human-facing window into the same memory.
  */
 export function MemoryPanel() {
+  useUsageView('memory');
   const { t } = useTranslation();
   const rtl = useRtl();
   const [open, setOpen] = useState(false);

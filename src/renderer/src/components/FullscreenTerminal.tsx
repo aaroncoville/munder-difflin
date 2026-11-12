@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useUsageView } from '@/usage';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { PixelBadge } from './PixelBadge';
@@ -152,6 +153,7 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
   const agents = useStore(s => s.agents);
   const restorableAgents = useStore(s => s.restorableAgents);
   const fullscreenAgentId = useStore(s => s.fullscreenAgentId);
+  useUsageView(fullscreenAgentId ? 'terminal-fullscreen' : null, { agentId: fullscreenAgentId ?? undefined });
   const setFullscreen = useStore(s => s.setFullscreen);
   const select = useStore(s => s.select);
   const setAddAgentOpen = useStore(s => s.setAddAgentOpen);

@@ -732,7 +732,9 @@ export class HiveManager {
     // can include tokens, paths and prompt fragments, and the hive repo is
     // committed on every change — a secret written there would be permanent.
     // log.jsonl gets the structured, non-sensitive fields; the dump stays local.
-    const want = ['fleet.json', 'hooks.sock', 'cost-ledger.jsonl', 'crashes/', '.DS_Store'];
+    // `usage/`: the owner's usage log lives in the app's data folder, not here;
+    // ignored anyway so a stray usage file can never enter the hive's history.
+    const want = ['fleet.json', 'hooks.sock', 'cost-ledger.jsonl', 'crashes/', '.DS_Store', 'usage/'];
     let lines: string[] = [];
     if (existsSync(gitignore)) { try { lines = readFileSync(gitignore, 'utf8').split('\n'); } catch { lines = []; } }
     const missing = want.filter((w) => !lines.includes(w));

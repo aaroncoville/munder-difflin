@@ -12,6 +12,7 @@
  * boundary is handled separately.
  */
 
+import { askKeyOf } from '../shared/askKey';
 
 // ── field validators ─────────────────────────────────────────────────────────
 // A string an agent or a sender controls is written verbatim only when it is a
@@ -44,11 +45,6 @@ export const CARD_STATUSES = ['todo', 'doing', 'blocked', 'done'] as const;
 type CardStatus = typeof CARD_STATUSES[number];
 const asStatus = (v: unknown): CardStatus | undefined =>
   (typeof v === 'string' && (CARD_STATUSES as readonly string[]).includes(v) ? (v as CardStatus) : undefined);
-/** A timestamp string, parsed and re-emitted in canonical ISO form, never copied. */
-const asIso = (v: unknown): string | undefined => {
-  const t = typeof v === 'string' ? Date.parse(v) : NaN;
-  return Number.isFinite(t) ? new Date(t).toISOString() : undefined;
-};
 
 /** Hook event names the harness handles; anything else is logged as 'other'. */
 export const HOOK_EVENTS = [
@@ -136,17 +132,8 @@ export class TurnTracker {
 
 // ── tasks.json ───────────────────────────────────────────────────────────────
 
-export type AnswerShape = 'done-ack' | 'option' | 'short' | 'sentence' | 'long';
-
-/** The shape of an answer, so the review can tell one-tap answers from real decisions. */
-export function answerShape(answer: string): AnswerShape {
-  const a = answer.trim().toLowerCase().replace(/[.!]+$/, '');
-  if (['done', 'ack', 'ok', 'okay', 'yes', 'no', 'go', 'superseded', 'merged'].includes(a)) return 'done-ack';
-  if (/^[a-z0-9]$/.test(a)) return 'option';
-  if (a.length <= 20) return 'short';
-  if (a.length <= 280) return 'sentence';
-  return 'long';
-}
+export { answerShape, type AnswerShape } from '../shared/answerShape';
+import { answerShape, type AnswerShape } from '../shared/answerShape';
 
 interface Card { id?: unknown; status?: unknown; updatedAt?: unknown; humanQA?: unknown }
 interface Ask { askedAt?: unknown; a?: unknown; answeredAt?: unknown }
@@ -193,10 +180,9 @@ export function diffTasks(prev: unknown, next: unknown, now: number): TaskEvent[
     for (const q of asks(c)) {
       const askedAt = str(q.askedAt);
       if (!askedAt) continue;
-      // The key the owner's side also uses: card id @ canonical ask time. Left
-      // out when either part is not a valid id or timestamp.
-      const iso = asIso(askedAt);
-      const askKey = cardId && iso ? `${cardId}@${iso}` : undefined;
+      // The key the owner's side also uses (askKeyOf). Left out when either
+      // part is not a valid id or timestamp.
+      const askKey = askKeyOf(cardId, askedAt);
       const ids = { ...(cardId ? { cardId } : {}), ...(askKey ? { askKey } : {}) };
       const was = oldAsks.get(askedAt);
       if (!was) out.push({ kind: 'ask-filed', sampled: true, ...ids });

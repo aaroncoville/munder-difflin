@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useUsageView } from '@/usage';
 import { useStore } from '@/store/store';
 import { TaskDetail, parseTasks, type HiveTask } from './TasksKanban';
 
@@ -13,6 +14,7 @@ const POLL_MS = 5000;
 
 export function TaskDetailOverlay() {
   const taskDetailId = useStore((s) => s.taskDetailId);
+  useUsageView(taskDetailId ? 'task-detail' : null, { cardId: taskDetailId ?? undefined });
   const closeTaskDetail = useStore((s) => s.closeTaskDetail);
   const agents = useStore((s) => s.agents);
   const restorable = useStore((s) => s.restorableAgents);

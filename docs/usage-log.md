@@ -1,7 +1,7 @@
 # Local usage log: how to read the data
 
 Everything here stays on this machine.
-- Events are appended to files under the hive folder.
+- Floor events go to the hive's `log.jsonl`. The owner's own usage events go to the app's data folder, never the hive.
 - Nothing is sent anywhere. The outbound analytics module (`src/main/analytics.ts`) sends only the event names on its own allowlist, and none of these is on it.
 - Events hold ids, counts, durations and short enums or codes. They never hold message text, query results, command output or file contents.
 
@@ -85,6 +85,37 @@ The roster and `tasks.json` are themselves files agents can write: this rule kee
 
 **Sampled task rows.** `tasks.json` is written directly by the orchestrator, so the app compares one read every 30 s with the previous one. These rows are therefore samples, and carry `sampled: true`: a card that goes `todo -> doing -> done` between two reads appears as one `todo -> done` row, and an ask filed and removed between reads never appears. For the same reason no row claims a time in state: `doing -> done` can hide `doing -> blocked -> done`. The weekly digest takes state hours from the rows' own timestamps and labels them as sampled. Authoritative transition events, one per change, arrive with the pipeline's card log; until then, read these rows as samples.
 
+**Joining a turn to its message:** the router's own `message` row keeps the message id as it is, while the `turn` row has only `triggerRef`. To join them, compute the same ref over the message row's `id`: HMAC-SHA-256 keyed with the secret in the app's data folder (`usage-ref-secret`), first 12 hex. That is possible only on this machine, by design.
+
 **Dollars per turn:** join `turn` spans with `cost-ledger.jsonl` rows for the same agent between `startTs` and `startTs + durationMs` (the `usd` column is cumulative per session, so take positive differences).
 
 **Not logged:** review rounds and verdicts. Today they exist only in message text, so capturing them would mean logging content. They become measurable once verdicts are sent as structured fields.
+
+## The owner's side (`<userData>/usage/YYYY-MM-DD.jsonl`)
+
+These events have their own daily files, so they can be switched off and deleted on their own.
+
+| | |
+|---|---|
+| **Where** | `<userData>/usage/`, the app's own data folder (on macOS `~/Library/Application Support/<app name>/usage/`), folder `0700`, files `0600`. Never the hive: the hive is a git repository that agents can read and write, so rows kept there could be read, changed or redirected by an agent and would be committed into its history. The hive's `.gitignore` also lists `usage/` |
+| **Retention** | Files older than 90 days are removed at start and daily |
+| **Off switch and delete** | Settings → General → *Local usage log*; the switch takes effect when Settings is saved. **Delete usage log** removes every daily file in that folder |
+| **Allowlist** | `src/main/usageLog.ts`. Unknown kinds are refused and unknown fields dropped. Every string must be a known enum, a known view, or an agent or card id the app holds, so typed text cannot be written even by a buggy caller |
+| **Outbound** | None. `test/usage-log-not-outbound.test.cjs` proves the analytics module drops every one of these kinds |
+
+Every row carries `ts`, `v` (schema version), `session` (one id per app run), `win` (window id) and `focused`.
+
+| kind | Fields | Written when |
+|---|---|---|
+| `ui-view` | `view`, `agentId?`, `cardId?` | A screen or panel opens: `command-center:<tab>`, `agent-detail:<sidebar tab>`, `settings`, `memory`, `task-detail`, `terminal-fullscreen`. `agentId` only when it is on the roster and `cardId` only when it is in `tasks.json`; otherwise the field is left out and the view still counts |
+| `ui-view-end` | `view`, `dwellMs` | It closes or changes. `dwellMs` counts only time the window was visible and focused |
+| `ask-shown` | `askKey` (`<cardId>@<ISO time>`, card in `tasks.json`; otherwise not written), `surface` (`ask-me`), `ageMs?` | An ask row on the Ask Me board has been on screen, with the window focused at both ends of 1 s (once per ask per window). `ageMs` is the time since it was asked |
+| `ask-submitted` | `askKey`, `surface` (`ask-me`), `answerLen`, `answerShape`, `msSinceShown?` | An answer is sent from the Ask Me board. The text is never copied |
+| `app-focus` | `state` (`focus` / `blur`) | A window gains or loses focus |
+
+**Reading it:**
+- Time unseen = `ask-shown.ageMs`; time thinking = `ask-submitted.msSinceShown`.
+- An ask filed (`ask-filed` in `log.jsonl`) with no `ask-shown` was never looked at.
+- An ask shown with no answer was seen and left.
+
+**Not logged:** keystrokes, typed text, clipboard, window titles, screenshots, and anything outside the app.
