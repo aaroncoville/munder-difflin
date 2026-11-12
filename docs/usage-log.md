@@ -132,6 +132,6 @@ At start and once a day, while the usage log is on, the app writes the digest fo
 - heavy-lock waits;
 - canary failures.
 
-The logs live in the hive folder, which agents can write, so the digest never prints a string because it looks like an id. It prints only known values (triggers, statuses, answer shapes, views, lock kinds, canary features and failure codes, with anything else shown as `other`), card ids present in the current `tasks.json` (a turn's `cardId` and ask keys), and `ref:<hex>` for a conversation logged as a keyed ref. Dollars by conversation are grouped by those two only.
+The logs live in the hive folder, which agents can write, so the digest never prints a string because it looks like an id. It prints only known values (triggers, statuses, answer shapes, views, lock kinds, canary features and failure codes, with anything else shown as `other`), card ids present in the current `tasks.json` (a turn's `cardId` and ask keys), and `ref:<hex>` for a conversation logged as a keyed ref. Dollars by conversation are grouped by those two only. The digest never joins a turn to its `message` row, so it needs neither the message id nor the ref secret.
 
 It reads the ledger and the hive log backwards, only as far as the week needs, so a large history is never loaded whole. The file is `0600` and is never rewritten. **Delete usage log** in Settings removes digests too. The daily research pass reads the newest digest instead of mining the logs.
