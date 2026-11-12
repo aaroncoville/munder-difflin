@@ -30,7 +30,7 @@ import {
 import { linkWorktreeDeps, unlinkWorktreeDeps } from './worktreeDeps';
 import { saveAskAttachment } from './askAttachments';
 import { HiveManager, type AgentMeta, type HiveMessage, type HiveTask } from './hive';
-import { runCanaries } from './canaries';
+import { runCanaries, memoryCanary } from './canaries';
 import { HookServer } from './hooks';
 import { HeavyJobLock, heavyLimit, heavySlotNotice, probeProcesses } from './heavyJob';
 import { suiteJobLimit } from './heavyJobRules';
@@ -5477,9 +5477,11 @@ async function runCanaryPass(): Promise<void> {
   const godId = hive.registry().godId ?? 'god';
   const sock = hive.sockPath();
   const results = await runCanaries({
-    memory: memory.status().active
-      ? { search: (q, o) => memory.search(q, { wing: o.wing }), wakeUp: (w) => memory.wakeUp(w), wing: godId }
-      : null,
+    // Decided from settings only: asking the backend (even its status) may spawn its CLI.
+    memory: memoryCanary(
+      { search: (q, o) => memory.search(q, { wing: o.wing }), wakeUp: (w) => memory.wakeUp(w) },
+      migrateMemorySettings(readConfig()), godId
+    ),
     kg: knowledge.active() ? { search: (q, limit) => knowledge.search(q, limit) } : null,
     hook: sock ? { sock, instance: hookServer.instance() } : null,
     helpers: hive.installedHelpers(),

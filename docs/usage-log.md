@@ -14,8 +14,8 @@ The canaries run a minute after the app starts, then every hour. Each pass write
 
 | feature | What it checks | `ok:false` details |
 |---|---|---|
-| `memory-search` | The memory backend's search, called in-process with the owner tag agents send (god's id). `hits` is a count | `refused-<HTTP code>`, `error`, `timeout`. `ok:true` with `detail: "no-hits"` means it answered but recalled nothing |
-| `memory-wakeup` | The backend's wake-up, called in-process | Same as above |
+| `memory-search` | Probed only when it is provably local and passive: the backend is Hindsight and its URL's host is loopback (`localhost`, `127.0.0.0/8`, `::1`). Then the constant probe is sent with the owner tag agents send (god's id). `hits` is a count | `refused-<HTTP code>`, `error`, `timeout`. `ok:true` with `no-hits` means it answered but recalled nothing. **Not probed** (`ok: null`): `not-probed-spawn` (the MemPalace backend answers by starting its CLI), `not-probed-remote` (a Hindsight URL that is not this machine), `off` |
+| `memory-wakeup` | Same rule as `memory-search` | Same as above |
 | `kg-search` | The knowledge graph's search, called in-process. `hits` is a count | `timeout`, `threw`. `no-hits` as above |
 | `hook-socket` | A ping over the hook socket. The pong must carry this app's instance id | `ENOENT`, `ECONNREFUSED`, `timeout`, `wrong-pong`, `other-instance` (another app owns the socket), `no-root` |
 | `helpers-intact` | Reads `bin/hive-memory`, `bin/hive-node` and `bin/runtime/node` and compares them with what this app installs | `problems: {name: missing / not-regular / not-executable / stale / modified}`. `stale` = older than the bundled source (the app has not reinstalled it since an update; a restart fixes it). `modified` = different bytes |
@@ -25,7 +25,21 @@ The canaries run a minute after the app starts, then every hour. Each pass write
 - `ok: null` with `detail: "off"` means the feature is disabled on this install.
 - A failing canary only logs; it changes no behaviour.
 
-**Security: canaries never execute anything.** The main process does not run, require or eval files under the hive root, because every agent can write there. Backends are probed in-process, and the helpers agents run are only read and compared. A test plants hostile helpers and asserts that a pass never runs them.
+**Security: a canary pass starts no child process and contacts nothing but loopback.**
+- The main process never runs, requires or evals files under the hive root, because every agent can write there. The helpers agents run are only read and compared, and a test plants hostile helpers and asserts that a pass never runs them.
+- Whether to probe memory is decided from settings alone, since even asking the MemPalace backend for its status can start a login-shell lookup.
+- A second test drives the real memory adapters with child processes and `fetch` instrumented, for every backend setting.
+
+**What is and is not probed:**
+
+| Probed | Not probed |
+|---|---|
+| A loopback Hindsight server's search and wake-up | MemPalace (it spawns a CLI) |
+| The knowledge graph (an in-process file read) | A non-loopback Hindsight server |
+| The hook socket (a local Unix socket) | |
+| The installed helpers (read only) | |
+| `node` on PATH (lookup only) | |
+| The ledger (read only) | |
 
 **Known limits:**
 - The memory canaries test the backend, not the agents' shim and launcher. `helpers-intact` covers the shim by comparing bytes, and `node-on-path` covers the launcher by lookup.

@@ -51,7 +51,7 @@ test('a canary pass never executes the installed helpers, and reports them as mo
   ];
   const r = byFeature(await C.runCanaries(deps(dir, {
     helpers, pathDirs: [path.join(bin, 'runtime')],
-    memory: { search: recall('— a'), wakeUp: recall('— a'), wing: 'god' }
+    memory: { plan: 'probe', search: recall('— a'), wakeUp: recall('— a'), wing: 'god' }
   })));
   await new Promise((res) => setTimeout(res, 200));
   assert.equal(fs.existsSync(sentinel), false, 'a helper under the hive root was executed');
@@ -93,7 +93,7 @@ test('memory canaries count hits and name a refusal by its status code', async (
   const dir = tmp(t);
   const seen = [];
   const memory = {
-    wing: 'god',
+    plan: 'probe', wing: 'god',
     search: async (q, o) => { seen.push(['search', q, o]); return { ok: true, output: '— one\n— two' }; },
     wakeUp: async (w) => { seen.push(['wake', w]); return { ok: false, output: '', error: 'HTTP 422' }; }
   };
@@ -107,7 +107,7 @@ test('memory canaries count hits and name a refusal by its status code', async (
 test('zero hits is its own detail, and nothing recalled reaches the result', async (t) => {
   const dir = tmp(t);
   const results = await C.runCanaries(deps(dir, {
-    memory: { wing: 'god', search: recall(''), wakeUp: recall('— secret memory text') },
+    memory: { plan: 'probe', wing: 'god', search: recall(''), wakeUp: recall('— secret memory text') },
     kg: { search: () => [{ title: 'secret doc' }] }
   }));
   const r = byFeature(results);
@@ -119,7 +119,7 @@ test('zero hits is its own detail, and nothing recalled reaches the result', asy
 test('a probe that hangs times out instead of holding the pass', async (t) => {
   const dir = tmp(t);
   const never = () => new Promise(() => {});
-  const r = byFeature(await C.runCanaries(deps(dir, { memory: { wing: 'god', search: never, wakeUp: never }, timeoutMs: 50 })));
+  const r = byFeature(await C.runCanaries(deps(dir, { memory: { plan: 'probe', wing: 'god', search: never, wakeUp: never }, timeoutMs: 50 })));
   assert.deepEqual([r['memory-search'].ok, r['memory-search'].detail], [false, 'timeout']);
 });
 

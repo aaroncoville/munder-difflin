@@ -8,7 +8,8 @@
  * canary writes one `canary` line to the hive log.
  *
  * SECURITY: the main process never executes, requires or evals anything under
- * the hive root. Every agent can write there, so running a file from it would
+ * the hive root, and a canary pass starts no child process and contacts nothing
+ * but loopback (memory is probed only on a loopback Hindsight server). Every agent can write there, so running a file from it would
  * turn an agent's file write into code running as the app user. Backends are
  * probed in-process; the helpers agents run are READ and compared with what the
  * app would install, never run.
@@ -53,8 +54,8 @@ export interface Helper {
 }
 
 export interface CanaryDeps {
-  /** In-process memory probes; `wing` is the owner tag agents send (god's id). null when memory is off. */
-  memory: { search: (q: string, o: { wing: string }) => Promise<TextResult>; wakeUp: (wing: string) => Promise<TextResult>; wing: string } | null;
+  /** Memory probes and whether they may run (see memoryCanary); `wing` is the owner tag agents send. */
+  memory: MemoryCanary | null;
   /** In-process knowledge-graph search; null when the graph is off. */
   kg: { search: (q: string, limit: number) => unknown[] } | null;
   /** The hook socket and this app's instance id; null without a hive root. */
@@ -70,6 +71,42 @@ export interface CanaryDeps {
 }
 
 const PROBE = 'canary probe';
+
+/** Whether the memory canary may probe: only a backend that is provably local and passive. */
+export type MemoryPlan = 'probe' | 'off' | 'not-probed-spawn' | 'not-probed-remote';
+
+export interface MemoryCanary {
+  plan: MemoryPlan;
+  search: (q: string, o: { wing: string }) => Promise<TextResult>;
+  wakeUp: (wing: string) => Promise<TextResult>;
+  wing: string;
+}
+
+/** A URL whose host is this machine: localhost, 127.0.0.0/8 or ::1, over http(s). */
+export function isLoopbackUrl(url: string): boolean {
+  let u: URL;
+  try { u = new URL(url); } catch { return false; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+  const h = u.hostname;
+  return h === 'localhost' || h === '[::1]' || h === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h);
+}
+
+/**
+ * The memory canary's plan, decided from settings alone, so that deciding never
+ * touches the backend. Only a Hindsight server on loopback is probed: the
+ * MemPalace backend answers by spawning its CLI (and finds it with a login-shell
+ * lookup), and a Hindsight URL elsewhere would send the probe off this machine.
+ */
+export function memoryCanary(
+  memory: { search: (q: string, o: { wing: string }) => Promise<TextResult>; wakeUp: (wing: string) => Promise<TextResult> },
+  settings: { enabled: boolean; backend: string; hindsight?: { url?: string } },
+  wing: string
+): MemoryCanary {
+  const plan: MemoryPlan = !settings.enabled ? 'off'
+    : settings.backend !== 'hindsight' ? 'not-probed-spawn'
+      : isLoopbackUrl(settings.hindsight?.url ?? '') ? 'probe' : 'not-probed-remote';
+  return { plan, search: (q, o) => memory.search(q, o), wakeUp: (w) => memory.wakeUp(w), wing };
+}
 
 /** Hits in a rendered recall: one per non-empty line that starts a result. */
 function countHits(output: string): number {
@@ -213,8 +250,8 @@ export async function runCanaries(d: CanaryDeps): Promise<CanaryResult[]> {
   };
   const m = d.memory;
   return [
-    await timed('memory-search', async () => (m ? judgeRecall(await m.search(PROBE, { wing: m.wing })) : { ok: null, detail: 'off' })),
-    await timed('memory-wakeup', async () => (m ? judgeRecall(await m.wakeUp(m.wing)) : { ok: null, detail: 'off' })),
+    await timed('memory-search', async () => (m?.plan === 'probe' ? judgeRecall(await m.search(PROBE, { wing: m.wing })) : { ok: null, detail: m?.plan ?? 'off' })),
+    await timed('memory-wakeup', async () => (m?.plan === 'probe' ? judgeRecall(await m.wakeUp(m.wing)) : { ok: null, detail: m?.plan ?? 'off' })),
     await timed('kg-search', async () => {
       if (!d.kg) return { ok: null, detail: 'off' };
       const hits = d.kg.search(PROBE, 1).length;
