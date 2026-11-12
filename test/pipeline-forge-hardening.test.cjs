@@ -15,6 +15,9 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const loadTs = require('./load-ts.cjs');
 
+/** A forbidden list for tests that are not about it: one folder nothing here uses. */
+const NONE = [require('node:path').join(require('node:os').tmpdir(), 'mr-pipeline-nothing-forbidden')];
+
 const { GitlabForge, toForgeMr, resolveTool, toolEnv } = loadTs('src/main/pipeline/forgeGitlab.ts');
 const { GitMirror } = loadTs('src/main/pipeline/gitMirror.ts');
 const { probeLive } = loadTs('src/main/pipeline/liveProbe.ts');
@@ -27,9 +30,9 @@ const MR = { state: 'opened', draft: false, sha: S, source_branch: 'feat/x', tar
 
 test('a GitLab answer that gives a name twice is no answer: the MR is unknown and a merge is refused', async () => {
   const twice = '{"state":"opened","state":"merged","sha":"' + S + '","source_branch":"feat/x","target_branch":"main"}';
-  const forge = new GitlabForge({ host: 'gitlab.com', project: 'wooden-bird/wayfarer', forbidden: [], run: async () => ({ code: 0, stdout: twice, stderr: '' }) });
+  const forge = new GitlabForge({ host: 'gitlab.com', project: 'wooden-bird/wayfarer', forbidden: NONE, run: async () => ({ code: 0, stdout: twice, stderr: '' }) });
   assert.equal(await forge.mr(7), null);
-  const merged = new GitlabForge({ host: 'gitlab.com', project: 'wooden-bird/wayfarer', forbidden: [], run: async () => ({ code: 0, stdout: `{"state":"merged","merge_commit_sha":"${M}","merge_commit_sha":"${S}"}`, stderr: '' }) });
+  const merged = new GitlabForge({ host: 'gitlab.com', project: 'wooden-bird/wayfarer', forbidden: NONE, run: async () => ({ code: 0, stdout: `{"state":"merged","merge_commit_sha":"${M}","merge_commit_sha":"${S}"}`, stderr: '' }) });
   assert.equal((await merged.merge(7, S)).ok, false);
 });
 
@@ -88,7 +91,7 @@ test('git runs with no user or system config and no GIT_ variables from the app\
 test('the mirror refuses, and never throws, on a malformed sha, ref or branch from outside', async () => {
   const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mr-mirror-')), 'm.git');
   const calls = [];
-  const m = new GitMirror({ dir, remote: 'https://gitlab.com/wooden-bird/wayfarer.git', forbidden: [], run: async (f, a) => { calls.push(a); return { code: 0, stdout: '', stderr: '' }; } });
+  const m = new GitMirror({ dir, remote: 'https://gitlab.com/wooden-bird/wayfarer.git', forbidden: NONE, run: async (f, a) => { calls.push(a); return { code: 0, stdout: '', stderr: '' }; } });
   for (const bad of ['', 'HEAD', S.slice(0, 7), `${S}x`, '--upload-pack=x', S.toUpperCase()]) {
     assert.equal(await m.hasCommit(bad), false, bad);
     assert.equal(await m.mergeTree(bad, S), null, bad);
@@ -104,7 +107,7 @@ test('the mirror refuses, and never throws, on a malformed sha, ref or branch fr
 
 test('the mirror folder must be an absolute path outside every forbidden folder', () => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'mr-mirror-'));
-  assert.throws(() => new GitMirror({ dir: 'rel/m.git', remote: 'https://gitlab.com/a/b.git', forbidden: [] }), /absolute/);
+  assert.throws(() => new GitMirror({ dir: 'rel/m.git', remote: 'https://gitlab.com/a/b.git', forbidden: NONE }), /absolute/);
   assert.throws(() => new GitMirror({ dir: path.join(base, 'hive', 'm.git'), remote: 'https://gitlab.com/a/b.git', forbidden: [path.join(base, 'hive')] }), /forbidden|under/);
   fs.mkdirSync(path.join(base, 'hive'));
   fs.symlinkSync(path.join(base, 'hive'), path.join(base, 'appdata'));
@@ -138,7 +141,7 @@ test('property: on random histories the mirror\'s answers match git\'s own in th
     const src = randomRepo(seed);
     const branches = src.git('for-each-ref', '--format=%(refname:short)', 'refs/heads').split('\n').filter(Boolean);
     const mirrorDir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mr-mir-')), 'm.git');
-    const mirror = new GitMirror({ dir: mirrorDir, remote: src.dir, forbidden: [] });
+    const mirror = new GitMirror({ dir: mirrorDir, remote: src.dir, forbidden: NONE });
     assert.equal(await mirror.fetch(branches), true, `seed ${seed}: fetch`);
     const cs = src.commits;
     for (let i = 0; i < cs.length; i++) {
@@ -173,7 +176,7 @@ test('changed files come back exactly, whatever characters a file name holds', a
   for (const n of odd) fs.writeFileSync(path.join(dir, n), 'x\n');
   git('add', '-A'); git('commit', '--quiet', '-m', 'b');
   const S2 = git('rev-parse', 'HEAD');
-  const mirror = new GitMirror({ dir: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mr-mir-')), 'm.git'), remote: dir, forbidden: [] });
+  const mirror = new GitMirror({ dir: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mr-mir-')), 'm.git'), remote: dir, forbidden: NONE });
   assert.equal(await mirror.fetch(['main']), true);
   assert.deepEqual((await mirror.changedFiles(T, S2)).sort(), [...odd].sort());
 });

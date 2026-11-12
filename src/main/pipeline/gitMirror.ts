@@ -44,8 +44,10 @@ export class GitMirror {
     const bad = forbidden.find((f) => isUnder(dir, f));
     if (bad) throw new Error(`the mirror folder ${dir} is under a forbidden folder (${bad})`);
     if (typeof remote !== 'string' || !REMOTE_RE.test(remote)) throw new Error(`not a remote this mirror fetches from (https or an absolute path): ${String(remote).slice(0, 80)}`);
+    if (remote.startsWith('/') && forbidden.some((f) => isUnder(remote, f))) throw new Error(`the remote ${remote} is under a forbidden folder`);
     this.helper = opts.glab ? credentialHelper(opts.glab) : null;
     if (opts.glab && !this.helper) throw new Error(`not an absolute glab path: ${opts.glab}`);
+    if (opts.glab && forbidden.some((f) => isUnder(opts.glab as string, f))) throw new Error(`the glab at ${opts.glab} is under a forbidden folder`);
     this.dir = dir;
     this.remote = remote;
     this.run = opts.run ?? makeRunner(forbidden);

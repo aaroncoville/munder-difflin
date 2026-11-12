@@ -10,6 +10,9 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const loadTs = require('./load-ts.cjs');
+
+/** A forbidden list for tests that are not about it: one folder nothing here uses. */
+const NONE = [require('node:path').join(require('node:os').tmpdir(), 'mr-pipeline-nothing-forbidden')];
 const core = require('../src/main/pipeline/mr-core.cjs');
 
 const { GitlabForge, toForgeMr, toolEnv, resolveTool, isUnder, SYSTEM_TOOL_DIRS, credentialHelper } = loadTs('src/main/pipeline/forgeGitlab.ts');
@@ -20,7 +23,7 @@ const S = 'fa862a4a5d84f8924d3bf0559ec525a7868b0db3';
 const M = '2222222222222222222222222222222222222222';
 const MR = { state: 'opened', draft: false, sha: S, source_branch: 'feat/x', target_branch: 'main', head_pipeline: { id: 1, sha: S, status: 'success' }, merge_commit_sha: null };
 const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p));
-const forgeWith = (answer, calls = []) => new GitlabForge({ host: 'gitlab.com', project: 'wooden-bird/wayfarer', forbidden: [], run: async (f, a, o) => { calls.push({ f, a, o }); return answer; } });
+const forgeWith = (answer, calls = []) => new GitlabForge({ host: 'gitlab.com', project: 'wooden-bird/wayfarer', forbidden: NONE, run: async (f, a, o) => { calls.push({ f, a, o }); return answer; } });
 
 // --- M1: no program is chosen through PATH, not even by git or glab ---
 
@@ -115,13 +118,13 @@ test('L3: a mirror folder that is not a repository answers nothing from a reposi
   const inner = path.join(outer, 'm.git');
   fs.mkdirSync(inner);
   fs.writeFileSync(path.join(inner, 'HEAD'), 'junk\n');
-  const m = new GitMirror({ dir: inner, remote: 'https://gitlab.com/a/b.git', forbidden: [] });
+  const m = new GitMirror({ dir: inner, remote: 'https://gitlab.com/a/b.git', forbidden: NONE });
   assert.equal(await m.hasCommit(c), false);
 });
 
 test('the mirror fetches only over https or from a local path, never another transport', () => {
   for (const remote of ['ext::sh -c touch% /tmp/x', 'ssh://git@gitlab.com/a/b.git', 'git@gitlab.com:a/b.git', 'http://gitlab.com/a/b.git', 'https://user:tok@gitlab.com/a/b.git', 'fd::3', 'relative/path']) {
-    assert.throws(() => new GitMirror({ dir: path.join(tmp('mr-'), 'm.git'), remote, forbidden: [] }), /remote/, remote);
+    assert.throws(() => new GitMirror({ dir: path.join(tmp('mr-'), 'm.git'), remote, forbidden: NONE }), /remote/, remote);
   }
 });
 
@@ -162,7 +165,7 @@ test('L6: git variables are dropped in any case, glab\'s host and config redirec
   await forgeWith({ code: 0, stdout: JSON.stringify(MR), stderr: '' }, calls).mr(7);
   assert.deepEqual(calls[0].a.slice(0, 3), ['api', '--hostname', 'gitlab.com']);
   assert.equal(calls[0].o.cwd, '/');
-  assert.throws(() => new GitlabForge({ host: 'gitlab.com/evil', project: 'a/b', forbidden: [] }), /host/);
+  assert.throws(() => new GitlabForge({ host: 'gitlab.com/evil', project: 'a/b', forbidden: NONE }), /host/);
 });
 
 // --- L7: the probe reads at most a bounded body ---
@@ -193,7 +196,7 @@ test('audit: no library injection or config-folder redirection reaches git or gl
 
 test('audit: every git call pins the hooks folder to nothing, so no hook in the mirror runs', async () => {
   const calls = [];
-  const m = new GitMirror({ dir: path.join(tmp('mr-'), 'm.git'), remote: 'https://gitlab.com/a/b.git', forbidden: [], run: async (f, a) => { calls.push(a); return { code: 0, stdout: `${S}\n`, stderr: '' }; } });
+  const m = new GitMirror({ dir: path.join(tmp('mr-'), 'm.git'), remote: 'https://gitlab.com/a/b.git', forbidden: NONE, run: async (f, a) => { calls.push(a); return { code: 0, stdout: `${S}\n`, stderr: '' }; } });
   await m.fetch(['main']); await m.hasCommit(S); await m.mergeTree(S, S); await m.isAncestor(S, S); await m.secondParent(S); await m.changedFiles(S, S); await m.revParse('refs/heads/main');
   const gitCalls = calls.filter((a) => !a.includes('init'));
   assert.ok(gitCalls.length >= 7);
@@ -204,4 +207,39 @@ test('audit: open MRs are counted only from an answer whose every entry is an MR
   const count = async (body) => forgeWith({ code: 0, stdout: JSON.stringify(body), stderr: '' }).openMrsForBranch('feat/x');
   assert.equal(await count([{ iid: 3 }, { iid: 4 }]), 2);
   for (const bad of [[1], [null], [{}], [{ iid: '3' }], { length: 1 }]) assert.equal(await count(bad), null, JSON.stringify(bad));
+});
+
+// --- second review ---
+
+test('N1: a merge is refused only on a 4xx glab reports on stderr; a 5xx, or "HTTP 409" in a body, is unknown', async () => {
+  const run = (code, stdout, stderr) => forgeWith({ code, stdout, stderr });
+  assert.equal((await run(1, '{"message":"conflict"}', 'glab: 409 Conflict (HTTP 409)').merge(7, S)).outcome, 'refused');
+  assert.equal((await run(1, '{"message":"bad gateway"}', 'glab: 502 Bad Gateway (HTTP 502)').merge(7, S)).outcome, 'unknown', 'a gateway error can mean it merged');
+  assert.equal((await run(1, '{"message":"HTTP 409"}', 'glab: context deadline exceeded').merge(7, S)).outcome, 'unknown', 'a body saying HTTP 409 on a timeout');
+});
+
+test('N2: a glab path at or under a forbidden folder is refused for the credential helper', () => {
+  const base = tmp('mr-n2-');
+  fs.mkdirSync(path.join(base, 'hive', 'bin'), { recursive: true });
+  fs.writeFileSync(path.join(base, 'hive', 'bin', 'glab'), '#!/bin/sh\n', { mode: 0o755 });
+  assert.throws(() => new GitMirror({ dir: path.join(tmp('mr-'), 'm.git'), remote: 'https://gitlab.com/a/b.git', forbidden: [path.join(base, 'hive')], glab: path.join(base, 'hive', 'bin', 'glab') }), /glab|forbidden/);
+});
+
+test('N3: a local-path remote under a forbidden folder is refused', () => {
+  const base = tmp('mr-n3-');
+  fs.mkdirSync(path.join(base, 'hive', 'repo'), { recursive: true });
+  assert.throws(() => new GitMirror({ dir: path.join(tmp('mr-'), 'm.git'), remote: path.join(base, 'hive', 'repo'), forbidden: [path.join(base, 'hive')] }), /remote|forbidden/);
+});
+
+test('N4: an empty forbidden list is not a forbidden list', () => {
+  assert.throws(() => new GitMirror({ dir: path.join(tmp('mr-'), 'm.git'), remote: 'https://gitlab.com/a/b.git', forbidden: [] }), /forbidden/);
+  assert.throws(() => new GitlabForge({ host: 'gitlab.com', project: 'a/b', forbidden: [] }), /forbidden/);
+});
+
+test('N5: draft and work_in_progress that disagree make the MR unknown', () => {
+  assert.equal(toForgeMr({ ...MR, draft: false, work_in_progress: true }), null);
+  assert.equal(toForgeMr({ ...MR, draft: true, work_in_progress: false }), null);
+  assert.equal(toForgeMr({ ...MR, draft: true, work_in_progress: true }).draft, true);
+  assert.equal(toForgeMr({ ...MR, draft: false, work_in_progress: false }).draft, false);
+  assert.equal(toForgeMr({ ...MR, draft: false, work_in_progress: 'yes' }), null, 'a malformed older flag is not ignored');
 });
