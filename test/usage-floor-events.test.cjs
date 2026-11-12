@@ -67,22 +67,22 @@ test('time in state runs from the card\'s previous transition, not from its last
   const seen = new Map();
   // First transition after start: no earlier transition known, so no duration.
   const e1 = U.diffTasks([card('A', 'todo')], [card('A', 'doing')], NOW, seen);
-  assert.deepEqual(e1, [{ kind: 'card-transition', cardId: 'A', from: 'todo', to: 'doing' }]);
+  assert.deepEqual(e1, [{ kind: 'card-transition', sampled: true, cardId: 'A', from: 'todo', to: 'doing' }]);
   // A later edit that is not a status change moves updatedAt but not the clock.
   const edited = card('A', 'doing', { updatedAt: '2026-11-12T14:59:00.000Z' });
   assert.deepEqual(U.diffTasks([card('A', 'doing')], [edited], NOW + 3 * 3600_000, seen), []);
   const e2 = U.diffTasks([edited], [card('A', 'done')], NOW + 3 * 3600_000 + 60_000, seen);
-  assert.deepEqual(e2, [{ kind: 'card-transition', cardId: 'A', from: 'doing', to: 'done', msInState: 3 * 3600_000 + 60_000 }]);
+  assert.deepEqual(e2, [{ kind: 'card-transition', sampled: true, cardId: 'A', from: 'doing', to: 'done', msInState: 3 * 3600_000 + 60_000 }]);
 });
 
 test('with no transition memory, no time in state is guessed', () => {
   const ev = U.diffTasks([card('A', 'todo')], [card('A', 'doing')], NOW);
-  assert.deepEqual(ev, [{ kind: 'card-transition', cardId: 'A', from: 'todo', to: 'doing' }]);
+  assert.deepEqual(ev, [{ kind: 'card-transition', sampled: true, cardId: 'A', from: 'todo', to: 'doing' }]);
 });
 
 test('a new card is reported with its first status; unchanged cards are silent', () => {
   const ev = U.diffTasks([card('A', 'todo')], [card('A', 'todo'), card('B', 'blocked')], NOW);
-  assert.deepEqual(ev, [{ kind: 'card-transition', cardId: 'B', from: null, to: 'blocked' }]);
+  assert.deepEqual(ev, [{ kind: 'card-transition', sampled: true, cardId: 'B', from: null, to: 'blocked' }]);
 });
 
 test('asks are reported filed and answered with latency and an answer shape, never their text', () => {
@@ -91,9 +91,9 @@ test('asks are reported filed and answered with latency and an answer shape, nev
   const filed = [card('A', 'blocked', { humanQA: [q] })];
   const answered = [card('A', 'blocked', { humanQA: [{ ...q, a: 'done', answeredAt: '2026-11-12T11:30:00.000Z' }] })];
   const e1 = U.diffTasks(before, filed, NOW);
-  assert.deepEqual(e1, [{ kind: 'ask-filed', cardId: 'A', askKey: 'A@2026-11-12T11:00:00.000Z' }]);
+  assert.deepEqual(e1, [{ kind: 'ask-filed', sampled: true, cardId: 'A', askKey: 'A@2026-11-12T11:00:00.000Z' }]);
   const e2 = U.diffTasks(filed, answered, NOW);
-  assert.deepEqual(e2, [{ kind: 'ask-answered', cardId: 'A', askKey: 'A@2026-11-12T11:00:00.000Z', msSinceAsked: 1800_000, answerLen: 4, answerShape: 'done-ack' }]);
+  assert.deepEqual(e2, [{ kind: 'ask-answered', sampled: true, cardId: 'A', askKey: 'A@2026-11-12T11:00:00.000Z', msSinceAsked: 1800_000, answerLen: 4, answerShape: 'done-ack' }]);
   assert.doesNotMatch(JSON.stringify([...e1, ...e2]), /Secret|question text/);
 });
 
@@ -137,6 +137,76 @@ test('a queued agent\'s acquire logs how long it waited', () => {
   const acq = logs.filter((r) => r.action === 'acquire');
   assert.equal(acq[0].waitMs, undefined, 'no wait for a free slot');
   assert.equal(acq[1].waitMs, 65_000);
+});
+
+// ── nothing but validated ids, enums and numbers reaches a row ───────────────
+
+test('probe: a sentence used as a conversation is not logged', () => {
+  const t = new U.TurnTracker();
+  t.noteDelivery('jc', { from: 'god', id: 'god-1', conversation: 'Owner said the unreleased project is ORCHID' }, 1000);
+  t.prompt('jc', 1500);
+  assert.doesNotMatch(JSON.stringify(t.stop('jc', 9000)), /ORCHID/);
+});
+
+test('probe: free-text statuses, ask times and card ids are dropped field by field', () => {
+  const prev = [{ id: 'card-secret-customer-name', status: 'todo', humanQA: [] }];
+  const next = [{ id: 'card-secret-customer-name', status: 'paste private status here', humanQA: [{ q: 'q', askedAt: 'private question copied as key' }] },
+    { id: 'a card id with spaces', status: 'doing' }];
+  const rows = U.diffTasks(prev, next, NOW, new Map());
+  const text = JSON.stringify(rows);
+  assert.doesNotMatch(text, /paste private status|private question copied|a card id with spaces/);
+  const moved = rows.find((r) => r.kind === 'card-transition' && r.cardId === 'card-secret-customer-name');
+  assert.ok(moved, 'the row stays, without the bad field');
+  assert.equal(moved.to, undefined);
+  assert.equal(moved.from, 'todo');
+});
+
+test('probe: hook ids are read from the top level only, never from nested tool input', () => {
+  const head = Buffer.from(JSON.stringify({
+    tool_input: { agent_id: 'nested-agent', tool_name: 'NestedTool', hook_event_name: 'Nested' },
+    hook_event_name: 'PostToolUse', agent_id: 'worker-ysabet', tool_name: 'Read'
+  }).slice(0, -1) + ',"tool_response":"' + 'x'.repeat(5000));
+  assert.deepEqual(U.frameIds(head), { agentId: 'worker-ysabet', hookEvent: 'PostToolUse', toolName: 'Read' });
+  const onlyNested = Buffer.from('{"tool_input":{"agent_id":"nested-agent","tool_name":"NestedTool"},"tool_response":"' + 'y'.repeat(5000));
+  assert.deepEqual(U.frameIds(onlyNested), {});
+});
+
+test('property: random prose in every input field never appears in any emitted row', () => {
+  let seed = 42;
+  const rand = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+  const WORDS = ['owner', 'secret', 'Pam', 'invoice', 'ORCHID', 'is', 'the', 'project', 'please', 'paste', 'here', 'v2', 'a-b'];
+  const prose = () => Array.from({ length: 2 + Math.floor(rand() * 5) }, () => WORDS[Math.floor(rand() * WORDS.length)]).join(rand() < 0.5 ? ' ' : ', ') + (rand() < 0.5 ? '.' : '?');
+  for (let i = 0; i < 300; i++) {
+    const p = Array.from({ length: 12 }, prose);
+    const rows = [];
+    const t = new U.TurnTracker();
+    t.noteDelivery(p[0], { from: p[1], id: p[2], conversation: p[3] }, 1000);
+    t.prompt(p[0], 1500);
+    rows.push(t.stop(p[0], 2000));
+    rows.push(...U.diffTasks(
+      [{ id: p[4], status: p[5], updatedAt: p[6], humanQA: [] }, { id: 'C-1', status: 'todo', humanQA: [] }],
+      [{ id: p[4], status: p[7], humanQA: [{ q: p[8], askedAt: p[9], a: p[10], answeredAt: p[11] }] },
+        { id: 'C-1', status: p[5], humanQA: [{ q: p[8], askedAt: p[9], a: p[10] }] }],
+      NOW, new Map()));
+    rows.push(U.frameIds(Buffer.from(JSON.stringify({ agent_id: p[0], hook_event_name: p[1], tool_name: p[2], tool_input: { agent_id: 'x' } }))));
+    const text = JSON.stringify(rows);
+    for (const s of p) assert.equal(text.includes(s), false, `prose reached a row: ${s}`);
+  }
+});
+
+// ── sampled task rows ────────────────────────────────────────────────────────
+
+test('task rows are marked sampled, and a move that skipped a status carries no time in state', () => {
+  const seen = new Map([['A', { ts: NOW - 3600_000, to: 'todo' }]]);
+  // todo -> doing -> done between two reads arrives as one todo -> done.
+  const rows = U.diffTasks([card('A', 'todo')], [card('A', 'done')], NOW, seen);
+  assert.deepEqual(rows, [{ kind: 'card-transition', cardId: 'A', from: 'todo', to: 'done', sampled: true }]);
+});
+
+test('time in state needs the previous transition to have been seen ending in this state', () => {
+  const seen = new Map([['A', { ts: NOW - 3600_000, to: 'blocked' }]]);
+  const rows = U.diffTasks([card('A', 'doing')], [card('A', 'done')], NOW, seen);
+  assert.equal(rows[0].msInState, undefined);
 });
 
 // ── delivered, not intended ──────────────────────────────────────────────────

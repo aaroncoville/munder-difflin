@@ -72,12 +72,16 @@ PY
 
 | kind | Fields | Written when |
 |---|---|---|
-| `turn` | `agentId`, `startTs`, `durationMs`, `trigger` (`mail` / `heartbeat` / `scheduler` / `breaker` / `system` / `direct`), `from?`, `triggerId?` (the message id), `conversation?` (only when id-shaped) | A Claude agent's turn ends (Stop hook). The trigger is the newest hive delivery to that agent in the 10 minutes before its prompt. `direct` means no delivery, so someone typed or the session resumed |
-| `card-transition` | `cardId`, `from` (null for a new card), `to`, `msInState?` | A card's status changes in `tasks.json`. The file is checked every 30 s; the first read after start is the baseline and logs nothing. `msInState` is the time since the same card's previous transition row, so it is absent for a card's first transition after a start |
-| `ask-filed` | `cardId`, `askKey` (`<cardId>@<askedAt>`) | A new `humanQA` entry appears |
-| `ask-answered` | `cardId`, `askKey`, `msSinceAsked?`, `answerLen`, `answerShape` (`done-ack` / `option` / `short` / `sentence` / `long`) | An ask gets its answer. The answer text is never copied |
+| `turn` | `agentId?`, `startTs`, `durationMs`, `trigger` (`mail` / `heartbeat` / `scheduler` / `breaker` / `system` / `direct`), `from?`, `triggerId?` (the message id), `conversation?` | A Claude agent's turn ends (Stop hook). The trigger is the newest hive delivery that actually landed in that agent's inbox in the 10 minutes before its prompt (a bounced or dropped message is never a cause). `direct` means no delivery, so someone typed or the session resumed |
+| `card-transition` | `sampled: true`, `cardId?`, `from?` (null for a new card), `to?`, `msInState?` | A card's status differs between two reads of `tasks.json` (see "Sampled task rows" below). The first read after start is the baseline and logs nothing |
+| `ask-filed` | `sampled: true`, `cardId?`, `askKey?` (`<cardId>@<askedAt as ISO>`) | A new `humanQA` entry appears |
+| `ask-answered` | `sampled: true`, `cardId?`, `askKey?`, `msSinceAsked?`, `answerLen`, `answerShape` (`done-ack` / `option` / `short` / `sentence` / `long`) | An ask gets its answer. The answer text is never copied |
 | `heavy-lock` `acquire` | adds `waitMs` | The agent had been queued for that slot |
-| `hook-frame-rejected` | adds `agentId?`, `hookEvent?`, `toolName?` | Read from the first 4 KB of the oversized message, and kept only if id-shaped |
+| `hook-frame-rejected` | adds `agentId?`, `hookEvent?`, `toolName?` | Read from the top level of the first 4 KB of the oversized message (never from tool input or other nested content), and kept only if id-shaped |
+
+**Every string is validated, field by field.** Agent, card and conversation ids must be short id tokens (a letter or digit, then letters, digits, `_ . : -`, at most 80 characters); message ids must pass the router's own message-id check; statuses must be one of `todo`, `doing`, `blocked`, `done`; ask times are parsed and written back as ISO, never copied. A field that fails is left out and the rest of the row is kept, which is why most fields above are optional.
+
+**Sampled task rows.** `tasks.json` is written directly by the orchestrator, so the app compares one read every 30 s with the previous one. These rows are therefore samples, and carry `sampled: true`: a card that goes `todo -> doing -> done` between two reads appears as one `todo -> done` row, and an ask filed and removed between reads never appears. `msInState` is written only when the same card's previous transition was seen ending in this row's `from` status and the move did not skip a status (between `todo` and `blocked` or `done`); otherwise it is left out rather than guessed. Authoritative transition events, one per change, arrive with the pipeline's card log; until then, read these rows as samples.
 
 **Dollars per turn:** join `turn` spans with `cost-ledger.jsonl` rows for the same agent between `startTs` and `startTs + durationMs` (the `usd` column is cumulative per session, so take positive differences).
 

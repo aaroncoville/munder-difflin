@@ -31,7 +31,7 @@ import { linkWorktreeDeps, unlinkWorktreeDeps } from './worktreeDeps';
 import { saveAskAttachment } from './askAttachments';
 import { HiveManager, type AgentMeta, type HiveMessage, type HiveTask } from './hive';
 import { runCanaries, memoryCanary } from './canaries';
-import { TurnTracker, diffTasks } from './usageEvents';
+import { TurnTracker, diffTasks, type SeenTransition } from './usageEvents';
 import { HookServer } from './hooks';
 import { HeavyJobLock, heavyLimit, heavySlotNotice, probeProcesses } from './heavyJob';
 import { suiteJobLimit } from './heavyJobRules';
@@ -5484,7 +5484,7 @@ const TASKS_WATCH_MS = 30_000;
 let tasksWatchTimer: ReturnType<typeof setInterval> | null = null;
 let tasksSeen: { mark: string; cards: unknown } | null = null;
 /** Each card's last logged transition time, for msInState. In memory only. */
-const cardTransitions = new Map<string, number>();
+const cardTransitions = new Map<string, SeenTransition>();
 function tasksWatchTick(): void {
   const root = hive.root();
   if (!root) return;
