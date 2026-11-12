@@ -1,11 +1,14 @@
 'use strict';
 // A fault-injection sweep over the card log. Every filesystem call the store makes
 // to change something is wrapped, so a scenario can be run with its Nth call
-// failing (EIO), or with its Nth write accepting only part of the bytes, for every
-// N until no call is left. After each fault the log is reopened with no faults and
-// must hold: the chain verifies, no committed line is lost or doubled, the sequence
-// numbers run without a gap, a repair that dropped bytes is on record exactly once,
-// no temp or marker file is left behind, and a writer that failed takes no more.
+// failing (EIO), its Nth write accepting only part of the bytes, or its Nth write
+// landing part of the bytes and then failing, for every N until no call is left.
+// Where the first fault leaves something to recover, the recovering open is swept
+// the same way. After that the log is reopened with no faults and must hold: the
+// chain verifies, no committed line is lost or doubled, the sequence numbers run
+// without a gap, every byte dropped from the log is on record in exactly one
+// log-repaired fact, no temp or marker file is left behind, a writer that failed
+// takes no more, and the export copy matches the log.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -20,6 +23,8 @@ const { CardLog } = loadTs('src/main/pipeline/store.ts');
 const CARD = 'WF-FB-VEHICLES';
 const TORN = '{"v":1,"seq":3,"note":"é torn';
 const WRAPPED = ['openSync', 'writeSync', 'fsyncSync', 'ftruncateSync', 'renameSync', 'rmSync', 'unlinkSync', 'mkdirSync', 'appendFileSync'];
+const WRITES = ['writeSync', 'appendFileSync'];
+const injected = (name) => Object.assign(new Error(`EIO: injected at ${name}`), { code: 'EIO' });
 
 function newRoot() {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'mr-faults-'));
@@ -28,11 +33,22 @@ function newRoot() {
 const open = (authRoot) => new CardLog({ authRoot, card: CARD });
 const cardDir = (authRoot) => path.join(authRoot, CARD);
 const logFile = (authRoot) => path.join(cardDir(authRoot), 'log.jsonl');
+const exportFile = (authRoot) => path.join(authRoot, '_export', CARD, 'log.jsonl');
+const read = (f) => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '');
+
+/** Half of what a write call was asked to write, as [buf, off, len] for the real writeSync. */
+function half(args) {
+  const [, data, off, len] = args;
+  const buf = Buffer.isBuffer(data) ? data : Buffer.from(String(data));
+  const start = Buffer.isBuffer(data) && typeof off === 'number' ? off : 0;
+  const size = Buffer.isBuffer(data) && typeof len === 'number' ? len : buf.length - start;
+  return [buf, start, Math.max(1, Math.floor(size / 2))];
+}
 
 /**
- * Runs [body] with the [nth] wrapped call failing: mode 'eio' throws EIO from any
- * wrapped call; mode 'short' makes the nth writeSync write half its bytes and say so.
- * Returns whether the fault fired.
+ * Runs [body] with the [nth] wrapped call faulted. 'eio': that call throws without
+ * doing anything. 'short': that write writes half and says so. 'tear': that write
+ * lands half and then throws. Returns whether the fault fired.
  */
 function withFault(mode, nth, body) {
   const real = {};
@@ -40,24 +56,45 @@ function withFault(mode, nth, body) {
   let fired = false;
   for (const name of WRAPPED) {
     real[name] = fs[name];
+    if (mode !== 'eio' && !WRITES.includes(name)) continue;
     if (mode === 'short' && name !== 'writeSync') continue;
     fs[name] = (...args) => {
       if (fired || ++calls !== nth) return real[name](...args);
       fired = true;
-      if (mode === 'eio') throw Object.assign(new Error(`EIO: injected at ${name}`), { code: 'EIO' });
-      const [fd, data] = args;
-      const buf = Buffer.isBuffer(data) ? data : Buffer.from(String(data));
-      return real.writeSync(fd, buf, 0, Math.max(1, Math.floor(buf.length / 2)));
+      if (mode === 'eio') throw injected(name);
+      if (name === 'appendFileSync') {
+        const [file, data, opts] = args;
+        const buf = Buffer.from(String(data));
+        real.appendFileSync(file, buf.subarray(0, Math.max(1, Math.floor(buf.length / 2))), opts);
+        throw injected(name);
+      }
+      const [buf, off, len] = half(args);
+      const n = real.writeSync(args[0], buf, off, len);
+      if (mode === 'short') return n;
+      throw injected(name);
     };
   }
   try { body(); } finally { for (const name of WRAPPED) fs[name] = real[name]; }
   return fired;
 }
 
+/** Counts every byte a truncate actually removed from the log while [body] runs. */
+function truncations(body) {
+  const real = fs.ftruncateSync;
+  let dropped = 0;
+  fs.ftruncateSync = (fd, len) => {
+    const before = fs.fstatSync(fd).size;
+    const out = real(fd, len);
+    dropped += Math.max(0, before - fs.fstatSync(fd).size);
+    return out;
+  };
+  try { body(); } finally { fs.ftruncateSync = real; }
+  return dropped;
+}
+
 /**
  * Each scenario: setup (no faults) returns what it committed and any live writer;
- * op is the faulted operation. `extra` is a line the op may add (at most once);
- * `repair` says the reopened log must carry exactly one log-repaired fact.
+ * op is the faulted operation. `extra` is a line the op may add (at most once).
  */
 const SCENARIOS = {
   'new log, first append': {
@@ -74,10 +111,9 @@ const SCENARIOS = {
     setup: (root) => {
       const w = open(root); w.append({ type: 'fact', n: 1 }); w.append({ type: 'fact', n: 2 });
       fs.appendFileSync(logFile(root), TORN);
-      return { committed: [1, 2] };
+      return { committed: [1, 2], tornBytes: Buffer.byteLength(TORN) };
     },
     op: (root, ctx) => { ctx.writer = open(root); },
-    repair: true,
   },
   'open one line past the anchor': {
     setup: (root) => {
@@ -100,24 +136,22 @@ const SCENARIOS = {
   },
 };
 
-/** Everything that went wrong in one cell, as strings; empty when the invariants hold. */
-function checkCell(name, sc, mode, nth) {
-  const root = newRoot();
-  const ctx = sc.setup(root);
-  let error = null;
-  const fired = withFault(mode, nth, () => { try { sc.op(root, ctx); } catch (e) { error = e; } });
-  if (!fired) return { fired, problems: [] };
-  const problems = [];
-  const say = (p) => problems.push(p);
-  // A writer that saw its operation fail takes no more appends (the export copy is not the log).
-  if (error && ctx.writer && !ctx.keepsWriter) {
-    let refused = false;
-    try { ctx.writer.append({ type: 'fact', n: 'after' }); } catch { refused = true; }
-    if (!refused) say('the failed writer took another append');
-  }
-  let lines;
-  try { lines = open(root).lines(); } catch (e) { say(`reopen failed: ${e.message}`); return { fired, problems }; }
-  const text = fs.existsSync(logFile(root)) ? fs.readFileSync(logFile(root), 'utf8') : '';
+/** True when the log on disk still has something an open must recover. */
+const pending = (root) => {
+  const text = read(logFile(root));
+  return (text !== '' && !text.endsWith('\n')) || fs.existsSync(path.join(cardDir(root), 'repair.json'));
+};
+
+/** The invariants after a clean reopen; [dropped] is every byte truncated before it. */
+function verify(root, ctx, sc, say, dropped, error) {
+  if (sc.restores && !error && read(exportFile(root)) !== read(logFile(root))) say('the restore reported success but the export is not the log');
+  let lines = [];
+  let reopened = null;
+  dropped += truncations(() => {
+    try { reopened = open(root); lines = reopened.lines(); } catch (e) { say(`reopen failed: ${e.message}`); }
+  });
+  if (!reopened) return;
+  const text = read(logFile(root));
   if (!core.verifyLogText(text, { card: CARD }).ok) say('the chain does not verify');
   if (text !== '' && !text.endsWith('\n')) say('a torn tail is left');
   lines.forEach((l, i) => { if (l.seq !== i + 1) say(`seq ${l.seq} at line ${i + 1}`); });
@@ -125,42 +159,73 @@ function checkCell(name, sc, mode, nth) {
   const committed = ns.filter((n) => n !== sc.extra);
   if (JSON.stringify(committed) !== JSON.stringify(ctx.committed)) say(`committed lines ${JSON.stringify(committed)}, want ${JSON.stringify(ctx.committed)}`);
   if (sc.extra && ns.filter((n) => n === sc.extra).length > 1) say('the op line is there twice');
-  const repairs = lines.filter((l) => l.fact === 'log-repaired').length;
-  if (sc.repair && repairs !== 1) say(`${repairs} log-repaired facts, want 1`);
-  for (const l of lines.filter((x) => x.fact === 'log-repaired')) {
-    if (l.dropped_bytes !== Buffer.byteLength(TORN)) say(`the repair says ${l.dropped_bytes} bytes dropped, want ${Buffer.byteLength(TORN)}`);
-  }
-  if (!sc.repair && repairs !== 0) say(`${repairs} log-repaired facts, want 0`);
+  const repairs = lines.filter((l) => l.fact === 'log-repaired');
+  if (repairs.length > 1) say(`${repairs.length} log-repaired facts`);
+  if (dropped > 0 && repairs.length !== 1) say(`${dropped} bytes dropped but ${repairs.length} log-repaired facts`);
+  if (dropped === 0 && repairs.length !== 0) say('a log-repaired fact with nothing dropped');
+  if (repairs[0] && repairs[0].dropped_bytes !== dropped) say(`the repair records ${repairs[0].dropped_bytes} bytes, ${dropped} were dropped`);
+  if (ctx.tornBytes && dropped < ctx.tornBytes) say(`only ${dropped} bytes dropped, the torn tail was ${ctx.tornBytes}`);
   const leftover = fs.readdirSync(cardDir(root)).filter((f) => !['head.json', 'log.jsonl'].includes(f));
   if (leftover.length) say(`left in the card folder: ${leftover.join(', ')}`);
-  const exportDir = path.join(root, '_export', CARD);
-  // A restore that reports success has put back the whole log.
-  if (sc.restores && !error && fs.readFileSync(path.join(exportDir, 'log.jsonl'), 'utf8') !== text) say('the restored export copy is not the log');
+  const exportDir = path.dirname(exportFile(root));
   if (fs.existsSync(exportDir)) {
     const stray = fs.readdirSync(exportDir).filter((f) => f !== 'log.jsonl');
     if (stray.length) say(`left in the export folder: ${stray.join(', ')}`);
   }
+  if (!sc.restores && reopened.mirrorStatus() !== 'same') say(`the export copy reads ${reopened.mirrorStatus()} after the reopen`);
   try {
-    const next = open(root).append({ type: 'fact', n: 'next' });
+    const next = reopened.append({ type: 'fact', n: 'next' });
     if (next.seq !== lines.length + 1) say(`next seq ${next.seq}, want ${lines.length + 1}`);
   } catch (e) { say(`append after reopen failed: ${e.message}`); }
-  return { fired, problems };
 }
 
-test('fault-injection sweep: every failing call and every short write, in every scenario, reopens whole', () => {
+const MODES = ['eio', 'short', 'tear'];
+const SECOND_MODES = ['eio', 'tear'];
+
+test('fault-injection sweep: every failing call, short write and torn write, then a second fault in the recovering open', () => {
   const failures = [];
-  let cells = 0;
+  const cells = { eio: 0, short: 0, tear: 0, double: 0 };
   for (const [name, sc] of Object.entries(SCENARIOS)) {
-    for (const mode of ['eio', 'short']) {
+    for (const mode of MODES) {
       for (let nth = 1; nth < 200; nth++) {
-        const { fired, problems } = checkCell(name, sc, mode, nth);
+        // The first fault alone.
+        const root = newRoot();
+        const ctx = sc.setup(root);
+        let error = null;
+        let fired = false;
+        const dropped = truncations(() => { fired = withFault(mode, nth, () => { try { sc.op(root, ctx); } catch (e) { error = e; } }); });
         if (!fired) break;
-        cells += 1;
-        for (const p of problems) failures.push(`${name} / ${mode} #${nth}: ${p}`);
+        cells[mode] += 1;
+        const say = (p) => failures.push(`${name} / ${mode} #${nth}: ${p}`);
+        if (error && ctx.writer && !ctx.keepsWriter) {
+          let refused = false;
+          try { ctx.writer.append({ type: 'fact', n: 'after' }); } catch { refused = true; }
+          if (!refused) say('the failed writer took another append');
+        }
+        // A short write is not a failure: an operation that returned has its export copy whole too.
+        if (mode === 'short' && !error && ctx.writer && !sc.restores && ctx.writer.mirrorStatus() !== 'same') say(`the export copy reads ${ctx.writer.mirrorStatus()} after a short write`);
+        // Keep the faulted state to sweep the recovering open over, before the clean reopen recovers it.
+        const base = path.dirname(path.dirname(root));
+        const snapshot = pending(root) ? fs.mkdtempSync(path.join(os.tmpdir(), 'mr-snap-')) : null;
+        if (snapshot) fs.cpSync(base, snapshot, { recursive: true });
+        verify(root, ctx, sc, say, dropped, error);
+        if (!snapshot) continue;
+        for (const mode2 of SECOND_MODES) {
+          for (let m = 1; m < 200; m++) {
+            const base2 = fs.mkdtempSync(path.join(os.tmpdir(), 'mr-faults2-'));
+            fs.cpSync(snapshot, base2, { recursive: true });
+            const root2 = path.join(base2, 'app', 'pipeline');
+            let fired2 = false;
+            const dropped2 = truncations(() => { fired2 = withFault(mode2, m, () => { try { open(root2); } catch { /* the second fault */ } }); });
+            if (!fired2) break;
+            cells.double += 1;
+            verify(root2, ctx, sc, (p) => failures.push(`${name} / ${mode} #${nth}, then ${mode2} #${m} in the recovering open: ${p}`), dropped + dropped2, error);
+          }
+        }
       }
     }
   }
-  if (process.env.SWEEP_REPORT) console.log(`cells: ${cells}\n${failures.join('\n')}`);
-  assert.ok(cells > 40, `only ${cells} cells ran`);
+  if (process.env.SWEEP_REPORT) console.log(`cells: ${JSON.stringify(cells)}\n${failures.join('\n')}`);
+  assert.ok(cells.eio > 40 && cells.tear > 5 && cells.double > 20, `too few cells: ${JSON.stringify(cells)}`);
   assert.deepEqual(failures, []);
 });
