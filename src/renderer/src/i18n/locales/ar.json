@@ -472,7 +472,7 @@
     "sections": {
       "identity": {
         "label": "الهوية",
-        "hint": "الاسم · الشخصية · اللون"
+        "hint": "الاسم · الصورة · اللون"
       },
       "workspace": {
         "label": "مساحة العمل",
@@ -489,7 +489,7 @@
     },
     "name": "الاسم",
     "namePlaceholder": "Ada",
-    "character": "الشخصية",
+    "character": "الصورة",
     "color": "اللون",
     "project": "المشروع",
     "pickProject": "اختر مشروعًا، أو أضف واحدًا جديدًا:",

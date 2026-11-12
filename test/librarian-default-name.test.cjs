@@ -271,28 +271,8 @@ function oldNameHits(f, src) {
   return hits;
 }
 
-/** The repository's files, from git; with no git (an unpacked source archive,
- *  a machine without it), from the disk, skipping what a build or install
- *  writes. */
-function repoFiles({ git = true } = {}) {
-  if (git) {
-    try {
-      const { execFileSync } = require('node:child_process');
-      return execFileSync('git', ['ls-files'], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
-        .split('\n').filter(Boolean);
-    } catch { /* no git here: read the disk */ }
-  }
-  const SKIP = new Set(['.git', 'node_modules', 'out', 'dist', 'release']);
-  const out = [];
-  const walk = (dir) => {
-    for (const e of fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
-      const rel = dir ? `${dir}/${e.name}` : e.name;
-      if (e.isDirectory()) { if (!SKIP.has(e.name)) walk(rel); } else if (e.isFile()) out.push(rel);
-    }
-  };
-  walk('');
-  return out;
-}
+const { repoFiles: listRepo } = require('./repo-files.cjs');
+const repoFiles = ({ git = true } = {}) => listRepo('', { git });
 // Not matched at all: `michael-voice`, the voice's actor id and inbox folder on
 // disk (renaming it orphans existing floors' voice inboxes), and identifiers
 // such as RealtimeMichaelToggle, which contain the name but no word boundary.

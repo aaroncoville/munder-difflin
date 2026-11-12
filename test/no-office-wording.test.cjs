@@ -15,6 +15,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
+const { repoFiles } = require('./repo-files.cjs');
 const ROOT = path.resolve(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 const LOCALES = 'src/renderer/src/i18n/locales';
@@ -51,6 +52,25 @@ test('no locale calls the floor an office', () => {
   assert.deepEqual(hits, []);
 });
 
+// The word for a cast character in each locale. The Add Agent row picks a
+// portrait from the Study's pack; there is no cast to pick from.
+const CHARACTER = {
+  'en.json': /\b(character|cast)\b/i,
+  'en-SH.json': /\b(character|cast)\b/i,
+  'zh-CN.json': /角色/,
+  'ar.json': /شخصية/
+};
+
+test('no locale offers a character or a cast', () => {
+  const hits = [];
+  for (const [f, word] of Object.entries(CHARACTER)) {
+    for (const [key, text] of strings(JSON.parse(read(`${LOCALES}/${f}`)))) {
+      if (word.test(text)) hits.push(`${f} ${key}: ${text.slice(0, 80)}`);
+    }
+  }
+  assert.deepEqual(hits, []);
+});
+
 test('the spawn guide does not offer a cast member or an office floor', () => {
   const hive = read('src/main/hive.ts');
   const start = hive.indexOf('You can start an ephemeral worker yourself.');
@@ -65,9 +85,7 @@ test('the spawn guide does not offer a cast member or an office floor', () => {
 test('no code the app runs calls the floor an office', () => {
   // Comments may say what the code replaced; text the app shows a person or
   // hands an agent may not.
-  const { execFileSync } = require('node:child_process');
-  const files = execFileSync('git', ['ls-files', 'src'], { cwd: ROOT, encoding: 'utf8' })
-    .split('\n').filter((f) => /\.(ts|tsx|cjs|mjs|js)$/.test(f));
+  const files = repoFiles('src').filter((f) => /\.(ts|tsx|cjs|mjs|js)$/.test(f));
   assert.ok(files.length > 200, `only ${files.length} files scanned`);
   const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, (c) => c.replace(/[^\n]/g, '')).replace(/(^|[^:\\])\/\/.*$/gm, '$1');
   // The 0.4.4 release page is the record of what that release changed, office

@@ -19,7 +19,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { repoFiles } = require('./repo-files.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 // Comments go, their line breaks stay, so a reported line is the file's own.
@@ -146,8 +146,8 @@ function childless(src, end) {
 }
 
 test('every text colour that can sit on a solid accent fill is the on-accent ink', () => {
-  const files = execFileSync('git', ['ls-files', 'src/renderer/src'], { cwd: ROOT, encoding: 'utf8' })
-    .split('\n').filter((f) => /\.tsx?$/.test(f));
+  const files = repoFiles('src/renderer/src').filter((f) => /\.tsx?$/.test(f));
+  assert.ok(files.length > 100, `only ${files.length} files scanned`);
   const hits = [];
   for (const f of files) {
     const src = strip(fs.readFileSync(path.join(ROOT, f), 'utf8'));
@@ -246,8 +246,8 @@ test('every text colour that can sit on a tint fill is the primary or secondary 
   // that does not paint a fill of its own, must be one of the two inks that
   // read on every tint. A tint element with no colour of its own inherits
   // the primary ink from the page; what it contains is still checked.
-  const files = execFileSync('git', ['ls-files', 'src/renderer/src'], { cwd: ROOT, encoding: 'utf8' })
-    .split('\n').filter((f) => /\.tsx$/.test(f));
+  const files = repoFiles('src/renderer/src').filter((f) => /\.tsx$/.test(f));
+  assert.ok(files.length > 50, `only ${files.length} files scanned`);
   const hits = [];
   let consts = {};
   const checkText = (where, fg, fillPath, fill) => {
@@ -299,8 +299,8 @@ test('the quiet status colours are never a fill behind text', () => {
   // reads below that, so those two may colour a dot or an outline, never a
   // box with text in it. A status fill is only allowed on an element with no
   // children.
-  const files = execFileSync('git', ['ls-files', 'src/renderer/src'], { cwd: ROOT, encoding: 'utf8' })
-    .split('\n').filter((f) => /\.tsx$/.test(f));
+  const files = repoFiles('src/renderer/src').filter((f) => /\.tsx$/.test(f));
+  assert.ok(files.length > 50, `only ${files.length} files scanned`);
   const STATUS_FILL = /background(?:Color)?\s*:\s*(?:[^,}\n]*var\(--cth-status-(?:idle|ghost)\)|colorByStatus\[|STATUS_COLOR\[)/g;
   const hits = [];
   let seen = 0;

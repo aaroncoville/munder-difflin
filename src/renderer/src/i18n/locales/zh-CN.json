@@ -472,7 +472,7 @@
     "sections": {
       "identity": {
         "label": "身份",
-        "hint": "名字 · 角色 · 颜色"
+        "hint": "名字 · 肖像 · 颜色"
       },
       "workspace": {
         "label": "工作区",
@@ -489,7 +489,7 @@
     },
     "name": "名字",
     "namePlaceholder": "Ada",
-    "character": "角色",
+    "character": "肖像",
     "color": "颜色",
     "project": "项目",
     "pickProject": "选择项目，或添加新项目：",

@@ -14,6 +14,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 
+const { repoFiles } = require('./repo-files.cjs');
 const ROOT = path.join(__dirname, '..');
 const readRaw = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
 /** CSS with comments removed: a comment naming a value is not a declaration. */
@@ -591,9 +592,8 @@ test('global.css carries no colour from the previous theme', () => {
 test('every token the renderer asks for exists', () => {
   // A var() naming a token nobody defines falls through to its fallback, so
   // the old light theme's literal colour is what renders, on a dark ground.
-  const { execFileSync } = require('node:child_process');
-  const files = execFileSync('git', ['ls-files', 'src/renderer'], { cwd: ROOT, encoding: 'utf8' })
-    .split('\n').filter((f) => /\.(tsx?|css|html)$/.test(f));
+  const files = repoFiles('src/renderer').filter((f) => /\.(tsx?|css|html)$/.test(f));
+  assert.ok(files.length > 100, `only ${files.length} files scanned`);
   const defined = new Set();
   const used = new Map();
   for (const f of files) {

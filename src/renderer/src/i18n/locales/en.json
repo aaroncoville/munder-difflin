@@ -472,7 +472,7 @@
     "sections": {
       "identity": {
         "label": "Identity",
-        "hint": "name · character · color"
+        "hint": "name · portrait · color"
       },
       "workspace": {
         "label": "Workspace",
@@ -489,7 +489,7 @@
     },
     "name": "Name",
     "namePlaceholder": "Ada",
-    "character": "Character",
+    "character": "Portrait",
     "color": "Color",
     "project": "Project",
     "pickProject": "Pick a project, or add a new one:",
