@@ -45,8 +45,8 @@ import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { isFolderName } from './messageTarget';
 import { TOOL_NAMES } from './usageEvents';
-import { claudeLaunch, codexLaunchSandbox, launchExecutable, launchPlaces } from './launchLine';
-export { claudeLaunch, codexLaunchSandbox } from './launchLine';
+import { claudeLaunch, claudeRoots, codexLaunchSandbox, codexRoots, launchExecutable, launchPlaces, type RootsState } from './launchLine';
+export { claudeLaunch, claudeRoots, codexLaunchSandbox, codexRoots } from './launchLine';
 
 /** Every class a path can be logged as. A name outside this list is never logged. */
 export const PATH_CLASSES = [
@@ -381,7 +381,6 @@ export function observeTool(tool: string, input: unknown, ctx: RootsContext, bud
 
 // --- effective roots ---
 
-export type RootsState = 'ok' | 'unsandboxed' | 'unknown';
 export interface EffectiveRoots { roots: string[]; state: RootsState; source: 'claude-settings-files' | 'codex-config' | 'none' }
 /** What the app launched the session with, as it holds it: how the CLI's sandbox was chosen on its command line. */
 export interface LaunchFacts { args?: string[]; platform?: string; /** The spawn's final environment, relocation variables only (relocationEnv). */ env?: Record<string, string> }
@@ -406,52 +405,6 @@ export function readSettings(file: string): Read {
   } catch { return { kind: 'bad' }; } finally { if (fd !== null) closeSync(fd); }
 }
 
-/** Codex writable_roots and sandbox mode from a config.toml. Anything not positively read is unknown. */
-export function codexRoots(toml: string): { roots: string[]; state: RootsState } {
-  const lines = toml.split('\n');
-  const firstHeader = lines.findIndex((l) => /^\s*\[/.test(l));
-  const top = firstHeader === -1 ? lines : lines.slice(0, firstHeader);
-  const rest = firstHeader === -1 ? [] : lines.slice(firstHeader);
-  // A sandbox mode inside a table (a profile) may be the one in force; it cannot be told from here.
-  if (rest.some((l) => /^\s*"?sandbox_mode"?\s*=/.test(l))) return { roots: [], state: 'unknown' };
-  const modeLine = top.find((l) => /^\s*"?sandbox_mode"?\s*=/.test(l));
-  if (modeLine) {
-    const m = /^\s*"?sandbox_mode"?\s*=\s*(?:"([^"]*)"|'([^']*)')\s*(#.*)?$/.exec(modeLine);
-    const mode = m ? (m[1] ?? m[2]) : null;
-    if (mode === 'danger-full-access') return { roots: [], state: 'unsandboxed' };
-    if (mode !== 'workspace-write' && mode !== 'read-only') return { roots: [], state: 'unknown' };
-  }
-  if (top.some((l) => /^\s*"?sandbox_workspace_write"?\s*[.=]/.test(l))) return { roots: [], state: 'unknown' };
-  const header = lines.findIndex((l) => /^\s*\[\s*sandbox_workspace_write\s*\]\s*(#.*)?$/.test(l));
-  if (header === -1) return { roots: [], state: 'ok' };
-  for (let i = header + 1; i < lines.length && !/^\s*\[[^\]"]*\]\s*(#.*)?$/.test(lines[i]); i++) {
-    const m = /^\s*writable_roots\s*=\s*(\[.*)$/.exec(lines[i]);
-    if (!m) continue;
-    let text = m[1];
-    while (!/\]\s*(#.*)?$/.test(text) && i + 1 < lines.length) text += lines[++i];
-    try {
-      const v = JSON.parse(text.replace(/#.*$/, '').replace(/,\s*\]/, ']')) as unknown;
-      return Array.isArray(v) && v.every((x) => typeof x === 'string') ? { roots: v as string[], state: 'ok' } : { roots: [], state: 'unknown' };
-    } catch { return { roots: [], state: 'unknown' }; }
-  }
-  return { roots: [], state: 'ok' };
-}
-
-/** Writable dirs in one Claude settings file; `enabled` is its sandbox.enabled, if it says. */
-export function claudeRoots(json: string): { roots: string[]; enabled: boolean | undefined } | null {
-  let v: unknown;
-  try { v = JSON.parse(json); } catch { return null; }
-  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
-  const o = v as { sandbox?: unknown; permissions?: unknown };
-  const sb = o.sandbox && typeof o.sandbox === 'object' ? (o.sandbox as { enabled?: unknown; filesystem?: { allowWrite?: unknown } }) : undefined;
-  if (o.sandbox !== undefined && !sb) return null;
-  const pm = o.permissions && typeof o.permissions === 'object' ? (o.permissions as { additionalDirectories?: unknown }) : undefined;
-  const a = sb?.filesystem?.allowWrite ?? [];
-  const b = pm?.additionalDirectories ?? [];
-  if (!Array.isArray(a) || !Array.isArray(b) || ![...a, ...b].every((x) => typeof x === 'string')) return null;
-  if (sb && sb.enabled !== undefined && typeof sb.enabled !== 'boolean') return null;
-  return { roots: [...a, ...b] as string[], enabled: sb?.enabled as boolean | undefined };
-}
 
 const MANAGED = process.platform === 'darwin' ? '/Library/Application Support/ClaudeCode/managed-settings.json' : '/etc/claude-code/managed-settings.json';
 /** Platforms where the CLIs' OS sandbox exists. Elsewhere "enabled" settings do not sandbox anything. */
@@ -460,7 +413,21 @@ const SANDBOXED_PLATFORMS = new Set(['darwin', 'linux']);
 /** The roots a session was given, read back from the settings files on disk, plus its cwd. */
 export function effectiveRoots(provider: string, agentDir: string, cwd: string, home: string = homedir(), launch: LaunchFacts = {}): EffectiveRoots {
   const abscwd = typeof cwd === 'string' && isAbsolute(cwd) ? cwd : '';
-  const withCwd = (roots: string[]): string[] => [...new Set([...roots, ...(abscwd ? [abscwd] : [])])];
+  let anchorHome = home;
+  let unanchored = false;
+  // Every root is read the way the spawned CLI reads it: ~ against the spawn's home, a relative path against the
+  // spawn's cwd (never the app's own). A variable, or a relative root with no cwd to read it against, is not modelled.
+  const anchor = (r: string): string | null => {
+    const v = r.replace(/^~(?=$|[\\/])/, anchorHome);
+    if (/[$%`]/.test(v) || /^~/.test(v)) return null;
+    if (isAbsolute(v)) return v;
+    return abscwd ? join(abscwd, v) : null;
+  };
+  const withCwd = (roots: string[]): string[] => {
+    const out: string[] = [];
+    for (const r of roots) { const a = anchor(r); if (a === null) { unanchored = true; continue; } out.push(a); }
+    return [...new Set([...out, ...(abscwd ? [abscwd] : [])])];
+  };
   const unknown = (source: EffectiveRoots['source']): EffectiveRoots => ({ roots: withCwd([]), state: 'unknown', source });
   const src: EffectiveRoots['source'] = provider === 'codex' ? 'codex-config' : provider === 'claude' ? 'claude-settings-files' : 'none';
   if (!SANDBOXED_PLATFORMS.has(launch.platform ?? process.platform)) return unknown(src);
@@ -469,6 +436,7 @@ export function effectiveRoots(provider: string, agentDir: string, cwd: string, 
   if (launchExecutable(launch.args) !== provider) return unknown(src);
   const places = launchPlaces(provider, launch.env, home);
   if ('unknown' in places) return unknown(src);
+  anchorHome = places.home;
   if (provider === 'codex') {
     const addDirs: string[] = [];
     const flag = codexLaunchSandbox(launch.args, addDirs);
@@ -488,12 +456,13 @@ export function effectiveRoots(provider: string, agentDir: string, cwd: string, 
         if (pr.kind === 'text') {
           const pc = codexRoots(pr.text);
           if (pc.state === 'unknown') return unknown('codex-config'); // a mode there is outranked by the command line's
-          projectRoots.push(...pc.roots.map((x) => (isAbsolute(x) ? x : join(d, x))));
+          projectRoots.push(...pc.roots);
         }
         if (dirname(d) === d) break;
       }
     }
-    return { roots: withCwd([...c.roots, ...projectRoots, ...addDirs, ...places.tmpDirs]), state: 'ok', source: 'codex-config' };
+    const codexRootsOut = withCwd([...c.roots, ...projectRoots, ...addDirs, ...places.tmpDirs]);
+    return unanchored ? unknown('codex-config') : { roots: codexRootsOut, state: 'ok', source: 'codex-config' };
   }
   // Highest precedence first; the generated file is passed with --settings. Directories merge across files.
   const generated = join(agentDir, 'settings.json');
@@ -511,7 +480,9 @@ export function effectiveRoots(provider: string, agentDir: string, cwd: string, 
     roots.push(...c.roots);
     if (enabled === undefined && c.enabled !== undefined) enabled = c.enabled;
   }
-  return { roots: withCwd([...roots, ...launchDirs, ...places.tmpDirs]), state: enabled === true ? 'ok' : 'unsandboxed', source: 'claude-settings-files' };
+  const claudeRootsOut = withCwd([...roots, ...launchDirs, ...places.tmpDirs]);
+  if (unanchored) return unknown('claude-settings-files');
+  return { roots: claudeRootsOut, state: enabled === true ? 'ok' : 'unsandboxed', source: 'claude-settings-files' };
 }
 
 /** The classes of the effective roots, and of those the scoped roots would not grant. */
@@ -667,6 +638,8 @@ export const READ_SITES = [
   { id: 'claude-plugin-dir', read: 'Claude --plugin-dir, --plugin-url', writer: 'the spawn request', planted: 'any plugin (can carry hooks and settings)', outcome: 'unknown' },
   { id: 'env-tmpdir', read: 'TMPDIR (both), CLAUDE_CODE_TMPDIR (Claude)', writer: 'the operator\'s environment, or a per-agent override', planted: 'a temp folder inside the hive', outcome: 'counted as a root (the sandbox lets the CLI write its temp folder); relative = unknown' },
   { id: 'launch-executable-name', read: 'the executable\'s name', writer: 'the spawn request', planted: 'another program installed under the name claude or codex', outcome: 'taken to be the CLI: judged by name, the path is not resolved (stated limit)' },
+  { id: 'relative-roots', read: 'a relative or ~ root in settings, config or --add-dir', writer: 'whoever wrote that source', planted: 'a relative path, ~/x, a $VAR', outcome: 'resolved the way the spawned CLI resolves it: against the spawn\'s cwd and home, never the app\'s; no cwd or a variable = unknown' },
+  { id: 'strict-decoders', read: 'the JSON and TOML decoders', writer: 'whoever wrote the file', planted: 'quoted, dotted or inline keys, profiles, duplicates, wrong types, nesting, key order', outcome: 'JSON: exact shape check of the keys read, any other type = unknown; TOML: no parser, so any sandbox key not consumed in its exact plain form = unknown' },
   { id: 'launch-wrapper', read: 'the launch line\'s executable', writer: 'the spawn request', planted: 'a wrapper: env X=Y claude, sh -c "...", npx codex', outcome: 'unknown (not a plain provider invocation)' },
   { id: 'env-missing', read: 'the spawn\'s final environment', writer: 'held in main\'s memory from the spawn', planted: 'none recorded', outcome: 'unknown' },
   { id: 'env-home', read: 'HOME in the spawn environment', writer: 'the operator\'s environment, or a per-agent override', planted: 'another home', outcome: 'honoured: user config is read from that home' },
