@@ -40,7 +40,7 @@
  * recorded; it never reads as scoped or as the agent's own. These are checks at the time of
  * the read: an enforcing version must re-check at use, since a folder can be swapped after.
  */
-import { closeSync, fstatSync, lstatSync, openSync, readSync, realpathSync, constants } from 'node:fs';
+import { closeSync, fstatSync, lstatSync, openSync, readdirSync, readSync, realpathSync, constants } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { isFolderName } from './messageTarget';
@@ -406,7 +406,14 @@ export function readSettings(file: string): Read {
 }
 
 
-const MANAGED = process.platform === 'darwin' ? '/Library/Application Support/ClaudeCode/managed-settings.json' : '/etc/claude-code/managed-settings.json';
+/** The machine-wide Claude settings file; its drop-in folder managed-settings.d sits beside it. (An object so a test can point it elsewhere.) */
+export const MANAGED_SETTINGS = { path: process.platform === 'darwin' ? '/Library/Application Support/ClaudeCode/managed-settings.json' : '/etc/claude-code/managed-settings.json' };
+function managedFiles(): string[] {
+  const drop = join(dirname(MANAGED_SETTINGS.path), 'managed-settings.d');
+  let names: string[] = [];
+  try { names = readdirSync(drop).filter((n) => n.endsWith('.json')).sort(); } catch { names = []; }
+  return [MANAGED_SETTINGS.path, ...names.map((n) => join(drop, n))];
+}
 /** Platforms where the CLIs' OS sandbox exists. Elsewhere "enabled" settings do not sandbox anything. */
 const SANDBOXED_PLATFORMS = new Set(['darwin', 'linux']);
 
@@ -476,7 +483,7 @@ export function effectiveRoots(provider: string, agentDir: string, cwd: string, 
   const generated = join(agentDir, 'settings.json');
   const launchDirs: string[] = [];
   if (claudeLaunch(launch.args, generated, launchDirs) === 'unknown') return unknown('claude-settings-files');
-  const files = [MANAGED, generated, ...(abscwd ? [join(abscwd, '.claude', 'settings.local.json'), join(abscwd, '.claude', 'settings.json')] : []), join(places.claudeUserDir, 'settings.json')];
+  const files = [...managedFiles(), generated, ...(abscwd ? [join(abscwd, '.claude', 'settings.local.json'), join(abscwd, '.claude', 'settings.json')] : []), join(places.claudeUserDir, 'settings.json')];
   const roots: string[] = [];
   let enabled: boolean | undefined;
   for (const f of files) {
@@ -518,7 +525,7 @@ export function rootsReport(eff: EffectiveRoots, ctx: RootsContext): { effective
 
 // --- the observer ---
 
-export interface DryRunAgent { ctx: RootsContext; provider: string; agentDir: string; launch?: LaunchFacts }
+export interface DryRunAgent { ctx: RootsContext; provider: string; agentDir: string; launch?: LaunchFacts; /** Which spawn of this agent this is; a session start is counted once per spawn. */ gen?: number }
 export interface DryRunDeps {
   /** The agent's roots context from what the app spawned, or null for an id it did not spawn. */
   agent(agentId: string): DryRunAgent | null;
@@ -546,6 +553,8 @@ export class WriteRootsDryRun {
   private turn: string[] = [];
   private scheduled = false;
   private shed = new Map<string, number>();
+  /** The spawn generation whose session start has been recorded, per agent. */
+  private sessionGen = new Map<string, number>();
   /** Tool calls seen per spawned agent, tool and input shape since that agent's last Stop. */
   private seen = new Map<string, number>();
 
@@ -602,6 +611,10 @@ export class WriteRootsDryRun {
       return;
     }
     if (j.event === 'Stop' || j.event === 'SessionEnd') { this.flush(j.agentId); return; }
+    // The first session start of a spawn wins; another for the same spawn is recorded as such, never merged.
+    const gen = a.gen ?? 0;
+    if (this.sessionGen.get(j.agentId) === gen) { this.d.record({ kind: 'write-duplicate-session-start', agentId: j.agentId }); return; }
+    this.sessionGen.set(j.agentId, gen);
     const eff = effectiveRoots(a.provider, a.agentDir, a.ctx.cwd, a.ctx.home, a.launch);
     this.d.record({ kind: 'write-roots', agentId: j.agentId, provider: providerClass(a.provider), role: a.ctx.isGod ? 'god' : 'agent', source: eff.source, ...rootsReport(eff, a.ctx) });
   }
@@ -615,7 +628,12 @@ export class WriteRootsDryRun {
       this.d.record({ kind: 'write-observed', agentId, tool, shape, count });
     }
     const shed = this.shed.get(agentId);
-    if (shed) { this.shed.delete(agentId); this.d.record({ kind: 'write-observed', agentId, tool: 'other', shape: 'shed', count: shed }); }
+    if (shed) {
+      this.shed.delete(agentId);
+      this.d.record({ kind: 'write-observed', agentId, tool: 'other', shape: 'shed', count: shed });
+      // An agent that lost calls is incomplete for this turn, never clean: its burst filled its queue.
+      this.d.record({ kind: 'write-incomplete', agentId, state: 'incomplete', shed, burst: true });
+    }
   }
 }
 
@@ -623,6 +641,10 @@ export class WriteRootsDryRun {
  *  per row and fails when a row has none; the PR's table is this list. */
 export const READ_SITES = [
   { id: 'payload-agent-id', read: 'hook payload agent_id', writer: 'any process that reaches the hook socket', planted: 'an id the app did not spawn, thousands of them', outcome: 'never queued (checked against the spawn record before admission); nothing allocated or recorded' },
+  { id: 'attribution', read: 'which agent a call is filed under', writer: 'any process that reaches the hook socket', planted: 'another spawned agent\'s id', outcome: 'filed under that id: attribution is self-reported and this dry run cannot authenticate it (an enforcement-phase item); a flood under a forged id can only shed that id\'s own calls, and shows as incomplete' },
+  { id: 'incomplete', read: 'an agent\'s shed calls', writer: 'spawned agents, or a process forging their id', planted: 'a burst past the agent\'s queue', outcome: 'a write-incomplete row (state incomplete, shed count, burst) at the turn\'s end: the agent reads incomplete, never clean' },
+  { id: 'duplicate-session-start', read: 'SessionStart', writer: 'any process that reaches the hook socket', planted: 'a second session start for the same spawn', outcome: 'the first per spawn wins; another is recorded as write-duplicate-session-start, never merged' },
+  { id: 'claude-managed-drop-ins', read: 'managed-settings.d/*.json beside the managed file', writer: 'root only', planted: '—', outcome: 'read like the managed file' },
   { id: 'payload-tool-name', read: 'hook payload tool_name', writer: 'same', planted: 'free text, non-string', outcome: 'logged as a fixed name or other' },
   { id: 'payload-tool-input', read: 'hook payload tool_input', writer: 'same', planted: 'huge command, thousands or deep missing paths, wrong types', outcome: 'answer not delayed; at most 64 paths, 25 ms, 64 KB per call, then one truncated row; wrong types record nothing' },
   { id: 'queue', read: 'the deferred queue, one per agent', writer: 'spawned agents, by calling tools', planted: 'one agent flooding calls', outcome: 'at most 8 tool calls waiting per agent, drained in turn; more are shed and counted for that agent only; Stop and session start are never shed' },
@@ -656,6 +678,7 @@ export const READ_SITES = [
   { id: 'env-missing', read: 'the spawn\'s final environment', writer: 'held in main\'s memory from the spawn', planted: 'none recorded', outcome: 'unknown' },
   { id: 'env-home', read: 'HOME in the spawn environment', writer: 'the operator\'s environment, or a per-agent override', planted: 'another home', outcome: 'honoured: user config is read from that home' },
   { id: 'env-claude-config-dir', read: 'CLAUDE_CONFIG_DIR', writer: 'same', planted: 'another folder', outcome: 'honoured: Claude\'s user settings are read from there; not absolute = unknown' },
+  { id: 'env-other-provider', read: 'the other provider\'s relocation variables', writer: 'the operator\'s environment', planted: 'CODEX_HOME on a Claude seat; CLAUDE_CONFIG_DIR, XDG_CONFIG_HOME or CLAUDE_CODE_* on a Codex seat', outcome: 'ignored: the launched CLI does not read them' },
   { id: 'env-codex-home', read: 'CODEX_HOME', writer: 'the app (one per Codex agent)', planted: 'another folder', outcome: 'honoured: Codex\'s config is read from there; not absolute = unknown' },
   { id: 'env-xdg-config-home', read: 'XDG_CONFIG_HOME (Claude)', writer: 'the operator\'s environment', planted: 'any value', outcome: 'unknown (Claude reads it; not modelled)' },
   { id: 'env-claude-unmodelled', read: 'CLAUDE_CODE_*SETTINGS/CONFIG/MANAGED/PLUGIN* variables', writer: 'a per-agent override', planted: 'any value', outcome: 'unknown' },

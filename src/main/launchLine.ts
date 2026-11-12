@@ -5,6 +5,7 @@
  * the same way. Anything not modelled is `unknown`; nothing here guesses.
  */
 import { basename, isAbsolute, join, resolve } from 'node:path';
+import { parse as parseToml } from 'smol-toml';
 
 /** Environment variables that move where a provider reads configuration or write roots. Only these are recorded from a spawn. */
 export const RELOCATING_ENV = ['HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'TMPDIR', 'CLAUDE_CODE_TMPDIR'] as const;
@@ -43,9 +44,10 @@ export function launchPlaces(provider: string, env: Record<string, string> | und
     const odd = Object.keys(env).find((k) => CLAUDE_UNMODELLED_ENV.test(k));
     if (odd) return { unknown: `${odd} is set` };
   }
-  const cfg = env.CLAUDE_CONFIG_DIR;
+  // Only the launched CLI's own variables count: the other provider's are not read by it, so they are ignored.
+  const cfg = provider === 'claude' ? env.CLAUDE_CONFIG_DIR : undefined;
   if (cfg !== undefined && !isAbsolute(cfg)) return { unknown: 'CLAUDE_CONFIG_DIR is not an absolute path' };
-  const ch = env.CODEX_HOME;
+  const ch = provider === 'codex' ? env.CODEX_HOME : undefined;
   if (ch !== undefined && !isAbsolute(ch)) return { unknown: 'CODEX_HOME is not an absolute path' };
   const tmpDirs: string[] = [];
   for (const k of provider === 'claude' ? ['TMPDIR', 'CLAUDE_CODE_TMPDIR'] : ['TMPDIR']) {
@@ -155,18 +157,6 @@ export function claudeLaunch(args: string[] | undefined, generatedSettings: stri
   return 'ok';
 }
 
-/** TOML text without comments: a '#' outside a string, and what follows it on the line. */
-export function stripTomlComments(text: string): string {
-  return text.split('\n').map((line) => {
-    let q: string | null = null;
-    for (let i = 0; i < line.length; i++) {
-      const c = line[i];
-      if (q) { if (c === '\\' && q === '"') i++; else if (c === q) q = null; } else if (c === '"' || c === "'") q = c; else if (c === '#') return line.slice(0, i);
-    }
-    return line;
-  }).join('\n');
-}
-
 /** A plain JSON object (not null, not an array). */
 export const isPlainObject = (x: unknown): x is Record<string, unknown> => x !== null && typeof x === 'object' && !Array.isArray(x);
 
@@ -175,101 +165,45 @@ export const stringList = (x: unknown): x is string[] => Array.isArray(x) && x.e
 
 export type RootsState = 'ok' | 'unsandboxed' | 'unknown';
 
-/** The keys that decide a Codex sandbox. Each occurrence must be one the decoder below consumed in its exact plain form. */
-const CODEX_POLICY_KEYS = ['writable_roots', 'sandbox_mode', 'sandbox_workspace_write', 'profile'] as const;
-
-/** A TOML key path (`a.b`, `"a".'b'`) as its segments, or null when the text is not one. Quoted segments are marked, so a
- *  quoted policy key is never mistaken for the bare form the decoder consumes. */
-function keySegments(text: string): Array<{ name: string; quoted: boolean }> | null {
-  const out: Array<{ name: string; quoted: boolean }> = [];
-  const re = /\s*(?:([A-Za-z0-9_-]+)|"((?:[^"\\]|\\.)*)"|'([^']*)')\s*(\.|$)/y;
-  let i = 0;
-  while (i < text.length) {
-    re.lastIndex = i;
-    const m = re.exec(text);
-    if (!m) return null;
-    out.push(m[1] !== undefined ? { name: m[1], quoted: false } : { name: m[2] ?? m[3] ?? '', quoted: true });
-    i = re.lastIndex;
-    if (m[4] === '') break;
-  }
-  return out.length ? out : null;
-}
-
-const isPolicy = (n: string): boolean => (CODEX_POLICY_KEYS as readonly string[]).includes(n);
-
-/** Codex writable_roots and sandbox mode from a config.toml, read without a TOML parser by the conservative rule:
- *  only a top-level `sandbox_mode = "..."`, a bare `[sandbox_workspace_write]` header and one `writable_roots = [...]`
- *  under it are read. The policy words (writable_roots, sandbox_mode, sandbox_workspace_write, profile) are looked for
- *  only where TOML puts names: in a key (bare, quoted or dotted, inline tables included) or a table header (`[x]`,
- *  `[[x]]`, `["x"]`), never inside a string value. Any such name the decoder did not consume in its exact form makes the
- *  file unknown, and `why` names the word and the line. A table such as [profiles.x] holding none of them is fine. */
+/** Codex writable_roots and sandbox mode from a config.toml, parsed by a TOML 1.0 parser (smol-toml) and then checked
+ *  for exactly the shape read: a top-level `sandbox_mode` string, a `sandbox_workspace_write` table whose
+ *  `writable_roots` is a list of strings, and no `profile` (it selects a profile) or profile that sets either key. A
+ *  parse error or any other type where those keys can legally live is unknown, and `why` names the key. Escaped or
+ *  quoted key spellings are decoded by the parser, so they are read as the keys they are. */
 export function codexRoots(toml: string): { roots: string[]; state: RootsState; mode?: string | null; why?: string } {
-  const unknown = (word: string, line: number): { roots: string[]; state: 'unknown'; why: string } => ({ roots: [], state: 'unknown', why: `${word} on line ${line + 1}` });
-  const lines = stripTomlComments(toml).split('\n');
-  let section: Array<{ name: string; quoted: boolean }> = [];
+  const unknown = (why: string): { roots: string[]; state: 'unknown'; why: string } => ({ roots: [], state: 'unknown', why });
+  let doc: unknown;
+  try { doc = parseToml(toml); } catch (e) {
+    const line = (e as { line?: number }).line;
+    return unknown(`not valid TOML${typeof line === 'number' ? ` (line ${line})` : ''}`);
+  }
+  if (!isPlainObject(doc)) return unknown('not a TOML table');
   let mode: string | null = null;
-  let modeSeen = false;
-  let headerSeen = false;
-  let roots: string[] | null = null;
-  let multi: string | null = null; // inside a multi-line string, closed by this delimiter
-  const TRIPLE = ['"'.repeat(3), "'".repeat(3)];
-  for (let i = 0; i < lines.length; i++) {
-    const l = lines[i];
-    if (multi) { if (l.includes(multi)) multi = null; continue; }
-    const header = /^\s*(\[\[?)(.*?)(\]\]?)\s*$/.exec(l);
-    if (header && header[1].length === header[3].length) {
-      const segs = keySegments(header[2]);
-      if (!segs) return unknown('a table header', i);
-      const word = segs.map((x) => x.name).find(isPolicy);
-      if (word) {
-        if (header[1] !== '[' || segs.length !== 1 || segs[0].quoted || segs[0].name !== 'sandbox_workspace_write' || headerSeen) return unknown(word, i);
-        headerSeen = true;
-      }
-      section = segs;
-      continue;
+  if (Object.hasOwn(doc, 'sandbox_mode')) {
+    if (typeof doc.sandbox_mode !== 'string') return unknown('sandbox_mode is not text');
+    mode = doc.sandbox_mode;
+  }
+  let roots: string[] = [];
+  if (Object.hasOwn(doc, 'sandbox_workspace_write')) {
+    const sww = doc.sandbox_workspace_write;
+    if (!isPlainObject(sww)) return unknown('sandbox_workspace_write is not a table');
+    if (Object.hasOwn(sww, 'writable_roots')) {
+      if (!stringList(sww.writable_roots)) return unknown('sandbox_workspace_write.writable_roots is not a list of text');
+      roots = sww.writable_roots;
     }
-    const kv = /^\s*((?:[A-Za-z0-9_-]+|"(?:[^"\\]|\\.)*"|'[^']*')(?:\s*\.\s*(?:[A-Za-z0-9_-]+|"(?:[^"\\]|\\.)*"|'[^']*'))*)\s*=\s*(.*)$/.exec(l);
-    if (!kv) continue; // a blank line, or the inside of a multi-line array
-    const segs = keySegments(kv[1]);
-    if (!segs) return unknown('a key', i);
-    const value = kv[2];
-    const word = segs.map((x) => x.name).find(isPolicy);
-    const inSection = (n: string): boolean => section.length === 1 && !section[0].quoted && section[0].name === n;
-    if (word) {
-      const bare = segs.length === 1 && !segs[0].quoted;
-      if (bare && word === 'sandbox_mode' && section.length === 0 && !modeSeen) {
-        const m = /^"([^"\\]*)"\s*$/.exec(value);
-        if (!m) return unknown(word, i);
-        mode = m[1];
-        modeSeen = true;
-        continue;
-      }
-      if (bare && word === 'writable_roots' && inSection('sandbox_workspace_write') && roots === null) {
-        let arr = value;
-        while (!/\]\s*$/.test(arr) && i + 1 < lines.length) arr += '\n' + lines[++i];
-        let v: unknown;
-        try { v = JSON.parse(arr.replace(/,\s*\]\s*$/, ']')); } catch { return unknown(word, i); }
-        if (!stringList(v)) return unknown(word, i);
-        roots = v;
-        continue;
-      }
-      return unknown(word, i);
+  }
+  if (Object.hasOwn(doc, 'profile')) return unknown('profile (it selects a profile, which may set the sandbox)');
+  if (Object.hasOwn(doc, 'profiles')) {
+    const profiles = doc.profiles;
+    if (!isPlainObject(profiles)) return unknown('profiles is not a table');
+    for (const [name, p] of Object.entries(profiles)) {
+      if (!isPlainObject(p)) return unknown(`profiles.${name} is not a table`);
+      for (const k of ['sandbox_mode', 'sandbox_workspace_write']) if (Object.hasOwn(p, k)) return unknown(`profiles.${name}.${k}`);
     }
-    // An inline table in the value holds keys too; strings inside it are not keys unless followed by '='.
-    if (value.includes('{')) {
-      for (const m of value.matchAll(/(?:^|[{,]\s*)((?:[A-Za-z0-9_-]+|"(?:[^"\\]|\\.)*"|'[^']*')(?:\s*\.\s*(?:[A-Za-z0-9_-]+|"(?:[^"\\]|\\.)*"|'[^']*'))*)\s*=/g)) {
-        const inner = keySegments(m[1]);
-        const w = inner?.map((x) => x.name).find(isPolicy);
-        if (w) return unknown(w, i);
-      }
-    }
-    const v = value.trim();
-    const open = TRIPLE.find((d) => v.startsWith(d));
-    if (open && !v.slice(3).includes(open)) multi = open;
   }
   if (mode === 'danger-full-access') return { roots: [], state: 'unsandboxed', mode };
   if (mode !== null && mode !== 'workspace-write' && mode !== 'read-only') return { roots: [], state: 'unknown', mode, why: `sandbox_mode = "${mode}"` };
-  return { roots: roots ?? [], state: 'ok', mode };
+  return { roots, state: 'ok', mode };
 }
 
 /** Writable dirs in one Claude settings file; `enabled` is its sandbox.enabled, if it says. JSON.parse, then an exact

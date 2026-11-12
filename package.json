@@ -59,6 +59,7 @@
     "react-i18next": "^17.0.11",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
+    "smol-toml": "1.9.1",
     "tunnelmole": "^2.4.0",
     "zustand": "^4.5.5"
   },
