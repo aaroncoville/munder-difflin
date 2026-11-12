@@ -466,33 +466,42 @@ test('the documentation lists exactly the tokens the file may set', () => {
 
 // ─── the read, at the edges ──────────────────────────────────────────────────
 
-test('only a small regular file is read; a pipe, a link or a huge file is refused unread', () => {
-  const { readPanelPalette, PANEL_PALETTE_MAX_BYTES } = loadTs(MAIN);
+test('a link at the path is refused, not followed to a file elsewhere', { skip: process.platform === 'win32' }, () => {
+  // A valid palette outside the app's folder, reached through a link at the
+  // palette path, must not apply.
+  const outside = paletteFile({ '--cth-cream-50': '#000000' });
+  const link = path.join(tmp, 'link-case', 'panel-palette.json');
+  fs.mkdirSync(path.dirname(link), { recursive: true });
+  fs.symlinkSync(outside, link);
+  const r = readWith(link);
+  assert.deepEqual(r.palette, {});
+  assert.equal(r.warnings.length, 1);
+  assert.match(r.warnings[0], /link/);
+});
+
+test('a file over the size cap is refused, and no more than the cap is read', () => {
+  const { PANEL_PALETTE_MAX_BYTES, readBoundedFile } = loadTs(MAIN);
   assert.ok(PANEL_PALETTE_MAX_BYTES >= 4096 && PANEL_PALETTE_MAX_BYTES <= 65536);
-  const attempt = (stat) => {
-    const warnings = [];
-    let reads = 0;
-    const palette = readPanelPalette('/x/panel-palette.json', {
-      stat: () => stat,
-      read: () => { reads++; return '{"--cth-cream-50":"#000000"}'; },
-      warn: (m) => warnings.push(m)
-    });
-    return { palette, warnings, reads };
-  };
-  const kinds = {
-    fifo: { isFile: () => false, size: 0 },
-    link: { isFile: () => false, isSymbolicLink: () => true, size: 30 },
-    huge: { isFile: () => true, size: PANEL_PALETTE_MAX_BYTES + 1 }
-  };
-  for (const [kind, stat] of Object.entries(kinds)) {
-    const r = attempt(stat);
-    assert.equal(r.reads, 0, `${kind}: the file was opened`);
-    assert.deepEqual(r.palette, {}, kind);
-    assert.equal(r.warnings.length, 1, kind);
-  }
-  const ok = attempt({ isFile: () => true, size: 40 });
-  assert.equal(ok.reads, 1);
-  assert.deepEqual(ok.palette, { '--cth-cream-50': '#000000' });
+  const big = paletteFile(`{"--cth-cream-50": "#000000"}${' '.repeat(PANEL_PALETTE_MAX_BYTES)}`);
+  const r = readWith(big);
+  assert.deepEqual(r.palette, {});
+  assert.equal(r.warnings.length, 1);
+  assert.throws(() => readBoundedFile(big), /larger than/);
+});
+
+test('what the file is, is decided from the open handle, not from the path', () => {
+  // Checking the path and then opening it leaves a window in which the path
+  // can be swapped; the read opens once, without following a link or
+  // blocking, and examines the handle it holds.
+  const src = code(MAIN);
+  assert.match(src, /O_NOFOLLOW/);
+  assert.match(src, /O_NONBLOCK/);
+  assert.match(src, /fstatSync\(fd\)/);
+  assert.doesNotMatch(src, /readFileSync|[^l]statSync\(file\)/, 'the file is read or examined by path');
+  // The one look by path is the link check where the OS has no O_NOFOLLOW.
+  const byPath = [...src.matchAll(/lstatSync\(file\)/g)];
+  assert.equal(byPath.length, 1);
+  assert.match(src, /noFollow === undefined && lstatSync\(file\)/);
 });
 
 test('a real named pipe at the path does not hold the launch', { skip: process.platform === 'win32' }, () => {
@@ -571,3 +580,4 @@ test('global.css carries no colour from the previous theme', () => {
   assert.deepEqual(literals.filter((l) => !/^rgba?\(0,\s*0,\s*0/.test(l)), [],
     'global.css paints a literal colour; use a token');
 });
+

@@ -7,48 +7,64 @@
  * (an empty palette) or a fully validated one; it never throws, so a broken
  * file cannot stop the window opening.
  */
-import { lstatSync, readFileSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from 'node:fs';
 import { checkPanelPalette, type PanelPalette } from '../shared/panelPalette';
 
 /** The largest palette file that is read. The full token list with comments
  *  fits in a few kilobytes; anything near this is not a palette. */
 export const PANEL_PALETTE_MAX_BYTES = 64 * 1024;
 
-interface PaletteStat { isFile(): boolean; size: number }
-
 export interface PanelPaletteDeps {
-  stat?: (file: string) => PaletteStat;
   read?: (file: string) => string;
   warn?: (message: string) => void;
 }
 
-const defaultStat = (file: string): PaletteStat => lstatSync(file);
-const defaultRead = (file: string): string => readFileSync(file, 'utf8');
+const refused = (reason: string): Error => Object.assign(new Error(reason), { code: 'EPALETTE' });
+
+/**
+ * Read a small regular file, deciding what it is from the open handle, not
+ * from the path. Checking the path first and opening it after leaves a gap in
+ * which the path can be swapped for a link or a pipe; so the file is opened
+ * once, without following a final link and without blocking (a named pipe
+ * with no writer would otherwise hold the launch), and then the handle itself
+ * is examined: it must be a regular file of at most PANEL_PALETTE_MAX_BYTES,
+ * and no more than that is ever read from it.
+ */
+export function readBoundedFile(file: string): string {
+  const noFollow = constants.O_NOFOLLOW;
+  // Windows has no O_NOFOLLOW; there, refuse a link by looking first. The
+  // remaining gap is a local race inside the user's own profile folder.
+  if (noFollow === undefined && lstatSync(file).isSymbolicLink()) throw refused('it is a link');
+  const fd = openSync(file, constants.O_RDONLY | (noFollow ?? 0) | (constants.O_NONBLOCK ?? 0));
+  try {
+    const info = fstatSync(fd);
+    if (!info.isFile()) throw refused('it is not a regular file');
+    if (info.size > PANEL_PALETTE_MAX_BYTES) throw refused(`it is larger than ${PANEL_PALETTE_MAX_BYTES} bytes`);
+    const buf = Buffer.alloc(PANEL_PALETTE_MAX_BYTES + 1);
+    let n = 0;
+    for (let got = 1; got > 0 && n < buf.length; n += got) got = readSync(fd, buf, n, buf.length - n, null);
+    if (n > PANEL_PALETTE_MAX_BYTES) throw refused(`it is larger than ${PANEL_PALETTE_MAX_BYTES} bytes`);
+    return buf.subarray(0, n).toString('utf8');
+  } finally {
+    closeSync(fd);
+  }
+}
+
 const defaultWarn = (message: string): void => console.warn(message);
 
 /** Read and check one palette file. Missing is the normal case and is silent;
  *  anything else that stops the file applying is one warning. */
 export function readPanelPalette(file: string, deps: PanelPaletteDeps = {}): PanelPalette {
-  const stat = deps.stat ?? defaultStat;
-  const read = deps.read ?? defaultRead;
+  const read = deps.read ?? readBoundedFile;
   const warn = deps.warn ?? defaultWarn;
   let text: string;
   try {
-    // Look before opening: a named pipe or device at the path would block the
-    // read, and so the launch, indefinitely. lstat, so a link is refused too
-    // rather than followed somewhere else.
-    const info = stat(file);
-    if (!info.isFile()) {
-      warn(`[panel-palette] ${file} is not a regular file; using the default palette`);
-      return {};
-    }
-    if (info.size > PANEL_PALETTE_MAX_BYTES) {
-      warn(`[panel-palette] ${file} is larger than ${PANEL_PALETTE_MAX_BYTES} bytes; using the default palette`);
-      return {};
-    }
     text = read(file);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === 'ELOOP' || code === 'EMLINK') {
+      warn(`[panel-palette] ${file} is a link, which is not followed; using the default palette`);
+    } else if (code !== 'ENOENT') {
       warn(`[panel-palette] could not read ${file}; using the default palette (${(err as Error)?.message ?? err})`);
     }
     return {};
