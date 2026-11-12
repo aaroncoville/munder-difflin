@@ -9,7 +9,9 @@
 // write lands part of its bytes and then fails. Where that fault leaves something
 // for an open to recover, a second fault (EIO or torn write) is swept over the
 // recovering open. Faults are injected one at a time, never at random, and a crash is
-// modelled as the operation stopping at the faulted call. After that the log is
+// modelled as the operation stopping at the faulted call. Bytes a write reported as
+// written and a power failure later loses are outside this model. Every line carries
+// multi-byte text, and two rows tear or cut inside a character on purpose. After that the log is
 // reopened with no faults and must hold: the
 // chain verifies, no committed line is lost or doubled, the sequence numbers run
 // without a gap, every byte dropped from the log is on record in exactly one
@@ -26,8 +28,18 @@ const core = require('../src/main/pipeline/mr-core.cjs');
 
 const { CardLog } = loadTs('src/main/pipeline/store.ts');
 
+// The sweep checks what the store does when a call fails, not whether the disk keeps
+// what it was told to flush (that is outside the fault model). So an fsync that is not
+// the injected fault only checks its descriptor, and skips the physical flush that
+// would otherwise take most of the run. The faulted fsync fails exactly as before.
+fs.fsyncSync = (fd) => { fs.fstatSync(fd); };
+
 const CARD = 'WF-FB-VEHICLES';
-const TORN = '{"v":1,"seq":3,"note":"é torn';
+// Multi-byte text in every line, so a tear or a cut at any byte can land inside a character.
+const NOTE = 'é✓𝄞 Zoë’s ✓✓✓ ééé 𝄞𝄞';
+const TORN = '{"v":1,"seq":3,"note":"é torn ✓𝄞';
+/** A tail that stops after the first byte of a two-byte character. */
+const TORN_MID = Buffer.from('{"v":1,"seq":3,"note":"Zoé').subarray(0, -1);
 const WRAPPED = ['closeSync', 'existsSync', 'fsyncSync', 'ftruncateSync', 'mkdirSync', 'openSync', 'readFileSync', 'renameSync', 'rmSync', 'writeSync'];
 const injected = (name) => Object.assign(new Error(`EIO: injected at ${name}`), { code: 'EIO' });
 
@@ -101,27 +113,45 @@ function truncations(body) {
 const SCENARIOS = {
   'new log, first append': {
     setup: () => ({ committed: [] }),
-    op: (root, ctx) => { ctx.writer = open(root); ctx.writer.append({ type: 'fact', n: 'op' }); },
+    op: (root, ctx) => { ctx.writer = open(root); ctx.writer.append({ type: 'fact', note: NOTE, n: 'op' }); },
     extra: 'op',
   },
   'append to an existing log': {
-    setup: (root) => { const w = open(root); w.append({ type: 'fact', n: 1 }); w.append({ type: 'fact', n: 2 }); return { committed: [1, 2], writer: w }; },
-    op: (root, ctx) => { ctx.writer.append({ type: 'fact', n: 'op' }); },
+    setup: (root) => { const w = open(root); w.append({ type: 'fact', note: NOTE, n: 1 }); w.append({ type: 'fact', note: NOTE, n: 2 }); return { committed: [1, 2], writer: w }; },
+    op: (root, ctx) => { ctx.writer.append({ type: 'fact', note: NOTE, n: 'op' }); },
     extra: 'op',
   },
   'open with a torn tail': {
     setup: (root) => {
-      const w = open(root); w.append({ type: 'fact', n: 1 }); w.append({ type: 'fact', n: 2 });
+      const w = open(root); w.append({ type: 'fact', note: NOTE, n: 1 }); w.append({ type: 'fact', note: NOTE, n: 2 });
       fs.appendFileSync(logFile(root), TORN);
       return { committed: [1, 2], tornBytes: Buffer.byteLength(TORN) };
     },
     op: (root, ctx) => { ctx.writer = open(root); },
   },
+  'open with a tail torn inside a character': {
+    setup: (root) => {
+      const w = open(root); w.append({ type: 'fact', note: NOTE, n: 1 }); w.append({ type: 'fact', note: NOTE, n: 2 });
+      fs.appendFileSync(logFile(root), TORN_MID);
+      return { committed: [1, 2], tornBytes: TORN_MID.length };
+    },
+    op: (root, ctx) => { ctx.writer = open(root); },
+  },
+  'open with the export copy cut inside a character': {
+    setup: (root) => {
+      const w = open(root); w.append({ type: 'fact', note: NOTE, n: 1 }); w.append({ type: 'fact', note: NOTE, n: 2 });
+      const buf = fs.readFileSync(exportFile(root));
+      const at = buf.lastIndexOf(Buffer.from('é')) + 1; // after the first byte of the last 'é'
+      fs.writeFileSync(exportFile(root), buf.subarray(0, at));
+      return { committed: [1, 2] };
+    },
+    op: (root, ctx) => { ctx.writer = open(root); },
+  },
   'open one line past the anchor': {
     setup: (root) => {
-      const w = open(root); w.append({ type: 'fact', n: 1 });
+      const w = open(root); w.append({ type: 'fact', note: NOTE, n: 1 });
       const anchor = fs.readFileSync(path.join(cardDir(root), 'head.json'), 'utf8');
-      w.append({ type: 'fact', n: 2 });
+      w.append({ type: 'fact', note: NOTE, n: 2 });
       fs.writeFileSync(path.join(cardDir(root), 'head.json'), anchor);
       return { committed: [1, 2] };
     },
@@ -131,7 +161,7 @@ const SCENARIOS = {
     // A repair that stopped after its cut: the marker is durable, the log already
     // truncated, and the log-repaired fact not yet written.
     setup: (root) => {
-      const w = open(root); w.append({ type: 'fact', n: 1 }); w.append({ type: 'fact', n: 2 });
+      const w = open(root); w.append({ type: 'fact', note: NOTE, n: 1 }); w.append({ type: 'fact', note: NOTE, n: 2 });
       const keep = fs.statSync(logFile(root)).size;
       const tail = require('node:crypto').createHash('sha256').update(TORN).digest('hex');
       const marker = { seq: 2, keep_bytes: keep, size: keep + Buffer.byteLength(TORN), tail, dropped_bytes: Buffer.byteLength(TORN) };
@@ -142,7 +172,7 @@ const SCENARIOS = {
   },
   'restore of the export copy': {
     setup: (root) => {
-      const w = open(root); w.append({ type: 'fact', n: 1 }); w.append({ type: 'fact', n: 2 });
+      const w = open(root); w.append({ type: 'fact', note: NOTE, n: 1 }); w.append({ type: 'fact', note: NOTE, n: 2 });
       fs.rmSync(path.join(root, '_export'), { recursive: true, force: true });
       return { committed: [1, 2], writer: w, keepsWriter: true };
     },
@@ -189,7 +219,7 @@ function verify(root, ctx, sc, say, dropped, error) {
   }
   if (!sc.restores && reopened.mirrorStatus() !== 'same') say(`the export copy reads ${reopened.mirrorStatus()} after the reopen`);
   try {
-    const next = reopened.append({ type: 'fact', n: 'next' });
+    const next = reopened.append({ type: 'fact', note: NOTE, n: 'next' });
     if (next.seq !== lines.length + 1) say(`next seq ${next.seq}, want ${lines.length + 1}`);
   } catch (e) { say(`append after reopen failed: ${e.message}`); }
 }
@@ -215,7 +245,7 @@ test('fault-injection sweep: every failing call, short write and torn write, the
         const say = (p) => failures.push(`${name} / ${mode} #${nth}: ${p}`);
         if (error && ctx.writer && !ctx.keepsWriter) {
           let refused = false;
-          try { ctx.writer.append({ type: 'fact', n: 'after' }); } catch { refused = true; }
+          try { ctx.writer.append({ type: 'fact', note: NOTE, n: 'after' }); } catch { refused = true; }
           if (!refused) say('the failed writer took another append');
         }
         // A short write is not a failure: an operation that returned has its export copy whole too.
@@ -229,6 +259,7 @@ test('fault-injection sweep: every failing call, short write and torn write, the
         const snapshot = fresh ? fs.mkdtempSync(path.join(os.tmpdir(), 'mr-snap-')) : null;
         if (snapshot) fs.cpSync(base, snapshot, { recursive: true });
         verify(root, ctx, sc, say, dropped, error);
+        fs.rmSync(base, { recursive: true, force: true });
         if (!snapshot) continue;
         for (const mode2 of SECOND_MODES) {
           for (let m = 1; m < 200; m++) {
@@ -240,6 +271,7 @@ test('fault-injection sweep: every failing call, short write and torn write, the
             if (!fired2) break;
             cells.double += 1;
             verify(root2, ctx, sc, (p) => failures.push(`${name} / ${mode} #${nth}, then ${mode2} #${m} in the recovering open: ${p}`), dropped + dropped2, error);
+            fs.rmSync(base2, { recursive: true, force: true });
           }
         }
       }
