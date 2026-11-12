@@ -85,3 +85,9 @@ test('no code the app runs calls the floor an office', () => {
   }
   assert.deepEqual(hits, []);
 });
+
+test('the harness deck describes the floor the app draws now', () => {
+  const deck = read('docs/harness-engineering-deck.html');
+  assert.doesNotMatch(deck, /office floor|Michael's office/i);
+  assert.doesNotMatch(deck, /class="chip[^"]*">Pixi\.js</, 'the deck lists a renderer the app no longer uses');
+});
