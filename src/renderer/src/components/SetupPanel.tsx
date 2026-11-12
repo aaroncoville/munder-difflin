@@ -183,7 +183,7 @@ export function SetupPanel({ onDone }: { onDone?: () => void } = {}) {
           disabled={missingEssential.length === 0}
         >
           <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
-            <Icon name="sparkle" /> {t('setupPanel.askMichael')}
+            <Icon name="sparkle" /> {t('setupPanel.askOrchestrator')}
           </span>
         </PixelButton>
       </div>

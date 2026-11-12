@@ -218,8 +218,9 @@ function resolveAgent(target: string, reg: Registry): ResolvedAgent | { error: s
   // exact id
   const byId = entries.find(([id]) => id.toLowerCase() === t);
   if (byId) return mk(byId[0], byId[1]);
-  // 'god' / 'michael' alias for the orchestrator
-  if ((t === 'god' || t === 'michael' || t === 'the god') && reg.godId)
+  // 'god' alias for the orchestrator. Its own name is matched below like any
+  // other agent's, so a fixed name here would only steal a worker who has it.
+  if ((t === 'god' || t === 'the god') && reg.godId)
     return mk(reg.godId, reg.agents[reg.godId] ?? {});
   // exact name, prefer live
   const byName = entries.filter(([, m]) => (m.name || '').toLowerCase() === t);
