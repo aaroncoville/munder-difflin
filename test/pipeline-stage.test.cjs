@@ -563,3 +563,69 @@ test('a card read against another repo\'s settings holds rather than use them', 
   assert.deepEqual(kinds(r.effects, 'merge'), []);
   assert.ok(held(r.state).includes('OFF_PATH'));
 });
+
+// --- Second review of #86: an approval answers only what it was given for ---
+
+const askOwner = submit({ needs_owner: { question: 'VIN optional?' } });
+const ownerTold = (effects) => kinds(effects, 'exception').filter((e) => e.code === 'OWNER_DECISION');
+
+test('E1: an approval of the implementer\'s question does not answer a product decision raised later at the same sha', () => {
+  const r = run([enrol(), askOwner, approve(S), tick(), verdict('orsolina-mtx', 'CONFIRMED', { findings: [pd] }), verdict('jannings-mtx', 'CONFIRMED'), tick()]);
+  assert.equal(r.state.stage, 'review');
+  assert.deepEqual(held(r.state), ['OWNER_DECISION']);
+  assert.deepEqual(kinds(r.effects, 'merge'), []);
+  assert.equal(ownerTold(r.effects).length, 2, 'the owner is asked again, about the new cause');
+});
+
+test('E2: an approval of the implementer\'s question does not cover a diff that touches a human-only path', () => {
+  const human = { changedFiles: ['.gitlab-ci.yml'] };
+  const r = run([enrol(), askOwner, approve(S), tick(), ...bothConfirm, tick(human)]);
+  assert.equal(r.state.stage, 'mergeable');
+  assert.deepEqual(held(r.state), ['OWNER_DECISION']);
+  assert.deepEqual(kinds(r.effects, 'merge'), []);
+  const ok = run([enrol(), askOwner, approve(S), tick(), ...bothConfirm, tick(human), approve(S), tick(human)]);
+  assert.equal(kinds(ok.effects, 'merge').length, 1, 'approving the path itself lets it merge');
+});
+
+test('E3: a product decision inside a BLOCK still goes to the owner, beside the block', () => {
+  const blockPd = finding({ id: 'o-PD2', class: 'product-decision', must_fix: true });
+  const r = run([...toReview, verdict('orsolina-mtx', 'BLOCK', { findings: [blockPd] }), verdict('jannings-mtx', 'CONFIRMED'), tick()]);
+  assert.deepEqual(held(r.state), ['OWNER_DECISION', 'REVIEW_BLOCK_MANUAL']);
+  assert.deepEqual(codes(r.effects).sort(), ['OWNER_DECISION', 'REVIEW_BLOCK_MANUAL']);
+});
+
+test('a product decision in a degraded round still goes to the owner, beside the degraded hold', () => {
+  const claudeOnly = ctx({ roster: roster.filter((a) => a.provider === 'claude') });
+  const r = run([...toReview, verdict('orsolina-mtx', 'CONFIRMED', { findings: [pd] })], claudeOnly);
+  assert.deepEqual(held(r.state), ['OWNER_DECISION', 'REVIEW_DEGRADED']);
+});
+
+test('N1: an MR the forge shows as locked is not merged; once open again it is', () => {
+  const r = run([...toMergeable, tick({ forge: forge({ state: 'locked' }) })]);
+  assert.deepEqual(kinds(r.effects, 'merge'), []);
+  const ok = run([...toMergeable, tick({ forge: forge({ state: 'locked' }) }), tick()]);
+  assert.equal(kinds(ok.effects, 'merge').length, 1);
+});
+
+test('N2: a refusal that arrives while held does not leave the merge in flight after resume', () => {
+  const refused = { kind: 'merge-result', attempt: ATTEMPT, ok: false, mergeCommit: null, secondParent: null, error: 'conflict' };
+  const r = run([...toMergeable, tick(), cmd('pause'), refused, cmd('resume'), tick()]);
+  assert.deepEqual(kinds(r.effects, 'merge').map((e) => e.attempt), [ATTEMPT, `${CARD}:merge:2`]);
+});
+
+test('N3: resume does not send a card with a merge in flight back to implementing', () => {
+  const r = run([...toMergeable, tick(), submit({ head_sha: S2 }), cmd('resume')]);
+  assert.equal(r.state.stage, 'mergeable');
+  assert.equal(r.state.mergeAttempt.id, ATTEMPT);
+});
+
+test('N4: an OWNER_DECISION hold lives only as long as its sha; a new head re-derives it', () => {
+  const r = run([enrol(), askOwner, submit({ head_sha: S2 }, { forge: forge({ head: S2, pipeline: { id: 100, sha: S2, status: 'success' } }) })]);
+  assert.deepEqual(held(r.state), []);
+  assert.equal(r.state.stage, 'review');
+  assert.equal(r.state.sha, S2);
+  const again = run([enrol(), askOwner, submit({ head_sha: S2, needs_owner: { question: 'VIN optional?' } }, { forge: forge({ head: S2 }) })]);
+  assert.deepEqual(held(again.state), ['OWNER_DECISION']);
+  assert.equal(again.state.holds.OWNER_DECISION.sha, S2);
+  assert.equal(ownerTold(again.effects).length, 2, 'asked again at the new sha');
+});

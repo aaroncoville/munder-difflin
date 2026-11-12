@@ -18,10 +18,13 @@
  * and no effect goes out.
  *
  * Owner decisions are derived, not remembered: on every evaluation, a submit's
- * `needs_owner`, a counted verdict's product-decision finding, or a diff touching a
- * human-only path holds the card with OWNER_DECISION unless an owner approval for
- * that exact sha is on record. God's `resume` clears every other hold, never that
- * one (spec 9: no command from god substitutes for the owner).
+ * `needs_owner`, a counted verdict's product-decision finding (whatever the verdict),
+ * or each changed human-only path is a cause that holds the card with OWNER_DECISION
+ * unless an owner approval at that exact sha answered that cause. An approval answers
+ * the causes the hold carried when it arrived, nothing raised after it. The hold is
+ * about one sha and ends when a new head replaces it; the new head derives its own.
+ * God's `resume` clears every other hold, never that one (spec 9: no command from
+ * god substitutes for the owner).
  */
 import { matchesAny, type RepoPipeline, type Vendor } from './config';
 import { choosePanel, combine, type RosterAgent, type TerminalState } from './panel';
@@ -54,7 +57,9 @@ export interface ForgeMr {
 
 export interface Request { reviewer: string; vendor: Vendor; requestId: string }
 export interface CountedVerdict { reviewer: string; vendor: Vendor; model: string | null; msg: string; payload: VerdictPayload }
-export interface Hold { sha: Sha | null; at: string; detail: string }
+export interface Hold { sha: Sha | null; at: string; detail: string; causes?: string[] }
+/** One owner approval: the sha, and the owner causes it answered (what the hold carried). */
+export interface OwnerApproval { sha: Sha; causes: string[]; ref: string }
 
 export interface CardState {
   card: string;
@@ -84,8 +89,8 @@ export interface CardState {
   outOfBandMerge: Sha | null;
   deployed: Sha | null;
   followups: Finding[];
-  /** Shas the owner approved through the app's own answer path. */
-  ownerApprovals: Sha[];
+  /** Approvals from the owner, through the app's own answer path. */
+  ownerApprovals: OwnerApproval[];
   /** Consecutive events whose forge probe could not be read. */
   forgeMisses: number;
   /** Dedupe keys `${code}|${sha}` already sent to god. */
@@ -203,16 +208,46 @@ export function step(prev: CardState, event: StepEvent, ctx: StepCtx): StepResul
     return null;
   };
 
-  /** Why the owner must decide at [sha], or null: derived afresh on every evaluation. */
-  const ownerNeeded = (sha: Sha | null, changedFiles?: string[]): string | null => {
-    if (sha && s.ownerApprovals.includes(sha)) return null;
+  /**
+   * What the owner must still decide at [sha], derived afresh on every evaluation: each
+   * cause as a key and a line for the owner, less the causes an approval at [sha] answered.
+   */
+  const ownerNeeded = (sha: Sha | null, changedFiles?: string[]): Map<string, string> => {
+    const need = new Map<string, string>();
     const claim = s.submit?.payload;
-    if (claim?.needs_owner && claim.head_sha === sha) return claim.needs_owner.question;
-    const pd = Object.values(s.verdicts).find((v) => v.payload.findings.some((f) => f.class === 'product-decision'));
-    if (pd) return `a product decision in ${pd.reviewer}'s review`;
-    const human = (changedFiles ?? []).filter((p) => matchesAny(p, ctx.repo?.humanOnlyPaths ?? []));
-    if (human.length > 0) return `the diff touches human-only paths: ${human.join(', ')}`;
-    return null;
+    if (claim?.needs_owner && claim.head_sha === sha) need.set(`question:${claim.needs_owner.question}`, claim.needs_owner.question);
+    for (const v of Object.values(s.verdicts)) {
+      for (const f of v.payload.findings.filter((x) => x.class === 'product-decision')) {
+        need.set(`product-decision:${v.reviewer}:${f.id}`, `a product decision in ${v.reviewer}'s review: ${f.id}`);
+      }
+    }
+    for (const p of (changedFiles ?? []).filter((x) => matchesAny(x, ctx.repo?.humanOnlyPaths ?? []))) {
+      need.set(`human-only:${p}`, `the diff touches a human-only path: ${p}`);
+    }
+    for (const a of s.ownerApprovals.filter((x) => x.sha === sha)) for (const c of a.causes) need.delete(c);
+    return need;
+  };
+
+  /**
+   * Holds for the owner at [sha] when anything is still to decide; true when held.
+   * A cause not yet in the hold joins it and tells god again, so an approval given
+   * before it arrived cannot be read as covering it.
+   */
+  const ownerHold = (sha: Sha | null, need: Map<string, string>): boolean => {
+    if (need.size === 0) return Boolean(s.holds.OWNER_DECISION);
+    const h = s.holds.OWNER_DECISION;
+    const fresh = [...need.keys()].filter((c) => !h?.causes?.includes(c));
+    if (fresh.length === 0) return true;
+    const detail = fresh.map((c) => need.get(c)).join('; ');
+    if (h) h.causes = [...(h.causes ?? []), ...fresh];
+    else s.holds.OWNER_DECISION = { sha, at: ctx.now, detail, causes: fresh };
+    log.push({ type: 'hold', code: 'OWNER_DECISION', sha, detail, causes: fresh });
+    const key = `OWNER_DECISION|${sha ?? ''}|${fresh.join(',')}`;
+    if (!s.raised.includes(key)) {
+      s.raised.push(key);
+      effects.push({ kind: 'exception', code: 'OWNER_DECISION', sha, stage: s.stage, round: s.round, detail });
+    }
+    return true;
   };
 
   /** Sends the round's review requests to one reviewer per vendor (T2's last step). */
@@ -231,8 +266,7 @@ export function step(prev: CardState, event: StepEvent, ctx: StepCtx): StepResul
     if (!claim) return;
     const repo = repoOrHold();
     if (!repo) return;
-    const owner = ownerNeeded(claim.head_sha);
-    if (owner) return hold('OWNER_DECISION', owner);
+    if (ownerHold(claim.head_sha, ownerNeeded(claim.head_sha))) return;
     if (!forgeRead(probe.forge)) return;
     const f = probe.forge;
     if (f.state === 'closed') return move('abandoned', 'harness', trigger, { forge: f });
@@ -268,6 +302,8 @@ export function step(prev: CardState, event: StepEvent, ctx: StepCtx): StepResul
       verdicts: counted.map((v) => ({ reviewer: v.reviewer, vendor: v.vendor, model: v.model, verdict: v.payload.verdict, msg: v.msg })),
       rule: outcome, forge_head: forgeNow?.head ?? null,
     };
+    // A product decision goes to the owner whatever the verdict (5.2), so before the outcome branches.
+    ownerHold(s.sha, ownerNeeded(s.sha));
     if (outcome === 'block') {
       fact('panel', evidence);
       return hold('REVIEW_BLOCK_MANUAL', `blocked at round ${s.round}: ${counted.flatMap((v) => v.payload.findings.filter((x) => x.must_fix).map((x) => x.id)).join(', ')}`);
@@ -277,8 +313,6 @@ export function step(prev: CardState, event: StepEvent, ctx: StepCtx): StepResul
       return hold('REVIEW_DEGRADED', 'not every vendor has a counted answer');
     }
     if (quiet()) return;
-    const owner = ownerNeeded(s.sha);
-    if (owner) return hold('OWNER_DECISION', owner);
     if (!forgeRead(forgeNow)) return;
     const shape = shapeProblem(forgeNow, repo);
     if (shape) return hold('OFF_PATH', shape);
@@ -339,7 +373,10 @@ export function step(prev: CardState, event: StepEvent, ctx: StepCtx): StepResul
         move('merged', 'god', trigger, { merge_commit: s.outOfBandMerge, out_of_band: true });
         break;
       }
-      if (s.submit && s.submit.payload.head_sha !== s.sha && (s.stage === 'review' || s.stage === 'mergeable')) {
+      // A merge call in flight is settled by its result or the forge, not by a new submit.
+      if (s.mergeAttempt) {
+        fact('resume-merge-in-flight', { attempt: s.mergeAttempt.id });
+      } else if (s.submit && s.submit.payload.head_sha !== s.sha && (s.stage === 'review' || s.stage === 'mergeable')) {
         if (cleared.includes('REVIEW_BLOCK_MANUAL')) s.round += 1;
         move('implementing', 'god', trigger, { submit: s.submit.msg });
         s.requests = []; s.terminal = {}; s.verdicts = {};
@@ -359,13 +396,12 @@ export function step(prev: CardState, event: StepEvent, ctx: StepCtx): StepResul
 
     case 'owner-approval': {
       if (!active() || !SHA_RE.test(event.sha)) { fact('owner-approval-ignored', { sha: event.sha, ref: event.ref }); break; }
-      if (!s.ownerApprovals.includes(event.sha)) s.ownerApprovals.push(event.sha);
-      log.push({ type: 'fact', fact: 'owner-approval', sha: event.sha, ref: event.ref, by: 'owner' });
-      const current = s.sha ?? s.submit?.payload.head_sha ?? null;
-      if (s.holds.OWNER_DECISION && event.sha === current) {
-        delete s.holds.OWNER_DECISION;
-        s.raised = s.raised.filter((k) => !k.startsWith('OWNER_DECISION|'));
-      }
+      // It answers what the hold at that sha carried when it arrived, and nothing else.
+      const h = s.holds.OWNER_DECISION;
+      const causes = h && h.sha === event.sha ? (h.causes ?? []) : [];
+      s.ownerApprovals.push({ sha: event.sha, causes, ref: event.ref });
+      log.push({ type: 'fact', fact: 'owner-approval', sha: event.sha, ref: event.ref, by: 'owner', causes });
+      if (h && h.sha === event.sha) delete s.holds.OWNER_DECISION;
       break;
     }
 
@@ -379,6 +415,12 @@ export function step(prev: CardState, event: StepEvent, ctx: StepCtx): StepResul
       s.submit = { msg: msgId, payload };
       s.mr = payload.mr;
       fact('submit', { msg: msgId, head: payload.head_sha, kind: payload.kind });
+      // An owner question is about one sha; a new head asks its own, derived afresh.
+      const oh = s.holds.OWNER_DECISION;
+      if (oh && oh.sha !== payload.head_sha) {
+        delete s.holds.OWNER_DECISION;
+        fact('owner-hold-superseded', { sha: oh.sha, head: payload.head_sha, causes: oh.causes ?? [] });
+      }
       if (!repoOrHold() || quiet()) break;
       if (s.stage === 'implementing') tryT2(event, { kind: 'message', id: msgId });
       else if (payload.head_sha !== s.sha) hold('HEAD_MOVED', `a new submit at ${payload.head_sha} while ${s.stage} at ${s.sha}`);
@@ -450,6 +492,8 @@ export function step(prev: CardState, event: StepEvent, ctx: StepCtx): StepResul
           break;
         }
         if (s.mergeAttempt) break;
+        // Only an open MR is merged; 'locked' (a merge already under way) waits.
+        if (f.state !== 'opened') { fact('forge-not-open', { state: f.state }); break; }
         const shape = shapeProblem(f, repo);
         if (shape) { hold('OFF_PATH', shape); break; }
         if (f.head !== s.sha) { hold('HEAD_MOVED', `the forge head moved from ${s.sha} to ${f.head}`); break; }
@@ -460,8 +504,7 @@ export function step(prev: CardState, event: StepEvent, ctx: StepCtx): StepResul
         if (event.mergeTree !== 'clean') break;
         // The changed-file probe must be present: unknown paths are never read as "none human-only".
         if (!Array.isArray(event.changedFiles)) { fact('awaiting-changed-files'); break; }
-        const owner = ownerNeeded(s.sha, event.changedFiles);
-        if (owner) { hold('OWNER_DECISION', owner); break; }
+        if (ownerHold(s.sha, ownerNeeded(s.sha, event.changedFiles))) break;
         if (!ctx.autoMerge) { notify('MERGE_READY', `ready to merge !${s.mr} at ${s.sha}`); break; }
         s.mergeAttempts += 1;
         s.mergeAttempt = { id: `${s.card}:merge:${s.mergeAttempts}`, sha: s.sha as Sha };
@@ -487,7 +530,12 @@ export function step(prev: CardState, event: StepEvent, ctx: StepCtx): StepResul
         break;
       }
       // Kept for reconciliation while held or paused; the forge, probed later, shows what happened.
-      if (quiet()) { fact('merge-result-while-held', { attempt: event.attempt, ok: event.ok, merge_commit: event.mergeCommit }); break; }
+      if (quiet()) {
+        fact('merge-result-while-held', { attempt: event.attempt, ok: event.ok, merge_commit: event.mergeCommit });
+        // A refusal ends the call: nothing is in flight, and resume may try again.
+        if (!event.ok) { s.mergeAttempt = null; hold('MERGE_REFUSED', event.error ?? 'the forge refused the merge'); }
+        break;
+      }
       s.mergeAttempt = null;
       if (!event.ok) { hold('MERGE_REFUSED', event.error ?? 'the forge refused the merge'); break; }
       if (!event.mergeCommit || !SHA_RE.test(event.mergeCommit)) { hold('MERGE_REFUSED', 'the forge reported a merge with no merge commit'); break; }
