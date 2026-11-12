@@ -41,6 +41,15 @@ test('a prompt with no recent delivery is a direct prompt, and a delivery is use
   assert.equal(t.stop('jc', U.TRIGGER_WINDOW_MS + 2).trigger, 'direct', 'a stale delivery does not count');
 });
 
+test('a conversation that is not id-shaped is left out of the turn row', () => {
+  const t = new U.TurnTracker();
+  t.noteDelivery('jc', { from: 'god', id: 'god-1', conversation: 'please fix the login bug for Pam' }, 1000);
+  t.prompt('jc', 1500);
+  const ev = t.stop('jc', 9500);
+  assert.equal(ev.conversation, undefined);
+  assert.equal(ev.triggerId, 'god-1');
+});
+
 test('a stop with no prompt yields nothing', () => {
   assert.equal(new U.TurnTracker().stop('jc', 5), null);
 });
@@ -50,9 +59,21 @@ test('a stop with no prompt yields nothing', () => {
 const card = (id, status, extra = {}) => ({ id, status, updatedAt: '2026-11-12T10:00:00.000Z', ...extra });
 const NOW = Date.parse('2026-11-12T12:00:00.000Z');
 
-test('a status change is a card transition with its time in the old state', () => {
+test('time in state runs from the card\'s previous transition, not from its last edit', () => {
+  const seen = new Map();
+  // First transition after start: no earlier transition known, so no duration.
+  const e1 = U.diffTasks([card('A', 'todo')], [card('A', 'doing')], NOW, seen);
+  assert.deepEqual(e1, [{ kind: 'card-transition', cardId: 'A', from: 'todo', to: 'doing' }]);
+  // A later edit that is not a status change moves updatedAt but not the clock.
+  const edited = card('A', 'doing', { updatedAt: '2026-11-12T14:59:00.000Z' });
+  assert.deepEqual(U.diffTasks([card('A', 'doing')], [edited], NOW + 3 * 3600_000, seen), []);
+  const e2 = U.diffTasks([edited], [card('A', 'done')], NOW + 3 * 3600_000 + 60_000, seen);
+  assert.deepEqual(e2, [{ kind: 'card-transition', cardId: 'A', from: 'doing', to: 'done', msInState: 3 * 3600_000 + 60_000 }]);
+});
+
+test('with no transition memory, no time in state is guessed', () => {
   const ev = U.diffTasks([card('A', 'todo')], [card('A', 'doing')], NOW);
-  assert.deepEqual(ev, [{ kind: 'card-transition', cardId: 'A', from: 'todo', to: 'doing', msInState: 2 * 3600_000 }]);
+  assert.deepEqual(ev, [{ kind: 'card-transition', cardId: 'A', from: 'todo', to: 'doing' }]);
 });
 
 test('a new card is reported with its first status; unchanged cards are silent', () => {

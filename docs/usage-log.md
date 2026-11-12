@@ -72,8 +72,8 @@ PY
 
 | kind | Fields | Written when |
 |---|---|---|
-| `turn` | `agentId`, `startTs`, `durationMs`, `trigger` (`mail` / `heartbeat` / `scheduler` / `breaker` / `system` / `direct`), `from?`, `triggerId?` (the message id), `conversation?` | A Claude agent's turn ends (Stop hook). The trigger is the newest hive delivery to that agent in the 10 minutes before its prompt. `direct` means no delivery, so someone typed or the session resumed |
-| `card-transition` | `cardId`, `from` (null for a new card), `to`, `msInState?` | A card's status changes in `tasks.json`. The file is checked every 30 s; the first read after start is the baseline and logs nothing |
+| `turn` | `agentId`, `startTs`, `durationMs`, `trigger` (`mail` / `heartbeat` / `scheduler` / `breaker` / `system` / `direct`), `from?`, `triggerId?` (the message id), `conversation?` (only when id-shaped) | A Claude agent's turn ends (Stop hook). The trigger is the newest hive delivery to that agent in the 10 minutes before its prompt. `direct` means no delivery, so someone typed or the session resumed |
+| `card-transition` | `cardId`, `from` (null for a new card), `to`, `msInState?` | A card's status changes in `tasks.json`. The file is checked every 30 s; the first read after start is the baseline and logs nothing. `msInState` is the time since the same card's previous transition row, so it is absent for a card's first transition after a start |
 | `ask-filed` | `cardId`, `askKey` (`<cardId>@<askedAt>`) | A new `humanQA` entry appears |
 | `ask-answered` | `cardId`, `askKey`, `msSinceAsked?`, `answerLen`, `answerShape` (`done-ack` / `option` / `short` / `sentence` / `long`) | An ask gets its answer. The answer text is never copied |
 | `heavy-lock` `acquire` | adds `waitMs` | The agent had been queued for that slot |

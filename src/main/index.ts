@@ -5483,6 +5483,8 @@ function bootstrapHiveServices(): void {
 const TASKS_WATCH_MS = 30_000;
 let tasksWatchTimer: ReturnType<typeof setInterval> | null = null;
 let tasksSeen: { mark: string; cards: unknown } | null = null;
+/** Each card's last logged transition time, for msInState. In memory only. */
+const cardTransitions = new Map<string, number>();
 function tasksWatchTick(): void {
   const root = hive.root();
   if (!root) return;
@@ -5492,7 +5494,7 @@ function tasksWatchTick(): void {
   if (tasksSeen?.mark === mark) return;
   let cards: unknown;
   try { cards = (JSON.parse(readFileSync(path, 'utf8')) as { tasks?: unknown })?.tasks; } catch { return; }
-  if (tasksSeen) for (const ev of diffTasks(tasksSeen.cards, cards, Date.now())) hive.appendLog({ ...ev });
+  if (tasksSeen) for (const ev of diffTasks(tasksSeen.cards, cards, Date.now(), cardTransitions)) hive.appendLog({ ...ev });
   tasksSeen = { mark, cards };
 }
 function startTasksWatch(): void {

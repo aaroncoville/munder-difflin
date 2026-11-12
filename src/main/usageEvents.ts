@@ -61,7 +61,8 @@ export class TurnTracker {
     if (c) {
       ev.from = c.from;
       if (c.id) ev.triggerId = c.id;
-      if (c.conversation) ev.conversation = c.conversation;
+      // Chosen by the sender, so kept only when it is id-shaped, never as free text.
+      if (c.conversation && ID_SHAPED.test(c.conversation)) ev.conversation = c.conversation;
     }
     return ev;
   }
@@ -94,8 +95,14 @@ const time = (v: unknown): number | null => { const t = typeof v === 'string' ? 
 const asks = (c: Card | undefined): Ask[] => (Array.isArray(c?.humanQA) ? (c!.humanQA as Ask[]) : []);
 const answered = (q: Ask): boolean => typeof q.a === 'string' && q.a.trim().length > 0;
 
-/** Events between two reads of tasks.json's card list. Either side unreadable -> no events. */
-export function diffTasks(prev: unknown, next: unknown, now: number): TaskEvent[] {
+/**
+ * Events between two reads of tasks.json's card list. Either side unreadable -> no events.
+ * `transitions` holds each card's last transition time, kept by the caller in
+ * memory: msInState is the time since that card's previous transition, and is
+ * absent for a card's first transition after start (its updatedAt moves on any
+ * edit, so it does not say when the status last changed).
+ */
+export function diffTasks(prev: unknown, next: unknown, now: number, transitions?: Map<string, number>): TaskEvent[] {
   if (!Array.isArray(prev) || !Array.isArray(next)) return [];
   const before = new Map<string, Card>();
   for (const c of prev as Card[]) { const id = str(c?.id); if (id) before.set(id, c); }
@@ -107,8 +114,9 @@ export function diffTasks(prev: unknown, next: unknown, now: number): TaskEvent[
     const old = before.get(id);
     const from = old ? str(old.status) : null;
     if (from !== to) {
-      const since = old ? time(old.updatedAt) : null;
-      out.push({ kind: 'card-transition', cardId: id, from, to, ...(from && since !== null ? { msInState: now - since } : {}) });
+      const since = transitions?.get(id);
+      out.push({ kind: 'card-transition', cardId: id, from, to, ...(from && since !== undefined ? { msInState: now - since } : {}) });
+      transitions?.set(id, now);
     }
     const oldAsks = new Map<string, Ask>();
     for (const q of asks(old)) { const k = str(q.askedAt); if (k) oldAsks.set(k, q); }
