@@ -80,9 +80,6 @@ export function summarize(i: DigestInput) {
       t.turns++; t.usd += usd;
       const conv = str(r.conversation);
       if (conv) usdByConversation[conv] = (usdByConversation[conv] ?? 0) + usd;
-    } else if (r.kind === 'card-transition') {
-      const from = str(r.from); const ms = num(r.msInState);
-      if (from && ms !== null) stateHours[from] = (stateHours[from] ?? 0) + ms / 3_600_000;
     } else if (r.kind === 'heavy-lock' && r.action === 'acquire') {
       const w = num(r.waitMs);
       if (w !== null) { const k = (lockWaits[str(r.heavyKind) ?? 'unknown'] ??= { n: 0, totalMs: 0 }); k.n++; k.totalMs += w; }
@@ -100,6 +97,21 @@ export function summarize(i: DigestInput) {
   }
   for (const t of Object.values(turnsByTrigger)) t.usd = cents(t.usd);
   for (const k of Object.keys(usdByConversation)) usdByConversation[k] = cents(usdByConversation[k]);
+  // Time in a state: the gap between a card's consecutive transition rows, read
+  // from the rows' own timestamps (counted in the week the later row falls in).
+  // An app start breaks every chain, since changes while the app was down are
+  // not logged.
+  const lastMove = new Map<string, number>();
+  for (const r of parse(i.log)) {
+    const t = num(r.ts);
+    if (r.kind === 'app-start') { lastMove.clear(); continue; }
+    if (r.kind !== 'card-transition' || t === null) continue;
+    const card = str(r.cardId); if (!card) continue;
+    const prevTs = lastMove.get(card);
+    const from = str(r.from);
+    if (from && prevTs !== undefined && t >= prevTs && inWeek(r)) stateHours[from] = (stateHours[from] ?? 0) + (t - prevTs) / 3_600_000;
+    lastMove.set(card, t);
+  }
   for (const k of Object.keys(stateHours)) stateHours[k] = Math.round(stateHours[k] * 10) / 10;
 
   const seen = new Set<string>(); const unseen: number[] = []; const thinking: number[] = [];

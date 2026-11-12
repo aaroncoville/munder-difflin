@@ -128,7 +128,7 @@ At start and once a day, while the usage log is on, the app writes the digest fo
 - asks filed and answered, with answer shapes and the medians and p90s of time unseen and time thinking;
 - asks filed but never seen on the Ask Me board;
 - screens by attended time;
-- hours cards spent in each state;
+- hours cards spent in each state, from the gaps between a card's consecutive transition rows (a restart breaks the chain);
 - heavy-lock waits;
 - canary failures.
 

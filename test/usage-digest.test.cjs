@@ -21,8 +21,14 @@ function week() {
     { ts: MON + H, kind: 'turn', agentId: 'god', startTs: MON + H, durationMs: 10 * MIN, trigger: 'heartbeat' },
     { ts: MON + 2 * H, kind: 'turn', agentId: 'god', startTs: MON + 2 * H, durationMs: 20 * MIN, trigger: 'mail', conversation: 'CARD-1' },
     { ts: MON + 3 * H, kind: 'turn', agentId: 'jc', startTs: MON + 3 * H, durationMs: 30 * MIN, trigger: 'mail', conversation: 'CARD-1' },
-    { ts: MON + 4 * H, kind: 'card-transition', cardId: 'CARD-1', from: 'doing', to: 'blocked', msInState: 2 * H },
-    { ts: MON + 5 * H, kind: 'card-transition', cardId: 'CARD-1', from: 'blocked', to: 'done', msInState: H },
+    // Hours in a state come from consecutive rows' own timestamps; msInState is ignored.
+    { ts: MON + 2 * H, kind: 'card-transition', cardId: 'CARD-1', from: 'todo', to: 'doing' },
+    { ts: MON + 4 * H, kind: 'card-transition', cardId: 'CARD-1', from: 'doing', to: 'blocked', msInState: 999 },
+    { ts: MON + 5 * H, kind: 'card-transition', cardId: 'CARD-1', from: 'blocked', to: 'done', msInState: 999 },
+    // A restart breaks the chain: CARD-3's time before it is not counted.
+    { ts: MON + 6 * H, kind: 'card-transition', cardId: 'CARD-3', from: 'todo', to: 'doing' },
+    { ts: MON + 7 * H, kind: 'app-start' },
+    { ts: MON + 9 * H, kind: 'card-transition', cardId: 'CARD-3', from: 'doing', to: 'done' },
     { ts: MON + 4 * H, kind: 'ask-filed', cardId: 'CARD-1', askKey: 'CARD-1@a' },
     { ts: MON + 5 * H, kind: 'ask-answered', cardId: 'CARD-1', askKey: 'CARD-1@a', msSinceAsked: H, answerLen: 4, answerShape: 'done-ack' },
     { ts: MON + 4 * H, kind: 'ask-filed', cardId: 'CARD-2', askKey: 'CARD-2@b' },
