@@ -483,6 +483,10 @@ test('round 4: the launch line and its environment decide; anything not modelled
     assert.equal(fs.existsSync(dir(id)), false, `${id}: nothing created`);
     assert.equal(Object.hasOwn(hive.registry().agents, id), false, `${id}: no row`);
   }
+  // Carried from the shared launch reader: a temp folder is a root; options after the prompt and plugins refuse.
+  assert.ok((await refused(spawn('t1', 'claude', claudeLaunch(dir('t1'), [], { TMPDIR: app })))).includes('TMPDIR'));
+  assert.match(await refused(spawn('t2', 'codex', codexLaunch(['prompt', '--yolo']))), /option the app does not model/);
+  assert.match(await refused(spawn('t3', 'claude', claudeLaunch(dir('t3'), ['--plugin-dir', '/p']))), /option the app does not model/);
   // Jannings' probe: an alternate Claude config folder granting the runtime folder is honoured, so it refuses.
   const alt = path.join(base, 'alt-claude');
   fs.mkdirSync(alt);

@@ -737,7 +737,8 @@ export class HiveManager {
     }
     return {
       roots: [...this.agentRoots(meta, dir, root, extra, kind, kind === 'claude' ? places.claudeUserDir : undefined),
-        ...addDirs.map((p) => ({ path: this.settingsRoot(p, meta.cwd), from: 'its launch line (--add-dir)' }))],
+        ...addDirs.map((p) => ({ path: this.settingsRoot(p, meta.cwd), from: 'its launch line (--add-dir)' })),
+        ...places.tmpDirs.map((p) => ({ path: p, from: 'its temp folder (TMPDIR), which its sandbox lets it write' }))],
       ...(kind === 'claude' ? { claudeUserDir: places.claudeUserDir } : {}),
     };
   }
