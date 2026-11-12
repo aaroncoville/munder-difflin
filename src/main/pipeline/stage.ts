@@ -17,12 +17,16 @@
  * hold is set, or the card is paused, facts are still recorded but nothing moves
  * and no effect goes out.
  *
- * Owner decisions are derived, not remembered: on every evaluation, a submit's
- * `needs_owner`, a counted verdict's product-decision finding (whatever the verdict),
- * or each changed human-only path is a cause that holds the card with OWNER_DECISION
- * unless an owner approval at that exact sha answered that cause. An approval answers
- * the causes the hold carried when it arrived, nothing raised after it. The hold is
- * about one sha and ends when a new head replaces it; the new head derives its own.
+ * Owner causes are recorded per sha as they are seen and never dropped: a submit's
+ * `needs_owner`, a product-decision finding in any accepted verdict (whatever the
+ * verdict, and whether or not it is counted: a DRIFTED answer still asks), and each
+ * changed human-only path. A product decision is keyed by reviewer, finding id and
+ * a hash of its title and body, so a changed decision under the same id is a new
+ * cause. Any cause at a sha that no owner approval at that sha answered holds the
+ * card with OWNER_DECISION. An approval answers the causes the hold carried when it
+ * arrived, nothing raised after it. The hold is about one sha and ends when a new
+ * head replaces it; coming back to that sha holds again from the recorded causes,
+ * and tells god again.
  * God's `resume` clears every other hold, never that one (spec 9: no command from
  * god substitutes for the owner).
  */
@@ -30,6 +34,7 @@ import { matchesAny, type RepoPipeline, type Vendor } from './config';
 import { choosePanel, combine, type RosterAgent, type TerminalState } from './panel';
 import type { CommandPayload, EnrolArgs, Finding, Sha, SubmitPayload, VerdictPayload } from './schema';
 import type { LogEntry } from './store';
+import { createHash } from 'node:crypto';
 
 export type Stage = 'implementing' | 'review' | 'mergeable' | 'merged' | 'live' | 'abandoned';
 
@@ -58,6 +63,8 @@ export interface ForgeMr {
 export interface Request { reviewer: string; vendor: Vendor; requestId: string }
 export interface CountedVerdict { reviewer: string; vendor: Vendor; model: string | null; msg: string; payload: VerdictPayload }
 export interface Hold { sha: Sha | null; at: string; detail: string; causes?: string[] }
+/** Something only the owner can decide, at one sha. */
+export interface OwnerCause { sha: Sha; key: string; detail: string }
 /** One owner approval: the sha, and the owner causes it answered (what the hold carried). */
 export interface OwnerApproval { sha: Sha; causes: string[]; ref: string }
 
@@ -89,6 +96,8 @@ export interface CardState {
   outOfBandMerge: Sha | null;
   deployed: Sha | null;
   followups: Finding[];
+  /** Every owner cause seen, per sha; kept for the card's life. */
+  ownerCauses: OwnerCause[];
   /** Approvals from the owner, through the app's own answer path. */
   ownerApprovals: OwnerApproval[];
   /** Consecutive events whose forge probe could not be read. */
@@ -144,7 +153,7 @@ export function initialState(card: string): CardState {
   return {
     card, repo: null, branch: null, implementer: null, mr: null, stage: null, stageSince: null, round: 1, sha: null,
     holds: {}, paused: false, submit: null, requests: [], terminal: {}, verdicts: {}, mergeAttempt: null, mergeAttempts: 0,
-    mergeCommit: null, outOfBandMerge: null, deployed: null, followups: [], ownerApprovals: [], forgeMisses: 0, raised: [],
+    mergeCommit: null, outOfBandMerge: null, deployed: null, followups: [], ownerCauses: [], ownerApprovals: [], forgeMisses: 0, raised: [],
   };
 }
 
@@ -208,22 +217,22 @@ export function step(prev: CardState, event: StepEvent, ctx: StepCtx): StepResul
     return null;
   };
 
+  /** Records an owner cause at [sha]; seen once, it stays. */
+  const recordCause = (sha: Sha | null, key: string, detail: string) => {
+    if (!sha || s.ownerCauses.some((c) => c.sha === sha && c.key === key)) return;
+    s.ownerCauses.push({ sha, key, detail });
+    fact('owner-cause', { sha, key });
+  };
+
   /**
    * What the owner must still decide at [sha], derived afresh on every evaluation: each
    * cause as a key and a line for the owner, less the causes an approval at [sha] answered.
    */
   const ownerNeeded = (sha: Sha | null, changedFiles?: string[]): Map<string, string> => {
-    const need = new Map<string, string>();
-    const claim = s.submit?.payload;
-    if (claim?.needs_owner && claim.head_sha === sha) need.set(`question:${claim.needs_owner.question}`, claim.needs_owner.question);
-    for (const v of Object.values(s.verdicts)) {
-      for (const f of v.payload.findings.filter((x) => x.class === 'product-decision')) {
-        need.set(`product-decision:${v.reviewer}:${f.id}`, `a product decision in ${v.reviewer}'s review: ${f.id}`);
-      }
-    }
     for (const p of (changedFiles ?? []).filter((x) => matchesAny(x, ctx.repo?.humanOnlyPaths ?? []))) {
-      need.set(`human-only:${p}`, `the diff touches a human-only path: ${p}`);
+      recordCause(sha, `human-only:${p}`, `the diff touches a human-only path: ${p}`);
     }
+    const need = new Map(s.ownerCauses.filter((c) => c.sha === sha).map((c) => [c.key, c.detail]));
     for (const a of s.ownerApprovals.filter((x) => x.sha === sha)) for (const c of a.causes) need.delete(c);
     return need;
   };
@@ -415,10 +424,12 @@ export function step(prev: CardState, event: StepEvent, ctx: StepCtx): StepResul
       s.submit = { msg: msgId, payload };
       s.mr = payload.mr;
       fact('submit', { msg: msgId, head: payload.head_sha, kind: payload.kind });
+      if (payload.needs_owner) recordCause(payload.head_sha, `question:${payload.needs_owner.question}`, payload.needs_owner.question);
       // An owner question is about one sha; a new head asks its own, derived afresh.
       const oh = s.holds.OWNER_DECISION;
       if (oh && oh.sha !== payload.head_sha) {
         delete s.holds.OWNER_DECISION;
+        s.raised = s.raised.filter((k) => !k.startsWith('OWNER_DECISION|'));
         fact('owner-hold-superseded', { sha: oh.sha, head: payload.head_sha, causes: oh.causes ?? [] });
       }
       if (!repoOrHold() || quiet()) break;
@@ -430,6 +441,15 @@ export function step(prev: CardState, event: StepEvent, ctx: StepCtx): StepResul
     case 'verdict': {
       const { payload: v, from, msgId } = event;
       const req = s.requests.find((r) => r.reviewer === from);
+      // Owner causes come from every verdict that answers this card's request at its sha and
+      // round, before it is counted or found DRIFTED, and even when it is too late to count.
+      const owns = !!req && v.reviewed_sha === s.sha && v.round === s.round && v.answers === req.requestId;
+      if (owns) {
+        for (const f of v.findings.filter((x) => x.class === 'product-decision')) {
+          const content = createHash('sha256').update(JSON.stringify([f.title, f.body])).digest('hex').slice(0, 16);
+          recordCause(s.sha, `product-decision:${from}:${f.id}:${content}`, `a product decision in ${from}'s review: ${f.id} (${f.title})`);
+        }
+      }
       if (s.stage !== 'review' || !req) { refuse(from, msgId, [`no review of ${s.card} is waiting on ${from}`]); break; }
       if (v.reviewed_sha !== s.sha || v.round !== s.round) {
         fact('verdict-stale', { msg: msgId, from, reviewed_sha: v.reviewed_sha, round: v.round });
@@ -451,7 +471,8 @@ export function step(prev: CardState, event: StepEvent, ctx: StepCtx): StepResul
         s.terminal[from] = v.verdict;
       }
       if (!repoOrHold() || s.paused) break;
-      // Only a degraded hold lets the panel decide (and only a block can come of it).
+      // Only a degraded hold lets the panel decide (and only a block can come of it). This gate is
+      // also why an existing OWNER_DECISION hold never needs to take on a new cause here.
       if (holdCodes().some((c) => c !== 'REVIEW_DEGRADED')) break;
       decide(event.forge, { kind: 'message', id: msgId });
       break;

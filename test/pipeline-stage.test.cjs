@@ -629,3 +629,52 @@ test('N4: an OWNER_DECISION hold lives only as long as its sha; a new head re-de
   assert.equal(again.state.holds.OWNER_DECISION.sha, S2);
   assert.equal(ownerTold(again.effects).length, 2, 'asked again at the new sha');
 });
+
+// --- Third review of #86: owner causes bound to what was decided, from every accepted verdict ---
+
+test('an approved product decision replaced by a different one under the same id is a new cause', () => {
+  const choose = (body) => finding({ id: 'PD-1', class: 'product-decision', must_fix: false, title: 'which VIN rule', body });
+  const r = run([...toReview, verdict('orsolina-mtx', 'CONFIRMED', { findings: [choose('choose A')] }), verdict('jannings-mtx', 'CONFIRMED'),
+    approve(S), verdict('orsolina-mtx', 'CONFIRMED', { findings: [choose('choose B instead')] }), tick(), tick()]);
+  assert.deepEqual(kinds(r.effects, 'merge'), []);
+  assert.deepEqual(held(r.state), ['OWNER_DECISION']);
+  assert.equal(ownerTold(r.effects).length, 2);
+});
+
+test('a DRIFTED verdict\'s product decision still goes to the owner; re-review without it does not merge', () => {
+  const c = ctx({ allowedModels: { openai: ['gpt-allowed'], anthropic: ['claude-allowed'] } });
+  const drifted = { ...verdict('jannings-mtx', 'CONFIRMED', { findings: [pd] }), model: 'gpt-not-allowed' };
+  const again = { ...verdict('jannings-mtx', 'CONFIRMED', { answers: `${CARD}:r1:jannings-mtx:again` }), msgId: 'j-again', model: 'gpt-allowed' };
+  const r = run([...toReview, verdict('orsolina-mtx', 'CONFIRMED'), drifted, cmd('resume'), again, tick(), tick()], c);
+  assert.ok(ownerTold(r.effects).length >= 1, 'the owner is told');
+  assert.ok(held(r.state).includes('OWNER_DECISION'));
+  assert.deepEqual(kinds(r.effects, 'merge'), []);
+});
+
+test('an owner hold that ends and comes back at the same sha tells god again', () => {
+  const r = run([...toReview, verdict('orsolina-mtx', 'CONFIRMED', { findings: [pd] }), verdict('jannings-mtx', 'CONFIRMED'),
+    submit({ head_sha: S2 }), submit(), cmd('resume'), tick(), tick()]);
+  assert.deepEqual(held(r.state), ['OWNER_DECISION']);
+  assert.equal(ownerTold(r.effects).length, 2);
+});
+
+test('a question put to the owner at a sha is not withdrawn by a later submit at that sha', () => {
+  const r = run([enrol(), cmd('pause'), askOwner, submit(), cmd('resume'), tick(), tick()]);
+  assert.equal(r.state.stage, 'implementing');
+  assert.deepEqual(held(r.state), ['OWNER_DECISION']);
+});
+
+test('a product decision in a late verdict, sent after the panel decided, is refused for the count but still holds for the owner', () => {
+  const r = run([...toMergeable, { ...verdict('orsolina-mtx', 'CONFIRMED', { findings: [pd] }), msgId: 'o-late' }, tick()]);
+  assert.ok(kinds(r.effects, 'refuse').some((e) => e.msgId === 'o-late'));
+  assert.deepEqual(held(r.state), ['OWNER_DECISION']);
+  assert.deepEqual(kinds(r.effects, 'merge'), []);
+});
+
+test('a product decision whose title changes, same id and body, is a new cause too', () => {
+  const choose = (title) => finding({ id: 'PD-1', class: 'product-decision', must_fix: false, title, body: 'see the options above' });
+  const r = run([...toReview, verdict('orsolina-mtx', 'CONFIRMED', { findings: [choose('VIN optional')] }), verdict('jannings-mtx', 'CONFIRMED'),
+    approve(S), verdict('orsolina-mtx', 'CONFIRMED', { findings: [choose('VIN required')] }), tick(), tick()]);
+  assert.deepEqual(kinds(r.effects, 'merge'), []);
+  assert.deepEqual(held(r.state), ['OWNER_DECISION']);
+});
