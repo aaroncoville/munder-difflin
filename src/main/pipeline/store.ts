@@ -131,6 +131,8 @@ export class CardLog {
   private readonly now: () => Date;
   private seq = 0;
   private last = core.GENESIS;
+  /** Set by any error once an append has started: this writer no longer knows where the log ends. */
+  private failed = false;
 
   /** [authRoot] must be in the app's data directory: the store writes nowhere else. */
   constructor(opts: { authRoot: string; card: string; now?: () => Date }) {
@@ -152,27 +154,36 @@ export class CardLog {
    *
    * An error does not mean the line is absent. If the line reached disk and the
    * anchor update then failed (a full disk, say), this throws, the line stays, and
-   * this writer refuses every further append. Reopen the log and read it before
-   * deciding anything: retrying the same entry would record it twice.
+   * this writer refuses every further append. Any error once the append has started
+   * does the same, whichever step it came from. Reopen the log and read it before
+   * deciding anything: the reopen keeps a line that reached disk, under the same
+   * rules as after a crash, and retrying the same entry would record it twice.
    */
   append(entry: LogEntry): LogLine {
+    if (this.failed) throw new LogTamperError(this.card, this.seq + 1, 'an earlier append on this writer failed; reopen the log');
     if (!sameAnchor(this.readAnchor(), headOf(this.seq, this.last))) {
-      throw new LogTamperError(this.card, this.seq + 1, 'the log moved under this writer (another writer, an edit, or an earlier failed append)');
+      throw new LogTamperError(this.card, this.seq + 1, 'the log moved under this writer (another writer, or an edit)');
     }
     const line: LogLine = { ...entry, v: 1, seq: this.seq + 1, at: this.now().toISOString(), card: this.card, prev: this.last };
     const text = JSON.stringify(line);
-    const created = !existsSync(this.authFile);
-    const fd = openSync(this.authFile, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT, 0o600);
+    let done = false;
     try {
-      writeSync(fd, `${text}\n`);
-      fsyncSync(fd);
+      const created = !existsSync(this.authFile);
+      const fd = openSync(this.authFile, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT, 0o600);
+      try {
+        writeSync(fd, `${text}\n`);
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+      if (created) fsyncDir(this.authDir);
+      this.seq = line.seq;
+      this.last = core.hashLine(text);
+      this.writeAnchor({ seq: this.seq, hash: this.last });
+      done = true;
     } finally {
-      closeSync(fd);
+      if (!done) this.failed = true;
     }
-    if (created) fsyncDir(this.authDir);
-    this.seq = line.seq;
-    this.last = core.hashLine(text);
-    this.writeAnchor({ seq: this.seq, hash: this.last });
     this.mirrorAppend(`${text}\n`);
     return line;
   }
@@ -202,14 +213,19 @@ export class CardLog {
   restoreMirror(): void {
     mkdirSync(this.exportDir, { recursive: true });
     const tmp = join(this.exportDir, `.log.jsonl.${randomBytes(8).toString('hex')}.tmp`);
-    const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW, 0o644);
     try {
-      writeSync(fd, this.authText());
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
+      const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW, 0o644);
+      try {
+        writeSync(fd, this.authText());
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+      renameSync(tmp, this.exportFile);
+    } catch (e) {
+      rmSync(tmp, { force: true });
+      throw e;
     }
-    renameSync(tmp, this.exportFile);
   }
 
   // — the authoritative copy —
@@ -279,9 +295,9 @@ export class CardLog {
 
   private writeAnchor(a: Anchor): void {
     const tmp = join(this.authDir, `.head.${randomBytes(8).toString('hex')}.tmp`);
-    const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW, 0o600);
-    try { writeSync(fd, JSON.stringify(a)); fsyncSync(fd); } finally { closeSync(fd); }
     try {
+      const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW, 0o600);
+      try { writeSync(fd, JSON.stringify(a)); fsyncSync(fd); } finally { closeSync(fd); }
       renameSync(tmp, this.anchorFile);
     } catch (e) {
       rmSync(tmp, { force: true });

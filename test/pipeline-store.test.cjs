@@ -395,3 +395,83 @@ test('a folder that cannot be opened for its sync fails the open, unless the pla
   withOpen('EACCES', () => assert.throws(() => open(roots()), /EACCES/));
   withOpen('EISDIR', () => assert.equal(open(roots()).append({ type: 'fact' }).seq, 1));
 });
+
+/**
+ * Makes the [nth] call (1-based) to fs[fn] during [body] throw EIO, optionally only
+ * for calls [where] accepts. Returns whether it fired.
+ */
+function eioAt(fn, nth, body, where = () => true) {
+  const real = fs[fn];
+  let calls = 0;
+  let fired = false;
+  fs[fn] = (...args) => {
+    if (where(...args) && ++calls === nth) { fired = true; throw Object.assign(new Error('EIO: injected'), { code: 'EIO' }); }
+    return real(...args);
+  };
+  try { body(); } finally { fs[fn] = real; }
+  return fired;
+}
+const isDirFd = (fd) => fs.fstatSync(fd).isDirectory();
+const isFileFd = (fd) => !isDirFd(fd);
+
+// Each step of an append on a log that already has a line: [name, fn, nth, where, line 2 on disk after it].
+const APPEND_STEPS = [
+  ['line write', 'writeSync', 1, () => true, false],
+  ['line fsync', 'fsyncSync', 1, isFileFd, true],
+  ['anchor write', 'writeSync', 2, () => true, true],
+  ['anchor fsync', 'fsyncSync', 2, isFileFd, true],
+  ['anchor rename', 'renameSync', 1, () => true, true],
+  ['folder fsync after the anchor move', 'fsyncSync', 1, isDirFd, true],
+];
+
+test('a failed append at any step poisons the writer; a reopen keeps what reached disk once and carries on', () => {
+  for (const [name, fn, nth, where, kept] of APPEND_STEPS) {
+    const r = roots();
+    const log = open(r);
+    log.append({ type: 'fact', n: 1 });
+    let threw = null;
+    assert.ok(eioAt(fn, nth, () => { try { log.append({ type: 'fact', n: 2 }); } catch (e) { threw = e; } }, where), `${name}: the fault fired`);
+    assert.match(String(threw), /EIO/, `${name}: the append throws`);
+    assert.throws(() => log.append({ type: 'fact', n: 3 }), LogTamperError, `${name}: the same writer refuses the next append`);
+    const again = open(r);
+    const want = kept ? [1, 2] : [1];
+    assert.deepEqual(again.lines().map((l) => l.n), want, `${name}: on disk once`);
+    assert.equal(again.append({ type: 'fact', n: 9 }).seq, want.length + 1, `${name}: the next seq continues`);
+    assert.equal(core.verifyLogText(authText(r), { card: 'WF-FB-VEHICLES' }).ok, true, `${name}: the chain verifies`);
+    assert.deepEqual(fs.readdirSync(path.join(r.authRoot, 'WF-FB-VEHICLES')).sort(), ['head.json', 'log.jsonl'], `${name}: no temp file left`);
+  }
+});
+
+test('the first append into a new log, failing at the new file\'s folder sync, poisons the writer too', () => {
+  const r = roots();
+  const log = open(r);
+  assert.throws(() => eioAt('fsyncSync', 1, () => log.append({ type: 'fact', n: 1 }), isDirFd), /EIO/);
+  assert.throws(() => log.append({ type: 'fact', n: 2 }), LogTamperError);
+  const again = open(r);
+  assert.deepEqual(again.lines().map((l) => [l.seq, l.n]), [[1, 1]]);
+  assert.equal(again.append({ type: 'fact', n: 2 }).seq, 2);
+});
+
+test('a failed restore of the export copy leaves no temp file behind and the log usable', () => {
+  const r = roots();
+  const log = open(r);
+  log.append({ type: 'fact', n: 1 });
+  assert.throws(() => eioAt('fsyncSync', 1, () => log.restoreMirror(), isFileFd), /EIO/);
+  assert.deepEqual(fs.readdirSync(path.dirname(mirrorFile(r))), ['log.jsonl']);
+  assert.equal(log.append({ type: 'fact', n: 2 }).seq, 2);
+});
+
+test('an open that fails while writing the genesis anchor or repairing a torn tail throws, and the next open recovers', () => {
+  const r = roots();
+  assert.throws(() => eioAt('renameSync', 1, () => open(r)), /EIO/, 'genesis anchor');
+  assert.equal(open(r).append({ type: 'fact', n: 1 }).seq, 1);
+
+  const t = roots();
+  const log = open(t);
+  log.append({ type: 'fact', n: 1 });
+  fs.appendFileSync(path.join(t.authRoot, 'WF-FB-VEHICLES', 'log.jsonl'), '{"torn":');
+  assert.throws(() => eioAt('renameSync', 1, () => open(t)), /EIO/, 'repair append');
+  const again = open(t);
+  assert.deepEqual(again.lines().map((l) => l.fact ?? l.n), [1, 'log-repaired']);
+  assert.equal(again.append({ type: 'fact', n: 2 }).seq, 3);
+});
