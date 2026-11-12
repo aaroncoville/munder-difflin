@@ -678,3 +678,23 @@ test('a product decision whose title changes, same id and body, is a new cause t
   assert.deepEqual(kinds(r.effects, 'merge'), []);
   assert.deepEqual(held(r.state), ['OWNER_DECISION']);
 });
+
+test('a product decision\'s cause key carries the full SHA-256 of its content, and nothing shorter matches it', () => {
+  const pdKeys = (state) => state.ownerCauses.filter((c) => c.key.startsWith('product-decision:')).map((c) => c.key);
+  const texts = ['choose A', 'choose B', 'choose A ', 'Choose A', '', 'x'.repeat(5000)];
+  const keys = texts.map((body) => {
+    const r = run([...toReview, verdict('orsolina-mtx', 'CONFIRMED', { findings: [finding({ id: 'PD-1', class: 'product-decision', must_fix: false, body })] })]);
+    const [k] = pdKeys(r.state);
+    assert.match(k, /^product-decision:orsolina-mtx:PD-1:[0-9a-f]{64}$/);
+    return k;
+  });
+  assert.equal(new Set(keys).size, texts.length, 'different content, different keys');
+  // An approval recorded under a shortened digest answers nothing.
+  const held1 = run([...toReview, verdict('orsolina-mtx', 'CONFIRMED', { findings: [pd] }), verdict('jannings-mtx', 'CONFIRMED')]);
+  const [full] = pdKeys(held1.state);
+  const state = structuredClone(held1.state);
+  state.holds = {};
+  state.ownerApprovals = [{ sha: S, causes: [full.slice(0, full.length - 48)], ref: 'short' }];
+  const out = step(state, tick(), ctx());
+  assert.deepEqual(held(out.state), ['OWNER_DECISION']);
+});

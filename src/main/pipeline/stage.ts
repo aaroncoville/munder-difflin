@@ -446,7 +446,7 @@ export function step(prev: CardState, event: StepEvent, ctx: StepCtx): StepResul
       const owns = !!req && v.reviewed_sha === s.sha && v.round === s.round && v.answers === req.requestId;
       if (owns) {
         for (const f of v.findings.filter((x) => x.class === 'product-decision')) {
-          const content = createHash('sha256').update(JSON.stringify([f.title, f.body])).digest('hex').slice(0, 16);
+          const content = createHash('sha256').update(JSON.stringify([f.title, f.body])).digest('hex');
           recordCause(s.sha, `product-decision:${from}:${f.id}:${content}`, `a product decision in ${from}'s review: ${f.id} (${f.title})`);
         }
       }
