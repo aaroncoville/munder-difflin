@@ -7,9 +7,9 @@
 import { basename, isAbsolute, join, resolve } from 'node:path';
 
 /** Environment variables that move where a provider reads configuration or write roots. Only these are recorded from a spawn. */
-export const RELOCATING_ENV = ['HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'XDG_CONFIG_HOME'] as const;
+export const RELOCATING_ENV = ['HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'TMPDIR', 'CLAUDE_CODE_TMPDIR'] as const;
 /** Claude's own variables that point it at other settings, config or plugins: not modelled, so unknown. */
-const CLAUDE_UNMODELLED_ENV = /^CLAUDE_CODE_[A-Z0-9_]*(SETTINGS|CONFIG|MANAGED|PLUGIN)/;
+const CLAUDE_UNMODELLED_ENV = /^CLAUDE_CODE_(?!TMPDIR$)[A-Z0-9_]*(SETTINGS|CONFIG|MANAGED|PLUGIN)/;
 
 /** The relocation-relevant part of a spawn's final environment: the variables above, plus any unmodelled Claude one (by name). */
 export function relocationEnv(env: Record<string, string | undefined>): Record<string, string> {
@@ -22,14 +22,16 @@ export function relocationEnv(env: Record<string, string | undefined>): Record<s
   return out;
 }
 
-/** 'claude' / 'codex' when the launch line's executable is that CLI itself, else null (a wrapper such as env, sh -c, npx). */
+/** 'claude' / 'codex' when the launch line's executable is that CLI itself, else null (a wrapper such as env, sh -c, npx).
+ *  Judged by the executable's name, not by resolving the path: a different program installed under the name claude or
+ *  codex is taken to be the CLI. */
 export function launchExecutable(args: string[] | undefined): 'claude' | 'codex' | null {
   const first = Array.isArray(args) && typeof args[0] === 'string' ? args[0].trim().split(/\s+/)[0] ?? '' : '';
   const b = basename(first);
   return b === 'claude' || b === 'codex' ? b : null;
 }
 
-export type Places = { home: string; claudeUserDir: string; codexHome: string } | { unknown: string };
+export type Places = { home: string; claudeUserDir: string; codexHome: string; /** Temp folders the CLI's sandbox lets it write. */ tmpDirs: string[] } | { unknown: string };
 
 /** Where this provider will read its user configuration, given the final spawn environment; or what made it unknown. */
 export function launchPlaces(provider: string, env: Record<string, string> | undefined, appHome: string): Places {
@@ -45,7 +47,14 @@ export function launchPlaces(provider: string, env: Record<string, string> | und
   if (cfg !== undefined && !isAbsolute(cfg)) return { unknown: 'CLAUDE_CONFIG_DIR is not an absolute path' };
   const ch = env.CODEX_HOME;
   if (ch !== undefined && !isAbsolute(ch)) return { unknown: 'CODEX_HOME is not an absolute path' };
-  return { home, claudeUserDir: cfg ?? join(home, '.claude'), codexHome: ch ?? join(home, '.codex') };
+  const tmpDirs: string[] = [];
+  for (const k of provider === 'claude' ? ['TMPDIR', 'CLAUDE_CODE_TMPDIR'] : ['TMPDIR']) {
+    const v = env[k];
+    if (v === undefined) continue;
+    if (!isAbsolute(v)) return { unknown: `${k} is not an absolute path` };
+    tmpDirs.push(v);
+  }
+  return { home, claudeUserDir: cfg ?? join(home, '.claude'), codexHome: ch ?? join(home, '.codex'), tmpDirs };
 }
 
 /** Codex options that take a value (the next argument, or `--name=value`). */
@@ -70,8 +79,11 @@ export function codexLaunchSandbox(args: string[] | undefined, addDirs: string[]
   if (words[i] === 'resume') i += 2; // `resume <session id>`
   for (; i < words.length; i++) {
     const w = words[i];
-    if (w === '--') break;
-    if (!w.startsWith('-')) break; // the prompt, or another positional: stop reading
+    if (w === '--' || !w.startsWith('-')) {
+      // The prompt (or '--'): Codex still reads options after it, so anything further is not modelled.
+      if (i + 1 < words.length) return 'unknown';
+      break;
+    }
     const eq = w.indexOf('=');
     const name = w.startsWith('--') && eq !== -1 ? w.slice(0, eq) : w;
     const value = w.startsWith('--') && eq !== -1 ? w.slice(eq + 1) : null;
@@ -84,7 +96,7 @@ export function codexLaunchSandbox(args: string[] | undefined, addDirs: string[]
     const v = value ?? words[++i];
     if (v === undefined) return 'unknown';
     if (name === '-s' || name === '--sandbox') mode = v;
-    else if ((name === '-c' || name === '--config') && /^\s*"?(sandbox_mode|sandbox_workspace_write)\b/.test(v)) return 'unknown';
+    else if ((name === '-c' || name === '--config') && /^\s*"?(sandbox_mode|sandbox_workspace_write|profile)\b/.test(v)) return 'unknown';
     else if (name === '--add-dir') addDirs.push(v);
     else if (name === '-p' || name === '--profile' || name === '--remote') return 'unknown';
   }
@@ -94,7 +106,7 @@ export function codexLaunchSandbox(args: string[] | undefined, addDirs: string[]
 
 const CLAUDE_VALUE_OPTS = new Set(['--agent', '--agents', '--append-system-prompt', '--autocompact', '--debug-file', '--effort', '--environment',
   '--fallback-model', '--input-format', '--json-schema', '--max-budget-usd', '--model', '-n', '--name', '--output-format', '--permission-mode',
-  '--permission-prompts', '--plugin-dir', '--plugin-url', '--remote-control-session-name-prefix', '--session-id', '--system-prompt',
+  '--permission-prompts', '--remote-control-session-name-prefix', '--session-id', '--system-prompt',
   '--system-prompt-snapshot', '--settings']);
 const CLAUDE_VARIADIC_OPTS = new Set(['--add-dir', '--allowedTools', '--allowed-tools', '--disallowedTools', '--disallowed-tools', '--betas',
   '--file', '--mcp-config', '--tools']);
@@ -112,8 +124,11 @@ export function claudeLaunch(args: string[] | undefined, generatedSettings: stri
   const words = [...(a[0] ?? '').trim().split(/\s+/).filter(Boolean), ...a.slice(1)];
   for (let i = 1; i < words.length; i++) {
     const w = words[i];
-    if (w === '--') break;
-    if (!w.startsWith('-')) break;
+    if (w === '--' || !w.startsWith('-')) {
+      // The prompt (or '--'): Claude still reads options after it, so anything further is not modelled.
+      if (i + 1 < words.length) return 'unknown';
+      break;
+    }
     const eq = w.indexOf('=');
     const name = w.startsWith('--') && eq !== -1 ? w.slice(0, eq) : w;
     const inline = w.startsWith('--') && eq !== -1 ? w.slice(eq + 1) : null;

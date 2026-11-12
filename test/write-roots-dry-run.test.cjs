@@ -81,7 +81,7 @@ test('property: scoped roots never grant bin, the agents folder, another agent, 
     }
   }
   assert.ok(checked > 400);
-  assert.ok(W.MAX_QUEUE * W.BUDGET_MS <= 2000, 'a full queue is at most about 2 s of sliced main-thread work');
+  assert.ok(W.MAX_QUEUE * W.BUDGET_MS <= 250, 'a full queue is at most about 200 ms of sliced main-thread work per agent');
   assert.deepEqual(W.scopedRoots({ ...ctx, agentId: '..' }), [], 'an id that is not a folder name gets no roots');
 });
 
@@ -227,7 +227,8 @@ test('effective Codex roots: inherited roots show; full access is unsandboxed; d
   assert.equal(L('codex -a never', 'a -s b c'), 'none');
   assert.equal(L('codex -a never -s workspace-write', '--dangerously-bypass-hook-trust', 'prompt'), 'workspace-write');
   assert.equal(L('codex', 'resume', 'abc', '-s', 'workspace-write'), 'workspace-write');
-  assert.equal(L('codex', 'the prompt', '-s', 'workspace-write'), 'none', 'nothing after the first positional is read');
+  assert.equal(L('codex', 'the prompt', '-s', 'workspace-write'), 'unknown', 'Codex reads options after the prompt, so anything after it is not modelled');
+  assert.equal(L('codex -s workspace-write', 'the prompt'), 'workspace-write', 'a prompt last is fine');
   assert.equal(L('codex', '-s workspace-write'), 'unknown', 'an argv element is one word, never split');
   assert.equal(L('codex', '--sandbox=read-only'), 'read-only');
   assert.equal(L('codex -s workspace-write', '--config', 'sandbox_mode="danger-full-access"'), 'unknown', 'long --config');
@@ -390,30 +391,39 @@ test('each deferred call stays inside its budget, and a call past it records one
   assert.deepEqual(slow.map((r) => r.via), ['shell-write', 'truncated'], 'past the time budget the rest is dropped');
 });
 
-test('admission: made-up ids never take a queue slot; the queue is bounded and sheds only a spawned agent\'s calls', (t) => {
+test('admission: made-up ids never take a queue slot; each agent has its own bounded queue and sheds only its own calls', (t) => {
   const { agent } = hookFloor(t);
   const later = [];
   const rows = [];
-  const dry = new W.WriteRootsDryRun({ agent, known: (id) => id === 'w1', record: (e) => rows.push(e), defer: (fn) => later.push(fn) });
+  const dry = new W.WriteRootsDryRun({ agent: (id) => (id === 'w1' || id === 'w2' ? agent('w1') && { ...agent('w1'), ctx: { ...agent('w1').ctx, agentId: id } } : null), known: (id) => id === 'w1' || id === 'w2', record: (e) => rows.push(e), defer: (fn) => later.push(fn) });
   for (let i = 0; i < 10_000; i++) dry.onHook(`fake-${i}`, 'PreToolUse', { tool_name: 'Write', tool_input: { file_path: '/x' } });
   assert.equal(later.length, 0, 'nothing queued for unknown ids');
-  assert.equal(dry.queue.length, 0);
-  for (let i = 0; i < 10; i++) dry.onHook('w1', 'PreToolUse', { tool_name: 'Read', tool_input: { file_path: '/x' } });
+  assert.equal(dry.queues.size, 0);
+  for (let i = 0; i < 5; i++) dry.onHook('w1', 'PreToolUse', { tool_name: 'Read', tool_input: { file_path: '/x' } });
   assert.equal(later.length, 1, 'one scheduled drain at a time');
   later.shift()();
   assert.equal(later.length, 1, 'one call per turn, then the next is scheduled');
   while (later.length) later.shift()();
   dry.onHook('w1', 'Stop', {});
   while (later.length) later.shift()();
-  assert.deepEqual(rows.filter((r) => r.kind === 'write-observed').map((r) => `${r.tool}/${r.shape}/${r.count}`), ['Read/file-path/10'], 'the real calls are all counted');
+  assert.deepEqual(rows.filter((r) => r.kind === 'write-observed').map((r) => `${r.tool}/${r.shape}/${r.count}`), ['Read/file-path/5'], 'the real calls are all counted');
   rows.length = 0;
+  // w1 floods past its own bound; w2's calls are untouched and drained in turn.
   for (let i = 0; i < W.MAX_QUEUE + 5; i++) dry.onHook('w1', 'PreToolUse', { tool_name: 'Read', tool_input: {} });
+  for (let i = 0; i < 3; i++) dry.onHook('w2', 'PreToolUse', { tool_name: 'Grep', tool_input: {} });
   dry.onHook('w1', 'Stop', {});
+  dry.onHook('w2', 'Stop', {});
   while (later.length) later.shift()();
-  dry.onHook('w1', 'Stop', {});
+  assert.ok(rows.some((r) => r.agentId === 'w1' && r.shape === 'shed' && r.count === 5), JSON.stringify(rows));
+  assert.ok(rows.some((r) => r.agentId === 'w2' && r.tool === 'Grep' && r.count === 3), 'another agent loses nothing');
+  assert.ok(!rows.some((r) => r.agentId === 'w2' && r.shape === 'shed'));
+  // Drained in turn: w2's call is read second, not after all of w1's.
+  const order = [];
+  const d2 = new W.WriteRootsDryRun({ agent: (id) => { order.push(id); return null; }, known: () => true, record: () => {}, defer: (fn) => later.push(fn) });
+  for (let i = 0; i < 3; i++) d2.onHook('w1', 'PreToolUse', { tool_name: 'Read', tool_input: {} });
+  d2.onHook('w2', 'PreToolUse', { tool_name: 'Read', tool_input: {} });
   while (later.length) later.shift()();
-  assert.ok(rows.some((r) => r.shape === 'shed' && r.count === 6), JSON.stringify(rows));
-  assert.equal(dry.shed.size, 0);
+  assert.deepEqual(order, ['w1', 'w2', 'w1', 'w1']);
 });
 
 test('generated: a value planted at any read site reads as unknown or refused, never as scoped or own', (t) => {
@@ -512,7 +522,7 @@ test('every row of READ_SITES has a case here, and each case holds', (t) => {
     'payload-agent-id': () => { const later = []; const d = new W.WriteRootsDryRun({ agent: () => null, known: () => false, record: () => {}, defer: (f) => later.push(f) }); d.onHook('fake', 'PreToolUse', {}); assert.equal(later.length, 0); },
     'payload-tool-name': () => assert.equal(W.toolClass('secret_text'), 'other'),
     'payload-tool-input': () => assert.equal(W.observeTool('Bash', { command: Array.from({ length: 200 }, (_, i) => `rm ${root}/bin/${i}`).join(';') }, ctx).at(-1).via, 'truncated'),
-    queue: () => assert.ok(W.MAX_QUEUE <= 64),
+    queue: () => { assert.ok(W.MAX_QUEUE * W.BUDGET_MS <= 250, 'per agent'); const later = []; const rows = []; const d = new W.WriteRootsDryRun({ agent: (id) => ({ ctx: { ...ctx, agentId: id }, provider: 'claude', agentDir: dir }), known: () => true, record: (e) => rows.push(e), defer: (f) => later.push(f) }); for (let i = 0; i < 500; i++) d.onHook('a2', 'PreToolUse', { tool_name: 'Read', tool_input: {} }); d.onHook('a1', 'PreToolUse', { tool_name: 'Write', tool_input: { file_path: path.join(root, 'bin/x') } }); while (later.length) later.shift()(); assert.ok(rows.some((r) => r.kind === 'write-would-refuse' && r.agentId === 'a1'), 'one agent\'s burst does not shed another\'s write'); },
     'own-folder': () => { fs.rmSync(path.join(root, 'agents/a9'), { force: true, recursive: true }); fs.symlinkSync(path.join(root, 'agents/a2'), path.join(root, 'agents/a9')); assert.deepEqual(W.scopedRoots({ ...ctx, agentId: 'a9' }), []); },
     'claude-generated-settings': () => assert.equal(plant(path.join(dir, 'settings.json'), (f) => fs.mkdirSync(f)), 'unknown'),
     'claude-project-settings': () => { const cwd = path.join(home, 'wt'); fs.mkdirSync(path.join(cwd, '.claude'), { recursive: true }); fs.mkdirSync(path.join(cwd, '.claude/settings.json')); assert.equal(W.effectiveRoots('claude', dir, cwd, home, { args: ok, platform: 'darwin', env: {} }).state, 'unknown'); fs.rmSync(cwd, { recursive: true }); },
@@ -528,10 +538,15 @@ test('every row of READ_SITES has a case here, and each case holds', (t) => {
     'codex-add-dir-flag': () => assert.ok(codex('codex -s workspace-write', '--add-dir', path.join(root, 'bin')).roots.includes(path.join(root, 'bin'))),
     'codex-remote-flag': () => assert.equal(codex('codex -s workspace-write', '--remote', 'ws://x').state, 'unknown'),
     'codex-unknown-option': () => assert.equal(codex('codex -s workspace-write', '--weird').state, 'unknown'),
-    'claude-prompt': () => { assert.equal(claude(...ok, 'please --settings /tmp/x --add-dir /').state, 'ok', 'the prompt is not read'); assert.equal(claude(...ok, 'prompt', '--settings', '/tmp/x').state, 'ok', 'nothing after the first positional is read'); },
+    'claude-prompt': () => { assert.equal(claude(...ok, 'please --settings /tmp/x --add-dir /').state, 'ok', 'the prompt is not read'); assert.equal(claude(...ok, 'prompt', '--settings', '/tmp/x').state, 'unknown', 'anything after the prompt is not modelled'); assert.equal(claude(...ok, 'prompt').state, 'ok', 'a prompt last is fine'); },
     'claude-add-dir-flag': () => { const e = claude('claude', '--add-dir', path.join(root, 'bin'), path.join(root, 'research'), '--settings', path.join(dir, 'settings.json')); assert.ok(e.roots.includes(path.join(root, 'bin')) && e.roots.includes(path.join(root, 'research'))); },
     'claude-settings-flag': () => { assert.equal(claude('claude', '--settings', '/tmp/other.json').state, 'unknown'); assert.equal(claude('claude', '--settings', '{"sandbox":{}}').state, 'unknown'); },
     'claude-unmodelled-flag': () => { for (const f of ['--setting-sources=user', '--bare', '--safe-mode', '--restricted', '--worktree', '-w', '--debug']) assert.equal(claude(...ok, f).state, 'unknown', f); },
+    'option-after-positional': () => { assert.equal(codex('codex -s workspace-write', 'prompt', '--yolo').state, 'unknown'); assert.equal(claude(...ok, 'prompt', '--add-dir', '/').state, 'unknown'); },
+    'codex-project-config': () => { const wt = path.join(home, 'proj', 'sub'); fs.mkdirSync(path.join(home, 'proj', '.codex'), { recursive: true }); fs.mkdirSync(wt, { recursive: true }); fs.writeFileSync(path.join(home, 'proj', '.codex', 'config.toml'), `[sandbox_workspace_write]\nwritable_roots = [${JSON.stringify(path.join(root, 'bin'))}]\n`); const e = W.effectiveRoots('codex', dir, wt, home, { args: ['codex -s workspace-write'], platform: 'darwin', env: cx }); assert.ok(e.roots.includes(path.join(root, 'bin')), 'a project config above the cwd'); fs.writeFileSync(path.join(home, 'proj', '.codex', 'config.toml'), 'sandbox_workspace_write = { x'); assert.equal(W.effectiveRoots('codex', dir, wt, home, { args: ['codex -s workspace-write'], platform: 'darwin', env: cx }).state, 'unknown'); fs.rmSync(path.join(home, 'proj', '.codex', 'config.toml')); fs.mkdirSync(path.join(home, 'proj', '.codex', 'config.toml')); assert.equal(W.effectiveRoots('codex', dir, wt, home, { args: ['codex -s workspace-write'], platform: 'darwin', env: cx }).state, 'unknown', 'a folder where the file should be'); fs.rmSync(path.join(home, 'proj'), { recursive: true }); },
+    'claude-plugin-dir': () => { assert.equal(claude(...ok, '--plugin-dir', '/p').state, 'unknown'); assert.equal(claude(...ok, '--plugin-url', 'https://x').state, 'unknown'); assert.equal(codex('codex -s workspace-write', '-c', 'profile="x"').state, 'unknown', '-c profile'); },
+    'env-tmpdir': () => { const e = W.effectiveRoots('claude', dir, '', home, { args: ok, platform: 'darwin', env: { TMPDIR: path.join(root, 'bin') } }); assert.ok(W.rootsReport(e, ctx).excess.includes('bin')); assert.ok(W.effectiveRoots('codex', dir, '', home, { args: ['codex -s workspace-write'], platform: 'darwin', env: { ...cx, TMPDIR: path.join(root, 'research') } }).roots.includes(path.join(root, 'research'))); assert.ok(W.effectiveRoots('claude', dir, '', home, { args: ok, platform: 'darwin', env: { CLAUDE_CODE_TMPDIR: path.join(root, 'bin') } }).roots.includes(path.join(root, 'bin'))); assert.equal(W.effectiveRoots('claude', dir, '', home, { args: ok, platform: 'darwin', env: { TMPDIR: 'rel' } }).state, 'unknown'); },
+    'launch-executable-name': () => { const L = loadTs('src/main/launchLine.ts'); assert.equal(L.launchExecutable(['/opt/anything/bin/claude --x']), 'claude', 'judged by name'); assert.equal(L.launchExecutable(['claude-wrapper']), null); },
     'launch-wrapper': () => { for (const w of ['env X=1 claude', 'sh -c "claude"', 'npx claude']) assert.equal(W.effectiveRoots('claude', dir, '', home, { args: [w, '--settings', path.join(dir, 'settings.json')], platform: 'darwin', env: {} }).state, 'unknown', w); assert.equal(W.effectiveRoots('codex', dir, '', home, { args: ['npx codex -s workspace-write'], platform: 'darwin', env: cx }).state, 'unknown'); },
     'env-missing': () => { assert.equal(W.effectiveRoots('claude', dir, '', home, { args: ok, platform: 'darwin' }).state, 'unknown'); assert.equal(W.effectiveRoots('codex', dir, '', home, { args: ['codex -s workspace-write'], platform: 'darwin' }).state, 'unknown'); },
     'env-home': () => { const other = path.join(home, 'other-home'); fs.mkdirSync(path.join(other, '.claude'), { recursive: true }); fs.writeFileSync(path.join(other, '.claude/settings.json'), JSON.stringify({ permissions: { additionalDirectories: [path.join(root, 'bin')] } })); const e = W.effectiveRoots('claude', dir, '', home, { args: ok, platform: 'darwin', env: { HOME: other } }); assert.ok(e.roots.includes(path.join(root, 'bin')), 'read from the spawn\'s HOME'); assert.equal(W.effectiveRoots('claude', dir, '', home, { args: ok, platform: 'darwin', env: { HOME: 'rel' } }).state, 'unknown'); },

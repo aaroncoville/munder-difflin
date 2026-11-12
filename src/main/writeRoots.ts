@@ -479,7 +479,21 @@ export function effectiveRoots(provider: string, agentDir: string, cwd: string, 
     const c = codexRoots(r.text);
     // The command-line mode outranks the config's; the roots still come from the config.
     if (c.state === 'unknown') return unknown('codex-config');
-    return { roots: withCwd([...c.roots, ...addDirs]), state: 'ok', source: 'codex-config' };
+    // Codex also merges a project .codex/config.toml in the working directory or any folder above it.
+    const projectRoots: string[] = [];
+    if (abscwd) {
+      for (let d = resolve(abscwd); ; d = dirname(d)) {
+        const pr = readSettings(join(d, '.codex', 'config.toml'));
+        if (pr.kind === 'bad') return unknown('codex-config');
+        if (pr.kind === 'text') {
+          const pc = codexRoots(pr.text);
+          if (pc.state === 'unknown') return unknown('codex-config'); // a mode there is outranked by the command line's
+          projectRoots.push(...pc.roots.map((x) => (isAbsolute(x) ? x : join(d, x))));
+        }
+        if (dirname(d) === d) break;
+      }
+    }
+    return { roots: withCwd([...c.roots, ...projectRoots, ...addDirs, ...places.tmpDirs]), state: 'ok', source: 'codex-config' };
   }
   // Highest precedence first; the generated file is passed with --settings. Directories merge across files.
   const generated = join(agentDir, 'settings.json');
@@ -497,7 +511,7 @@ export function effectiveRoots(provider: string, agentDir: string, cwd: string, 
     roots.push(...c.roots);
     if (enabled === undefined && c.enabled !== undefined) enabled = c.enabled;
   }
-  return { roots: withCwd([...roots, ...launchDirs]), state: enabled === true ? 'ok' : 'unsandboxed', source: 'claude-settings-files' };
+  return { roots: withCwd([...roots, ...launchDirs, ...places.tmpDirs]), state: enabled === true ? 'ok' : 'unsandboxed', source: 'claude-settings-files' };
 }
 
 /** The classes of the effective roots, and of those the scoped roots would not grant. */
@@ -533,9 +547,10 @@ export interface DryRunDeps {
   now?: () => number;
 }
 
-/** Calls waiting to be read. Past this the hook sheds the call and counts it. A full queue is at most
- *  64 × 25 ms ≈ 1.6 s of main-thread work, in slices with hooks answered between them. */
-export const MAX_QUEUE = 64;
+/** Calls waiting to be read, per agent. Past this the hook sheds that agent's call and counts it: one agent's burst can
+ *  only shed its own calls, never another's. Agents are drained in turn, one call per event-loop turn, so a full queue
+ *  is at most 8 × 25 ms = 200 ms of main-thread work per spawned agent, in slices with hooks answered between them. */
+export const MAX_QUEUE = 8;
 const MAX_COUNTERS = 2000;
 
 type Pending = { agentId: string; event: string; tool: unknown; input: unknown };
@@ -543,7 +558,9 @@ type Pending = { agentId: string; event: string; tool: unknown; input: unknown }
 /** Records, from the hook channel, what scoped roots would have refused. Observes only: never throws, never decides,
  *  and does nothing on the hook's answer path but queue the call. */
 export class WriteRootsDryRun {
-  private queue: Pending[] = [];
+  private queues = new Map<string, Pending[]>();
+  /** The agents with calls waiting, in the order they are drained. */
+  private turn: string[] = [];
   private scheduled = false;
   private shed = new Map<string, number>();
   /** Tool calls seen per spawned agent, tool and input shape since that agent's last Stop. */
@@ -558,8 +575,12 @@ export class WriteRootsDryRun {
       if (event !== 'PreToolUse' && event !== 'Stop' && event !== 'SessionEnd' && event !== 'SessionStart') return;
       // Admission: an id the app did not spawn never takes a queue slot, so made-up ids cannot crowd out a real call.
       if (this.d.known(agentId) !== true) return;
-      if (this.queue.length >= MAX_QUEUE) { this.shed.set(agentId, (this.shed.get(agentId) ?? 0) + 1); return; }
-      this.queue.push({ agentId, event, tool: p?.tool_name, input: p?.tool_input });
+      let q = this.queues.get(agentId);
+      if (!q) { q = []; this.queues.set(agentId, q); this.turn.push(agentId); }
+      if (event === 'PreToolUse') {
+        if (q.filter((j) => j.event === 'PreToolUse').length >= MAX_QUEUE) { this.shed.set(agentId, (this.shed.get(agentId) ?? 0) + 1); return; }
+      } else if (q.some((j) => j.event === event)) return; // a turn's Stop or a session start is never shed, and never waits twice
+      q.push({ agentId, event, tool: p?.tool_name, input: p?.tool_input });
       this.schedule();
     } catch { /* a dry run must never disturb the hook it rides on */ }
   }
@@ -573,9 +594,13 @@ export class WriteRootsDryRun {
   /** One call per event-loop turn, so other hooks are answered between them. */
   private drainOne(): void {
     this.scheduled = false;
-    const job = this.queue.shift();
+    // Round robin: the next agent in turn gives one call, and goes to the back if it has more.
+    const id = this.turn.shift();
+    const q = id === undefined ? undefined : this.queues.get(id);
+    const job = q?.shift();
+    if (id !== undefined && q) { if (q.length) this.turn.push(id); else this.queues.delete(id); }
     if (job) { try { this.process(job); } catch { /* never let one call stop the rest */ } }
-    if (this.queue.length) this.schedule();
+    if (this.turn.length) this.schedule();
   }
 
   private process(j: Pending): void {
@@ -617,7 +642,7 @@ export const READ_SITES = [
   { id: 'payload-agent-id', read: 'hook payload agent_id', writer: 'any process that reaches the hook socket', planted: 'an id the app did not spawn, thousands of them', outcome: 'never queued (checked against the spawn record before admission); nothing allocated or recorded' },
   { id: 'payload-tool-name', read: 'hook payload tool_name', writer: 'same', planted: 'free text, non-string', outcome: 'logged as a fixed name or other' },
   { id: 'payload-tool-input', read: 'hook payload tool_input', writer: 'same', planted: 'huge command, thousands or deep missing paths, wrong types', outcome: 'answer not delayed; at most 64 paths, 25 ms, 64 KB per call, then one truncated row; wrong types record nothing' },
-  { id: 'queue', read: 'the deferred queue', writer: 'spawned agents, by calling tools', planted: 'a flood of calls', outcome: 'at most 64 waiting; more are shed and counted per spawned agent' },
+  { id: 'queue', read: 'the deferred queue, one per agent', writer: 'spawned agents, by calling tools', planted: 'one agent flooding calls', outcome: 'at most 8 tool calls waiting per agent, drained in turn; more are shed and counted for that agent only; Stop and session start are never shed' },
   { id: 'own-folder', read: '<hive>/agents/<id>', writer: 'every agent', planted: 'a link, a file, missing, an id that is not a plain name', outcome: 'no roots; every observation and the report unknown' },
   { id: 'claude-generated-settings', read: 'agents/<id>/settings.json', writer: 'the agent itself', planted: 'link, folder, unreadable, oversized, named pipe, parent is a file, missing', outcome: 'unknown' },
   { id: 'claude-project-settings', read: '<cwd>/.claude/settings(.local).json', writer: 'agents working in that cwd', planted: 'same kinds', outcome: 'unknown; missing is skipped' },
@@ -628,7 +653,7 @@ export const READ_SITES = [
   { id: 'codex-prompt', read: 'Codex launch line: the prompt', writer: 'the spawn request', planted: 'flags inside the prompt text', outcome: 'never read: options stop at the first positional' },
   { id: 'codex-sandbox-flag', read: 'Codex -s/--sandbox, --full-auto', writer: 'the spawn request', planted: 'any mode', outcome: 'workspace-write/read-only ok; danger-full-access unsandboxed; anything else or none unknown' },
   { id: 'codex-bypass-flag', read: 'Codex --dangerously-bypass-approvals-and-sandbox, --yolo', writer: 'the spawn request', planted: 'the flag', outcome: 'unsandboxed' },
-  { id: 'codex-config-flag', read: 'Codex -c/--config on sandbox_mode or sandbox_workspace_write', writer: 'the spawn request', planted: 'any value', outcome: 'unknown' },
+  { id: 'codex-config-flag', read: 'Codex -c/--config on sandbox_mode, sandbox_workspace_write or profile', writer: 'the spawn request', planted: 'any value', outcome: 'unknown' },
   { id: 'codex-profile-flag', read: 'Codex -p/--profile', writer: 'the spawn request', planted: 'any profile', outcome: 'unknown' },
   { id: 'codex-add-dir-flag', read: 'Codex --add-dir', writer: 'the spawn request (the app passes its own roots)', planted: 'any directory', outcome: 'counted as a root' },
   { id: 'codex-remote-flag', read: 'Codex --remote', writer: 'the remote rewrite', planted: 'any server', outcome: 'unknown (the server\'s policy is in force)' },
@@ -637,6 +662,11 @@ export const READ_SITES = [
   { id: 'claude-add-dir-flag', read: 'Claude --add-dir (variadic)', writer: 'the spawn request', planted: 'any directories', outcome: 'counted as roots' },
   { id: 'claude-settings-flag', read: 'Claude --settings', writer: 'the app (its generated file)', planted: 'another file or inline JSON', outcome: 'unknown' },
   { id: 'claude-unmodelled-flag', read: 'Claude --setting-sources, --bare, --safe-mode, --restricted, --worktree, ...', writer: 'the spawn request', planted: 'any', outcome: 'unknown' },
+  { id: 'option-after-positional', read: 'arguments after the prompt (either CLI)', writer: 'the spawn request', planted: 'codex "prompt" --yolo; claude ... "prompt" --settings x', outcome: 'unknown: both CLIs read options there' },
+  { id: 'codex-project-config', read: '.codex/config.toml in the cwd and every folder above', writer: 'agents working in that cwd', planted: 'writable_roots into the hive; an unreadable or unparsed file', outcome: 'its roots count; not understood = unknown' },
+  { id: 'claude-plugin-dir', read: 'Claude --plugin-dir, --plugin-url', writer: 'the spawn request', planted: 'any plugin (can carry hooks and settings)', outcome: 'unknown' },
+  { id: 'env-tmpdir', read: 'TMPDIR (both), CLAUDE_CODE_TMPDIR (Claude)', writer: 'the operator\'s environment, or a per-agent override', planted: 'a temp folder inside the hive', outcome: 'counted as a root (the sandbox lets the CLI write its temp folder); relative = unknown' },
+  { id: 'launch-executable-name', read: 'the executable\'s name', writer: 'the spawn request', planted: 'another program installed under the name claude or codex', outcome: 'taken to be the CLI: judged by name, the path is not resolved (stated limit)' },
   { id: 'launch-wrapper', read: 'the launch line\'s executable', writer: 'the spawn request', planted: 'a wrapper: env X=Y claude, sh -c "...", npx codex', outcome: 'unknown (not a plain provider invocation)' },
   { id: 'env-missing', read: 'the spawn\'s final environment', writer: 'held in main\'s memory from the spawn', planted: 'none recorded', outcome: 'unknown' },
   { id: 'env-home', read: 'HOME in the spawn environment', writer: 'the operator\'s environment, or a per-agent override', planted: 'another home', outcome: 'honoured: user config is read from that home' },
