@@ -540,3 +540,25 @@ test('a write that makes no progress fails the append instead of trying forever'
   assert.throws(() => log.append({ type: 'fact', n: 2 }), LogTamperError);
   assert.deepEqual(open(r).lines().map((l) => l.n), [1]);
 });
+
+test('a re-entered repair tells two torn tails apart by their bytes, even when both decode to the same text', () => {
+  const r = roots();
+  const log = open(r);
+  log.append({ type: 'fact', n: 1 });
+  const file = path.join(r.authRoot, 'WF-FB-VEHICLES', 'log.jsonl');
+  const size = fs.statSync(file).size;
+  // A tail ending in the first byte of 'é', and one ending in the first byte of '✓':
+  // the same length, and both decode to '{"x":' plus U+FFFD.
+  const first = Buffer.concat([Buffer.from('{"x":'), Buffer.from('é').subarray(0, 1)]);
+  const later = Buffer.concat([Buffer.from('{"x":'), Buffer.from('✓').subarray(0, 1)]);
+  assert.equal(first.toString('utf8'), later.toString('utf8'));
+  fs.appendFileSync(file, first);
+  // The store's own repair writes its marker, then stops at the cut.
+  const real = fs.ftruncateSync;
+  fs.ftruncateSync = () => { throw Object.assign(new Error('EIO: injected'), { code: 'EIO' }); };
+  try { assert.throws(() => open(r), /EIO/); } finally { fs.ftruncateSync = real; }
+  // Then the cut happens after all and the next repair line tears with the other tail.
+  fs.truncateSync(file, size);
+  fs.appendFileSync(file, later);
+  assert.equal(open(r).lines().at(-1).dropped_bytes, 12, 'both tails counted');
+});

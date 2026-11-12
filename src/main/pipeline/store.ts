@@ -46,6 +46,17 @@
  * line added while the app is closed is adopted, which needs write access to the
  * app's data directory, where the anchor could be rewritten as well; a transition
  * line is a record, not evidence on its own.
+ *
+ * Sizes, offsets, hashes and comparisons are all done on bytes; text is decoded only
+ * a whole line at a time, so a tear inside a multi-byte character is counted exactly.
+ *
+ * Limits. Crash safety here is against faults one call at a time in one process: a
+ * call that fails, writes short or tears, and a process that stops at that call.
+ * Bytes that a write reported as written but that a power failure then loses are
+ * outside it, as are two processes on one card (the anchor check refuses the second).
+ * The export copy is caught up when the log is opened; a writer whose export write
+ * fails leaves it behind until then, or until something compares and restores it.
+ * The export is never read for a decision.
  */
 import { createHash, randomBytes } from 'node:crypto';
 import {
@@ -131,9 +142,9 @@ function fsyncDir(dir: string): void {
  * The file's text, or null only when it does not exist. Any other error is thrown:
  * a log, anchor or marker that cannot be read is never taken for one that is absent.
  */
-function readIfThere(file: string): string | null {
+function readIfThere(file: string): Buffer | null {
   try {
-    return readFileSync(file, 'utf8');
+    return readFileSync(file);
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw e;
@@ -141,13 +152,27 @@ function readIfThere(file: string): string | null {
 }
 
 /** Writes all of [data] at the file's position: a short write carries on from where it stopped. */
-function writeAll(fd: number, data: string): void {
-  const buf = Buffer.from(data);
+function writeAll(fd: number, data: string | Buffer): void {
+  const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
   for (let off = 0; off < buf.length;) {
     const n = writeSync(fd, buf, off, buf.length - off);
     if (n <= 0) throw Object.assign(new Error('EIO: the write made no progress'), { code: 'EIO' });
     off += n;
   }
+}
+
+const NL = 0x0a;
+
+/**
+ * The complete lines of [buf], split on the newline byte and each decoded on its own.
+ * Sizes, offsets and comparisons are done on bytes; text is only ever a whole line.
+ */
+function linesOf(buf: Buffer): string[] {
+  const out: string[] = [];
+  for (let start = 0, nl = buf.indexOf(NL); nl !== -1; start = nl + 1, nl = buf.indexOf(NL, start)) {
+    out.push(buf.subarray(start, nl).toString('utf8'));
+  }
+  return out;
 }
 
 /** Makes [dir] and any missing folders above it, each synced in its parent, top down. */
@@ -230,22 +255,22 @@ export class CardLog {
 
   /** Every line of the authoritative log, checked against the chain and the anchor on the way. */
   lines(): LogLine[] {
-    const text = this.authText();
-    this.check(text);
-    return text === '' ? [] : text.slice(0, -1).split('\n').map((l) => JSON.parse(l) as LogLine);
+    const buf = this.authBytes();
+    this.check(buf);
+    return linesOf(buf).map((l) => JSON.parse(l) as LogLine);
   }
 
   /** How the export copy compares with the authoritative log. */
   mirrorStatus(): MirrorStatus {
-    let mirror: string;
+    let mirror: Buffer;
     try {
-      mirror = readFileSync(this.exportFile, 'utf8');
+      mirror = readFileSync(this.exportFile);
     } catch (e) {
       return (e as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : 'differs';
     }
-    const auth = this.authText();
-    if (mirror === auth) return 'same';
-    if (auth.startsWith(mirror)) return 'behind';
+    const auth = this.authBytes();
+    if (mirror.equals(auth)) return 'same';
+    if (mirror.length < auth.length && auth.subarray(0, mirror.length).equals(mirror)) return 'behind';
     return 'differs';
   }
 
@@ -256,7 +281,7 @@ export class CardLog {
     try {
       const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW, 0o644);
       try {
-        writeAll(fd, this.authText());
+        writeAll(fd, this.authBytes());
         fsyncSync(fd);
       } finally {
         closeSync(fd);
@@ -272,26 +297,26 @@ export class CardLog {
 
   /** Reads the log on opening: checks it against the anchor, and repairs what a crash leaves. */
   private open(): void {
-    let text = this.authText();
+    let buf = this.authBytes();
     let anchor = this.readAnchor();
-    if (text === '' && anchor === null) {
+    if (buf.length === 0 && anchor === null) {
       // A new card: the genesis anchor is on disk before any line can be.
       this.writeAnchor(headOf(0, core.GENESIS));
       anchor = this.readAnchor();
     }
     // A torn last line: everything before it verifies and the anchor points at the line before it.
-    if (text !== '' && !text.endsWith('\n')) {
-      const cut = text.lastIndexOf('\n') + 1;
-      const prefix = text.slice(0, cut);
-      const checked = core.verifyLogText(prefix, { card: this.card });
+    if (buf.length > 0 && buf[buf.length - 1] !== NL) {
+      const cut = buf.lastIndexOf(NL) + 1;
+      const prefix = buf.subarray(0, cut);
+      const checked = core.verifyLogText(prefix.toString('utf8'), { card: this.card });
       if (!checked.ok || !sameAnchor(headOf(checked.count, checked.last), anchor)) {
-        throw new LogTamperError(this.card, prefix.split('\n').length, 'the last line is incomplete and the head anchor does not point at the line before it');
+        throw new LogTamperError(this.card, linesOf(prefix).length + 1, 'the last line is incomplete and the head anchor does not point at the line before it');
       }
       // The repair is a transaction: the marker says what is dropped before it is dropped,
       // and goes only once the repair fact is on disk. An open that finds it finishes the job.
-      const size = Buffer.byteLength(text);
-      const keep = Buffer.byteLength(prefix);
-      const tail = createHash('sha256').update(text.slice(cut)).digest('hex');
+      const size = buf.length;
+      const keep = cut;
+      const tail = createHash('sha256').update(buf.subarray(cut)).digest('hex');
       const prior = this.readMarker();
       if (prior && (prior.seq !== checked.count || prior.keep_bytes !== keep)) {
         throw new LogTamperError(this.card, checked.count, `a repair marker for line ${prior.seq} does not match a torn tail after line ${checked.count}`);
@@ -303,12 +328,12 @@ export class CardLog {
         this.writeDurable(this.markerFile, { seq: checked.count, keep_bytes: keep, size, tail, dropped_bytes: dropped } satisfies RepairMarker);
       }
       const fd = openSync(this.authFile, constants.O_WRONLY);
-      try { ftruncateSync(fd, Buffer.byteLength(prefix)); fsyncSync(fd); } finally { closeSync(fd); }
-      text = prefix;
+      try { ftruncateSync(fd, keep); fsyncSync(fd); } finally { closeSync(fd); }
+      buf = prefix;
     }
-    this.check(text, true);
-    this.adopt(text);
-    this.finishRepair(text);
+    this.check(buf, true);
+    this.adopt(buf);
+    this.finishRepair(buf);
     this.catchUpExport();
   }
 
@@ -326,10 +351,11 @@ export class CardLog {
   }
 
   /** Completes a torn-tail repair the marker shows was under way: the fact appended once, then the marker removed. */
-  private finishRepair(text: string): void {
+  private finishRepair(buf: Buffer): void {
     const marker = this.readMarker();
     if (!marker) return;
-    const lastLine = text === '' ? null : JSON.parse(text.slice(0, -1).split('\n').pop() as string) as LogLine;
+    const last = linesOf(buf).pop();
+    const lastLine = last === undefined ? null : JSON.parse(last) as LogLine;
     if (this.seq === marker.seq) {
       this.append({ type: 'fact', fact: 'log-repaired', dropped_bytes: marker.dropped_bytes });
     } else if (!(this.seq === marker.seq + 1 && lastLine?.fact === 'log-repaired')) {
@@ -343,7 +369,7 @@ export class CardLog {
     const raw = readIfThere(this.markerFile);
     if (raw === null) return null;
     try {
-      const m = JSON.parse(raw) as RepairMarker;
+      const m = JSON.parse(raw.toString('utf8')) as RepairMarker;
       const ints = [m.seq, m.keep_bytes, m.size, m.dropped_bytes].every((x) => Number.isInteger(x) && x >= 0);
       if (ints && m.dropped_bytes > 0 && m.size > m.keep_bytes && typeof m.tail === 'string' && /^[0-9a-f]{64}$/.test(m.tail)) {
         return { seq: m.seq, keep_bytes: m.keep_bytes, size: m.size, tail: m.tail, dropped_bytes: m.dropped_bytes };
@@ -353,14 +379,14 @@ export class CardLog {
   }
 
   /** Throws unless [text] verifies and ends at the anchor. With [fixAnchor], a complete line one past the anchor is kept. */
-  private check(text: string, fixAnchor = false): void {
-    const checked = core.verifyLogText(text, { card: this.card });
+  private check(buf: Buffer, fixAnchor = false): void {
+    const checked = core.verifyLogText(buf.toString('utf8'), { card: this.card });
     if (!checked.ok) throw new LogTamperError(this.card, checked.line, checked.reason);
     const anchor = this.readAnchor();
     const head = headOf(checked.count, checked.last);
     if (sameAnchor(head, anchor)) return;
     if (fixAnchor && anchor && head.seq === anchor.seq + 1) {
-      const lines = text.slice(0, -1).split('\n');
+      const lines = linesOf(buf);
       const before = lines.length >= 2 ? core.hashLine(lines[lines.length - 2]) : core.GENESIS;
       if (before === anchor.hash) { this.writeAnchor(head); return; }
     }
@@ -369,8 +395,8 @@ export class CardLog {
       : `the log ends at line ${checked.count}, the head anchor at line ${anchor.seq}`);
   }
 
-  private adopt(text: string): void {
-    const checked = core.verifyLogText(text, { card: this.card });
+  private adopt(buf: Buffer): void {
+    const checked = core.verifyLogText(buf.toString('utf8'), { card: this.card });
     if (!checked.ok) throw new LogTamperError(this.card, checked.line, checked.reason);
     this.seq = checked.count;
     this.last = headOf(checked.count, checked.last).hash;
@@ -380,7 +406,7 @@ export class CardLog {
     const raw = readIfThere(this.anchorFile);
     if (raw === null) return null;
     try {
-      const a = JSON.parse(raw) as Anchor;
+      const a = JSON.parse(raw.toString('utf8')) as Anchor;
       if (a.seq === 0 && a.hash === core.GENESIS) return { seq: 0, hash: core.GENESIS };
       if (Number.isInteger(a.seq) && a.seq > 0 && typeof a.hash === 'string') return { seq: a.seq, hash: a.hash };
     } catch { /* fall through */ }
@@ -405,8 +431,8 @@ export class CardLog {
     fsyncDir(this.authDir);
   }
 
-  private authText(): string {
-    return readIfThere(this.authFile) ?? '';
+  private authBytes(): Buffer {
+    return readIfThere(this.authFile) ?? Buffer.alloc(0);
   }
 
   // — the export copy —
