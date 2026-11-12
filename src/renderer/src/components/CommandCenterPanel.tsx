@@ -577,7 +577,7 @@ function FloorTab({ seed }: { seed: { text: string; seq: number } }) {
     setDispatchMsg(res.ok
       ? suggested
         ? t('commandCenter.sentToWithSuggestion', { godName, name: suggested.name })
-        : t('commandCenter.sentToMichael', { godName })
+        : t('commandCenter.sentToOrchestrator', { godName })
       : t('commandCenter.dispatchFailed', { error: res.error ?? '?' }));
     setTimeout(() => setDispatchMsg(null), 4000);
   };
@@ -648,13 +648,13 @@ function FloorTab({ seed }: { seed: { text: string; seq: number } }) {
 
   return (
     <Scroll>
-      <Section title={t('commandCenter.dispatchViaMichael', { godName: godName.toUpperCase() })}>
+      <Section title={t('commandCenter.dispatchViaOrchestrator', { godName: godName.toUpperCase() })}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
           <span style={{ fontFamily: 'var(--cth-font-display)', fontSize: 8, color: 'var(--cth-ink-500)', flexShrink: 0 }}>
             {t('commandCenter.suggestedOwner')}
           </span>
           <Select value={dispatchTo} onChange={setDispatchTo}>
-            <option value="">{t('commandCenter.michaelDecides', { godName })}</option>
+            <option value="">{t('commandCenter.orchestratorDecides', { godName })}</option>
             {agents.filter((a) => !a.isGod).map((a) => (
               <option key={a.id} value={a.id}>{a.name}</option>
             ))}

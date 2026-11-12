@@ -1,7 +1,5 @@
 import { useEffect, useState } from 'react';
-import { resolveGodName, DEFAULT_GOD_NAME } from '@shared/godIdentity';
-
-const GOD_ID = 'god';
+import { godNameFromRegistry, DEFAULT_GOD_NAME } from '@shared/godIdentity';
 
 /**
  * God's persisted display name, for the boot screens shown BEFORE the store
@@ -15,7 +13,7 @@ export function useResolvedGodName(): string {
   useEffect(() => {
     let cancelled = false;
     void window.cth.hiveRegistry().then((reg) => {
-      if (!cancelled) setGodName(resolveGodName(reg?.agents?.[GOD_ID]?.name));
+      if (!cancelled) setGodName(godNameFromRegistry(reg));
     }).catch(() => { /* keep the default while unknown */ });
     return () => { cancelled = true; };
   }, []);

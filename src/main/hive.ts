@@ -52,7 +52,7 @@ import { agentFolderId, hasExactFolder, isAppSender, isKnownTarget, isRosterId, 
 import { nodeLauncherScript } from './nodeLauncher';
 import { codexTrustEntry } from '../shared/codexTrust';
 import { withCodexWritableRoots } from '../shared/codexWritableRoots';
-import { resolveGodName } from '../shared/godIdentity';
+import { godNameFromRegistry } from '../shared/godIdentity';
 import { appendSession } from './codexActivity';
 import { isSafeMessageId, publishMessage, sweepInboxLeftovers } from './messageId';
 import { envelopeErrors, isPipelineName, PIPELINE, pipelineIntake, refusalBody, type Intake } from './pipeline/route';
@@ -1675,7 +1675,7 @@ export class HiveManager {
     // name in prose; god's own prompt already gets its name via `meta.name`.
     const godRegistry = meta.isAssistant ? this.registry() : null;
     const godNameForPrompt = godRegistry
-      ? resolveGodName(godRegistry.agents[godRegistry.godId ?? 'god']?.name)
+      ? godNameFromRegistry(godRegistry)
       : '';
     const ctxLine = 'LIVE CONTEXT: each agent row in the LIVE ROSTER carries a `ctx NN%` tag — its live context-window occupancy. Treat it as the real headroom signal when routing: prefer an agent with a LOW `ctx` for a big task; treat a HIGH `ctx` (near 100%) as busy rather than idle, even if the cumulative token count looks modest.';
 
