@@ -108,7 +108,7 @@ export function QuitWarningModal({ ptyCount, closing, onCancel, onConfirm, onClo
                     ? `${closing!.acked} / ${closing!.total} WORKERS CONFIRMED${closing!.acked >= closing!.total ? ' — WAITING FOR THE ORCHESTRATOR' : ''}`
                     : 'NO WORKERS ON THE FLOOR — WAITING FOR THE ORCHESTRATOR'}
                   {closing!.phase === 'timeout' && (
-                    <div style={{ marginTop: 6, fontFamily: 'var(--cth-font-body, inherit)' }}>
+                    <div style={{ marginTop: 6, fontFamily: 'var(--cth-font-ui)' }}>
                       This is taking a while (an agent may be mid-compaction or deep in a
                       tool call). Keep waiting, or force quit and accept the data loss.
                     </div>

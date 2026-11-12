@@ -51,7 +51,7 @@ export function CommandBar({ accent, busy, blocked, onSend }: CommandBarProps) {
               padding: '4px 10px 2px',
               border: 'none',
               background: mode === m ? `var(--cth-${accent})` : 'var(--cth-cream-200)',
-              color: 'var(--cth-ink-900)',
+              color: mode === m ? 'var(--cth-on-accent)' : 'var(--cth-ink-900)',
               boxShadow: mode === m
                 ? 'inset 0 0 0 1px var(--cth-ink-300), 0 -2px 0 var(--cth-ink-900) inset'
                 : 'inset 0 0 0 1px var(--cth-ink-100)',

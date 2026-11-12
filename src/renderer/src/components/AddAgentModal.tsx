@@ -531,8 +531,8 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                           fontFamily: 'var(--cth-font-mono)',
                           fontSize: 12,
                           padding: '0 4px',
-                          background: 'var(--cth-paprika-light, #f6d3c4)',
-                          boxShadow: 'inset 0 0 0 1px var(--cth-paprika-700, #b3502e)',
+                          background: 'var(--cth-peach-light)',
+                          boxShadow: 'inset 0 0 0 1px var(--cth-peach)',
                           color: 'var(--cth-ink-900)'
                         }}
                       >
@@ -552,7 +552,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                           fontSize: 12,
                           padding: '0 4px',
                           background: 'var(--cth-mint-light, #d0f0e0)',
-                          boxShadow: 'inset 0 0 0 1px var(--cth-mint-700, #1f7a4d)',
+                          boxShadow: 'inset 0 0 0 1px var(--cth-mint)',
                           color: 'var(--cth-ink-900)'
                         }}
                       >
@@ -577,7 +577,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                             <code key={id} style={{
                               fontFamily: 'var(--cth-font-mono)', fontSize: 12, padding: '0 4px',
                               background: 'var(--cth-sky-light, #d0e8f8)',
-                              boxShadow: 'inset 0 0 0 1px var(--cth-sky-700, #1f5a8a)',
+                              boxShadow: 'inset 0 0 0 1px var(--cth-sky)',
                               color: 'var(--cth-ink-900)'
                             }}>{id}</code>
                           ))}
@@ -589,8 +589,8 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                           {consent.map((id) => (
                             <code key={id} style={{
                               fontFamily: 'var(--cth-font-mono)', fontSize: 12, padding: '0 4px',
-                              background: 'var(--cth-paprika-light, #f6d3c4)',
-                              boxShadow: 'inset 0 0 0 1px var(--cth-paprika-700, #b3502e)',
+                              background: 'var(--cth-peach-light)',
+                              boxShadow: 'inset 0 0 0 1px var(--cth-peach)',
                               color: 'var(--cth-ink-900)'
                             }}>{id}</code>
                           ))}

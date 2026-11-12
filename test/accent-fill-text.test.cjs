@@ -62,7 +62,19 @@ const INK_TEXT = /(^|[^-\w])color\s*:\s*['"`]var\(--cth-ink-(?:900|700|500)\)['"
 /** Chip paints its "on" tone through a variable; read where that variable is set. */
 const CHIP = 'src/renderer/src/components/triggers/ui.tsx';
 
-test('no text sits in the primary ink on a solid accent fill', () => {
+/** The value of `key` in an object body: everything up to the next key at the
+ *  same level, so a ternary split over lines is read whole. */
+function valueOf(own, key) {
+  const m = new RegExp(`(?:^|[\\s,{])${key}\\s*:`).exec(own);
+  if (!m) return null;
+  const rest = own.slice(m.index + m[0].length);
+  const next = /,\s*\n?\s*[A-Za-z]+\s*:/.exec(rest);
+  return next ? rest.slice(0, next.index) : rest;
+}
+const ACCENT_LITERAL = new RegExp(`['"\`]var\\(--cth-${ACCENT}\\)['"\`]|\`var\\(--cth-\\$\\{[^}]+\\}\\)\`|\\bcol\\.accent\\b`);
+const PALE_INK = /var\(--cth-ink-(?:900|700|500)\)/;
+
+test('no text sits in a pale ink on a solid accent fill', () => {
   const files = execFileSync('git', ['ls-files', 'src/renderer/src'], { cwd: ROOT, encoding: 'utf8' })
     .split('\n').filter((f) => /\.tsx?$/.test(f));
   assert.ok(files.length > 100, `only ${files.length} files scanned`);
@@ -74,12 +86,29 @@ test('no text sits in the primary ink on a solid accent fill', () => {
       // A template's `${...}` is not an object and must survive, or the
       // per-agent accent fill would be invisible to the scan.
       const own = o.body.slice(1, -1).replace(/(?<!\$)\{[^{}]*\}/g, '{}');
-      if (SOLID_ACCENT.test(own) && INK_TEXT.test(own)) {
+      const bg = valueOf(own, 'background(?:Color)?');
+      const fg = valueOf(own, 'color');
+      if (!bg || !fg || !ACCENT_LITERAL.test(bg)) continue;
+      // Flag when every colour the text can take is a pale ink: a ternary
+      // that puts the on-accent ink on its accent branch passes.
+      const refs = [...fg.matchAll(/var\(--cth-[\w-]+\)/g)].map((r) => r[0]);
+      if (refs.length && refs.every((r) => PALE_INK.test(r))) {
         hits.push(`${f}:${src.slice(0, o.at).split('\n').length}`);
       }
     }
   }
   assert.deepEqual([...new Set(hits)], []);
+});
+
+test('a stylesheet hover that fills an accent sets the text for it', () => {
+  const css = fs.readFileSync(path.join(ROOT, 'src/renderer/src/design/global.css'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+  const misses = [];
+  for (const m of css.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
+    if (new RegExp(`background(?:-color)?:\\s*var\\(--cth-${ACCENT}\\)`).test(m[2]) &&
+        !/(^|[;\s])color:\s*var\(--cth-on-accent\)/.test(m[2])) misses.push(m[1].trim());
+  }
+  assert.deepEqual(misses, []);
 });
 
 test('an "on" chip in the triggers tab is lettered for its fill', () => {

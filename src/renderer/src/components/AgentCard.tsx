@@ -236,7 +236,9 @@ export function AgentCard({
               title={`${project}${action && status !== 'idle' ? ` — ${action}` : ''}`}
               style={{
                 fontSize: 11, lineHeight: '14px',
-                color: 'var(--cth-ink-500)',
+                // On the orchestrator's tinted surface the quieter inks sit too
+                // close to the tint; only the primary ink clears it.
+                color: isGod ? 'var(--cth-ink-900)' : 'var(--cth-ink-500)',
                 whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'
               }}
             >{infoLine}</div>
@@ -289,7 +291,7 @@ export function AgentCard({
                       display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                       fontSize: 10, lineHeight: 1, cursor: 'pointer',
                       // Quiet until the card is hovered — discoverable, not noisy.
-                      color: hover ? 'var(--cth-ink-500)' : 'var(--cth-ink-300)'
+                      color: isGod ? 'var(--cth-ink-700)' : hover ? 'var(--cth-ink-500)' : 'var(--cth-ink-300)'
                     }}
                   >✎</span>
                 )}

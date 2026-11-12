@@ -329,7 +329,7 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
               background: rosterCollapsed ? 'var(--cth-lemon)' : 'var(--cth-paper-100)',
               boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)',
               border: 'none', borderRadius: 2, cursor: 'pointer',
-              color: rosterCollapsed ? 'var(--cth-ink-900)' : 'var(--cth-ink-900)'
+              color: rosterCollapsed ? 'var(--cth-on-accent)' : 'var(--cth-ink-900)'
             }}
           >
             <Icon name="sidebar" size={1} style={{ width: 16, height: 16 }} />
@@ -787,7 +787,7 @@ function SidebarRow({
             }} title={agent.model ? t('fullscreenTerminal.modelTitle', { model: agent.model }) : t('fullscreenTerminal.cliDefault')}>
               {shortModel(agent.model) ?? t('fullscreenTerminal.cliDefault')}
             </span>
-            <span style={{ flexShrink: 0, opacity: 0.5 }}>·</span>
+            <span style={{ flexShrink: 0 }}>·</span>
             <span style={{
               flex: 1, minWidth: 0,
               whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'

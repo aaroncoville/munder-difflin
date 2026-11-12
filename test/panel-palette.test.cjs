@@ -587,3 +587,24 @@ test('global.css carries no colour from the previous theme', () => {
     'global.css paints a literal colour; use a token');
 });
 
+test('every token the renderer asks for exists', () => {
+  // A var() naming a token nobody defines falls through to its fallback, so
+  // the old light theme's literal colour is what renders, on a dark ground.
+  const { execFileSync } = require('node:child_process');
+  const files = execFileSync('git', ['ls-files', 'src/renderer'], { cwd: ROOT, encoding: 'utf8' })
+    .split('\n').filter((f) => /\.(tsx?|css|html)$/.test(f));
+  const defined = new Set();
+  const used = new Map();
+  for (const f of files) {
+    const src = readRaw(f);
+    for (const m of src.matchAll(/(--cth-[a-z0-9-]+)\s*:/g)) defined.add(m[1]);
+    for (const m of src.matchAll(/setProperty\(\s*['"`](--cth-[a-z0-9-]+)/g)) defined.add(m[1]);
+    for (const m of src.matchAll(/var\((--cth-[a-z0-9]+(?:-[a-z0-9]+)*)[,)]/g)) {
+      if (!used.has(m[1])) used.set(m[1], f);
+    }
+  }
+  // Set per element at run time (positions of a flying book), not colours.
+  const runtime = /^--cth-fly-/;
+  const missing = [...used].filter(([t]) => !defined.has(t) && !runtime.test(t)).map(([t, f]) => `${t} (${f})`);
+  assert.deepEqual(missing, []);
+});

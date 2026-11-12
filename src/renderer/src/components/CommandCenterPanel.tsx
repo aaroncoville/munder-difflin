@@ -1219,7 +1219,8 @@ function TokenLimitEditor({ value, onSet }: { value?: number; onSet: (tokens: nu
           flexShrink: 0, padding: '1px 6px', border: 'none', cursor: 'pointer',
           background: value && value > 0 ? 'var(--cth-lemon)' : 'var(--cth-cream-200)',
           boxShadow: `inset 0 0 0 1px ${value && value > 0 ? 'var(--cth-ink-900)' : 'var(--cth-ink-700)'}`,
-          fontFamily: 'var(--cth-font-ui)', fontSize: 11, color: 'var(--cth-ink-900)'
+          fontFamily: 'var(--cth-font-ui)', fontSize: 11,
+          color: value && value > 0 ? 'var(--cth-on-accent)' : 'var(--cth-ink-900)'
         }}
       >{value && value > 0
         ? <>{t('commandCenter.tokenLimit', { value: fmtTokens(value) })}</>
