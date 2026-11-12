@@ -36,17 +36,20 @@
  * not land. Neither is tampering: a torn tail is dropped and the repair logged when
  * the anchor points at the line before it; a complete line exactly one past the
  * anchor is kept, the first line included. The repair writes a marker (`repair.json`:
- * the line it keeps up to and the bytes it drops) before it drops anything, and
- * removes it only once the `log-repaired` fact is on disk; an open that finds the
- * marker finishes the repair first, so a second fault cannot lose the record. Every
- * write carries on after a short write until all its bytes are down. That also means a single well-formed
+ * the line it keeps up to and the bytes dropped so far) before it drops anything, and
+ * removes it only once the `log-repaired` fact is on disk. An open that finds the
+ * marker finishes the repair first; if its own repair line was torn in the meantime,
+ * those bytes are added to the marker's count, so the one `log-repaired` fact records
+ * every byte the repair dropped, however many attempts it took. Every write carries on
+ * after a short write until all its bytes are down, and an open brings an export copy
+ * that is only behind, or missing, up to date. That also means a single well-formed
  * line added while the app is closed is adopted, which needs write access to the
  * app's data directory, where the anchor could be rewritten as well; a transition
  * line is a record, not evidence on its own.
  */
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
-  appendFileSync, closeSync, constants, existsSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeSync,
+  closeSync, constants, existsSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 
@@ -82,10 +85,16 @@ export class LogTamperError extends Error {
   }
 }
 
-/** `behind`: the export copy is a whole-line prefix of the log (a crash between the two writes). */
+/** `behind`: the export copy is a prefix of the log (a crash between the two writes, or an export write cut short). */
 export type MirrorStatus = 'same' | 'behind' | 'missing' | 'differs';
 
-interface RepairMarker { seq: number; dropped_bytes: number }
+/**
+ * An unfinished torn-tail repair: the line the log is cut back to and its length in
+ * bytes, the log's size and the hash of the bytes past that line when the marker was
+ * written (so a second attempt can tell whether the first one's cut happened), and
+ * the bytes dropped so far.
+ */
+interface RepairMarker { seq: number; keep_bytes: number; size: number; tail: string; dropped_bytes: number }
 interface Anchor { seq: number; hash: string }
 
 const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
@@ -223,7 +232,7 @@ export class CardLog {
     }
     const auth = this.authText();
     if (mirror === auth) return 'same';
-    if (auth.startsWith(mirror) && (mirror === '' || mirror.endsWith('\n'))) return 'behind';
+    if (auth.startsWith(mirror)) return 'behind';
     return 'differs';
   }
 
@@ -267,8 +276,19 @@ export class CardLog {
       }
       // The repair is a transaction: the marker says what is dropped before it is dropped,
       // and goes only once the repair fact is on disk. An open that finds it finishes the job.
-      const marker: RepairMarker = { seq: checked.count, dropped_bytes: Buffer.byteLength(text) - Buffer.byteLength(prefix) };
-      this.writeDurable(this.markerFile, marker);
+      const size = Buffer.byteLength(text);
+      const keep = Buffer.byteLength(prefix);
+      const tail = createHash('sha256').update(text.slice(cut)).digest('hex');
+      const prior = this.readMarker();
+      if (prior && (prior.seq !== checked.count || prior.keep_bytes !== keep)) {
+        throw new LogTamperError(this.card, checked.count, `a repair marker for line ${prior.seq} does not match a torn tail after line ${checked.count}`);
+      }
+      // A repair interrupted before its cut finds the same tail: nothing more was dropped.
+      // One interrupted after it finds a new tail (its own repair line, torn): that is added.
+      if (!prior || prior.size !== size || prior.tail !== tail) {
+        const dropped = (prior?.dropped_bytes ?? 0) + (size - keep);
+        this.writeDurable(this.markerFile, { seq: checked.count, keep_bytes: keep, size, tail, dropped_bytes: dropped } satisfies RepairMarker);
+      }
       const fd = openSync(this.authFile, constants.O_WRONLY);
       try { ftruncateSync(fd, Buffer.byteLength(prefix)); fsyncSync(fd); } finally { closeSync(fd); }
       text = prefix;
@@ -276,6 +296,20 @@ export class CardLog {
     this.check(text, true);
     this.adopt(text);
     this.finishRepair(text);
+    this.catchUpExport();
+  }
+
+  /**
+   * After an open, brings an export copy that is only behind (a line adopted or a
+   * repair made by this open, or an export write that failed) or missing up to date.
+   * One that differs is left for the comparison to report. Best effort: the export
+   * is never read for a decision.
+   */
+  private catchUpExport(): void {
+    try {
+      const st = this.mirrorStatus();
+      if (st === 'behind' || st === 'missing') this.restoreMirror();
+    } catch { /* the next comparison reports it */ }
   }
 
   /** Completes a torn-tail repair the marker shows was under way: the fact appended once, then the marker removed. */
@@ -296,7 +330,10 @@ export class CardLog {
     if (!existsSync(this.markerFile)) return null;
     try {
       const m = JSON.parse(readFileSync(this.markerFile, 'utf8')) as RepairMarker;
-      if (Number.isInteger(m.seq) && m.seq >= 0 && Number.isInteger(m.dropped_bytes) && m.dropped_bytes > 0) return { seq: m.seq, dropped_bytes: m.dropped_bytes };
+      const ints = [m.seq, m.keep_bytes, m.size, m.dropped_bytes].every((x) => Number.isInteger(x) && x >= 0);
+      if (ints && m.dropped_bytes > 0 && m.size > m.keep_bytes && typeof m.tail === 'string' && /^[0-9a-f]{64}$/.test(m.tail)) {
+        return { seq: m.seq, keep_bytes: m.keep_bytes, size: m.size, tail: m.tail, dropped_bytes: m.dropped_bytes };
+      }
     } catch { /* fall through */ }
     throw new LogTamperError(this.card, 0, 'the repair marker is not readable');
   }
@@ -363,7 +400,8 @@ export class CardLog {
   private mirrorAppend(text: string): void {
     try {
       mkdirSync(this.exportDir, { recursive: true });
-      appendFileSync(this.exportFile, text, { mode: 0o644 });
-    } catch { /* reported by mirrorStatus */ }
+      const fd = openSync(this.exportFile, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT, 0o644);
+      try { writeAll(fd, text); } finally { closeSync(fd); }
+    } catch { /* reported by mirrorStatus, put right by the next open or a restore */ }
   }
 }

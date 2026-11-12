@@ -482,12 +482,42 @@ test('a repair marker that does not match the log, or cannot be read, will not o
   log.append({ type: 'fact', n: 1 });
   log.append({ type: 'fact', n: 2 });
   const marker = path.join(r.authRoot, 'WF-FB-VEHICLES', 'repair.json');
-  fs.writeFileSync(marker, JSON.stringify({ seq: 0, dropped_bytes: 5 }));
+  const size = fs.statSync(path.join(r.authRoot, 'WF-FB-VEHICLES', 'log.jsonl')).size;
+  const m = (seq) => JSON.stringify({ seq, keep_bytes: size, size: size + 5, tail: 'a'.repeat(64), dropped_bytes: 5 });
+  fs.writeFileSync(marker, m(0));
   assert.throws(() => open(r), LogTamperError, 'a marker for another line');
   fs.writeFileSync(marker, '{"seq":');
   assert.throws(() => open(r), LogTamperError, 'an unreadable marker');
-  fs.writeFileSync(marker, JSON.stringify({ seq: 2, dropped_bytes: 5 }));
+  fs.writeFileSync(marker, m(2));
   const fixed = open(r);
   assert.deepEqual(fixed.lines().map((l) => l.fact ?? l.n), [1, 2, 'log-repaired'], 'a marker at the log\'s end finishes its repair');
   assert.equal(fs.existsSync(marker), false);
+  assert.equal(fixed.lines()[2].dropped_bytes, 5, 'with the count the marker carried');
+});
+
+test('a repair re-entered after its cut adds the new torn bytes, even when they are as long as the first tail', () => {
+  const r = roots();
+  const log = open(r);
+  log.append({ type: 'fact', n: 1 });
+  const file = path.join(r.authRoot, 'WF-FB-VEHICLES', 'log.jsonl');
+  const size = fs.statSync(file).size;
+  fs.appendFileSync(file, 'NEWTORN');
+  const marker = path.join(r.authRoot, 'WF-FB-VEHICLES', 'repair.json');
+  // The first attempt dropped 7 other bytes (same length, different content), then its own line tore.
+  const tail = require('node:crypto').createHash('sha256').update('OLDTORN').digest('hex');
+  fs.writeFileSync(marker, JSON.stringify({ seq: 1, keep_bytes: size, size: size + 7, tail, dropped_bytes: 7 }));
+  const again = open(r);
+  assert.equal(again.lines().at(-1).dropped_bytes, 14);
+});
+
+test('a repair marker for another line than the torn tail follows will not open', () => {
+  const r = roots();
+  const log = open(r);
+  log.append({ type: 'fact', n: 1 });
+  log.append({ type: 'fact', n: 2 });
+  const file = path.join(r.authRoot, 'WF-FB-VEHICLES', 'log.jsonl');
+  const size = fs.statSync(file).size;
+  fs.appendFileSync(file, 'TORN');
+  fs.writeFileSync(path.join(r.authRoot, 'WF-FB-VEHICLES', 'repair.json'), JSON.stringify({ seq: 1, keep_bytes: size, size: size + 4, tail: 'b'.repeat(64), dropped_bytes: 4 }));
+  assert.throws(() => open(r), LogTamperError);
 });
