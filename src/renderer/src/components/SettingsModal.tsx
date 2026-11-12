@@ -1,4 +1,5 @@
 import { useState, useEffect, type CSSProperties } from 'react';
+import { useUsageView } from '@/usage';
 import { useTranslation } from 'react-i18next';
 import { agentModels, type HarnessConfig } from '@/store/config';
 import { useStore } from '@/store/store';
@@ -195,6 +196,7 @@ const NAV_SECTION_KEYS: Record<Section, string> = {
 };
 
 export function SettingsModal({ config, onClose, initialSection }: SettingsModalProps) {
+  useUsageView('settings');
   const { t, i18n } = useTranslation();
   const godName = useStore((s) => s.agents.find((a) => a.isGod)?.name) ?? 'the orchestrator';
   const [confirming, setConfirming] = useState(false);
@@ -495,6 +497,20 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
     setTelemetryOn(next);
     try { stage({ telemetryEnabled: next }); }
     catch { setTelemetryOn(!next); }
+  };
+
+  // ─── Local usage log (default ON; never sent anywhere; docs/usage-log.md) ──
+  const [usageLogOn, setUsageLogOn] = useState<boolean>(config.usageLog !== false);
+  const [usageLogNote, setUsageLogNote] = useState('');
+  const toggleUsageLog = async () => {
+    const next = !usageLogOn;
+    setUsageLogOn(next);
+    try { stage({ usageLog: next }); }
+    catch { setUsageLogOn(!next); }
+  };
+  const deleteUsageLog = async () => {
+    try { setUsageLogNote(t('settings.general.usageLogDeleted', { count: await window.cth.usageDelete() })); }
+    catch (e) { setUsageLogNote(e instanceof Error ? e.message : String(e)); }
   };
 
   // --- Free Flow (voice dictation → message queue) ---
@@ -1180,6 +1196,32 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                           >
                             {telemetryOn ? t('common.on') : t('common.off')}
                           </PixelButton>
+                        </div>
+                        <div style={{ height: 10 }} />
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                            <span style={{ fontSize: 13, lineHeight: '20px', color: 'var(--cth-ink-900)' }}>
+                              {t('settings.general.usageLog')}
+                            </span>
+                            <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>
+                              {t('settings.general.usageLogDesc')}
+                            </span>
+                            {usageLogNote && (
+                              <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-700)' }}>{usageLogNote}</span>
+                            )}
+                          </div>
+                          <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                            <PixelButton variant="secondary" size="sm" onClick={deleteUsageLog}>
+                              {t('settings.general.usageLogDelete')}
+                            </PixelButton>
+                            <PixelButton
+                              variant={usageLogOn ? 'primary' : 'secondary'}
+                              size="sm"
+                              onClick={toggleUsageLog}
+                            >
+                              {usageLogOn ? t('common.on') : t('common.off')}
+                            </PixelButton>
+                          </div>
                         </div>
                       </div>
 

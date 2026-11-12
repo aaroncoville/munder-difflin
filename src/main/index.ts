@@ -7,7 +7,7 @@ import {
   rmSync, existsSync, readFileSync, readdirSync, statSync, cpSync, writeFileSync,
   unlinkSync, mkdirSync, renameSync, createWriteStream, copyFileSync
 } from 'node:fs';
-import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
+import { randomBytes, createHash, timingSafeEqual, randomUUID } from 'node:crypto';
 import { join, resolve, sep, basename, dirname, isAbsolute, delimiter } from 'node:path';
 import { homedir } from 'node:os';
 import { request as httpsRequest } from 'node:https';
@@ -34,6 +34,7 @@ import { HiveManager, type AgentMeta, type HiveMessage, type HiveTask } from './
 import { runCanaries, memoryCanary } from './canaries';
 import { TurnTracker, diffTasks, type UsageIds } from './usageEvents';
 import { loadUsageSecret, usageRef } from './usageRef';
+import { UsageLog } from './usageLog';
 import { HookServer } from './hooks';
 import { HeavyJobLock, heavyLimit, heavySlotNotice, probeProcesses } from './heavyJob';
 import { suiteJobLimit } from './heavyJobRules';
@@ -138,6 +139,17 @@ process.on('unhandledRejection', (reason) => {
 });
 
 const ptyManager = new PtyManager();
+
+// Local usage log of the owner's side (docs/usage-log.md): never sent anywhere,
+// allowlisted ids/enums/durations only, switchable and deletable in Settings.
+const usageLog = new UsageLog({ root: () => hive.root(), enabled: () => readConfig().usageLog !== false });
+const usageSession = randomUUID();
+ipcMain.on('usage:event', (e, event: unknown) => {
+  if (!event || typeof event !== 'object') return;
+  const win = BrowserWindow.fromWebContents(e.sender);
+  usageLog.record({ ...(event as Record<string, unknown>), session: usageSession, win: win?.id ?? 0, focused: !!win?.isFocused() });
+});
+ipcMain.handle('usage:delete', () => usageLog.deleteAll());
 
 function runCodexDaemonCommand(
   executable: string,
@@ -2494,7 +2506,8 @@ function createWindow(opts: { floor?: boolean } = {}): BrowserWindow {
   allWindows.add(win);
   // Global timer events follow the user — the most-recently-focused window is
   // primary. The primary is also seeded synchronously so boot events route now.
-  win.on('focus', () => { mainWindow = win; });
+  win.on('focus', () => { mainWindow = win; usageLog.record({ kind: 'app-focus', state: 'focus', session: usageSession, win: win.id }); });
+  win.on('blur', () => { usageLog.record({ kind: 'app-focus', state: 'blur', session: usageSession, win: win.id }); });
   if (!isFloor) mainWindow = win;
 
   // Permission gate for the renderer (our own trusted, local content). The only
@@ -5491,6 +5504,9 @@ function bootstrapHiveServices(): void {
   armAlwaysOnBeats();
   startCanaries();
   startTasksWatch();
+  // Keep the usage log to its retention window: now, then daily.
+  try { usageLog.prune(); } catch { /* best effort */ }
+  setInterval(() => { try { usageLog.prune(); } catch { /* best effort */ } }, 24 * 3600_000).unref();
 }
 
 /** Card transitions and ask filed/answered events, from changes to tasks.json

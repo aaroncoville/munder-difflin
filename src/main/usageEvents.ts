@@ -136,17 +136,8 @@ export class TurnTracker {
 
 // ── tasks.json ───────────────────────────────────────────────────────────────
 
-export type AnswerShape = 'done-ack' | 'option' | 'short' | 'sentence' | 'long';
-
-/** The shape of an answer, so the review can tell one-tap answers from real decisions. */
-export function answerShape(answer: string): AnswerShape {
-  const a = answer.trim().toLowerCase().replace(/[.!]+$/, '');
-  if (['done', 'ack', 'ok', 'okay', 'yes', 'no', 'go', 'superseded', 'merged'].includes(a)) return 'done-ack';
-  if (/^[a-z0-9]$/.test(a)) return 'option';
-  if (a.length <= 20) return 'short';
-  if (a.length <= 280) return 'sentence';
-  return 'long';
-}
+export { answerShape, type AnswerShape } from '../shared/answerShape';
+import { answerShape, type AnswerShape } from '../shared/answerShape';
 
 interface Card { id?: unknown; status?: unknown; updatedAt?: unknown; humanQA?: unknown }
 interface Ask { askedAt?: unknown; a?: unknown; answeredAt?: unknown }

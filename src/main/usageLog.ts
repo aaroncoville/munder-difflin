@@ -1,0 +1,136 @@
+/**
+ * The local usage log for the owner's side of the app: which screens are open,
+ * for how long, and how asks are seen and answered (docs/usage-log.md).
+ *
+ * Local only: daily files at <hive>/usage/YYYY-MM-DD.jsonl, folder 0700, files
+ * 0600, kept RETENTION_DAYS. There is no network code here, and these events
+ * are never handed to the outbound analytics module.
+ *
+ * Ids, enums and durations only, enforced by an allowlist: an unknown kind is
+ * refused, an unknown field is dropped, and every string must be a known enum
+ * or id-shaped, so free text (message, question, answer, typed input) cannot be
+ * written even by a buggy caller.
+ */
+import { appendFileSync, chmodSync, closeSync, lstatSync, mkdirSync, openSync, readdirSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+
+export const RETENTION_DAYS = 90;
+const SCHEMA = 1;
+const DAY_FILE = /^(\d{4}-\d{2}-\d{2})\.jsonl$/;
+
+export const VIEWS = [
+  ...['terminal', 'floor', 'tasks', 'human', 'triggers', 'trigger-history', 'memory', 'graph', 'activity', 'skills', 'workers']
+    .map((tab) => `command-center:${tab}`),
+  'agent-detail', 'agent-detail:terminal', 'agent-detail:git', 'agent-detail:messages', 'agent-detail:traces',
+  'settings', 'memory', 'task-detail', 'terminal-fullscreen'
+];
+
+type FieldType = 'view' | 'id' | 'count' | 'bool' | { oneOf: readonly string[] };
+
+const ID = /^[\w.:@-]{1,120}$/;
+const COMMON: Record<string, FieldType> = { session: 'id', win: 'count', focused: 'bool' };
+const EVENTS: Record<string, Record<string, FieldType>> = {
+  'ui-view': { view: 'view', agentId: 'id', cardId: 'id' },
+  'ui-view-end': { view: 'view', dwellMs: 'count' },
+  'ask-shown': { askKey: 'id', ageMs: 'count', surface: { oneOf: ['ask-me', 'card-overlay'] } },
+  'ask-submitted': {
+    askKey: 'id', msSinceShown: 'count', answerLen: 'count',
+    answerShape: { oneOf: ['done-ack', 'option', 'short', 'sentence', 'long'] },
+    surface: { oneOf: ['ask-me', 'card-overlay'] }
+  },
+  'app-focus': { state: { oneOf: ['focus', 'blur', 'hidden', 'shown'] } }
+};
+/** Fields a kind cannot be written without. */
+const REQUIRED: Record<string, string[]> = {
+  'ui-view': ['view'], 'ui-view-end': ['view', 'dwellMs'], 'ask-shown': ['askKey'], 'ask-submitted': ['askKey'], 'app-focus': ['state']
+};
+
+function valid(type: FieldType, v: unknown): boolean {
+  if (type === 'view') return typeof v === 'string' && (VIEWS as readonly string[]).includes(v);
+  if (type === 'id') return typeof v === 'string' && ID.test(v);
+  if (type === 'count') return typeof v === 'number' && Number.isFinite(v) && v >= 0;
+  if (type === 'bool') return typeof v === 'boolean';
+  return typeof v === 'string' && type.oneOf.includes(v);
+}
+
+/** The allowlisted copy of an event, or null when it must not be written. */
+export function sanitize(event: Record<string, unknown>): Record<string, unknown> | null {
+  const kind = typeof event.kind === 'string' ? event.kind : '';
+  const fields = EVENTS[kind];
+  if (!fields) return null;
+  const out: Record<string, unknown> = { kind };
+  for (const [k, type] of Object.entries({ ...COMMON, ...fields })) {
+    if (!(k in event) || event[k] === undefined) continue;
+    if (!valid(type, event[k])) return null;
+    out[k] = event[k];
+  }
+  for (const k of REQUIRED[kind] ?? []) if (!(k in out)) return null;
+  return out;
+}
+
+export interface UsageLogDeps {
+  root: () => string | null;
+  enabled: () => boolean;
+  now?: () => number;
+}
+
+export class UsageLog {
+  constructor(private readonly d: UsageLogDeps) {}
+
+  private now(): number { return (this.d.now ?? Date.now)(); }
+
+  /** The usage folder, created private; null when there is no root or the path is not a real folder. */
+  private dir(create: boolean): string | null {
+    const root = this.d.root();
+    if (!root) return null;
+    const dir = join(root, 'usage');
+    try {
+      const st = lstatSync(dir);
+      if (!st.isDirectory() || st.isSymbolicLink()) return null;
+      return dir;
+    } catch {
+      if (!create) return null;
+      try { mkdirSync(dir, { mode: 0o700 }); chmodSync(dir, 0o700); return dir; } catch { return null; }
+    }
+  }
+
+  /** Append one event if the log is on and the event passes the allowlist. */
+  record(event: Record<string, unknown>): boolean {
+    if (!this.d.enabled()) return false;
+    const clean = sanitize(event);
+    if (!clean) return false;
+    const dir = this.dir(true);
+    if (!dir) return false;
+    const ts = this.now();
+    const file = join(dir, `${new Date(ts).toISOString().slice(0, 10)}.jsonl`);
+    try {
+      try { if (lstatSync(file).isSymbolicLink()) return false; } catch { closeSync(openSync(file, 'a', 0o600)); }
+      appendFileSync(file, JSON.stringify({ ts, v: SCHEMA, ...clean }) + '\n', { mode: 0o600 });
+      return true;
+    } catch { return false; }
+  }
+
+  /** Remove daily files older than RETENTION_DAYS; returns how many were removed. */
+  prune(): number {
+    const dir = this.dir(false);
+    if (!dir) return 0;
+    const cutoff = new Date(this.now() - RETENTION_DAYS * 86_400_000).toISOString().slice(0, 10);
+    let removed = 0;
+    for (const name of readdirSync(dir)) {
+      const m = DAY_FILE.exec(name);
+      if (m && m[1] < cutoff) { try { rmSync(join(dir, name)); removed++; } catch { /* keep going */ } }
+    }
+    return removed;
+  }
+
+  /** Delete every daily usage file (the Settings button); returns how many. */
+  deleteAll(): number {
+    const dir = this.dir(false);
+    if (!dir) return 0;
+    let removed = 0;
+    for (const name of readdirSync(dir)) {
+      if (DAY_FILE.test(name)) { try { rmSync(join(dir, name)); removed++; } catch { /* keep going */ } }
+    }
+    return removed;
+  }
+}

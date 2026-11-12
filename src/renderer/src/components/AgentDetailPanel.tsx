@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useUsageView } from '@/usage';
 import { useTranslation } from 'react-i18next';
 import { PixelPanel } from './PixelPanel';
 import { PixelBadge } from './PixelBadge';
@@ -91,6 +92,8 @@ export function AgentDetailPanel({ agent }: AgentDetailPanelProps) {
   const isFullscreenedHere = fullscreenAgentId === agent.id;
 
   const onPtyStream = usePtyParser(agent.id);
+
+  useUsageView(agent.isGod ? null : `agent-detail:${sidebarTab}`, { agentId: agent.id });
 
   // Michael gets the full command-center dashboard instead of the plain panel.
   if (agent.isGod) return <CommandCenterPanel agent={agent} />;

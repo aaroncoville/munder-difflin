@@ -88,3 +88,32 @@ The roster and `tasks.json` are themselves files agents can write: this rule kee
 **Dollars per turn:** join `turn` spans with `cost-ledger.jsonl` rows for the same agent between `startTs` and `startTs + durationMs` (the `usd` column is cumulative per session, so take positive differences).
 
 **Not logged:** review rounds and verdicts. Today they exist only in message text, so capturing them would mean logging content. They become measurable once verdicts are sent as structured fields.
+
+## The owner's side (`<hive>/usage/YYYY-MM-DD.jsonl`)
+
+These events have their own daily files, so they can be switched off and deleted on their own.
+
+| | |
+|---|---|
+| **Where** | `<hive>/usage/`, folder `0700`, files `0600`. A link in place of the folder or a file is refused, so the log cannot be redirected |
+| **Retention** | Files older than 90 days are removed at start and daily |
+| **Off switch and delete** | Settings → General → *Local usage log*. **Delete usage log** removes every daily file |
+| **Allowlist** | `src/main/usageLog.ts`. Unknown kinds are refused and unknown fields dropped. Every string must be a known enum or id-shaped, so typed text cannot be written even by a buggy caller |
+| **Outbound** | None. `test/usage-log-not-outbound.test.cjs` proves the analytics module drops every one of these kinds |
+
+Every row carries `ts`, `v` (schema version), `session` (one id per app run), `win` (window id) and `focused`.
+
+| kind | Fields | Written when |
+|---|---|---|
+| `ui-view` | `view`, `agentId?`, `cardId?` | A screen or panel opens: `command-center:<tab>`, `agent-detail:<sidebar tab>`, `settings`, `memory`, `task-detail`, `terminal-fullscreen` |
+| `ui-view-end` | `view`, `dwellMs` | It closes or changes. `dwellMs` counts only time the window was visible and focused |
+| `ask-shown` | `askKey`, `surface`, `ageMs?` | An ask row on the Ask Me board has been on screen, with the window focused, for 1 s (once per ask per window). `ageMs` is the time since it was asked |
+| `ask-submitted` | `askKey`, `surface`, `answerLen`, `answerShape`, `msSinceShown?` | An answer is sent from the Ask Me board. The text is never copied |
+| `app-focus` | `state` (`focus` / `blur`) | A window gains or loses focus |
+
+**Reading it:**
+- Time unseen = `ask-shown.ageMs`; time thinking = `ask-submitted.msSinceShown`.
+- An ask filed (`ask-filed` in `log.jsonl`) with no `ask-shown` was never looked at.
+- An ask shown with no answer was seen and left.
+
+**Not logged:** keystrokes, typed text, clipboard, window titles, screenshots, and anything outside the app.
