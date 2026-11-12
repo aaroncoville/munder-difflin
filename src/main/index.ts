@@ -5516,7 +5516,7 @@ function bootstrapHiveServices(): void {
   const usageDaily = (): void => {
     try { usageLog.prune(); } catch { /* best effort */ }
     const root = hive.root();
-    if (root && readConfig().usageLog !== false) { try { writeWeeklyDigest(root, Date.now()); } catch (e) { console.error('[usage digest]', e); } }
+    if (root && readConfig().usageLog !== false) { try { writeWeeklyDigest(root, join(app.getPath('userData'), 'usage'), Date.now()); } catch (e) { console.error('[usage digest]', e); } }
   };
   usageDaily();
   setInterval(usageDaily, 24 * 3600_000).unref();

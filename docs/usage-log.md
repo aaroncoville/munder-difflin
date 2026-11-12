@@ -120,7 +120,7 @@ Every row carries `ts`, `v` (schema version), `session` (one id per app run), `w
 
 **Not logged:** keystrokes, typed text, clipboard, window titles, screenshots, and anything outside the app.
 
-## Weekly digest (`<hive>/usage/digest-YYYY-Www.md`)
+## Weekly digest (`<userData>/usage/digest-YYYY-Www.md`)
 
 At start and once a day, while the usage log is on, the app writes the digest for the last full ISO week (UTC) if it does not exist yet. It is plain markdown built by code, with no model call and no network. It covers:
 - agent turns and dollars by trigger;
@@ -134,4 +134,4 @@ At start and once a day, while the usage log is on, the app writes the digest fo
 
 The logs live in the hive folder, which agents can write, so the digest never prints a string because it looks like an id. It prints only known values (triggers, statuses, answer shapes, views, lock kinds, canary features and failure codes, with anything else shown as `other`), card ids present in the current `tasks.json` (a turn's `cardId` and ask keys), and `ref:<hex>` for a conversation logged as a keyed ref. Dollars by conversation are grouped by those two only. The digest never joins a turn to its `message` row, so it needs neither the message id nor the ref secret.
 
-It reads the ledger and the hive log backwards, only as far as the week needs, so a large history is never loaded whole. The file is `0600` and is never rewritten. **Delete usage log** in Settings removes digests too. The daily research pass reads the newest digest instead of mining the logs.
+It reads the ledger and the hive log backwards, only as far as the week needs, so a large history is never loaded whole. It only reads the hive (`log.jsonl`, `cost-ledger.jsonl`, `tasks.json`); the digest is written beside the owner's usage files in the app's data folder, never into the hive. The file is `0600` and is never rewritten. **Delete usage log** in Settings removes digests too. The daily research pass reads the newest `digest-*.md` from `<userData>/usage/` (on macOS `~/Library/Application Support/<app name>/usage/`) instead of mining the logs; it reads that folder and never writes to it.

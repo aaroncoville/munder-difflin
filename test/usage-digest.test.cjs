@@ -96,21 +96,27 @@ test('the markdown names the week and carries no text beyond ids and numbers', (
   assert.match(md, /memory-search/);
 });
 
-test('the weekly file is written once for the last full week, private, and not rewritten', (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'md-digest-'));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+test('the weekly file is written once, in the app data folder, private, and not rewritten; the hive is only read', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'md-digest-hive-'));
+  const appData = fs.mkdtempSync(path.join(os.tmpdir(), 'md-digest-appdata-'));
+  t.after(() => { fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(appData, { recursive: true, force: true }); });
   const { log, ledger, usage } = week();
   fs.writeFileSync(path.join(root, 'log.jsonl'), log.join('\n') + '\n');
   fs.writeFileSync(path.join(root, 'cost-ledger.jsonl'), ledger.join('\n') + '\n');
   fs.writeFileSync(path.join(root, 'tasks.json'), JSON.stringify({ tasks: [{ id: 'CARD-1' }, { id: 'CARD-2' }] }));
-  fs.mkdirSync(path.join(root, 'usage'), { mode: 0o700 });
-  fs.writeFileSync(path.join(root, 'usage', '2026-11-02.jsonl'), usage.join('\n') + '\n');
+  const usageDir = path.join(appData, 'usage');
+  fs.mkdirSync(usageDir, { mode: 0o700 });
+  fs.writeFileSync(path.join(usageDir, '2026-11-02.jsonl'), usage.join('\n') + '\n');
+  const before = fs.readdirSync(root).sort();
   const now = MON + 7 * 86400_000 + 2 * H; // Monday of the next week
-  assert.equal(D.writeWeeklyDigest(root, now), path.join(root, 'usage', 'digest-2026-W45.md'));
-  const file = path.join(root, 'usage', 'digest-2026-W45.md');
-  assert.match(fs.readFileSync(file, 'utf8'), /Usage digest 2026-W45/);
+  const file = path.join(usageDir, 'digest-2026-W45.md');
+  assert.equal(D.writeWeeklyDigest(root, usageDir, now), file);
+  const md = fs.readFileSync(file, 'utf8');
+  assert.match(md, /Usage digest 2026-W45/);
+  assert.match(md, /command-center:human/, 'the owner-side rows were read from the app data folder');
   if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o777, 0o600);
-  assert.equal(D.writeWeeklyDigest(root, now + H), null, 'an existing digest is left alone');
+  assert.equal(D.writeWeeklyDigest(root, usageDir, now + H), null, 'an existing digest is left alone');
+  assert.deepEqual(fs.readdirSync(root).sort(), before, 'nothing written under the hive');
 });
 
 test('prose written into any string field of the logs never reaches the digest', () => {

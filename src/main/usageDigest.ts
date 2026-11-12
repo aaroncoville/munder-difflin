@@ -5,7 +5,7 @@
  * durations only, like the logs it summarizes. The daily research pass reads it
  * instead of mining the logs by hand.
  */
-import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CARD_STATUSES } from './usageEvents';
 import { VIEWS } from './usageLog';
@@ -232,11 +232,15 @@ function cardIds(path: string): Set<string> {
   } catch { return new Set(); }
 }
 
-/** Write last week's digest if it is not there yet; returns its path, or null when nothing was written. */
-export function writeWeeklyDigest(root: string, now: number): string | null {
+/**
+ * Write last week's digest if it is not there yet; returns its path, or null
+ * when nothing was written. The hive (`root`) is only read: its log, ledger and
+ * tasks.json. The owner's usage files are read from, and the digest written to,
+ * `dir`, the usage folder in the app's own data folder.
+ */
+export function writeWeeklyDigest(root: string, dir: string, now: number): string | null {
   const week = isoWeek(now - 7 * DAY);
-  const dir = join(root, 'usage');
-  try { if (lstatSync(dir).isSymbolicLink()) return null; } catch { mkdirSync(dir, { mode: 0o700 }); }
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
   const file = join(dir, `digest-${week.label}.md`);
   if (existsSync(file)) return null;
   const usage: string[] = [];
