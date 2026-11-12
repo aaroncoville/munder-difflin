@@ -35,6 +35,7 @@ import { runCanaries, memoryCanary } from './canaries';
 import { TurnTracker, diffTasks, type UsageIds } from './usageEvents';
 import { loadUsageSecret, usageRef } from './usageRef';
 import { UsageLog, recordFromRenderer } from './usageLog';
+import { writeWeeklyDigest } from './usageDigest';
 import { HookServer } from './hooks';
 import { HeavyJobLock, heavyLimit, heavySlotNotice, probeProcesses } from './heavyJob';
 import { suiteJobLimit } from './heavyJobRules';
@@ -5511,8 +5512,14 @@ function bootstrapHiveServices(): void {
   startCanaries();
   startTasksWatch();
   // Keep the usage log to its retention window: now, then daily.
-  try { usageLog.prune(); } catch { /* best effort */ }
-  setInterval(() => { try { usageLog.prune(); } catch { /* best effort */ } }, 24 * 3600_000).unref();
+  // Write last week's digest once it is due (no-op when it exists or the log is off).
+  const usageDaily = (): void => {
+    try { usageLog.prune(); } catch { /* best effort */ }
+    const root = hive.root();
+    if (root && readConfig().usageLog !== false) { try { writeWeeklyDigest(root, Date.now()); } catch (e) { console.error('[usage digest]', e); } }
+  };
+  usageDaily();
+  setInterval(usageDaily, 24 * 3600_000).unref();
 }
 
 /** Card transitions and ask filed/answered events, from changes to tasks.json

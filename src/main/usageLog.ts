@@ -21,6 +21,7 @@ import { join } from 'node:path';
 export const RETENTION_DAYS = 90;
 const SCHEMA = 1;
 const DAY_FILE = /^(\d{4}-\d{2}-\d{2})\.jsonl$/;
+const DIGEST_FILE = /^digest-\d{4}-W\d{2}\.md$/;
 
 export const VIEWS = [
   ...['terminal', 'floor', 'tasks', 'human', 'triggers', 'trigger-history', 'memory', 'graph', 'activity', 'skills', 'workers']
@@ -153,13 +154,13 @@ export class UsageLog {
     return removed;
   }
 
-  /** Delete every daily usage file (the Settings button); returns how many. */
+  /** Delete every daily usage file and weekly digest (the Settings button); returns how many. */
   deleteAll(): number {
     const dir = this.dir(false);
     if (!dir) return 0;
     let removed = 0;
     for (const name of readdirSync(dir)) {
-      if (DAY_FILE.test(name)) { try { rmSync(join(dir, name)); removed++; } catch { /* keep going */ } }
+      if (DAY_FILE.test(name) || DIGEST_FILE.test(name)) { try { rmSync(join(dir, name)); removed++; } catch { /* keep going */ } }
     }
     return removed;
   }

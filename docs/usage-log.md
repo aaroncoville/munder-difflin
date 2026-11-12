@@ -119,3 +119,17 @@ Every row carries `ts`, `v` (schema version), `session` (one id per app run), `w
 - An ask shown with no answer was seen and left.
 
 **Not logged:** keystrokes, typed text, clipboard, window titles, screenshots, and anything outside the app.
+
+## Weekly digest (`<hive>/usage/digest-YYYY-Www.md`)
+
+At start and once a day, while the usage log is on, the app writes the digest for the last full ISO week (UTC) if it does not exist yet. It is plain markdown built by code, with no model call and no network. It covers:
+- agent turns and dollars by trigger;
+- dollars by conversation (turn spans joined with the ledger);
+- asks filed and answered, with answer shapes and the medians and p90s of time unseen and time thinking;
+- asks filed but never seen on the Ask Me board;
+- screens by attended time;
+- hours cards spent in each state;
+- heavy-lock waits;
+- canary failures.
+
+It reads the ledger and the hive log backwards, only as far as the week needs, so a large history is never loaded whole. The file is `0600` and is never rewritten. **Delete usage log** in Settings removes digests too. The daily research pass reads the newest digest instead of mining the logs.

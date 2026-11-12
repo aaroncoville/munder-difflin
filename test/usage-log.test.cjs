@@ -87,7 +87,8 @@ test('delete removes every usage file and reports how many', (t) => {
   const { log, dir } = setup(t);
   log.record({ kind: 'ui-view', view: 'settings' });
   fs.writeFileSync(path.join(dir, '2026-11-01.jsonl'), '{}\n');
-  assert.equal(log.deleteAll(), 2);
+  fs.writeFileSync(path.join(dir, 'digest-2026-W44.md'), '# digest\n');
+  assert.equal(log.deleteAll(), 3);
   assert.deepEqual(fs.readdirSync(dir), []);
 });
 
