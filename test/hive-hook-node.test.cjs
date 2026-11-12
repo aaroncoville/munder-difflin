@@ -81,6 +81,15 @@ function hookCommandsUnder(home) {
   return found.filter((c) => shim.test(c));
 }
 
+/** A private hook runtime folder outside `home`, as the app gives one in its own data folder. */
+function runtimeFor(t, hive, dir) {
+  const rt = dir ?? fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'md-hook-rt-')));
+  t.after(() => fs.rmSync(rt, { recursive: true, force: true }));
+  hive.setHookRuntime(rt);
+  assert.equal(hive.hookRuntimeStatus().ok, true, JSON.stringify(hive.hookRuntimeStatus()));
+  return { launcher: path.join(rt, POSIX ? 'hive-node' : 'hive-node.cmd'), shim: path.join(rt, 'cth-hook.cjs') };
+}
+
 const usesLauncher = (cmd, launcher) => cmd.startsWith(launcher) || cmd.startsWith(`"${launcher}"`);
 
 async function run(cmd, env) {
@@ -123,9 +132,9 @@ test('the claude hook + statusLine commands run through the launcher', async (t)
   const home = tmpHome();
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
   const hive = new HiveManager(() => home);
+  const { launcher } = runtimeFor(t, hive);
   await hive.ensureAgent({ id: 'a1', name: 'A', provider: 'claude', cwd: home });
 
-  const launcher = launcherIn(home);
   const settings = JSON.parse(fs.readFileSync(path.join(home, 'hive/agents/a1/settings.json'), 'utf8'));
   const commands = [
     ...Object.values(settings.hooks).flatMap((matchers) => matchers.flatMap((m) => m.hooks.map((h) => h.command))),
@@ -180,6 +189,9 @@ test('Codex hook commands survive a hive path containing spaces', { skip: !POSIX
   const harness = `${isolated.harness} space`;
   const hive = new HiveManager(() => harness);
   hive.ensureHive();
+  // The hook runtime folder now carries the space: the command names only it.
+  const rtDir = `${isolated.harness}-rt space`;
+  const { launcher, shim } = runtimeFor(t, hive, rtDir);
   const agentDir = path.join(harness, 'hive', 'agents', 'a1');
   const codexHome = hive.installCodexHooks(agentDir, 'a1');
   const config = fs.readFileSync(path.join(codexHome, 'config.toml'), 'utf8');
@@ -189,8 +201,6 @@ test('Codex hook commands survive a hive path containing spaces', { skip: !POSIX
   });
 
   assert.equal(commands.length, 8, 'every Codex lifecycle hook must be generated');
-  const launcher = launcherIn(harness);
-  const shim = path.join(harness, 'hive', 'bin', 'cth-hook.cjs');
   const sock = path.join(harness, 'hive', 'hooks.sock');
   const env = { PATH: STRIPPED_PATH, HIVE_SOCK: sock, AGENT_ID: 'a1', HOME: home };
 
@@ -420,6 +430,7 @@ test('a hook fires with NO node on PATH, and its payload reaches HIVE_SOCK', { s
   const home = tmpHome();
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
   const hive = new HiveManager(() => home);
+  runtimeFor(t, hive);
   await hive.ensureAgent({ id: 'a1', name: 'A', provider: 'claude', cwd: home });
 
   const sock = path.join(home, 'hive', 'hooks.sock');

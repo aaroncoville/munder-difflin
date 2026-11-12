@@ -25,6 +25,7 @@ import {
 } from 'node:fs';
 import { join, dirname, basename, isAbsolute, relative } from 'node:path';
 import { homedir } from 'node:os';
+import { HookRuntimeUnavailable, hookCommandFor, overlaps, rootOverlap, stageHookRuntime, verifyHookRuntime, type StagedHookRuntime } from './hookRuntime';
 import { spawnSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
 import type { AgentUsageSample } from './usage';
@@ -516,35 +517,91 @@ export class HiveManager {
     return root ? join(root, 'bin', 'cth-hook.cjs') : null;
   }
 
-  /** Where Claude and Codex hook commands load from: the shim shipped in the app's
-   *  resources and a node launcher in a folder of the app's own data. Hooks run
-   *  outside the agent's sandbox, so they must not come from the hive folder, which
-   *  every agent can write. Null (no app paths given, or the shipped shim missing)
-   *  keeps the hive/bin copies. */
-  private hookRuntime: { shim: string; launcher: string } | null = null;
-  setHookRuntime(shim: string | null, launcherDir: string | null): void {
+  /** Where Claude and Codex hook commands load from: a private folder of the app's own
+   *  (see hookRuntime.ts), holding the hook shim and the node launcher, written from the
+   *  text this app holds. Hooks run outside the agent's sandbox, so they never load from
+   *  the hive folder, which every agent can write. With no folder set (a HiveManager used
+   *  as a library) no hook command is written at all; with one set, a Claude or Codex
+   *  spawn fails visibly whenever the folder cannot be staged, verified, or kept out of
+   *  the agent's reach. */
+  private hookRuntimeDir: string | null = null;
+  private hookRuntime: StagedHookRuntime | null = null;
+  private hookRuntimeState: { configured: boolean; ok: boolean; reason?: string } = { configured: false, ok: false };
+  setHookRuntime(dir: string | null): void {
+    this.hookRuntimeDir = dir;
     this.hookRuntime = null;
-    if (!shim || !launcherDir || !isAbsolute(shim) || !isAbsolute(launcherDir)) return;
-    const root = this.root();
-    const under = (p: string): boolean => !!root && (p === root || !relative(root, p).startsWith('..') && !isAbsolute(relative(root, p)));
-    if (under(shim) || under(launcherDir)) { console.warn('[hive] hook runtime refused: it is inside the hive folder'); return; }
-    if (!existsSync(shim)) { console.warn(`[hive] hook shim missing at ${shim}; hooks load from the hive folder`); return; }
-    const launcher = join(launcherDir, process.platform === 'win32' ? 'hive-node.cmd' : 'hive-node');
+    this.hookRuntimeState = { configured: !!dir, ok: false };
+    if (!dir) return;
+    try { this.runtimeFor([]); } catch { /* recorded; every spawn retries and fails visibly */ }
+  }
+  /** Whether hooks load from the app's runtime folder, and why not if not. Absent reads as no. */
+  hookRuntimeStatus(): { configured: boolean; ok: boolean; reason?: string } {
+    return { ...this.hookRuntimeState };
+  }
+  /** The staged, verified runtime for a spawn whose agent may write `roots` (null = a root that
+   *  could not be read), or null when no folder is configured. Throws HookRuntimeUnavailable. */
+  private runtimeFor(roots: Array<string | null>): StagedHookRuntime | null {
+    const dir = this.hookRuntimeDir;
+    if (!dir) return null;
     try {
-      mkdirSync(launcherDir, { recursive: true, mode: 0o700 });
-      writeFileSync(launcher, this.nodeLauncherContent(), 'utf8');
-      if (process.platform !== 'win32') chmodSync(launcher, 0o755);
-    } catch (e) { console.error('[hive] hook launcher not written:', e); return; }
-    this.hookRuntime = { shim, launcher };
+      const root = this.root();
+      if (!this.hookRuntime) {
+        this.hookRuntime = stageHookRuntime({
+          dir, hiveRoot: root, platform: process.platform,
+          launcher: { name: process.platform === 'win32' ? 'hive-node.cmd' : 'hive-node', content: this.nodeLauncherContent(), mode: 0o700 },
+          shim: { name: 'cth-hook.cjs', content: HOOK_SHIM, mode: 0o600 },
+        });
+      } else verifyHookRuntime(this.hookRuntime);
+      if (!root || overlaps(dir, root)) throw new HookRuntimeUnavailable('its folder overlaps the hive folder, or the hive folder is not known');
+      const why = rootOverlap(this.hookRuntime, roots);
+      if (why) throw new HookRuntimeUnavailable(why);
+      if (!this.hookRuntimeState.ok) this.noteRuntime(true);
+      return this.hookRuntime;
+    } catch (e) {
+      const err = e instanceof HookRuntimeUnavailable ? e : new HookRuntimeUnavailable(String((e as Error)?.message ?? e));
+      // A changed file is not re-trusted: the next spawn stages it afresh from the app's own text.
+      this.hookRuntime = null;
+      this.noteRuntime(false, err.message);
+      throw err;
+    }
+  }
+  private noteRuntime(ok: boolean, reason?: string): void {
+    this.hookRuntimeState = { configured: true, ok, ...(reason ? { reason } : {}) };
+    try { this.appendLog({ kind: 'hook-runtime', ok, ...(reason ? { reason } : {}) }); } catch { /* the state above still says it */ }
+  }
+  /** Write roots a Claude session also merges from the user's and the project's settings; null for a file that cannot be read. */
+  private claudeSettingsRoots(cwd: string): Array<string | null> {
+    const files = [join(homedir(), '.claude', 'settings.json'), ...(cwd ? [join(cwd, '.claude', 'settings.json'), join(cwd, '.claude', 'settings.local.json')] : [])];
+    const out: Array<string | null> = [];
+    for (const f of files) {
+      if (!existsSync(f)) continue;
+      try {
+        const v = JSON.parse(readFileSync(f, 'utf8')) as { sandbox?: { filesystem?: { allowWrite?: unknown } }; permissions?: { additionalDirectories?: unknown } } | null;
+        const list = [...(Array.isArray(v?.sandbox?.filesystem?.allowWrite) ? v!.sandbox!.filesystem!.allowWrite as unknown[] : []),
+          ...(Array.isArray(v?.permissions?.additionalDirectories) ? v!.permissions!.additionalDirectories as unknown[] : [])];
+        for (const x of list) out.push(typeof x === 'string' ? (isAbsolute(x) ? x : join(cwd, x)) : null);
+      } catch { out.push(null); }
+    }
+    return out;
+  }
+  /** writable_roots the user's own Codex config adds (the generated config keeps them); null when they cannot be read. */
+  private codexUserRoots(): Array<string | null> {
+    const f = join(homedir(), '.codex', 'config.toml');
+    if (!existsSync(f)) return [];
+    let text: string;
+    try { text = readFileSync(f, 'utf8'); } catch { return [null]; }
+    if (/^\s*"?sandbox_workspace_write"?\s*[.=]/m.test(text)) return [null];
+    const m = /^\s*writable_roots\s*=\s*(\[[^\]]*\])/m.exec(text);
+    if (!m) return [];
+    try {
+      const v = JSON.parse(m[1].replace(/,\s*\]/, ']')) as unknown;
+      return Array.isArray(v) ? v.map((x) => (typeof x === 'string' ? x : null)) : [null];
+    } catch { return [null]; }
   }
 
-  /** The command a Claude or Codex hook runs: quoted for POSIX JSON/TOML, unquoted where quotes do not survive. */
+  /** The hook command from a verified runtime: quoted for POSIX JSON/TOML, bare where quotes do not survive. */
   private hookCommand(quoted: boolean): string | null {
-    const rt = this.hookRuntime;
-    if (rt) return quoted ? `"${rt.launcher}" "${rt.shim}"` : `${rt.launcher} ${rt.shim}`;
-    const shim = this.shimPath();
-    if (!shim) return null;
-    return quoted ? this.nodeRun(shim) : this.nodeRunUnquoted(shim);
+    return this.hookRuntime ? hookCommandFor(this.hookRuntime, quoted) : null;
   }
   /** The proxy-bridge sidecar (qwen): resources/hive-proxy.cjs, shipped with the
    *  app. Set by the main process to the app's own resource path. Never a path
@@ -1000,6 +1057,11 @@ export class HiveManager {
       const sock = this.sockPath();
       if (desc && sock) {
         env.HIVE_SOCK = sock;
+        // Outside the try below, which logs and carries on: a hook runtime that cannot be staged,
+        // verified or kept out of this agent's reach fails the spawn.
+        if (desc.kind === 'hooks' && desc.shim === 'codex') {
+          this.runtimeFor([meta.cwd, ...this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs), ...this.codexUserRoots()]);
+        }
         try {
           if (desc.kind === 'hooks') {
             if (desc.shim === 'agy') this.installAgyHooks();
@@ -1138,11 +1200,12 @@ export class HiveManager {
     // Phase 1 — autonomy: attach lifecycle hooks via --settings (no edits to the
     // user's repo) so the agent reports activity and drains its inbox on Stop.
     const sock = this.sockPath();
-    const hookCmd = this.hookCommand(true);
-    if (sock && hookCmd) {
+    if (sock) {
+      const writable = this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs);
+      const rt = this.runtimeFor([meta.cwd, ...writable, ...this.claudeSettingsRoots(meta.cwd)]);
       env.HIVE_SOCK = sock;
       const settingsPath = join(dir, 'settings.json');
-      this.writeJson(settingsPath, this.hookSettings(hookCmd, meta.cwd, opts.mcpDefaults, opts.theme, this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs)));
+      this.writeJson(settingsPath, this.hookSettings(rt ? hookCommandFor(rt, true) : null, meta.cwd, opts.mcpDefaults, opts.theme, writable));
       args.push('--settings', settingsPath);
     }
     return { args, env };
@@ -1403,7 +1466,7 @@ export class HiveManager {
     return Array.from(new Set(out));
   }
 
-  private hookSettings(cmd: string, cwd: string, cfg: McpDefaultsMap, theme?: 'light' | 'dark', writableDirs: string[] = []): unknown {
+  private hookSettings(cmd: string | null, cwd: string, cfg: McpDefaultsMap, theme?: 'light' | 'dark', writableDirs: string[] = []): unknown {
     // `cmd` runs the shim under the bundled node, NOT bare `node` — see
     // nodeLauncherPath(). Claude runs each of these through `sh -c` with a
     // stripped PATH, where `node` is often absent.
@@ -1435,7 +1498,7 @@ export class HiveManager {
       // the only clean programmatic source for the session's REAL context
       // window. The shim prints a compact in-terminal gauge and forwards the
       // payload to the harness (agent-card context gauge, exact limit).
-      statusLine: { type: 'command', command: `${cmd} --status`, padding: 0 },
+      ...(cmd ? { statusLine: { type: 'command', command: `${cmd} --status`, padding: 0 } } : {}),
       // Native OS sandbox for Bash subprocesses (macOS Seatbelt / Linux bubblewrap).
       // Auto mode spawns with `--permission-mode bypassPermissions`, which only
       // silences PROMPTS; the sandbox is a separate, opt-in layer that was never
@@ -1452,20 +1515,22 @@ export class HiveManager {
             permissions: { additionalDirectories: writableDirs }
           }
         : {}),
-      hooks: {
-        Stop: [entry()],
-        SubagentStop: [entry()],
-        PreToolUse: [entry('*')],
-        PostToolUse: [entry('*')],
-        PostToolUseFailure: [entry('*')],
-        UserPromptSubmit: [entry()],
-        Notification: [entry()],
-        SessionStart: [entry()],
-        // #5C: surface mid-`/compact` so an agent boxing up its context reads as
-        // 'compacting' on the floor instead of looking frozen.
-        PreCompact: [entry()],
-        PostCompact: [entry()]
-      }
+      ...(cmd ? {
+        hooks: {
+          Stop: [entry()],
+          SubagentStop: [entry()],
+          PreToolUse: [entry('*')],
+          PostToolUse: [entry('*')],
+          PostToolUseFailure: [entry('*')],
+          UserPromptSubmit: [entry()],
+          Notification: [entry()],
+          SessionStart: [entry()],
+          // #5C: surface mid-`/compact` so an agent boxing up its context reads as
+          // 'compacting' on the floor instead of looking frozen.
+          PreCompact: [entry()],
+          PostCompact: [entry()]
+        }
+      } : {})
     };
   }
 

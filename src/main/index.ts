@@ -79,6 +79,7 @@ import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, IN
 import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
 import { RefusedRosterId, RegistryUnreadable, shortTarget } from './messageTarget';
+import { HookRuntimeUnavailable } from './hookRuntime';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WakeSkipLog, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
 import { inboxDeliveredAt, inboxLine, openTurnClaimAt, splitInbox } from './inboxClaims';
@@ -273,13 +274,14 @@ const hive = new HiveManager(
 hive.setProxyBridgeScript(bundledResourcePath('hive-proxy.cjs', {
   isPackaged: app.isPackaged, resourcesPath: process.resourcesPath, appPath: app.getAppPath()
 }));
-// Claude and Codex hooks run outside the agent's sandbox, so their command loads the
-// shim from the app's resources and the node launcher from the app's data folder,
-// never from the hive folder, which every agent can write.
-hive.setHookRuntime(
-  bundledResourcePath('cth-hook.cjs', { isPackaged: app.isPackaged, resourcesPath: process.resourcesPath, appPath: app.getAppPath() }),
-  join(app.getPath('userData'), 'hook-runtime')
-);
+// Claude and Codex hooks run outside the agent's sandbox, so their command runs a shim and a
+// node launcher the app stages into a private folder of its own (hookRuntime.ts), never from
+// the hive folder or a source checkout an agent may write. On Windows the Codex command cannot
+// carry quotes, so the folder must have no space: Local AppData usually has none, where the
+// roaming app-data folder of this app does.
+hive.setHookRuntime(process.platform === 'win32'
+  ? join(process.env.LOCALAPPDATA || app.getPath('userData'), 'munder-difflin-hooks')
+  : join(app.getPath('userData'), 'hook-runtime'));
 // #7C — operator control state (pause/gate/steer/halt), read by the HookServer
 // when deciding hook returns.
 const control = new ControlRegistry();
@@ -2785,7 +2787,7 @@ function spawnFailReason(error?: string): SpawnFailReason {
 /** A refused id must not start as a process with no prompt, environment, hooks or
  *  roster entry. Its worktree goes too, since no process will ever tear it down. One
  *  that cannot be removed is logged and stays tracked, because it is still on disk. */
-async function refuseSpawn(ptyId: string, agentId: string, provider: string, refusal: RefusedRosterId | RegistryUnreadable): Promise<{ ok: false; error: string }> {
+async function refuseSpawn(ptyId: string, agentId: string, provider: string, refusal: RefusedRosterId | RegistryUnreadable | HookRuntimeUnavailable): Promise<{ ok: false; error: string }> {
   hive.appendLog({ kind: 'spawn-refused', agentId: shortTarget(agentId), reason: refusal.message });
   analytics.track('agent_spawn_failed', { provider, reason: 'spawn_error' });
   const wtPath = worktreePaths.get(ptyId);
@@ -3002,7 +3004,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       // enterprise knowledge store (both no-ops / empty when their flags are off).
       opts.env = { ...(opts.env ?? {}), ...inj.env, ...memory.env(), ...knowledge.env() };
     } catch (e) {
-      if (e instanceof RefusedRosterId || e instanceof RegistryUnreadable) return refuseSpawn(opts.id, opts.hive.id, provider, e);
+      if (e instanceof RefusedRosterId || e instanceof RegistryUnreadable || e instanceof HookRuntimeUnavailable) return refuseSpawn(opts.id, opts.hive.id, provider, e);
       // Hive provisioning is best-effort; never block a spawn on it.
       console.error('[hive] ensureAgent failed:', e);
     }
