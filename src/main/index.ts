@@ -37,6 +37,8 @@ import { TurnTracker, diffTasks, type UsageIds } from './usageEvents';
 import { loadUsageSecret, usageRef } from './usageRef';
 import { UsageLog, recordFromRenderer } from './usageLog';
 import { WriteRootsDryRun } from './writeRoots';
+import { relocationEnv } from './launchLine';
+import { buildPtyEnv } from './ptyEnv';
 import { writeWeeklyDigest } from './usageDigest';
 import { HookServer } from './hooks';
 import { HeavyJobLock, heavyLimit, heavySlotNotice, probeProcesses } from './heavyJob';
@@ -398,7 +400,7 @@ hookServer.setHeavyLock(heavyLock);
 // roots would refuse are recorded in the usage log as path classes (see writeRoots.ts).
 // What the app itself spawned each agent with, kept in memory: registry.json is in the hive,
 // which agents can write, so a cwd or role read from it could be planted.
-const spawnRoots = new Map<string, { cwd: string; provider: string; isGod: boolean; args: string[] }>();
+const spawnRoots = new Map<string, { cwd: string; provider: string; isGod: boolean; args: string[]; env?: Record<string, string> }>();
 const writeRootsDryRun = new WriteRootsDryRun({
   agent: (agentId) => {
     const root = hive.root();
@@ -408,7 +410,7 @@ const writeRootsDryRun = new WriteRootsDryRun({
       ctx: { root, agentId, isGod: spawned.isGod, cwd: spawned.cwd },
       provider: spawned.provider,
       agentDir: join(root, 'agents', agentId),
-      launch: { args: spawned.args, platform: process.platform }
+      launch: { args: spawned.args, platform: process.platform, env: spawned.env }
     };
   },
   known: (agentId) => spawnRoots.has(agentId),
@@ -3269,7 +3271,8 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     await enableCodexRemoteForSpawn(opts, opts.hive.id);
   }
   // The launch line as it is really spawned, after any remote rewrite.
-  if (opts.hive?.id) { const sr = spawnRoots.get(opts.hive.id); if (sr) sr.args = [opts.command, ...(opts.args ?? [])]; }
+  // The environment too, built exactly as the PTY will build it, keeping only the variables that move config.
+  if (opts.hive?.id) { const sr = spawnRoots.get(opts.hive.id); if (sr) { sr.args = [opts.command, ...(opts.args ?? [])]; sr.env = relocationEnv(buildPtyEnv(process.env, '', opts.env)); } }
   const res = ptyManager.spawn(opts, owner);
   if (res.ok) analytics.track('agent_spawned', { provider });
   else analytics.track('agent_spawn_failed', { provider, reason: spawnFailReason(res.error) });
