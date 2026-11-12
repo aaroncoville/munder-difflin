@@ -85,11 +85,26 @@ test('a deleted mirror is reported missing, not as tampering with the log itself
   assert.equal(log.mirrorStatus(), 'missing');
 });
 
-test('an authoritative log with an edited, removed or torn line will not open', () => {
+test('an authoritative log with any line edited or removed, newest included, or rewritten whole, will not open', () => {
+  const lines = (t) => t.slice(0, -1).split('\n');
   const cases = {
-    edited: (t) => t.replace('"to":"review"', '"to":"merged"'),
-    removed: (t) => t.split('\n').filter((_, i) => i !== 1).join('\n'),
-    torn: (t) => t.slice(0, -5),
+    'middle edited': (t) => t.replace('"to":"mergeable"', '"to":"abandoned"'),
+    'middle removed': (t) => t.split('\n').filter((_, i) => i !== 1).join('\n'),
+    'newest edited': (t) => t.replace('"to":"merged"', '"to":"live"  '),
+    'newest removed': (t) => `${lines(t).slice(0, 2).join('\n')}\n`,
+    'all but the first removed': (t) => `${lines(t)[0]}\n`,
+    'emptied': () => '',
+    // Rewritten from the first line by someone who knows the chain's algorithm.
+    'rewritten whole': (t) => {
+      let prev = core.GENESIS;
+      return lines(t).map((l) => {
+        const e = { ...JSON.parse(l), prev, note: 'rewritten' };
+        const text = JSON.stringify(e);
+        prev = core.hashLine(text);
+        return text;
+      }).join('\n') + '\n';
+    },
+    'another card\'s line': (t) => t.replace(/"card":"WF-FB-VEHICLES"/, '"card":"OTHER"'),
   };
   for (const [what, damage] of Object.entries(cases)) {
     const r = roots();
@@ -115,4 +130,132 @@ test('each card has its own log and its own chain', () => {
   const b = open(r, 'B-2');
   assert.equal(b.append({ type: 'fact' }).seq, 1);
   assert.equal(b.lines().length, 1);
+});
+
+// --- The head anchor, crashes, and the mirror as untrusted output (review of #83) ---
+
+const anchorFile = (r, card = 'WF-FB-VEHICLES') => path.join(r.authRoot, card, 'head.json');
+
+test('a log whose head anchor is missing will not open: the anchor is what proves nothing was cut off', () => {
+  const r = roots();
+  open(r).append({ type: 'fact' });
+  fs.rmSync(anchorFile(r));
+  assert.throws(() => open(r), LogTamperError);
+});
+
+test('a torn last line after a crash is repaired, not taken for tampering, and the repair is logged', () => {
+  const r = roots();
+  const log = open(r);
+  log.append({ type: 'fact', n: 1 });
+  const file = path.join(r.authRoot, 'WF-FB-VEHICLES', 'log.jsonl');
+  fs.appendFileSync(file, '{"type":"fact","v":1,"se');
+  const again = open(r);
+  const ls = again.lines();
+  assert.deepEqual(ls.map((l) => l.n ?? l.fact), [1, 'log-repaired']);
+  assert.equal(ls[1].dropped_bytes, '{"type":"fact","v":1,"se'.length);
+  assert.equal(core.verifyLogText(authText(r)).ok, true);
+});
+
+test('a torn last line is not repaired when the anchor does not point at the line before it', () => {
+  const r = roots();
+  const log = open(r);
+  log.append({ type: 'fact', n: 1 });
+  log.append({ type: 'fact', n: 2 });
+  const file = path.join(r.authRoot, 'WF-FB-VEHICLES', 'log.jsonl');
+  // Cut back to line 1, then tear: the anchor still says 2.
+  fs.writeFileSync(file, `${authText(r).split('\n')[0]}\n{"torn`);
+  const before = authText(r);
+  assert.throws(() => open(r), LogTamperError);
+  // Nothing was cut: the evidence stays as it was found.
+  assert.equal(authText(r), before);
+});
+
+test('a whole log and anchor copied in from another card will not open as this card\'s', () => {
+  const r = roots();
+  open(r, 'A-1').append({ type: 'transition', to: 'mergeable' });
+  fs.mkdirSync(path.join(r.authRoot, 'B-2'), { recursive: true });
+  for (const f of ['log.jsonl', 'head.json']) fs.copyFileSync(path.join(r.authRoot, 'A-1', f), path.join(r.authRoot, 'B-2', f));
+  assert.throws(() => open(r, 'B-2'), LogTamperError);
+});
+
+test('a crash between the line and its anchor update reopens cleanly: the line is kept', () => {
+  const r = roots();
+  const log = open(r);
+  log.append({ type: 'fact', n: 1 });
+  const anchor = fs.readFileSync(anchorFile(r), 'utf8');
+  log.append({ type: 'fact', n: 2 });
+  fs.writeFileSync(anchorFile(r), anchor);
+  assert.deepEqual(open(r).lines().map((l) => l.n), [1, 2]);
+});
+
+test('a second writer on the same card is refused rather than forking the chain', () => {
+  const r = roots();
+  const a = open(r);
+  const b = open(r);
+  a.append({ type: 'fact' });
+  assert.throws(() => b.append({ type: 'fact' }), LogTamperError);
+  assert.equal(core.verifyLogText(authText(r)).ok, true);
+});
+
+test('a mirror that is merely behind reads "behind", not "differs", and is brought up to date', () => {
+  const r = roots();
+  const log = open(r);
+  log.append({ type: 'fact' });
+  const one = fs.readFileSync(mirrorFile(r), 'utf8');
+  log.append({ type: 'fact' });
+  fs.writeFileSync(mirrorFile(r), one);
+  assert.equal(log.mirrorStatus(), 'behind');
+  log.restoreMirror();
+  assert.equal(log.mirrorStatus(), 'same');
+});
+
+function planted() {
+  const r = roots();
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'mr-outside-'));
+  const victim = path.join(outside, 'victim.txt');
+  fs.writeFileSync(victim, 'precious\n');
+  return { r, outside, victim };
+}
+
+test('a mirror log planted as a link is never written through: the outside file is untouched', () => {
+  const { r, victim } = planted();
+  fs.mkdirSync(path.join(r.mirrorRoot, 'WF-FB-VEHICLES'), { recursive: true });
+  fs.symlinkSync(victim, mirrorFile(r));
+  const log = open(r);
+  log.append({ type: 'fact' });
+  assert.equal(fs.readFileSync(victim, 'utf8'), 'precious\n');
+  assert.equal(log.mirrorStatus(), 'differs');
+  log.restoreMirror();
+  assert.equal(fs.readFileSync(victim, 'utf8'), 'precious\n');
+  assert.equal(fs.lstatSync(mirrorFile(r)).isSymbolicLink(), false);
+  assert.equal(log.mirrorStatus(), 'same');
+});
+
+test('a restore through a planted temp-file link writes nothing outside', () => {
+  const { r, victim } = planted();
+  const log = open(r);
+  log.append({ type: 'fact' });
+  fs.symlinkSync(victim, `${mirrorFile(r)}.tmp`);
+  log.restoreMirror();
+  assert.equal(fs.readFileSync(victim, 'utf8'), 'precious\n');
+  assert.equal(log.mirrorStatus(), 'same');
+});
+
+test('a mirror card folder, or the mirror root itself, planted as a link is not written into', () => {
+  for (const which of ['card', 'root']) {
+    const { r, outside } = planted();
+    if (which === 'card') {
+      fs.mkdirSync(r.mirrorRoot, { recursive: true });
+      fs.symlinkSync(outside, path.join(r.mirrorRoot, 'WF-FB-VEHICLES'));
+    } else {
+      fs.mkdirSync(path.dirname(r.mirrorRoot), { recursive: true });
+      fs.symlinkSync(outside, r.mirrorRoot);
+    }
+    const log = open(r);
+    log.append({ type: 'fact' });
+    log.restoreMirror();
+    assert.deepEqual(fs.readdirSync(outside).sort(), ['victim.txt'], which);
+    assert.equal(fs.readFileSync(path.join(outside, 'victim.txt'), 'utf8'), 'precious\n', which);
+    assert.equal(log.mirrorStatus(), 'differs', which);
+  }
 });
