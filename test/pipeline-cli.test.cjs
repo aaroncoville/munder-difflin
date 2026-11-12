@@ -177,3 +177,39 @@ test('property: whatever the arguments, hive-mr writes a valid payload or nothin
     }
   }
 });
+
+// --- review round 1 ---
+
+test('L4: submit checks the remote\'s own branch head, not the local tracking ref', () => {
+  const s = setup();
+  // Someone else pushes to the branch; this worktree has not fetched, so its tracking ref still says HEAD.
+  const other = path.join(s.base, 'other');
+  git(s.base, 'clone', '-q', '-b', 'feat/x', path.join(s.base, 'remote.git'), other);
+  fs.writeFileSync(path.join(other, 'c.txt'), 'c\n');
+  git(other, 'add', '-A'); git(other, 'commit', '-qm', 'theirs'); git(other, 'push', '-q', 'origin', 'feat/x');
+  assert.equal(git(s.wt, 'rev-parse', '@{upstream}'), s.head, 'the stale tracking ref still matches');
+  const r = run(s, SUBMIT);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /remote/);
+  assert.deepEqual(outboxFiles(s), []);
+});
+
+test('L5: a value that starts with -- is given as --flag=value', () => {
+  const s = setup();
+  const args = SUBMIT.filter((a, i) => !(a === '--summary' || SUBMIT[i - 1] === '--summary'));
+  const r = run(s, [...args, '--summary=--risky: drops a column']);
+  assert.equal(r.status, 0, r.stderr);
+  const msg = JSON.parse(fs.readFileSync(path.join(s.agentDir, 'outbox', outboxFiles(s)[0]), 'utf8'));
+  assert.equal(msg.payload.summary, '--risky: drops a column');
+  assert.equal(run(s, [...args, '--summary', '--risky']).status, 2, 'the spaced form still reads it as a missing value');
+});
+
+test('L6: a request must name this agent and carry the id it is filed under', () => {
+  const s = setup();
+  assert.equal(run(s, ['verdict', '--request', request(s, { to: 'jannings-1' }), '--verdict', 'CONFIRMED']).status, 2, 'addressed to another agent');
+  const id = 'req-mismatch';
+  const msg = { id: 'req-other', from: 'pipeline', to: 'marinette-1', payload: { schema: 'mr.review-request/1', card: 'WF-FB-VEHICLES', request_id: 'WF-FB-VEHICLES:r1:marinette-1', sha: s.head, round: 1 } };
+  fs.writeFileSync(path.join(s.agentDir, 'inbox', `${id}.json`), JSON.stringify(msg));
+  assert.equal(run(s, ['verdict', '--request', id, '--verdict', 'CONFIRMED']).status, 2, 'filed under another id');
+  assert.deepEqual(outboxFiles(s), []);
+});

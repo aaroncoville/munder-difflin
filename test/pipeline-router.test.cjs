@@ -151,3 +151,107 @@ test('agents are told about hive-mr only while a conductor is attached with its 
   assert.match(protocol, /hive-mr verdict --request/);
   assert.match(protocol, /Do not write or edit those\s+by hand/);
 });
+
+// --- review round 1 ---
+
+test('M1: a message the conductor threw on is refused to its sender, not logged as delivered, and its resend goes through', async (t) => {
+  const { hive, post, log } = await floor(t);
+  let fail = true;
+  const got = [];
+  hive.setPipelineSink((m) => { if (fail) throw new Error('conductor down'); got.push(m); });
+  post(toPipeline(SUBMIT));
+  assert.equal(refusals(hive).length, 1);
+  assert.match(refusals(hive)[0].body, /could not take|send it again/i);
+  assert.equal(log().filter((l) => l.kind === 'message' && l.to === 'pipeline').length, 0, 'nothing logged as delivered');
+  fail = false;
+  post(toPipeline(SUBMIT));
+  assert.equal(got.length, 1, 'the resend is not taken for a repeat');
+});
+
+test('M1: a message refused while the pipeline was off goes through when sent again once it is on', async (t) => {
+  const { hive, post } = await floor(t);
+  post(toPipeline(SUBMIT));
+  assert.equal(refusals(hive).length, 1);
+  const got = [];
+  hive.setPipelineSink((m) => got.push(m));
+  post(toPipeline(SUBMIT));
+  assert.equal(got.length, 1);
+});
+
+test('L1: the same payload sent again under a new message id is a repeat, and the conductor gets a stable key that survives a restart', async (t) => {
+  const { hive, post, agents } = await floor(t);
+  const got = [];
+  hive.setPipelineSink((m) => got.push(m));
+  post({ ...toPipeline(SUBMIT), id: 'first-run' });
+  post({ ...toPipeline(SUBMIT), id: 'second-run' });
+  assert.equal(got.length, 1, 're-running hive-mr is a repeat');
+  assert.match(got[0].key, /^[0-9a-f]{64}$/);
+  // After a restart the router's memory is gone: the conductor must dedupe on the key.
+  const home = path.dirname(path.dirname(agents));
+  const again = new HiveManager(() => home);
+  const later = [];
+  again.setPipelineSink((m) => later.push(m));
+  fs.writeFileSync(path.join(agents, 'worker-1', 'outbox', 'third.json'), JSON.stringify({ ...toPipeline(SUBMIT), id: 'third-run' }));
+  again.routeOnce();
+  assert.equal(later.length, 1);
+  assert.equal(later[0].key, got[0].key, 'the same sender and payload give the same key');
+  const other = await (async () => { const g = []; again.setPipelineSink((m) => g.push(m)); fs.writeFileSync(path.join(agents, 'worker-1', 'outbox', 'fourth.json'), JSON.stringify(toPipeline({ ...SUBMIT, kind: 'rebase' }))); again.routeOnce(); return g; })();
+  assert.notEqual(other[0].key, got[0].key);
+  // The same payload from another sender is another message.
+  const fromOther = [];
+  again.setPipelineSink((m) => fromOther.push(m));
+  fs.writeFileSync(path.join(agents, 'worker-2', 'outbox', 'w2.json'), JSON.stringify(toPipeline(SUBMIT)));
+  again.routeOnce();
+  assert.equal(fromOther.length, 1);
+  assert.notEqual(fromOther[0].key, got[0].key, 'the sender is part of the key');
+});
+
+test('L2: the conductor gets only typed envelope fields; a subject or body that is not text is refused', async (t) => {
+  const { hive, post } = await floor(t);
+  const got = [];
+  hive.setPipelineSink((m) => got.push(m));
+  post(toPipeline(SUBMIT, { subject: { evil: true } }));
+  post(toPipeline(SUBMIT, { body: ['x'] }));
+  assert.equal(got.length, 0);
+  assert.equal(refusals(hive).length, 2);
+  post(toPipeline(SUBMIT, { extra: 'field', needs_human: 'yes' }));
+  assert.equal(got.length, 1);
+  assert.deepEqual(Object.keys(got[0]).sort(), ['act', 'body', 'conversation', 'created_at', 'from', 'id', 'in_reply_to', 'key', 'payload', 'subject']);
+  for (const k of ['act', 'body', 'conversation', 'created_at', 'from', 'id', 'subject', 'key']) assert.equal(typeof got[0][k], 'string', k);
+});
+
+test('L3: mr.command is accepted only from god', async (t) => {
+  const { hive, post, agents } = await floor(t);
+  const got = [];
+  hive.setPipelineSink((m) => got.push(m));
+  const cmd = { schema: 'mr.command/1', card: 'WF-FB-VEHICLES', command: 'pause', args: {}, reason: 'r' };
+  post(toPipeline(cmd));
+  assert.equal(got.length, 0);
+  assert.match(refusals(hive)[0].body, /god/);
+  fs.writeFileSync(path.join(agents, 'god-1', 'outbox', 'c.json'), JSON.stringify(toPipeline(cmd)));
+  hive.routeOnce();
+  assert.equal(got.length, 1);
+  assert.equal(got[0].from, 'god-1');
+});
+
+test('L7: mail to the pipeline under another case is refused with the right name, and god hears nothing', async (t) => {
+  const { hive, post } = await floor(t);
+  const got = [];
+  hive.setPipelineSink((m) => got.push(m));
+  post(toPipeline(SUBMIT, { to: 'Pipeline' }));
+  post(toPipeline(SUBMIT, { to: 'PIPELINE' }));
+  assert.equal(got.length, 0);
+  assert.equal(refusals(hive).length, 2);
+  assert.match(refusals(hive)[0].body, /"pipeline"/);
+  assert.deepEqual(hive.inbox('god-1'), []);
+});
+
+test('(c) a refusal that cannot be delivered is not dropped: the file is set aside and someone is told', async (t) => {
+  const { hive, post, outbox, agents, log } = await floor(t);
+  fs.rmSync(path.join(agents, 'worker-1', 'inbox'), { recursive: true, force: true });
+  post(toPipeline(SUBMIT));
+  assert.ok(log().some((l) => l.kind !== 'message' && JSON.stringify(l).includes('not-delivered')), 'the failure is logged');
+  const sent = fs.existsSync(path.join(outbox, '.sent')) ? fs.readdirSync(path.join(outbox, '.sent')).filter((f) => f.endsWith('.json')) : [];
+  assert.ok(sent.length === 1 && sent[0].startsWith('bad-'), `set aside as undelivered, not filed as sent: ${sent}`);
+  assert.ok(hive.inbox('god-1').length >= 1, 'god is told, since the sender cannot be');
+});

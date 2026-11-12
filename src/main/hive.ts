@@ -55,7 +55,7 @@ import { withCodexWritableRoots } from '../shared/codexWritableRoots';
 import { resolveGodName } from '../shared/godIdentity';
 import { appendSession } from './codexActivity';
 import { isSafeMessageId, publishMessage, sweepInboxLeftovers } from './messageId';
-import { PIPELINE, pipelineIntake, refusalBody } from './pipeline/route';
+import { envelopeErrors, isPipelineName, PIPELINE, pipelineIntake, refusalBody, type Intake } from './pipeline/route';
 
 /** The subset of HarnessConfig the hive consumes for the default-MCP merge.
  *  Kept as a local shape so hive.ts never imports the foundation-owned config
@@ -1835,20 +1835,51 @@ export class HiveManager {
     this.pipelineCli = sink && cli && isAbsolute(cli) ? cli : null;
   }
 
-  /** One outbox message addressed to the pipeline: read [text] strictly, hand a valid payload to the conductor, else refuse it to the sender. */
-  private routeToPipeline(msg: HiveMessage, text: string): void {
-    const sink = this.pipelineSink;
-    const intake = pipelineIntake(text, sink !== null);
-    if (intake.kind === 'refuse') {
-      this.deliver(this.normalize({
-        from: PIPELINE, to: msg.from, act: 'refuse', conversation: msg.conversation, in_reply_to: msg.id,
-        subject: `Refused: ${msg.subject}`.slice(0, 200), body: refusalBody(intake.errors), requires_reply: false,
-      }, PIPELINE), msg.from);
-      this.appendLog({ kind: 'pipeline-refused', from: msg.from, id: msg.id, errors: intake.errors.slice(0, 20) });
-      return;
+  /**
+   * What the router does with one outbox message addressed to the pipeline (in any case): the payload read
+   * strictly from [text] and validated, the envelope fields the conductor reads checked as text, and
+   * mr.command accepted only from god. A refusal lists every reason.
+   */
+  private pipelineIntakeFor(msg: HiveMessage, partial: Partial<HiveMessage>, text: string): Intake {
+    if (msg.to !== PIPELINE) return { kind: 'refuse', errors: [`to: the pipeline is addressed as "${PIPELINE}", in lowercase`] };
+    const errors = envelopeErrors(partial);
+    if (errors.length > 0) return { kind: 'refuse', errors };
+    const intake = pipelineIntake(text, this.pipelineSink !== null, msg.from);
+    if (intake.kind === 'deliver' && intake.schema === 'mr.command/1' && msg.from !== (this.routingRegistry().godId ?? 'god')) {
+      return { kind: 'refuse', errors: ['payload.schema: mr.command/1 is accepted only from god'] };
     }
-    try { sink?.({ ...msg, payload: intake.payload }); } catch (e) { this.appendLog({ kind: 'pipeline-sink-error', from: msg.from, id: msg.id, error: String(e).slice(0, 200) }); }
-    this.appendLog({ kind: 'message', from: msg.from, to: PIPELINE, act: msg.act, subject: msg.subject, id: msg.id, delivered: [PIPELINE], schema: intake.schema });
+    return intake;
+  }
+
+  /**
+   * Hands a validated message to the conductor, or refuses it to the sender. `taken`: the conductor has it;
+   * `refused`: the sender was told why; `undelivered`: the refusal itself could not be delivered, so the caller
+   * sets the file aside and says so. A conductor that throws has not taken it: the sender is told to send again.
+   */
+  private routeToPipeline(msg: HiveMessage, intake: Intake): 'taken' | 'refused' | 'undelivered' {
+    let errors: string[];
+    if (intake.kind === 'deliver') {
+      const envelope = {
+        id: msg.id, from: msg.from, act: msg.act, conversation: msg.conversation, in_reply_to: msg.in_reply_to,
+        subject: msg.subject, body: msg.body, created_at: msg.created_at, payload: intake.payload, key: intake.key,
+      };
+      try {
+        this.pipelineSink?.(envelope as unknown as HiveMessage);
+        this.appendLog({ kind: 'message', from: msg.from, to: PIPELINE, act: msg.act, subject: msg.subject, id: msg.id, delivered: [PIPELINE], schema: intake.schema });
+        return 'taken';
+      } catch (e) {
+        this.appendLog({ kind: 'pipeline-sink-error', from: msg.from, id: msg.id, error: String(e).slice(0, 200) });
+        errors = ['the pipeline could not take this message just now; send it again'];
+      }
+    } else {
+      errors = intake.errors;
+    }
+    const told = this.deliver(this.normalize({
+      from: PIPELINE, to: msg.from, act: 'refuse', conversation: msg.conversation, in_reply_to: msg.id,
+      subject: `Refused: ${msg.subject}`.slice(0, 200), body: refusalBody(errors), requires_reply: false,
+    }, PIPELINE), msg.from);
+    this.appendLog({ kind: 'pipeline-refused', from: msg.from, id: msg.id, errors: errors.slice(0, 20), told });
+    return told ? 'refused' : 'undelivered';
   }
 
   /** Inject a message directly (used by the orchestrator / UI / tests). */
@@ -2269,21 +2300,28 @@ export class HiveManager {
           const msg = this.normalize(partial, id);
           msg.from = id; // sender is authoritative — the owning directory
           hops = msg.hops;
-          // Mail to the pipeline differs by its payload, so its own text is part of what makes it a repeat.
-          const sendable = { ...msg, conversation: partial.conversation, ...(msg.to === PIPELINE ? { body: `${msg.body}\u0000${text}` } : {}) };
+          // Mail to the pipeline (in any case) is read before the repeat check: a repeat of it is the same sender
+          // and the same validated payload, whatever its message id or file text.
+          const intake = isPipelineName(msg.to) ? this.pipelineIntakeFor(msg, partial, text) : null;
+          const sendable = { ...msg, conversation: partial.conversation, ...(intake ? { body: `${msg.body}\u0000${intake.kind === 'deliver' ? intake.key : text}` } : {}) };
           if (this.recentSends.isRepeat(sendable, join(outbox, '.sent'), now)) { stage = 'archive'; this.appendLog({ kind: 'outbox-duplicate', from: id, file: f, archived: moveWithoutReplacing(full, join(outbox, '.sent'), (n) => (n === 0 ? `dup-${f}` : `dup-${n}-${f}`)) }); continue; } // written again after it was routed: file it, deliver nothing
           // An agent's payload is read only on mail to the pipeline; elsewhere it is dropped (normalize never copies it).
-          if (msg.to !== PIPELINE && partial !== null && typeof partial === 'object' && Object.hasOwn(partial, 'payload')) {
+          if (!intake && partial !== null && typeof partial === 'object' && Object.hasOwn(partial, 'payload')) {
             this.appendLog({ kind: 'payload-dropped', from: id, to: shortTarget(msg.to), id: msg.id });
           }
           stage = 'route';
-          if (msg.to === PIPELINE) {
-            this.routeToPipeline(msg, text);
-          } else if (!this.routeMessage(msg)) {
-            this.outboxFailed(isKnownTarget(this.routingRegistry().agents, msg.to, this.agentsDir()) ? 'not-delivered' : 'recipient', outbox, f, id, undefined, hops);
-            continue;
+          if (intake) {
+            // Remembered as routed only when the conductor took it, so a refused message never holds back its resend.
+            const outcome = this.routeToPipeline(msg, intake);
+            if (outcome === 'undelivered') { this.outboxFailed('not-delivered', outbox, f, id, undefined, hops); continue; }
+            if (outcome === 'taken') this.recentSends.routed(sendable, now);
+          } else {
+            if (!this.routeMessage(msg)) {
+              this.outboxFailed(isKnownTarget(this.routingRegistry().agents, msg.to, this.agentsDir()) ? 'not-delivered' : 'recipient', outbox, f, id, undefined, hops);
+              continue;
+            }
+            this.recentSends.routed(sendable, now);
           }
-          this.recentSends.routed(sendable, now);
           stage = 'archive';
           const stamp = stampSentCopy(join(outbox, '.sent'), archiveOutboxFile(outbox, f), msg); if (stamp !== 'stamped') this.appendLog({ kind: `sent-stamp-${stamp}`, from: id, file: f }); // archive, don't reprocess
           routed++;

@@ -44,15 +44,26 @@ function refuse(errors) {
   process.exit(2);
 }
 
-/** --name value pairs; a flag given twice, or without a value, is refused. */
+/**
+ * `--name value` or `--name=value` pairs. In the spaced form a value that starts with `--` reads as a
+ * missing value; give such a value as `--name=--value`. A flag given twice, or without a value, is refused.
+ */
 function flags(argv, allowed) {
   const out = new Map();
   const errors = [];
-  for (let i = 0; i < argv.length; i += 2) {
-    const k = argv[i];
-    const v = argv[i + 1];
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    const eq = typeof arg === 'string' && arg.startsWith('--') ? arg.indexOf('=') : -1;
+    const k = eq > 0 ? arg.slice(0, eq) : arg;
     if (typeof k !== 'string' || !k.startsWith('--') || !allowed.includes(k.slice(2))) { errors.push(`unknown argument ${JSON.stringify(k)}`); continue; }
-    if (v === undefined || v.startsWith('--')) { errors.push(`${k} needs a value`); continue; }
+    let v;
+    if (eq > 0) {
+      v = arg.slice(eq + 1);
+    } else {
+      v = argv[i + 1];
+      i += 1;
+      if (v === undefined || v.startsWith('--')) { errors.push(`${k} needs a value (or give it as ${k}=value)`); i -= 1; continue; }
+    }
     if (out.has(k.slice(2))) { errors.push(`${k} given twice`); continue; }
     out.set(k.slice(2), v);
   }
@@ -113,9 +124,15 @@ function submit(core, argv) {
   const me = agent();
   const head = git(['rev-parse', '--verify', 'HEAD']);
   if (!head || !core.SHA_RE.test(head)) refuse(['this folder is not a git worktree with a commit checked out']);
-  const upstream = git(['rev-parse', '--verify', '@{upstream}']);
-  if (!upstream) refuse(['the branch has no upstream: push it first (git push -u origin <branch>)']);
-  if (upstream !== head) refuse([`the remote branch head is ${upstream}, not ${head}: push first, then submit`]);
+  // The remote's own head for the branch, asked now: a local tracking ref is only as fresh as the last fetch.
+  const branch = git(['symbolic-ref', '--quiet', '--short', 'HEAD']);
+  const remote = branch && git(['config', '--get', `branch.${branch}.remote`]);
+  const merge = branch && git(['config', '--get', `branch.${branch}.merge`]);
+  if (!branch || !remote || !merge) refuse(['the branch has no upstream: push it first (git push -u origin <branch>)']);
+  const listed = git(['ls-remote', '--exit-code', '--', remote, merge]);
+  const remoteHead = listed ? listed.split(/\s+/)[0] : null;
+  if (!remoteHead || !core.SHA_RE.test(remoteHead)) refuse([`the remote ${remote} could not be asked for ${merge}: check the connection, push, then submit`]);
+  if (remoteHead !== head) refuse([`the remote branch head is ${remoteHead}, not ${head}: push first (or pull what is there), then submit`]);
   const mrText = f.get('mr');
   const payload = {
     schema: 'mr.submit/1',
@@ -142,7 +159,7 @@ function submit(core, argv) {
 }
 
 /** The review request [id] in this agent's inbox (or its .done), read strictly; it must come from the pipeline. */
-function readRequest(core, dir, id) {
+function readRequest(core, dir, id, me) {
   if (!/^[A-Za-z0-9._-]{1,200}$/.test(id) || id.startsWith('.')) refuse([`--request: ${JSON.stringify(id).slice(0, 60)} is not a message id`]);
   for (const where of ['inbox', path.join('inbox', '.done')]) {
     const file = path.join(dir, where, `${id}.json`);
@@ -152,6 +169,8 @@ function readRequest(core, dir, id) {
     const m = r.value;
     const own = (o, k) => (o !== null && typeof o === 'object' && Object.hasOwn(o, k) ? o[k] : undefined);
     if (own(m, 'from') !== 'pipeline') refuse([`the message ${id} is not from the pipeline`]);
+    if (own(m, 'id') !== id) refuse([`the message filed as ${id} carries another id`]);
+    if (own(m, 'to') !== me) refuse([`the message ${id} is addressed to someone else`]);
     const p = own(m, 'payload');
     const errors = [];
     if (own(p, 'schema') !== 'mr.review-request/1') errors.push('its payload is not a review request');
@@ -169,7 +188,7 @@ function verdict(core, argv) {
   const f = flags(argv, ['request', 'verdict', 'findings-file', 'abstain-reason', 'report']);
   const me = agent();
   if (!f.has('request')) refuse(['--request: the id of the review request this answers']);
-  const req = readRequest(core, me.dir, f.get('request'));
+  const req = readRequest(core, me.dir, f.get('request'), me.id);
   const payload = {
     schema: 'mr.verdict/1',
     card: req.card,
