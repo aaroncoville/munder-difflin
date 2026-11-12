@@ -1,9 +1,12 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
+import { applyAppTheme } from './design/theme';
 import brandLogo from '@/assets/sixth-history/logo.png?url';
 import './design/global.css';
 import './i18n';
+
+applyAppTheme();
 
 const favicon = document.createElement('link');
 favicon.rel = 'icon';

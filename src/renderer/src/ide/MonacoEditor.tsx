@@ -1,8 +1,7 @@
 import { useRef } from 'react';
 import Editor, { type OnMount } from '@monaco-editor/react';
 import { setupMonaco, languageForPath } from './monaco';
-import { monacoThemeFor } from './monacoTheme';
-import { useAppTheme } from '@/design/theme';
+import { OCCULT_MONACO_THEME } from '@/design/occult/occultTerminal';
 
 // Pin @monaco-editor/react to the bundled monaco + register themes at module load,
 // before any <Editor/> mounts (avoids a CDN fetch / unthemed first paint).
@@ -32,7 +31,7 @@ export function MonacoEditor({ path, value, onChange, onSave, readOnly }: Monaco
 
   return (
     <Editor
-      theme={monacoThemeFor(useAppTheme())}
+      theme={OCCULT_MONACO_THEME}
       language={languageForPath(path)}
       value={value}
       onChange={(v) => onChange(v ?? '')}

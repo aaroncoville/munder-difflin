@@ -2,12 +2,9 @@
 /**
  * Choosing a face when summoning an assistant.
  *
- * Under the office themes the add-agent screen picks a pixel CAST MEMBER, and
- * clicking one sets the agent's name to that character's. Under the occult
- * theme the cast is a wall of painted portraits, so the same control shows
- * those instead — and choosing one names the assistant after the portrait,
- * which is the same interaction and is what makes the name rule in
- * `portraits.ts` reach the assistant it applies to.
+ * The add-agent screen shows a wall of painted portraits, and choosing one
+ * names the assistant after the portrait — which is what makes the name rule
+ * in `portraits.ts` reach the assistant it applies to.
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -77,13 +74,13 @@ test('the chosen face is the one that looks chosen', () => {
   assert.equal(chosen[0].props['data-portrait'], name);
 });
 
-test('the add-agent screen swaps the cast for the wall, and only under occult', () => {
+test('the add-agent screen offers the wall of portraits, and nothing else', () => {
   const src = strip(read('src/renderer/src/components/AddAgentModal.tsx'));
-  assert.match(src, /PortraitPicker/, 'the picker is never mounted');
-  assert.match(src, /useAppTheme\(\)\s*===\s*'occult'/, 'it is not gated on the theme');
-  // The pixel cast must still be there for light and dark — this milestone
-  // changes what the occult theme shows, not what anybody else sees.
-  assert.match(src, /OFFICE_CAST/, 'the pixel cast was removed rather than switched');
+  assert.match(src, /<PortraitPicker\b/, 'the picker is never mounted');
+  // Sixth History is the only theme, so there is no pixel cast to switch back
+  // to and nothing to gate the wall on.
+  assert.doesNotMatch(src, /useAppTheme/, 'the picker is still gated on a theme');
+  assert.doesNotMatch(src, /OFFICE_CAST\.map/, 'the pixel cast tiles are still drawn');
   // Choosing a portrait names the assistant, the same as clicking a character
   // tile already does. Without this the name rule never reaches the agent.
   assert.match(src, /setName\(/, 'choosing a face does not name the assistant');

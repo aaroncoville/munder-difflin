@@ -2,9 +2,8 @@
 /**
  * The gilt redraw of the icon set.
  *
- * The whole risk in a "redraw" task is a redraw that did not happen: a table
- * that copied the originals, or one missing a name so that a button renders as
- * a blank square in one theme only. Both are checked here against `Icon.tsx`'s
+ * The deco table is the only one Icon draws from, so a name missing from it
+ * renders as a blank square. That is checked here against `Icon.tsx`'s
  * own union rather than against a list restated in this file, because a list
  * restated here would go stale the moment a name is added and would then pass
  * while the app rendered a hole.
@@ -55,20 +54,7 @@ test('every deco path is a path', () => {
   }
 });
 
-test('the redraw is a redraw, not a copy', () => {
-  // The defect this task exists to avoid: a table that satisfies "every icon
-  // has a deco counterpart" by pasting the pixel path in beside it.
-  const pixel = (() => {
-    const body = iconSrc.match(/const paths: Record<IconName, IconDef> = {([\s\S]*?)\n};/)[1];
-    const out = {};
-    for (const m of body.matchAll(/ink:\s*'([^']+)'/g)) out[m[1]] = true;
-    return out;
-  })();
-  const copied = ICON_NAMES.filter((n) => pixel[DECO_PATHS[n].ink]);
-  assert.deepEqual(copied, [], 'deco paths copied verbatim from the pixel set');
-});
-
-test('the deco set is curved, and the pixel set is not', () => {
+test('the deco set is curved', () => {
   // The pixel grid's whole idiom is integer horizontal/vertical runs; the deco
   // idiom is the curve. A "deco" table with no curve command in it anywhere is
   // the pixel set with different numbers.
@@ -77,13 +63,11 @@ test('the deco set is curved, and the pixel set is not', () => {
     `only ${curved.length} of ${ICON_NAMES.length} deco icons use a curve`);
 });
 
-test('Icon picks its table and its rendering by theme', () => {
+test('Icon draws the deco table, without the pixel rendering hint', () => {
   const src = strip(iconSrc);
-  assert.match(src, /DECO_PATHS/, 'Icon.tsx never reads the deco table');
-  assert.match(src, /useAppTheme|occult/, 'Icon.tsx never asks which theme it is in');
+  assert.match(src, /DECO_PATHS\[name\]/, 'Icon.tsx does not draw from the deco table');
   // crispEdges is the pixel grid's own instruction — it snaps every edge to the
   // device pixel, which is precisely what turns a swept curve into a staircase.
-  assert.doesNotMatch(src, /shapeRendering="crispEdges"/,
-    'crispEdges is still applied unconditionally');
-  assert.match(src, /crispEdges/, 'the pixel set lost its crisp rendering');
+  assert.doesNotMatch(src, /crispEdges/, 'the deco set is rendered with the pixel hint');
+  assert.doesNotMatch(src, /useAppTheme/, 'Icon.tsx still asks which theme it is in');
 });

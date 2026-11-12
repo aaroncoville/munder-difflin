@@ -43,12 +43,14 @@ test('the config has no theme settings, and an old config that names one loads u
   fs.writeFileSync(path.join(userData, 'config.json'), JSON.stringify({ onboardingComplete: true, tvShowOffices: true, officeTheme: 'brooklyn99', terminalTheme: 'dark' }));
   const c = readConfig();
   assert.equal(c.onboardingComplete, true);
-  assert.equal(c.terminalTheme, 'dark');
+  // The terminal theme followed the removed light/dark app themes; it is
+  // retired with them rather than kept as a setting nothing reads.
+  assert.equal('terminalTheme' in c, false);
 });
 
 test('voice cannot change a theme setting', () => {
   const { VOICE_SETTING_KEYS } = loadTs('src/main/realtimeActions.ts');
-  assert.ok(VOICE_SETTING_KEYS.includes('terminalTheme'));
+  assert.equal(VOICE_SETTING_KEYS.includes('terminalTheme'), false);
   assert.equal(VOICE_SETTING_KEYS.includes('tvShowOffices'), false);
   assert.equal(VOICE_SETTING_KEYS.includes('officeTheme'), false);
 });

@@ -1,137 +1,24 @@
 /**
- * App-wide theme (v0.3.4) — ONE light/dark switch for the whole UI, not just
- * the terminal.
+ * The app's one theme: Sixth History.
  *
- * The entire renderer is styled through the `--cth-*` tokens, so dark mode is
- * a token swap: this module stamps `data-cth-theme` on <html> and tokens.css
- * carries the dark overrides. The xterm palette (PtyTerminalView) and the
- * per-agent Claude session theme (config.terminalTheme, applied on spawn)
- * follow the same state, so terminals and TUIs match the chrome.
+ * The renderer is styled through the `--cth-*` tokens, and occult-tokens.css
+ * re-points them under `data-cth-theme='occult'` on <html>. There is nothing to
+ * choose between any more, so this module only stamps that attribute once, at
+ * start-up, before the first render.
  *
- * Shared subscribable module (same pattern as terminalFontSize): components
- * read it with `useAppTheme()`; the ONE toggle lives in the title bar.
+ * Earlier builds let the reader pick light or dark and saved the pick in
+ * localStorage (`cth.theme`, and before that `cth.ptyTheme`). Nothing reads
+ * those keys now, so they are cleared rather than rewritten: a stored choice
+ * that nothing honours could only mislead whoever finds it later.
  */
-import { useSyncExternalStore } from 'react';
 
-export type AppTheme = 'light' | 'dark' | 'occult';
+export const APP_THEME = 'occult';
 
-const LS_KEY = 'cth.theme';
-/** Pre-0.3.4 the terminal had its own theme key — honor it once as the seed. */
-const LEGACY_LS_KEY = 'cth.ptyTheme';
+const STALE_KEYS = ['cth.theme', 'cth.ptyTheme'] as const;
 
-function load(): AppTheme {
+export function applyAppTheme(): void {
   try {
-    const v = window.localStorage.getItem(LS_KEY) ?? window.localStorage.getItem(LEGACY_LS_KEY);
-    if (v === 'dark' || v === 'light' || v === 'occult') return v;
-  } catch { /* noop */ }
-  return 'light';
-}
-
-let theme: AppTheme = load();
-const subscribers = new Set<() => void>();
-
-function apply(): void {
-  try { document.documentElement.dataset.cthTheme = theme; } catch { /* SSR/tests */ }
-}
-apply();
-
-export function appTheme(): AppTheme {
-  return theme;
-}
-
-export function setAppTheme(next: AppTheme): void {
-  if (next === theme) return;
-  theme = next;
-  try { window.localStorage.setItem(LS_KEY, next); } catch { /* noop */ }
-  apply();
-  subscribers.forEach((fn) => fn());
-}
-
-/** The one title-bar control walks this ring; order is the ring. */
-const CYCLE: readonly AppTheme[] = ['light', 'dark', 'occult'];
-
-export function toggleAppTheme(): AppTheme {
-  const next = CYCLE[(CYCLE.indexOf(theme) + 1) % CYCLE.length];
-  setAppTheme(next);
-  return next;
-}
-
-/** What the one theme control shows and says, given where the ring stands. */
-export interface ThemeControlFace {
-  /** The theme a click moves to. */
-  next: AppTheme;
-  /** Glyph for the destination, in the title bar's existing text-glyph idiom. */
-  icon: string;
-  /** English wording, for the title bar, which is not wired to i18n. */
-  label: string;
-  /** The same wording as a translation key, for the fullscreen mirror. */
-  labelKey: string;
-}
-
-/**
- * The ring has three stops but both controls presented it as a binary: under
- * occult they showed a moon and said "dark theme" while a click went to light.
- * Icon and wording now come from here, so the two controls cannot disagree
- * with each other or with the cycle, and every state is one line to read.
- */
-const CONTROL_FACE: Readonly<Record<AppTheme, ThemeControlFace>> = {
-  light: {
-    next: 'dark', icon: '☾',
-    label: 'Switch to the dark theme', labelKey: 'fullscreenTerminal.darkTheme'
-  },
-  dark: {
-    // A star rather than a candle: the title bar's glyphs are text at 13px in
-    // the UI face, and this one has to sit beside the sun and the moon.
-    next: 'occult', icon: '✦',
-    label: 'Switch to the occult theme', labelKey: 'fullscreenTerminal.occultTheme'
-  },
-  occult: {
-    next: 'light', icon: '☀',
-    label: 'Switch to the light theme', labelKey: 'fullscreenTerminal.lightTheme'
-  }
-};
-
-export function themeControlFace(current: AppTheme): ThemeControlFace {
-  return CONTROL_FACE[current];
-}
-
-/**
- * What an EXTERNAL program should be told about the ground it is drawing on.
- *
- * Two values, and there cannot be a third. This answer feeds DEC mode 2031,
- * whose reply is `CSI ? 997 ; 1 n` for dark and `; 2 n` for light and has no
- * other form, and it feeds the persisted `terminalTheme` config field that
- * spawned agents read to theme their own TUI — typed and validated in the main
- * process as exactly this pair. Occult is a dark terminal as far as any program
- * painting into it is concerned, and always will be.
- *
- * This is NOT the question "which palette do we paint" — see terminalPaletteFor.
- */
-export function terminalThemeFor(t: AppTheme): 'light' | 'dark' {
-  return t === 'light' ? 'light' : 'dark';
-}
-
-/** Which of the app's own xterm palettes to paint. */
-export type TerminalPalette = 'light' | 'dark' | 'occult';
-
-/**
- * Which palette OUR terminals use — a different question from the one above,
- * and the one the candlelight answers.
- *
- * Nothing outside the renderer sees this value, so a third palette costs an
- * external program nothing: a running TUI still hears "dark" and paints itself
- * for a dark ground, which is what the candlelit palette is.
- */
-export function terminalPaletteFor(t: AppTheme): TerminalPalette {
-  return t;
-}
-
-export function useAppTheme(): AppTheme {
-  return useSyncExternalStore(
-    (onChange) => {
-      subscribers.add(onChange);
-      return () => subscribers.delete(onChange);
-    },
-    () => theme
-  );
+    for (const key of STALE_KEYS) window.localStorage.removeItem(key);
+  } catch { /* storage unavailable: nothing to clear */ }
+  try { document.documentElement.dataset.cthTheme = APP_THEME; } catch { /* SSR/tests */ }
 }

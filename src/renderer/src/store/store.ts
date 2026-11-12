@@ -292,8 +292,6 @@ interface State {
    *  window.cth.realtimeHasOpenAiKey(). */
   hasOpenAiKey: boolean;
   setHasOpenAiKey: (has: boolean) => void;
-  /** Mirror of the active office theme (set by App on config load + by Settings
-   *  on switch). OfficeFloor depends on this and rebuilds the scene on change. */
   /** Mirror of config.webhookTriggers — the inbound HTTP endpoints. Webhooks are
    *  editable from BOTH Settings → Connections and the Triggers tab, so neither
    *  surface keeps its own copy: both render off this list and both call the

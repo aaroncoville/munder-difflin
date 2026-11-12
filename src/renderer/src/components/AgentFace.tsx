@@ -1,11 +1,10 @@
 /**
  * The face on an assistant, wherever the chrome draws one.
  *
- * Two casts share one slot. The pixel sprites are the office's own people and
- * belong to the light and dark themes; the painted pack belongs to the Study,
- * which replaced the office floor under the occult theme. The strip along the
- * foot of the window kept drawing recolored sprites regardless, so the same
- * assistant appeared twice with two different faces, one above the other.
+ * Assistants wear the Study's painted pack. The strip along the foot of the
+ * window once drew recolored pixel sprites while the floor above it drew
+ * portraits, so the same assistant appeared twice with two different faces,
+ * one above the other.
  *
  * Which face a painted assistant wears is not decided here: `portraitFor` owns
  * that rule — named for a face wears it, anyone else is dealt one from their
@@ -14,10 +13,9 @@
  * call sites picking a portrait each is how they drifted apart in the first
  * place.
  *
- * A theme with no painted pack, or an assistant the pack cannot cover, falls
- * back to the sprite rather than to nothing.
+ * An assistant the pack cannot cover falls back to the sprite rather than to
+ * nothing.
  */
-import { useAppTheme } from '@/design/theme';
 import { OfficeCharacterName } from '@/scene/office/cast';
 import { portraitFor } from '@/scene/study/portraits';
 import { SpritePortrait } from './SpritePortrait';
@@ -26,7 +24,7 @@ export interface AgentFaceProps {
   /** The assistant's id — what a face is dealt from when the name matches none. */
   id: string;
   name: string;
-  /** The pixel cast member to draw under light and dark. */
+  /** The pixel cast member to draw when no portrait can be dealt. */
   character: OfficeCharacterName;
   /** Pixels per source pixel, passed straight to the sprite. Ignored by the
    *  painted portrait, which fills whatever tile it is given. */
@@ -35,8 +33,7 @@ export interface AgentFaceProps {
 }
 
 export function AgentFace({ id, name, character, scale = 2, isGod }: AgentFaceProps) {
-  const theme = useAppTheme();
-  const painted = theme === 'occult' ? portraitFor({ id, name, isGod }) : undefined;
+  const painted = portraitFor({ id, name, isGod });
   if (!painted) return <SpritePortrait character={character} scale={scale} />;
   return (
     <img

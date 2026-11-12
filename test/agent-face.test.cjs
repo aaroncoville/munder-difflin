@@ -9,7 +9,7 @@
  *
  * The rule is the Study's, unchanged: an assistant named for a face wears it,
  * anyone else is dealt one from their id, and the orchestrator's own face is
- * reserved. Light and dark are untouched — the pixel cast is theirs.
+ * reserved. The pixel sprite is only a fallback for a face the pack cannot deal.
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -84,19 +84,17 @@ test('an assistant named nothing in the pack still gets a face, and keeps it', (
     'the deal is from the id, so two strangers are not one person twice');
 });
 
-test('light and dark keep the pixel cast, untouched', () => {
-  const { SpritePortrait } = loadTs('src/renderer/src/components/SpritePortrait.tsx');
+test('a light or dark choice saved by an older build no longer brings back the pixel cast', () => {
   for (const theme of ['light', 'dark']) {
     const AgentFace = underTheme(theme);
-    const { PORTRAIT_NAMES, GOD_PORTRAIT } = loadTs('src/renderer/src/scene/study/portraits.ts');
+    const { PORTRAIT_NAMES, GOD_PORTRAIT, portraitNamed } =
+      loadTs('src/renderer/src/scene/study/portraits.ts');
     const named = PORTRAIT_NAMES.find((n) => n !== GOD_PORTRAIT);
     const { tree, img } = face(AgentFace, { id: 'w-1', name: named, character: 'dwight' });
-    assert.equal(img, undefined, `${theme} started painting portraits`);
-    const sprite = all(tree, (n) => n.type?.name === 'SpritePortrait'
-      || n.type === SpritePortrait)[0];
-    assert.ok(sprite, `${theme} lost the pixel cast`);
-    assert.equal(sprite.props.character, 'dwight', `${theme} drew somebody else`);
-    assert.equal(sprite.props.scale, 2, `${theme} redrew the sprite at another size`);
+    assert.ok(img, `a saved ${theme} drew a sprite instead of a portrait`);
+    assert.equal(img.props.src, portraitNamed(named));
+    assert.equal(all(tree, (n) => n.type?.name === 'SpritePortrait').length, 0,
+      `a saved ${theme} still drew the pixel cast`);
   }
 });
 

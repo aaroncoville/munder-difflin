@@ -138,7 +138,6 @@ const SETTING_POLICY: Record<string, {
 }> = {
   // soft: cosmetic / low-blast, instantly reversible
   notifications: { tier: 'soft', type: 'boolean' },
-  terminalTheme: { tier: 'soft', type: 'string', values: ['light', 'dark'] },
   freeflowEnabled: { tier: 'soft', type: 'boolean' },
   strongKeepalive: { tier: 'soft', type: 'boolean' },
   autoUpdate: { tier: 'soft', type: 'boolean' },

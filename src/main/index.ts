@@ -2973,7 +2973,9 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
           // expands to nothing, so every knowledge-graph instruction was dead on a
           // Windows floor. Empty when the KG is off (the line isn't emitted then).
           kgCliPath: knowledge.env().KG_CLI,
-          theme: readConfig().terminalTheme ?? 'light',
+          // The app's one theme paints every terminal on a dark ground, so the
+          // agent's own TUI is told to match it.
+          theme: 'dark',
           // W3 — default-MCP consent state + the bundled skills source dir.
           mcpDefaults: readConfig().mcpDefaults,
           skillsDir: skillsResourceDir(),

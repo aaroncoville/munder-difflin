@@ -1,5 +1,5 @@
 /**
- * The Study speaks in its own register while you are standing in it.
+ * The app speaks in the Study's own register.
  *
  * `en-SH` is not a translation — it is English said differently: assistants at
  * reading desks instead of agents on a floor, commissions instead of tasks,
@@ -10,20 +10,18 @@
  *
  * What is delicate is not the file, it is *when* the app switches to it. The
  * rule is in `voiceFor` alone, it is pure, and it exists to make one thing
- * impossible: taking somebody's language away from them because they changed a
- * theme. Somebody reading the app in Arabic did not ask for it in English, so
- * the register is offered ONLY to a reader already in English.
+ * impossible: taking somebody's language away from them. Somebody reading the
+ * app in Arabic did not ask for it in English, so the register is offered ONLY
+ * to a reader already in English.
  *
- * The switch is deliberately not persisted. It is a function of the theme and
- * the chosen language, so it recomputes on the next launch from both — which
- * leaves whatever the reader actually chose in Settings as the thing that
- * survives a restart.
+ * The switch is deliberately not persisted. It is a function of the chosen
+ * language, so it recomputes on the next launch — which leaves whatever the
+ * reader actually chose in Settings as the thing that survives a restart.
  */
 import { useEffect } from 'react';
 import i18n from './index';
-import { useAppTheme } from '@/design/theme';
 
-/** The register the occult theme speaks in. */
+/** The register the app speaks in. */
 export const THEME_VOICE = 'en-SH';
 
 /** The plain English it is a register OF, and the only language it replaces. */
@@ -35,12 +33,11 @@ const BASE = 'en';
  * Null is the common answer and it matters that it is distinguishable from
  * "switch to what you are already speaking": `changeLanguage` emits
  * `languageChanged`, which re-renders every translated component, and a rule
- * that returned the current language on every read would do that on every
- * theme subscription tick.
+ * that returned the current language on every read would loop on its own
+ * answer.
  */
-export function voiceFor(theme: string, current: string): string | null {
-  if (theme === 'occult') return current === BASE ? THEME_VOICE : null;
-  return current === THEME_VOICE ? BASE : null;
+export function voiceFor(current: string): string | null {
+  return current === BASE ? THEME_VOICE : null;
 }
 
 /** The part of an i18next instance the watcher needs, so the rule can be run
@@ -53,13 +50,11 @@ export interface VoiceI18n {
 }
 
 /**
- * Hold `inst` to the rule for `theme` until the returned function is called.
+ * Hold `inst` to the rule until the returned function is called.
  *
- * Both inputs to `voiceFor` move independently, so both have to be watched.
- * The theme is the obvious one; the language is not, and reacting to the theme
- * alone leaves a real gap: pick English in Settings while standing in the
- * Study and you get plain English, with the house register arriving only
- * whenever something else happened to re-run the effect.
+ * Applying the rule once at start-up is not enough: pick English in Settings
+ * and you would get plain English until the next launch. So the watcher also
+ * answers every language change.
  *
  * Answering `languageChanged` by calling `changeLanguage` does of course emit
  * `languageChanged` again, and this settles rather than spinning for exactly
@@ -67,9 +62,9 @@ export interface VoiceI18n {
  * would ask for. That null is the fixed point of the loop, not a nicety — the
  * second hop is always the last one.
  */
-export function watchVoice(theme: string, inst: VoiceI18n): () => void {
+export function watchVoice(inst: VoiceI18n): () => void {
   const apply = (): void => {
-    const next = voiceFor(theme, inst.language);
+    const next = voiceFor(inst.language);
     if (next) void inst.changeLanguage(next);
   };
   apply();
@@ -77,8 +72,7 @@ export function watchVoice(theme: string, inst: VoiceI18n): () => void {
   return () => inst.off('languageChanged', apply);
 }
 
-/** Keep the app's voice in step with the theme. Called once, from `App`. */
+/** Keep the app in the house register. Called once, from `App`. */
 export function useThemeVoice(): void {
-  const theme = useAppTheme();
-  useEffect(() => watchVoice(theme, i18n), [theme]);
+  useEffect(() => watchVoice(i18n), []);
 }
