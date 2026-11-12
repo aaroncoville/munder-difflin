@@ -74,7 +74,7 @@ const EVENTS: Record<string, Record<string, FieldType>> = {
   // The scoped-write-roots dry run (writeRoots.ts): path classes only, never a path.
   'write-roots': {
     agentId: 'agent', provider: { oneOf: PROVIDERS }, role: { oneOf: ['god', 'agent'] },
-    source: { oneOf: ['claude-settings-files', 'codex-config'] }, effective: 'classes', excess: 'classes'
+    source: { oneOf: ['claude-settings-files', 'codex-config', 'none'] }, effective: 'classes', excess: 'classes'
   },
   'write-would-refuse': { agentId: 'agent', tool: { oneOf: LOG_TOOLS }, via: { oneOf: VIAS }, pathClass: { oneOf: PATH_CLASSES } },
   'write-own-settings': { agentId: 'agent', tool: { oneOf: LOG_TOOLS }, via: { oneOf: VIAS } },

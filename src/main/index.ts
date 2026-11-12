@@ -398,7 +398,7 @@ hookServer.setHeavyLock(heavyLock);
 // roots would refuse are recorded in the usage log as path classes (see writeRoots.ts).
 // What the app itself spawned each agent with, kept in memory: registry.json is in the hive,
 // which agents can write, so a cwd or role read from it could be planted.
-const spawnRoots = new Map<string, { cwd: string; provider: string; isGod: boolean }>();
+const spawnRoots = new Map<string, { cwd: string; provider: string; isGod: boolean; args: string[] }>();
 const writeRootsDryRun = new WriteRootsDryRun({
   agent: (agentId) => {
     const root = hive.root();
@@ -407,9 +407,11 @@ const writeRootsDryRun = new WriteRootsDryRun({
     return {
       ctx: { root, agentId, isGod: spawned.isGod, cwd: spawned.cwd },
       provider: spawned.provider,
-      agentDir: join(root, 'agents', agentId)
+      agentDir: join(root, 'agents', agentId),
+      launch: { args: spawned.args, platform: process.platform }
     };
   },
+  known: (agentId) => spawnRoots.has(agentId),
   record: (event) => { usageLog.record(event); }
 });
 hookServer.setWriteObserver((agentId, event, p) => writeRootsDryRun.onHook(agentId, event, p));
@@ -3166,7 +3168,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // live terminal means active — ensureAgent above already cleared `archived`.
   if (opts.hive?.id) {
     ptyToAgent.set(opts.id, opts.hive.id);
-    spawnRoots.set(opts.hive.id, { cwd: opts.cwd, provider, isGod: opts.hive.isGod === true });
+    spawnRoots.set(opts.hive.id, { cwd: opts.cwd, provider, isGod: opts.hive.isGod === true, args: [opts.command, ...(opts.args ?? [])] });
     // Where this worker's Codex rollouts will be written, now that any resume
     // has settled its CODEX_HOME.
     codexHomes.recordSpawn(opts.hive.id, opts.env?.CODEX_HOME, codexResumedSession);
