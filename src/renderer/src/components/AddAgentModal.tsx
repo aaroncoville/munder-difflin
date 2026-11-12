@@ -633,7 +633,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
                         <span style={{ color: active ? 'var(--cth-ink-900)' : 'var(--cth-ink-500)' }}>{i + 1}</span>
                         {tr(s.labelKey)}
                       </span>
-                      <span style={{ fontFamily: 'var(--cth-font-ui)', fontSize: 11, color: 'var(--cth-ink-500)' }}>
+                      <span style={{ fontFamily: 'var(--cth-font-ui)', fontSize: 11, color: active ? 'var(--cth-ink-700)' : 'var(--cth-ink-500)' }}>
                         {tr(s.hintKey)}
                       </span>
                     </button>
