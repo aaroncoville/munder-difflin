@@ -37,7 +37,8 @@ async function openServer(t) {
   const logs = [];
   const hive = {
     sockPath: () => sock,
-    appendLog: (entry) => logs.push(entry)
+    appendLog: (entry) => logs.push(entry),
+    registry: () => ({ agents: { 'worker-big': {} } })
   };
   const server = new HookServer(hive, () => null, () => ({ notifications: false }));
 
@@ -185,4 +186,17 @@ test('payload one byte above the limit is rejected', async (t) => {
     bytes: MAX_HOOK_FRAME_BYTES + 1,
     limit: MAX_HOOK_FRAME_BYTES
   }]);
+});
+
+test('an oversized frame is logged with the sender ids from its head, not its content', async (t) => {
+  const { sock, logs } = await openServer(t);
+  const head = '{"hook_event_name":"PostToolUse","agent_id":"worker-big","tool_name":"Read","tool_response":"';
+  const body = Buffer.concat([Buffer.from(head), Buffer.alloc(MAX_HOOK_FRAME_BYTES + 1, 0x78)]);
+  await sendChunks(sock, [body], 0, 400);
+  const rejected = logs.filter((l) => l.kind === 'hook-frame-rejected');
+  assert.equal(rejected.length, 1);
+  assert.equal(rejected[0].agentId, 'worker-big');
+  assert.equal(rejected[0].hookEvent, 'PostToolUse');
+  assert.equal(rejected[0].toolName, 'Read');
+  assert.doesNotMatch(JSON.stringify(rejected[0]), /xxxx/);
 });

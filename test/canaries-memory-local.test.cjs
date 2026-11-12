@@ -126,3 +126,19 @@ test('a loopback server that redirects off-host is refused, with no off-host con
   assert.ok(sockets.every((h) => LOOPBACK.has(h)), sockets.join(','));
   assert.deepEqual(spawned, []);
 });
+
+test('a server that drops the connection mid-reply resolves the probe instead of leaving it pending', async (t) => {
+  const server = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => { res.writeHead(200, { 'content-type': 'application/json' }); res.write('{"results":['); setTimeout(() => res.socket.destroy(), 20); });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  t.after(() => server.close());
+  const pending = Symbol('pending');
+  const out = await Promise.race([
+    C.localRecall(`http://127.0.0.1:${server.address().port}`, 'b', 'q', 1, 'god'),
+    new Promise((r) => setTimeout(() => r(pending), 2000).unref())
+  ]);
+  assert.notEqual(out, pending, 'localRecall never settled after the socket closed');
+  assert.equal(out.ok, false);
+});

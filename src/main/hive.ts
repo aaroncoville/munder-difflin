@@ -1861,10 +1861,13 @@ export class HiveManager {
     // Targets that actually took delivery. The log below reports these instead of
     // intent, so a bounced or dropped message can never read as delivered.
     const delivered: string[] = [];
-    const tellObserver = (landed: string[]): void => {
+    // The routed observer keeps its resolved-target view; the delivery listener
+    // hears only recipients that took a copy.
+    const tellObserver = (resolved: string[], landed: string[]): void => {
       const replaced = this.replacedIds.get(msg.id) ?? {};
       this.replacedIds.delete(msg.id);
-      try { this.routedObserver?.(msg, landed, replaced); } catch { /* observer error */ }
+      try { this.routedObserver?.(msg, resolved, replaced); } catch { /* observer error */ }
+      try { this.deliveryListener?.(msg, landed, replaced); } catch { /* listener error */ }
     };
     let bounced = false;
     const bounce = (subject: string): void => { if (this.bounceToGod(msg, godId, subject)) bounced = true; };
@@ -1953,14 +1956,14 @@ export class HiveManager {
     }
     } catch (error) {
       // Copies that landed before this still have to be known by their ids.
-      tellObserver(delivered);
+      tellObserver(delivered, delivered);
       throw error;
     }
     this.appendLog({ kind: 'message', from: msg.from, to: msg.to, act: msg.act, subject: msg.subject, id: msg.id, delivered });
     this.emitMessage(msg, targets);
     // Main-process observer (e.g. the closing-time controller watching for the
     // team's ACKs and the god's COMPLETE). Best-effort, never breaks routing.
-    tellObserver(targets);
+    tellObserver(targets, delivered);
     return targets.length === 0 || delivered.length > 0 || bounced;
   }
 
@@ -1971,6 +1974,12 @@ export class HiveManager {
   private readonly replacedIds = new Map<string, Record<string, string>>();
   setRoutedObserver(cb: ((msg: HiveMessage, targets: string[], replaced: Record<string, string>) => void) | null): void {
     this.routedObserver = cb;
+  }
+
+  /** A second, independent listener for routed mail (the usage log's turn tracker), so it never shares the routed observer's slot. */
+  private deliveryListener: ((msg: HiveMessage, landed: string[], replaced: Record<string, string>) => void) | null = null;
+  setDeliveryListener(cb: ((msg: HiveMessage, landed: string[], replaced: Record<string, string>) => void) | null): void {
+    this.deliveryListener = cb;
   }
 
   /** Tell the renderer a message was routed, with its resolved recipients, so

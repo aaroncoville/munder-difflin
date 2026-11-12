@@ -67,3 +67,24 @@ for l in open('log.jsonl'):
             print(e['ts'], e['feature'], e.get('detail'), e.get('mismatched'))
 PY
 ```
+
+## Floor events (`<hive>/log.jsonl`)
+
+| kind | Fields | Written when |
+|---|---|---|
+| `turn` | `agentId?`, `startTs`, `durationMs`, `trigger` (`mail` / `heartbeat` / `scheduler` / `breaker` / `system` / `direct`), `from?`, `triggerRef?` (the message id, as a keyed ref), `cardId?` (when the conversation is a card) or `conversationRef?` | A Claude agent's turn ends (Stop hook). The trigger is the newest hive delivery that actually landed in that agent's inbox in the 10 minutes before its prompt (a bounced or dropped message is never a cause). `direct` means no delivery, so someone typed or the session resumed |
+| `card-transition` | `sampled: true`, `cardId?`, `from?` (null for a new card), `to?` | A card's status differs between two reads of `tasks.json` (see "Sampled task rows" below). The first read after start is the baseline and logs nothing |
+| `ask-filed` | `sampled: true`, `cardId?`, `askKey?` (`<cardId>@<askedAt as ISO>`) | A new `humanQA` entry appears |
+| `ask-answered` | `sampled: true`, `cardId?`, `askKey?`, `msSinceAsked?`, `answerLen`, `answerShape` (`done-ack` / `option` / `short` / `sentence` / `long`) | An ask gets its answer. The answer text is never copied |
+| `heavy-lock` `acquire` | adds `waitMs` | The agent had been queued for that slot |
+| `hook-frame-rejected` | adds `agentId?`, `hookEvent?`, `toolName?` | Read from the top level of the first 4 KB of the oversized message (never from tool input or other nested content). The agent id only if it is on the roster; the event and tool as a known name, else `other` |
+
+**Only ids the harness itself holds are written as they are.** A string an agent or a sender controls is written verbatim only when it belongs to a set the app holds: agent ids on the roster (or the fixed senders `heartbeat`, `scheduler`, `breaker`, `system`, `human`, `pipeline`), card ids in the current `tasks.json`, card statuses (`todo`, `doing`, `blocked`, `done`), and fixed lists of hook events and built-in tool names. A shape check is not enough: words joined with dots or dashes look like an id, and a sender can choose values shaped exactly like the router's own ids. So message ids and conversations are never written as they are: they become `triggerRef` / `conversationRef`, the first 12 hex of an HMAC-SHA-256 keyed with a random secret kept in the app's own data folder (not the hive). The one exception is a conversation that names a card in `tasks.json`, written as `cardId`. Rows can be grouped by refs, but the text cannot be read back or confirmed by guessing. If the secret file is found unreadable or short it is replaced once and a `usage-ref-secret-reset` row (no value) marks where refs stop matching earlier ones. Ask times are parsed and written back as ISO, never copied. A field that fails is left out and the rest of the row is kept.
+
+The roster and `tasks.json` are themselves files agents can write: this rule keeps unintended text out of the log, and is not a defence against an agent that edits those files to plant text.
+
+**Sampled task rows.** `tasks.json` is written directly by the orchestrator, so the app compares one read every 30 s with the previous one. These rows are therefore samples, and carry `sampled: true`: a card that goes `todo -> doing -> done` between two reads appears as one `todo -> done` row, and an ask filed and removed between reads never appears. For the same reason no row claims a time in state: `doing -> done` can hide `doing -> blocked -> done`. The weekly digest takes state hours from the rows' own timestamps and labels them as sampled. Authoritative transition events, one per change, arrive with the pipeline's card log; until then, read these rows as samples.
+
+**Dollars per turn:** join `turn` spans with `cost-ledger.jsonl` rows for the same agent between `startTs` and `startTs + durationMs` (the `usd` column is cumulative per session, so take positive differences).
+
+**Not logged:** review rounds and verdicts. Today they exist only in message text, so capturing them would mean logging content. They become measurable once verdicts are sent as structured fields.

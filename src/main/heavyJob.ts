@@ -315,7 +315,7 @@ export class HeavyJobLock {
   private readonly calls = new Map<number, HeavyCall>();
   private nextKey = 1;
   private readonly queue: Array<{ agentId: string; kind: HeavyKind; since: number }> = [];
-  private readonly reservations = new Map<string, { kind: HeavyKind; until: number }>();
+  private readonly reservations = new Map<string, { kind: HeavyKind; until: number; queuedSince?: number }>();
   private timer: unknown = null;
   private readonly now: () => number;
   private readonly setTimer: (fn: () => void, ms: number) => unknown;
@@ -357,12 +357,15 @@ export class HeavyJobLock {
     this.expire();
     this.serve(); // a raised limit serves the queue before anyone new
     if (cls.kind === 'suite' && this.reservations.get(agentId)?.kind !== 'suite' && !this.suiteRoom()) return this.refuse(agentId, cls, limit, true);
+    const reservation = this.reservations.get(agentId);
     const reserved = this.reservations.delete(agentId);
     if (!reserved && this.calls.size + this.reservations.size >= limit) return this.refuse(agentId, cls, limit);
     const now = this.now();
     const key = this.nextKey++;
     this.calls.set(key, { key, agentId, callId, kind: cls.kind, label: cls.why ?? cls.kind, command: command.slice(0, COMMAND_KEEP), why: cls.why, session, since: now, touched: now, background, posted: false, seen: false, misses: 0 });
-    this.log({ kind: 'heavy-lock', action: 'acquire', agentId, heavyKind: cls.kind, job: cls.why, background, limit, reserved });
+    // How long the agent queued for this slot, for the usage log (measure only).
+    const waitMs = reserved && reservation?.queuedSince !== undefined ? now - reservation.queuedSince : undefined;
+    this.log({ kind: 'heavy-lock', action: 'acquire', agentId, heavyKind: cls.kind, job: cls.why, background, limit, reserved, ...(waitMs !== undefined ? { waitMs } : {}) });
     this.arm();
     return { allow: true, acquired: true };
   }
@@ -466,7 +469,7 @@ export class HeavyJobLock {
       let told = true;
       try { if (this.d.notify) told = this.d.notify(w.agentId, w.kind, until) !== false; } catch { told = false; }
       if (!told) { this.log({ kind: 'heavy-lock', action: 'notice-failed', agentId: w.agentId, heavyKind: w.kind }); continue; }
-      this.reservations.set(w.agentId, { kind: w.kind, until });
+      this.reservations.set(w.agentId, { kind: w.kind, until, queuedSince: w.since });
       this.log({ kind: 'heavy-lock', action: 'reserve', agentId: w.agentId, heavyKind: w.kind, until });
       this.arm();
     }

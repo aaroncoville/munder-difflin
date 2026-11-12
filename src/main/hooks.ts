@@ -21,6 +21,7 @@ import type { ControlRegistry } from './control';
 import type { CircuitBreaker } from './breaker';
 import { estimateCostUsd } from './pricing';
 import { validateHookEvent } from '../shared/hookEvents';
+import { frameIds } from './usageEvents';
 
 /** Maximum JSON payload bytes in one newline-delimited hook frame. */
 const MAX_HOOK_FRAME_BYTES = 256 * 1024;
@@ -293,6 +294,8 @@ export class HookServer {
         reason: 'frame-too-large',
         bytes,
         limit: MAX_HOOK_FRAME_BYTES,
+        // Who sent it, from the head of the message: ids only, never its content.
+        ...frameIds(pending, (id) => { try { return Object.hasOwn(this.hive.registry().agents, id); } catch { return false; } }),
       });
       conn.destroy();
     };
