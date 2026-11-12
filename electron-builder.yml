@@ -62,6 +62,10 @@ files:
 extraResources:
   - from: resources/md-slack-reply.cjs
     to: md-slack-reply.cjs
+  # Proxy-bridge sidecar the main process starts for hookless CLIs. It runs from
+  # here, never from the hive folder, which every agent can write.
+  - from: resources/hive-proxy.cjs
+    to: hive-proxy.cjs
   # Knowledge Graph agent CLI + its pure-JS core. Agents invoke `node
   # <resources>/kg.cjs` out-of-process; kg-core.cjs ships beside it so the CLI's
   # `require('./kg-core.cjs')` resolves outside the asar.

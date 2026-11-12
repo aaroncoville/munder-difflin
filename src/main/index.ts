@@ -1,6 +1,7 @@
 import { seedCodexHookTrust } from './codexHookTrust';
 import { applyGitCommitsSetting, gitCommitsDisabled } from './hiveGitSetting';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
+import { bundledResourcePath } from './resourcePaths';
 import { spawn } from 'node:child_process';
 import {
   rmSync, existsSync, readFileSync, readdirSync, statSync, cpSync, writeFileSync,
@@ -245,6 +246,11 @@ const hive = new HiveManager(
     try { wc.send(channel, payload); return true; } catch { return false; }
   }
 );
+// The proxy bridge runs from the app's own resources. Never from the hive folder:
+// every agent can write there, and this process starts the script.
+hive.setProxyBridgeScript(bundledResourcePath('hive-proxy.cjs', {
+  isPackaged: app.isPackaged, resourcesPath: process.resourcesPath, appPath: app.getAppPath()
+}));
 // #7C — operator control state (pause/gate/steer/halt), read by the HookServer
 // when deciding hook returns.
 const control = new ControlRegistry();
