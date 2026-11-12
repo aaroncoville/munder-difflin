@@ -218,7 +218,7 @@ export interface Registry {
 /** A launch as the spawn will make it: argv[0] is the command string, then its arguments; env holds only the variables that move configuration. */
 export interface HookLaunch { argv: string[]; env: Record<string, string> }
 /** What ensureAgent decided for a Claude or Codex spawn, carried to the late check. */
-export interface HookVerdict { agentId: string; kind: 'claude' | 'codex'; rt: StagedHookRuntime; rootPaths: string[]; claudeUserDir?: string; codexFromConfig?: boolean; dir: string; cwd: string; isNew: boolean }
+export interface HookVerdict { agentId: string; kind: 'claude' | 'codex'; rt: StagedHookRuntime; rootPaths: string[]; claudeUserDir?: string; codexFromConfig?: boolean; dir: string; cwd: string; isNew: boolean; /** True when the agent's folder did not exist before this spawn. */ dirCreated?: boolean }
 
 export interface SpawnInjection {
   args: string[];
@@ -767,6 +767,17 @@ export class HiveManager {
     if (!rt || 'refuse' in r) return null;
     return { agentId: meta.id, kind, rt, rootPaths: r.roots.map((x) => x.path).filter((x): x is string => !!x), claudeUserDir: r.claudeUserDir, codexFromConfig: r.codexFromConfig, dir, cwd: meta.cwd, isNew };
   }
+  /** The late check for one spawn, by its id: the decision ensureAgent made for exactly this spawn must exist and be for
+   *  this agent. A Claude or Codex spawn with no decision (while a runtime folder is set), or another agent's, refuses. */
+  confirmSpawn(spawnId: string, meta: Pick<AgentMeta, 'id' | 'provider'>, argv: string[], env: Record<string, string>): void {
+    const v = this.takeHookVerdict(spawnId);
+    if (!v) {
+      if (this.hookRuntimeDir && this.hookKind(meta as AgentMeta)) throw new HookRuntimeUnavailable('no hook runtime decision was made for this spawn');
+      return;
+    }
+    if (v.agentId !== meta.id) throw new HookRuntimeUnavailable('the hook runtime decision on record is for another agent');
+    this.confirmHookLaunch(v, argv, env);
+  }
   /** The late check, just before the terminal starts: the FINAL launch line and environment must imply nothing the
    *  verdict did not check. Reads no settings files (the verdict is the snapshot). A refusal here rolls back a new agent's
    *  folder and registry row and logs that it did. */
@@ -797,22 +808,26 @@ export class HiveManager {
       if (!p || !checked.has(resolvePath(p))) fail(`its final launch line adds a write root that was not checked: ${d}`);
     }
   }
-  /** Undo what ensureAgent did for an agent it created in this spawn. An agent that already existed keeps its row. */
+  /** Undo what ensureAgent did for this spawn: only the registry row this call added. Main never deletes under the hive
+   *  root or an agent folder, so no folder is removed, ever; one this call created is left in place and named in the log. */
   private rollbackSpawn(v: HookVerdict, why: string): void {
     try {
       this.hookRuntimeRefused.set(v.agentId, { reason: why, at: Date.now() });
+      let rowRemoved = false;
       if (v.isNew) {
         const root = this.root();
         const reg = this.readableRegistry();
         if (root && reg && Object.hasOwn(reg.agents, v.agentId)) {
           delete reg.agents[v.agentId];
           this.atomicWriteJson(join(root, 'registry.json'), reg);
+          rowRemoved = true;
         }
-        const st = lstatSync(v.dir);
-        if (st.isDirectory() && !st.isSymbolicLink()) rmSync(v.dir, { recursive: true, force: true });
       }
-      this.appendLog({ kind: 'spawn-rolled-back', agentId: isFolderName(v.agentId) ? v.agentId : shortTarget(v.agentId), removed: v.isNew, reason: why });
-      if (v.isNew) this.commit(`hive: roll back ${v.agentId}`);
+      this.appendLog({
+        kind: 'spawn-rolled-back', agentId: isFolderName(v.agentId) ? v.agentId : shortTarget(v.agentId), rowRemoved,
+        ...(v.dirCreated ? { folderLeft: v.dir } : {}), reason: why
+      });
+      if (rowRemoved) this.commit(`hive: roll back ${v.agentId}`);
     } catch (e) { console.error('[hive] rollback after a refused spawn failed:', e); }
   }
   /** 'claude' or 'codex' when this agent gets the app's hook command, else null. */
@@ -1134,6 +1149,8 @@ export class HiveManager {
       extraWritableDirs?: string[];
       /** The launch the spawn will make: its command line and final environment (relocation variables only). */
       launch?: HookLaunch;
+      /** This spawn's own id (the terminal's), under which the decision is kept for the late check. */
+      spawnId?: string;
     } = {}
   ): Promise<SpawnInjection> {
     // One read for the whole operation. registry() reads a failure as an empty roster, and this would then replace the
@@ -1152,7 +1169,10 @@ export class HiveManager {
     const dir = this.agentDir(meta.id);
     // Before the agent's folder or registry entry exists: a refused spawn leaves nothing behind.
     const verdict = this.hookVerdict(meta, dir, root, opts.extraWritableDirs, opts.launch, !Object.hasOwn(roster.agents, meta.id));
-    if (verdict) this.hookVerdicts.set(meta.id, verdict); else this.hookVerdicts.delete(meta.id);
+    if (verdict) verdict.dirCreated = !existsSync(dir);
+    // Keyed by this spawn, so two overlapping spawns of one agent never share a decision.
+    const verdictKey = opts.spawnId ?? meta.id;
+    if (verdict) this.hookVerdicts.set(verdictKey, verdict); else this.hookVerdicts.delete(verdictKey);
     mkdirSync(join(dir, 'inbox', '.done'), { recursive: true });
     mkdirSync(join(dir, 'outbox', '.sent'), { recursive: true });
 

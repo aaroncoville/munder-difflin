@@ -2994,6 +2994,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
           // The launch as requested, with the environment the terminal will build, so the hook runtime
           // decision is made once, before anything for this agent is created.
           launch: { argv: [opts.command, ...(opts.args ?? [])], env: relocationEnv(buildPtyEnv(process.env, '', opts.env)) },
+          spawnId: opts.id,
           // The shared palace is mutated by the agent's own `mempalace` calls, so
           // the OS sandbox must let it through (empty when memory is off).
           extraWritableDirs: [memory.env().MEMPALACE_PALACE_PATH].filter((p): p is string => !!p)
@@ -3261,7 +3262,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   }
   // The late check on the launch exactly as it will start; a refusal here rolls back what ensureAgent created.
   if (opts.hive?.id) {
-    try { hive.confirmHookLaunch(hive.takeHookVerdict(opts.hive.id), [opts.command, ...(opts.args ?? [])], relocationEnv(buildPtyEnv(process.env, '', opts.env))); }
+    try { hive.confirmSpawn(opts.id, { id: opts.hive.id, provider }, [opts.command, ...(opts.args ?? [])], relocationEnv(buildPtyEnv(process.env, '', opts.env))); }
     catch (e) { if (e instanceof HookRuntimeUnavailable) return refuseSpawn(opts.id, opts.hive.id, provider, e); throw e; }
   }
   const res = ptyManager.spawn(opts, owner);
