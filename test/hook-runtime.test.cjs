@@ -182,7 +182,9 @@ test('a spawn fails when the agent could write the runtime: cwd, an extra root, 
   fs.writeFileSync(path.join(home, '.codex/config.toml'), `[sandbox_workspace_write]\nwritable_roots = [${JSON.stringify(base)}]\n`);
   assert.match(await refused(hive.ensureAgent({ id: 'x1', name: 'X', provider: 'codex', cwd: home })), /may write the hook runtime/);
   fs.writeFileSync(path.join(home, '.codex/config.toml'), 'sandbox_workspace_write.writable_roots = ["/"]\n');
-  assert.match(await refused(hive.ensureAgent({ id: 'x2', name: 'X', provider: 'codex', cwd: home })), /could not be read/);
+  assert.match(await refused(hive.ensureAgent({ id: 'x2', name: 'X', provider: 'codex', cwd: home })), /through \/ \(/, 'a dotted key is read, and / reaches everything');
+  fs.writeFileSync(path.join(home, '.codex/config.toml'), 'writable_roots = $X\n');
+  assert.match(await refused(hive.ensureAgent({ id: 'x3', name: 'X', provider: 'codex', cwd: home })), /could not be read/);
   fs.rmSync(path.join(home, '.codex'), { recursive: true });
   await hive.ensureAgent({ id: 'ok', name: 'OK', provider: 'claude', cwd: home });
 });
@@ -254,8 +256,12 @@ test('Windows: the bare Codex command splits into exactly the launcher and the s
   assert.deepEqual(windowsArgv(cmd), [rt.launcher, rt.shim]);
   const toml = `command = ${JSON.stringify(cmd)}`;
   assert.deepEqual(windowsArgv(JSON.parse(toml.slice('command = '.length))), [rt.launcher, rt.shim], 'the TOML string round-trips');
-  for (const bad of ['C:\\Users\\A B\\AppData\\Local\\x', 'C:\\Users\\a&b\\x', 'C:\\Users\\a%PATH%\\x', 'C:\\Program Files\\Munder Difflin\\x', 'C:\\Users\\a(1)\\x']) {
+  for (const bad of ['C:\\Users\\a&b\\x', 'C:\\Users\\a%PATH%\\x', 'C:\\Users\\a(1)\\x']) {
     assert.ok(R.unsafePathReason(bad, 'win32'), bad);
+  }
+  for (const spaced of ['C:\\Users\\A B\\AppData\\Local\\x', 'C:\\Program Files\\Munder Difflin\\x']) {
+    assert.ok(R.unsafePathReason(spaced, 'win32', true), `${spaced}: the bare Codex command cannot carry it`);
+    assert.equal(R.unsafePathReason(spaced, 'win32', false), null, `${spaced}: the quoted Claude command can`);
   }
   assert.equal(R.unsafePathReason(dir, 'win32'), null);
 });
@@ -267,4 +273,112 @@ test('the app sets the runtime from its own data folder, refuses a spawn it cann
   assert.match(fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'hooks.ts'), 'utf8'), /\{ runtime: this\.hive\.hookRuntimeStatus\(\) \}/);
   assert.doesNotMatch(main, /cth-hook\.cjs/, 'no shim path from resources or the hive');
   assert.doesNotMatch(fs.readFileSync(path.join(__dirname, '..', 'electron-builder.yml'), 'utf8'), /cth-hook/);
+});
+
+test('round 2: refusals name what to change, ~ and $HOME roots are understood, other forms are not', async (t) => {
+  const { base, home, rt, hive, root } = floor(t);
+  hive.setHookRuntime(rt);
+  const work = path.join(base, 'work');
+  fs.mkdirSync(path.join(work, '.claude'), { recursive: true });
+  const rel = path.relative(home, path.dirname(rt));
+  const settings = path.join(work, '.claude', 'settings.json');
+  for (const entry of [`~/${rel}`, `$HOME/${rel}`, `\${HOME}/${rel}`]) {
+    fs.writeFileSync(settings, JSON.stringify({ permissions: { additionalDirectories: [entry] } }));
+    const msg = await refused(hive.ensureAgent({ id: 'c1', name: 'C', provider: 'claude', cwd: work }));
+    assert.ok(msg.includes(path.dirname(rt)) && msg.includes(settings), `${entry}: ${msg}`);
+  }
+  for (const entry of ['$OTHER/x', '~someone/x', '%APPDATA%\\x']) {
+    fs.writeFileSync(settings, JSON.stringify({ sandbox: { filesystem: { allowWrite: [entry] } } }));
+    const msg = await refused(hive.ensureAgent({ id: 'c1', name: 'C', provider: 'claude', cwd: work }));
+    assert.ok(/could not be read or understood/.test(msg) && msg.includes(settings), `${entry}: ${msg}`);
+  }
+  fs.writeFileSync(settings, JSON.stringify({ permissions: { additionalDirectories: ['sub'] } }));
+  await hive.ensureAgent({ id: 'c1', name: 'C', provider: 'claude', cwd: work });
+  const managed = path.join(base, 'managed-settings.json');
+  fs.writeFileSync(managed, JSON.stringify({ sandbox: { filesystem: { allowWrite: [path.dirname(rt)] } } }));
+  hive.managedClaudeSettings = managed;
+  const mMsg = await refused(hive.ensureAgent({ id: 'c1', name: 'C', provider: 'claude', cwd: work }));
+  assert.ok(mMsg.includes(managed), mMsg);
+  fs.rmSync(managed);
+  const cwdMsg = await refused(hive.ensureAgent({ id: 'c2', name: 'C', provider: 'claude', cwd: path.dirname(rt) }));
+  assert.ok(cwdMsg.includes(path.dirname(rt)) && /working directory/.test(cwdMsg), cwdMsg);
+  assert.equal(root, path.join(home, 'hive'));
+});
+
+test('round 2: a refused new agent leaves nothing behind; the floor state stays ok and the refusal is per agent', async (t) => {
+  const { home, rt, hive, root } = floor(t);
+  hive.setHookRuntime(rt);
+  await refused(hive.ensureAgent({ id: 'nope', name: 'N', provider: 'claude', cwd: path.dirname(rt) }));
+  assert.equal(fs.existsSync(path.join(root, 'agents', 'nope')), false, 'no folder');
+  assert.equal(Object.hasOwn(hive.registry().agents, 'nope'), false, 'no registry entry');
+  const st = hive.hookRuntimeStatus();
+  assert.equal(st.ok, true, 'one agent\'s reach does not mark the floor down');
+  assert.match(st.refused.nope, /working directory/);
+  await hive.ensureAgent({ id: 'nope', name: 'N', provider: 'claude', cwd: home });
+  assert.equal(hive.hookRuntimeStatus().refused, undefined, 'cleared once it starts');
+});
+
+test('round 2: a file changed while an agent was being refused is reported, not silently restaged', async (t) => {
+  const { home, rt, hive, log } = floor(t);
+  hive.setHookRuntime(rt);
+  await refused(hive.ensureAgent({ id: 'n1', name: 'N', provider: 'claude', cwd: path.dirname(rt) }));
+  fs.appendFileSync(path.join(rt, 'cth-hook.cjs'), '\n// x');
+  await refused(hive.ensureAgent({ id: 'ok', name: 'OK', provider: 'claude', cwd: home }));
+  assert.ok(log().some((r) => r.kind === 'hook-runtime' && r.ok === false && /changed since the app wrote it/.test(r.reason)));
+  await hive.ensureAgent({ id: 'ok', name: 'OK', provider: 'claude', cwd: home });
+});
+
+test('round 2: a manager with no runtime folder says so once in the log', async (t) => {
+  const { home, hive, log } = floor(t);
+  await hive.ensureAgent({ id: 'c1', name: 'C', provider: 'claude', cwd: home });
+  await hive.ensureAgent({ id: 'c2', name: 'C', provider: 'claude', cwd: home });
+  const rows = log().filter((r) => r.kind === 'hook-runtime');
+  assert.equal(rows.length, 1);
+  assert.match(rows[0].reason, /no hook runtime folder/);
+});
+
+test('round 2: every Codex config that can add a write root is read: user, project in the cwd or above, any table form', async (t) => {
+  const { base, rt, hive } = floor(t);
+  hive.setHookRuntime(rt);
+  const app = path.dirname(rt);
+  const work = path.join(base, 'repo', 'pkg');
+  fs.mkdirSync(work, { recursive: true });
+  const above = path.join(base, 'repo', '.codex', 'config.toml');
+  const here = path.join(work, '.codex', 'config.toml');
+  const forms = [
+    [above, `[sandbox_workspace_write]\nwritable_roots = [${JSON.stringify(app)}]\n`, 'a project config above the cwd'],
+    [here, `sandbox_workspace_write.writable_roots = [${JSON.stringify(app)}]\n`, 'a dotted key in the cwd'],
+    [here, `sandbox_workspace_write = { writable_roots = [${JSON.stringify(app)}] }\n`, 'an inline table'],
+    [here, `[profiles.fast.sandbox_workspace_write]\nwritable_roots = ['${app}']\n`, 'a profile, literal string'],
+    [here, `[sandbox_workspace_write]\nwritable_roots = [\n  "/elsewhere",\n  ${JSON.stringify(app)}, # mine\n]\n`, 'a multi-line array'],
+  ];
+  let i = 0;
+  for (const [file, text, why] of forms) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, text);
+    const msg = await refused(hive.ensureAgent({ id: `x${i++}`, name: 'X', provider: 'codex', cwd: work }));
+    assert.ok(msg.includes(file) && msg.includes(app), `${why}: ${msg}`);
+    fs.rmSync(file);
+  }
+  for (const [text, why] of [['writable_roots = some_var\n', 'not an array'], ['writable_roots = ["/a"\n', 'broken'], ['writable_roots = [1]\n', 'not text']]) {
+    fs.writeFileSync(here, text);
+    assert.match(await refused(hive.ensureAgent({ id: `x${i++}`, name: 'X', provider: 'codex', cwd: work })), /could not be read or understood/, why);
+  }
+  fs.rmSync(here);
+  const benign = path.join(base, 'benign.toml');
+  fs.writeFileSync(benign, '[sandbox_workspace_write]\nwritable_roots = ["/elsewhere"]\n');
+  fs.symlinkSync(benign, here);
+  assert.match(await refused(hive.ensureAgent({ id: `x${i++}`, name: 'X', provider: 'codex', cwd: work })), /could not be read or understood/, 'a link');
+  fs.rmSync(here);
+  fs.writeFileSync(here, '[sandbox_workspace_write]\nwritable_roots = ["/elsewhere"]\n');
+  await hive.ensureAgent({ id: 'xok', name: 'X', provider: 'codex', cwd: work });
+  const userCfg = path.join(os.homedir(), '.codex', 'config.toml');
+  fs.mkdirSync(path.dirname(userCfg), { recursive: true });
+  fs.writeFileSync(userCfg, `[sandbox_workspace_write]\nwritable_roots = [${JSON.stringify(app)}]\n`);
+  assert.ok(!work.startsWith(os.homedir()), 'the cwd is outside home, so only the user config can name it');
+  assert.ok((await refused(hive.ensureAgent({ id: 'xu', name: 'X', provider: 'codex', cwd: work }))).includes(userCfg));
+  fs.rmSync(userCfg);
+  fs.mkdirSync(path.join(work, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(work, '.claude', 'settings.json'), JSON.stringify({ sandbox: { filesystem: { allowWrite: app } } }));
+  assert.match(await refused(hive.ensureAgent({ id: 'c9', name: 'C', provider: 'claude', cwd: work })), /could not be read or understood/, 'a Claude root list that is not a list');
 });

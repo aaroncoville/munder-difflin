@@ -29,11 +29,13 @@ export interface StagedHookRuntime { dir: string; launcher: string; shim: string
 
 const sha256 = (s: string | Buffer): string => createHash('sha256').update(s).digest('hex');
 
-/** Characters that would break or expand inside the generated command on this platform. On
- *  Windows the Codex command cannot carry quotes through its shell stack, so whitespace and
- *  cmd.exe metacharacters are refused outright. */
-export function unsafePathReason(p: string, platform: string): string | null {
-  if (platform === 'win32') return /[\s"%!^&|<>()`$]/.test(p) ? 'its path has a space or a shell character, which the Windows Codex command cannot quote' : null;
+/** Characters that would break or expand inside the generated command on this platform. Only the
+ *  Windows Codex command is bare (its shell stack drops quotes), so `bare` also refuses whitespace. */
+export function unsafePathReason(p: string, platform: string, bare = false): string | null {
+  if (platform === 'win32') {
+    if (/["%!^&|<>()`$]/.test(p)) return 'its path has a shell character the hook command cannot carry';
+    return bare && /\s/.test(p) ? 'its path has a space, which the Windows Codex command cannot quote' : null;
+  }
   return /["$`\\\r\n]/.test(p) ? 'its path has a quote, $, backtick or backslash, which the hook command would expand' : null;
 }
 
@@ -123,11 +125,14 @@ export function hookCommandFor(rt: StagedHookRuntime, quoted: boolean): string {
   return quoted ? `"${rt.launcher}" "${rt.shim}"` : `${rt.launcher} ${rt.shim}`;
 }
 
-/** The first root that holds the runtime folder or sits inside it; 'unknown' when a root could not be read. */
-export function rootOverlap(rt: StagedHookRuntime, roots: Array<string | null>): string | null {
+/** A write root an agent's sandbox is given, and where it came from; path null = could not be read or understood. */
+export interface WriteRoot { path: string | null; from: string }
+
+/** Why a root lets the agent reach the runtime folder, naming the root and its source; null when none does. */
+export function rootOverlap(rt: StagedHookRuntime, roots: WriteRoot[]): string | null {
   for (const r of roots) {
-    if (r === null) return 'a write root could not be read';
-    if (r && overlaps(rt.dir, r)) return 'the agent may write the hook runtime folder through its working directory or a write root';
+    if (r.path === null) return `a write root in ${r.from} could not be read or understood`;
+    if (r.path && overlaps(rt.dir, r.path)) return `the agent may write the hook runtime folder through ${r.path} (${r.from})`;
   }
   return null;
 }

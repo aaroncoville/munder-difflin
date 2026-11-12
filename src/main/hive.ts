@@ -23,9 +23,9 @@ import {
   readdirSync, statSync, lstatSync, realpathSync, rmSync, appendFileSync,
   symlinkSync, unlinkSync, copyFileSync, cpSync, chmodSync
 } from 'node:fs';
-import { join, dirname, basename, isAbsolute, relative } from 'node:path';
+import { join, dirname, basename, isAbsolute, relative, resolve as resolvePath } from 'node:path';
 import { homedir } from 'node:os';
-import { HookRuntimeUnavailable, hookCommandFor, overlaps, rootOverlap, stageHookRuntime, verifyHookRuntime, type StagedHookRuntime } from './hookRuntime';
+import { HookRuntimeUnavailable, hookCommandFor, overlaps, rootOverlap, stageHookRuntime, unsafePathReason, verifyHookRuntime, type StagedHookRuntime, type WriteRoot } from './hookRuntime';
 import { spawnSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
 import type { AgentUsageSample } from './usage';
@@ -527,76 +527,153 @@ export class HiveManager {
   private hookRuntimeDir: string | null = null;
   private hookRuntime: StagedHookRuntime | null = null;
   private hookRuntimeState: { configured: boolean; ok: boolean; reason?: string } = { configured: false, ok: false };
+  /** Agents whose last spawn was refused because they could reach the folder: per agent, not the floor's state. */
+  private hookRuntimeRefused = new Map<string, string>();
+  private warnedNoRuntime = false;
+  /** The machine-wide Claude settings file (a field so a test can point it elsewhere). */
+  private managedClaudeSettings = process.platform === 'darwin' ? '/Library/Application Support/ClaudeCode/managed-settings.json'
+    : process.platform === 'win32' ? 'C:\\ProgramData\\ClaudeCode\\managed-settings.json' : '/etc/claude-code/managed-settings.json';
   setHookRuntime(dir: string | null): void {
     this.hookRuntimeDir = dir;
     this.hookRuntime = null;
     this.hookRuntimeState = { configured: !!dir, ok: false };
+    this.hookRuntimeRefused.clear();
     if (!dir) return;
-    try { this.runtimeFor([]); } catch { /* recorded; every spawn retries and fails visibly */ }
+    try { this.stagedRuntime(); } catch { /* recorded; every spawn retries and fails visibly */ }
   }
-  /** Whether hooks load from the app's runtime folder, and why not if not. Absent reads as no. */
-  hookRuntimeStatus(): { configured: boolean; ok: boolean; reason?: string } {
-    return { ...this.hookRuntimeState };
+  /** Whether hooks load from the app's runtime folder, and why not if not; `refused` lists agents
+   *  whose own write roots reach it. Absent reads as no. */
+  hookRuntimeStatus(): { configured: boolean; ok: boolean; reason?: string; refused?: Record<string, string> } {
+    const refused = Object.fromEntries(this.hookRuntimeRefused);
+    return { ...this.hookRuntimeState, ...(this.hookRuntimeRefused.size ? { refused } : {}) };
   }
-  /** The staged, verified runtime for a spawn whose agent may write `roots` (null = a root that
-   *  could not be read), or null when no folder is configured. Throws HookRuntimeUnavailable. */
-  private runtimeFor(roots: Array<string | null>): StagedHookRuntime | null {
-    const dir = this.hookRuntimeDir;
-    if (!dir) return null;
+  /** The folder staged and verified, or a HookRuntimeUnavailable. A file found changed is reported
+   *  as changed before it is staged afresh from the app's own text. */
+  private stagedRuntime(): StagedHookRuntime {
+    const dir = this.hookRuntimeDir as string;
     try {
       const root = this.root();
-      if (!this.hookRuntime) {
+      if (this.hookRuntime) verifyHookRuntime(this.hookRuntime);
+      else {
         this.hookRuntime = stageHookRuntime({
           dir, hiveRoot: root, platform: process.platform,
           launcher: { name: process.platform === 'win32' ? 'hive-node.cmd' : 'hive-node', content: this.nodeLauncherContent(), mode: 0o700 },
           shim: { name: 'cth-hook.cjs', content: HOOK_SHIM, mode: 0o600 },
         });
-      } else verifyHookRuntime(this.hookRuntime);
-      if (!root || overlaps(dir, root)) throw new HookRuntimeUnavailable('its folder overlaps the hive folder, or the hive folder is not known');
-      const why = rootOverlap(this.hookRuntime, roots);
-      if (why) throw new HookRuntimeUnavailable(why);
+      }
+      if (!root || overlaps(dir, root)) throw new HookRuntimeUnavailable(`its folder ${dir} overlaps the hive folder, or the hive folder is not known`);
       if (!this.hookRuntimeState.ok) this.noteRuntime(true);
       return this.hookRuntime;
     } catch (e) {
       const err = e instanceof HookRuntimeUnavailable ? e : new HookRuntimeUnavailable(String((e as Error)?.message ?? e));
-      // A changed file is not re-trusted: the next spawn stages it afresh from the app's own text.
+      // Not re-trusted: the next spawn stages it afresh from the app's own text, after this row.
       this.hookRuntime = null;
       this.noteRuntime(false, err.message);
       throw err;
     }
   }
+  /** The runtime for one agent's spawn, or null when no folder is configured (then no hook command
+   *  is written, and that is logged once). Throws HookRuntimeUnavailable, naming what to change. */
+  private runtimeFor(agentId: string, roots: WriteRoot[], bare = false): StagedHookRuntime | null {
+    if (!this.hookRuntimeDir) {
+      if (!this.warnedNoRuntime) {
+        this.warnedNoRuntime = true;
+        try { this.appendLog({ kind: 'hook-runtime', ok: false, reason: 'no hook runtime folder is set, so sessions start without hooks' }); } catch { /* best effort */ }
+      }
+      return null;
+    }
+    const rt = this.stagedRuntime();
+    const unsafe = bare ? unsafePathReason(rt.dir, process.platform, true) : null;
+    const why = unsafe ? `${unsafe}: ${rt.dir}` : rootOverlap(rt, roots);
+    if (why) {
+      // This agent's problem, not the floor's: the folder itself is fine.
+      this.hookRuntimeRefused.set(agentId, why);
+      try { this.appendLog({ kind: 'hook-runtime', ok: false, agentId: shortTarget(agentId), reason: why }); } catch { /* the refusal still says it */ }
+      throw new HookRuntimeUnavailable(why);
+    }
+    this.hookRuntimeRefused.delete(agentId);
+    return rt;
+  }
   private noteRuntime(ok: boolean, reason?: string): void {
     this.hookRuntimeState = { configured: true, ok, ...(reason ? { reason } : {}) };
     try { this.appendLog({ kind: 'hook-runtime', ok, ...(reason ? { reason } : {}) }); } catch { /* the state above still says it */ }
   }
-  /** Write roots a Claude session also merges from the user's and the project's settings; null for a file that cannot be read. */
-  private claudeSettingsRoots(cwd: string): Array<string | null> {
-    const files = [join(homedir(), '.claude', 'settings.json'), ...(cwd ? [join(cwd, '.claude', 'settings.json'), join(cwd, '.claude', 'settings.local.json')] : [])];
-    const out: Array<string | null> = [];
+  /** A root as written in a settings file: ~ and $HOME expanded, relative ones against the cwd; any other
+   *  variable or form is not understood (null). */
+  private settingsRoot(x: unknown, cwd: string): string | null {
+    if (typeof x !== 'string' || !x) return null;
+    const home = homedir();
+    let v = x.replace(/^~(?=$|[\\/])/, home).replace(/^\$\{?HOME\}?(?=$|[\\/])/, home);
+    if (/[$~%`]/.test(v)) return null;
+    if (!isAbsolute(v)) { if (!cwd) return null; v = join(cwd, v); }
+    return resolvePath(v);
+  }
+  /** Write roots a Claude session merges from managed, user and project settings. */
+  private claudeSettingsRoots(cwd: string): WriteRoot[] {
+    const managed = this.managedClaudeSettings;
+    const files = [managed, join(homedir(), '.claude', 'settings.json'), ...(cwd ? [join(cwd, '.claude', 'settings.json'), join(cwd, '.claude', 'settings.local.json')] : [])];
+    const out: WriteRoot[] = [];
     for (const f of files) {
       if (!existsSync(f)) continue;
       try {
         const v = JSON.parse(readFileSync(f, 'utf8')) as { sandbox?: { filesystem?: { allowWrite?: unknown } }; permissions?: { additionalDirectories?: unknown } } | null;
-        const list = [...(Array.isArray(v?.sandbox?.filesystem?.allowWrite) ? v!.sandbox!.filesystem!.allowWrite as unknown[] : []),
-          ...(Array.isArray(v?.permissions?.additionalDirectories) ? v!.permissions!.additionalDirectories as unknown[] : [])];
-        for (const x of list) out.push(typeof x === 'string' ? (isAbsolute(x) ? x : join(cwd, x)) : null);
-      } catch { out.push(null); }
+        const a = v?.sandbox?.filesystem?.allowWrite;
+        const b = v?.permissions?.additionalDirectories;
+        // Present but not a list is not understood; absent adds nothing.
+        if ((a !== undefined && !Array.isArray(a)) || (b !== undefined && !Array.isArray(b))) { out.push({ path: null, from: f }); continue; }
+        for (const x of [...(a as unknown[] ?? []), ...(b as unknown[] ?? [])]) out.push({ path: this.settingsRoot(x, cwd), from: f });
+      } catch { out.push({ path: null, from: f }); }
     }
     return out;
   }
-  /** writable_roots the user's own Codex config adds (the generated config keeps them); null when they cannot be read. */
-  private codexUserRoots(): Array<string | null> {
-    const f = join(homedir(), '.codex', 'config.toml');
-    if (!existsSync(f)) return [];
+  /** Every writable_roots entry in one Codex config file, in any table (a profile, a dotted key, an
+   *  inline table); [] when the file is absent. A link, a non-file, or an entry not fully understood
+   *  is a root that could not be read. */
+  private codexConfigRoots(file: string, cwd: string): WriteRoot[] {
+    let st;
+    try { st = lstatSync(file); } catch (e) { return (e as NodeJS.ErrnoException).code === 'ENOENT' || (e as NodeJS.ErrnoException).code === 'ENOTDIR' ? [] : [{ path: null, from: file }]; }
+    if (st.isSymbolicLink() || !st.isFile() || st.size > 1024 * 1024) return [{ path: null, from: file }];
     let text: string;
-    try { text = readFileSync(f, 'utf8'); } catch { return [null]; }
-    if (/^\s*"?sandbox_workspace_write"?\s*[.=]/m.test(text)) return [null];
-    const m = /^\s*writable_roots\s*=\s*(\[[^\]]*\])/m.exec(text);
-    if (!m) return [];
-    try {
-      const v = JSON.parse(m[1].replace(/,\s*\]/, ']')) as unknown;
-      return Array.isArray(v) ? v.map((x) => (typeof x === 'string' ? x : null)) : [null];
-    } catch { return [null]; }
+    try { text = readFileSync(file, 'utf8'); } catch { return [{ path: null, from: file }]; }
+    const mentions = (text.match(/writable_roots/g) ?? []).length;
+    const arrays = [...text.matchAll(/writable_roots"?\s*=\s*(\[[^\]]*\])/g)];
+    if (arrays.length !== mentions) return [{ path: null, from: file }];
+    const out: WriteRoot[] = [];
+    for (const m of arrays) {
+      // TOML literal strings ('...') hold no escapes; as JSON they are the same text in double quotes.
+      const json = m[1].replace(/#[^\n]*/g, '').replace(/'([^'\\"\n]*)'/g, '"$1"').replace(/,\s*\]/, ']');
+      let v: unknown;
+      try { v = JSON.parse(json); } catch { return [{ path: null, from: file }]; }
+      if (!Array.isArray(v)) return [{ path: null, from: file }];
+      for (const x of v) out.push({ path: this.settingsRoot(x, cwd), from: file });
+    }
+    return out;
+  }
+  /** Codex write roots from every config it merges: the user's (copied into the generated one) and a
+   *  project .codex/config.toml in the working directory or any folder above it. The app passes no -c. */
+  private codexUserRoots(cwd = ''): WriteRoot[] {
+    const out = this.codexConfigRoots(join(homedir(), '.codex', 'config.toml'), '');
+    if (cwd && isAbsolute(cwd)) {
+      for (let d = resolvePath(cwd); ; d = dirname(d)) {
+        out.push(...this.codexConfigRoots(join(d, '.codex', 'config.toml'), d));
+        if (dirname(d) === d) break;
+      }
+    }
+    return out;
+  }
+  /** Every root a Claude or Codex agent's sandbox may write, labelled with where it comes from. */
+  private agentRoots(meta: AgentMeta, dir: string, root: string, extra: string[] | undefined, kind: 'claude' | 'codex'): WriteRoot[] {
+    return [
+      { path: meta.cwd, from: 'its working directory' },
+      ...this.sandboxWritableDirs(meta, dir, root, extra).map((p) => ({ path: p, from: 'the write roots the app gives it' })),
+      ...(kind === 'claude' ? this.claudeSettingsRoots(meta.cwd) : this.codexUserRoots(meta.cwd)),
+    ];
+  }
+  /** 'claude' or 'codex' when this agent gets the app's hook command, else null. */
+  private hookKind(meta: AgentMeta): 'claude' | 'codex' | null {
+    if (isClaudeProvider(meta.provider ?? 'claude')) return 'claude';
+    const desc = bridgeOf(meta.provider);
+    return desc && desc.kind === 'hooks' && desc.shim === 'codex' ? 'codex' : null;
   }
 
   /** The hook command from a verified runtime: quoted for POSIX JSON/TOML, bare where quotes do not survive. */
@@ -925,6 +1002,9 @@ export class HiveManager {
     const asRead = JSON.stringify(roster);
 
     const dir = this.agentDir(meta.id);
+    // Before the agent's folder or registry entry exists: a refused spawn leaves nothing behind.
+    const hookKind = this.hookKind(meta);
+    if (hookKind) this.runtimeFor(meta.id, this.agentRoots(meta, dir, root, opts.extraWritableDirs, hookKind), hookKind === 'codex' && process.platform === 'win32');
     mkdirSync(join(dir, 'inbox', '.done'), { recursive: true });
     mkdirSync(join(dir, 'outbox', '.sent'), { recursive: true });
 
@@ -1060,7 +1140,7 @@ export class HiveManager {
         // Outside the try below, which logs and carries on: a hook runtime that cannot be staged,
         // verified or kept out of this agent's reach fails the spawn.
         if (desc.kind === 'hooks' && desc.shim === 'codex') {
-          this.runtimeFor([meta.cwd, ...this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs), ...this.codexUserRoots()]);
+          this.runtimeFor(meta.id, this.agentRoots(meta, dir, root, opts.extraWritableDirs, 'codex'), process.platform === 'win32');
         }
         try {
           if (desc.kind === 'hooks') {
@@ -1202,7 +1282,7 @@ export class HiveManager {
     const sock = this.sockPath();
     if (sock) {
       const writable = this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs);
-      const rt = this.runtimeFor([meta.cwd, ...writable, ...this.claudeSettingsRoots(meta.cwd)]);
+      const rt = this.runtimeFor(meta.id, this.agentRoots(meta, dir, root, opts.extraWritableDirs, 'claude'));
       env.HIVE_SOCK = sock;
       const settingsPath = join(dir, 'settings.json');
       this.writeJson(settingsPath, this.hookSettings(rt ? hookCommandFor(rt, true) : null, meta.cwd, opts.mcpDefaults, opts.theme, writable));
