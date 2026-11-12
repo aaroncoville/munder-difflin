@@ -127,3 +127,27 @@ test('property: any text written to the pipeline is filed, never throws, and onl
     assert.throws(() => JSON.parse(fs.readFileSync(path.join(outbox, f), 'utf8')), f);
   }
 });
+
+// --- what agents are told (PROTOCOL.md and their brief) ---
+
+const promptOf = (inj) => inj.args[inj.args.findIndex((a) => a === '--append-system-prompt' || a === '--prompt') + 1];
+
+test('agents are told about hive-mr only while a conductor is attached with its path', async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-pipe-brief-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const hive = new HiveManager(() => home);
+  const cli = '/Applications/Munder Difflin.app/Contents/Resources/hive-mr.cjs';
+  const off = promptOf(await hive.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: home, isGod: true }));
+  assert.doesNotMatch(off, /hive-mr/);
+  hive.setPipelineSink(() => {}, cli);
+  const on = promptOf(await hive.ensureAgent({ id: 'worker-9', name: 'W', provider: 'claude', cwd: home }));
+  assert.ok(on.includes(`"${cli}" submit`) && on.includes(`"${cli}" verdict --request`));
+  hive.setPipelineSink(null, cli);
+  const detached = promptOf(await hive.ensureAgent({ id: 'worker-8', name: 'V', provider: 'claude', cwd: home }));
+  assert.doesNotMatch(detached, /hive-mr/);
+  const protocol = fs.readFileSync(path.join(home, 'hive', 'PROTOCOL.md'), 'utf8');
+  assert.match(protocol, /## The merge-request pipeline/);
+  assert.match(protocol, /hive-mr submit --card/);
+  assert.match(protocol, /hive-mr verdict --request/);
+  assert.match(protocol, /Do not write or edit those\s+by hand/);
+});

@@ -1688,6 +1688,9 @@ export class HiveManager {
     // cmd.exe/PowerShell as well as a POSIX shell.
     const hiveNode = this.nodeCommand();
     const kgCli = kgCliPath || (process.platform === 'win32' ? '%KG_CLI%' : '$KG_CLI');
+    const pipelineLine = this.pipelineCli
+      ? `MERGE-REQUEST PIPELINE: when a task card is enrolled in the pipeline, you report to it with hive-mr, never in free text: \`"${hiveNode}" "${this.pipelineCli}" submit ...\` when your MR is pushed, and \`"${hiveNode}" "${this.pipelineCli}" verdict --request <message id> ...\` to answer a review request. See "The merge-request pipeline" in PROTOCOL.md.`
+      : '';
     const knowledgeLine = knowledgeGraph
       ? `Enterprise knowledge: this organisation has a private Knowledge Graph of its own documents, policies, and business context. When a task needs that context — company-specific facts, house style, internal processes — query it instead of guessing: run \`"${hiveNode}" "${kgCli}" search "<query>"\` for ranked passages, \`"${hiveNode}" "${kgCli}" list\` to see what is available, and \`"${hiveNode}" "${kgCli}" get <id>\` for a full document. (That first path is the harness's bundled Node — use it instead of bare \`node\`, which may not be on your PATH.)`
       : '';
@@ -1732,6 +1735,7 @@ export class HiveManager {
       guardrailsLine,
       memoryLine,
       knowledgeLine,
+      pipelineLine,
       godLine,
       spawnQueueLine,
       runtimeLine,
@@ -1820,10 +1824,15 @@ export class HiveManager {
   }
 
   private pipelineSink: ((msg: HiveMessage) => void) | null = null;
+  private pipelineCli: string | null = null;
 
-  /** Attaches the merge-request pipeline's conductor, or detaches it with null. With none, mail to the pipeline is refused. */
-  setPipelineSink(sink: ((msg: HiveMessage) => void) | null): void {
+  /**
+   * Attaches the merge-request pipeline's conductor, or detaches it with null. With none, mail to the pipeline
+   * is refused and agents are not told about it. [cli] is the absolute path of hive-mr.cjs for their briefs.
+   */
+  setPipelineSink(sink: ((msg: HiveMessage) => void) | null, cli: string | null = null): void {
     this.pipelineSink = sink;
+    this.pipelineCli = sink && cli && isAbsolute(cli) ? cli : null;
   }
 
   /** One outbox message addressed to the pipeline: read [text] strictly, hand a valid payload to the conductor, else refuse it to the sender. */
@@ -3562,6 +3571,27 @@ The hive shares searchable semantic memory through the \`hive-memory\` command:
 
 Your \`memory.md\` is indexed automatically, so the durable facts you
 write there become searchable by every agent. You don't run \`mine\` yourself.
+
+## The merge-request pipeline (when enabled)
+For a task card enrolled in the pipeline, the harness, not god, moves the MR from
+"submitted" to "live" by rule, and wakes god only for exceptions. You report to it
+with \`hive-mr\` (your brief gives the exact command), never in free text:
+
+- **Implementer**, once the MR is pushed and its pipeline has started:
+  \`hive-mr submit --card <card> --repo <repo> --mr <number> --kind initial|fix|rebase|pipeline-fix --summary "<what changed for the user, and where the risk is>"\`
+  Add \`--answers <request id>\` and \`--dispositions-file <json>\` when answering a fix request
+  (one disposition for every must-fix finding), and \`--needs-owner "<question>"\` for a product
+  choice only the owner can make. It reads the head from git and refuses until the branch is pushed.
+- **Reviewer**, answering a review request from \`pipeline\`:
+  \`hive-mr verdict --request <that message's id> --verdict CONFIRMED|BLOCK|ABSTAIN --findings-file <json> --report <path>\`
+  It copies the card, round and sha from the request, so a verdict always names what it was asked about.
+  CONFIRMED carries no must-fix finding, a HIGH finding is always must-fix, BLOCK needs at least one,
+  and ABSTAIN gives \`--abstain-reason\` and no findings.
+- \`hive-mr verify-log --file <log> --card <card>\` checks a card log's chain.
+
+\`hive-mr\` writes one message to \`pipeline\` in your outbox. Do not write or edit those
+by hand: the router reads them strictly and refuses anything that does not validate, with
+the reasons, from \`pipeline\`. A payload on mail to anyone else is dropped.
 `;
 
 const GENERATED_HIVE_DOCS = [
