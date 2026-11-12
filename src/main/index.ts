@@ -36,6 +36,7 @@ import { runCanaries, memoryCanary } from './canaries';
 import { TurnTracker, diffTasks, type UsageIds } from './usageEvents';
 import { loadUsageSecret, usageRef } from './usageRef';
 import { UsageLog, recordFromRenderer } from './usageLog';
+import { WriteRootsDryRun } from './writeRoots';
 import { writeWeeklyDigest } from './usageDigest';
 import { HookServer } from './hooks';
 import { HeavyJobLock, heavyLimit, heavySlotNotice, probeProcesses } from './heavyJob';
@@ -78,7 +79,7 @@ import * as integrations from './integrations';
 import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
-import { RefusedRosterId, RegistryUnreadable, shortTarget } from './messageTarget';
+import { RefusedRosterId, RegistryUnreadable, isRosterId, shortTarget } from './messageTarget';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WakeSkipLog, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
 import { inboxDeliveredAt, inboxLine, openTurnClaimAt, splitInbox } from './inboxClaims';
@@ -393,6 +394,23 @@ const heavyLock = new HeavyJobLock({
   }
 });
 hookServer.setHeavyLock(heavyLock);
+// Dry run of per-agent write roots: the real sandbox settings are unchanged; writes the scoped
+// roots would refuse are recorded in the usage log as path classes (see writeRoots.ts).
+const writeRootsDryRun = new WriteRootsDryRun({
+  agent: (agentId) => {
+    const root = hive.root();
+    const reg = hive.registry();
+    const meta = Object.hasOwn(reg.agents, agentId) ? reg.agents[agentId] : null;
+    if (!root || !meta || !isRosterId(reg.agents, agentId) || typeof meta.cwd !== 'string') return null;
+    return {
+      ctx: { root, agentId, isGod: reg.godId === agentId || meta.isGod === true, cwd: meta.cwd },
+      provider: typeof meta.provider === 'string' ? meta.provider : 'claude',
+      agentDir: join(root, 'agents', agentId)
+    };
+  },
+  record: (event) => { usageLog.record(event); }
+});
+hookServer.setWriteObserver((agentId, event, p) => writeRootsDryRun.onHook(agentId, event, p));
 const memory = new MemoryManager(
   () => readConfig().harnessHome,
   () => migrateMemorySettings(readConfig())

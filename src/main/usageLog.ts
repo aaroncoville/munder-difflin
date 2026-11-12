@@ -17,6 +17,7 @@
  */
 import { appendFileSync, chmodSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { PATH_CLASSES } from './writeRoots';
 
 export const RETENTION_DAYS = 90;
 const SCHEMA = 1;
@@ -48,7 +49,7 @@ export const VIEWS = [
   'settings', 'memory', 'task-detail', 'terminal-fullscreen'
 ];
 
-type FieldType = 'view' | 'id' | 'agent' | 'card' | 'askKey' | 'count' | 'bool' | { oneOf: readonly string[] };
+type FieldType = 'view' | 'id' | 'agent' | 'card' | 'askKey' | 'count' | 'bool' | 'classes' | { oneOf: readonly string[] };
 
 /** The harness's own sets: a renderer-supplied agent or card id is written only
  *  when one of these holds it. */
@@ -69,12 +70,19 @@ const EVENTS: Record<string, Record<string, FieldType>> = {
     answerShape: { oneOf: ['done-ack', 'option', 'short', 'sentence', 'long'] },
     surface: { oneOf: ['ask-me'] }
   },
-  'app-focus': { state: { oneOf: ['focus', 'blur'] } }
+  'app-focus': { state: { oneOf: ['focus', 'blur'] } },
+  // The scoped-write-roots dry run (writeRoots.ts): path classes only, never a path.
+  'write-roots': { agentId: 'agent', provider: 'id', role: { oneOf: ['god', 'agent'] }, effective: 'classes', excess: 'classes' },
+  'write-would-refuse': {
+    agentId: 'agent', tool: 'id', via: { oneOf: ['edit', 'patch', 'shell-named', 'shell-unsandboxed'] },
+    pathClass: { oneOf: PATH_CLASSES }
+  }
 };
 /** Fields a kind cannot be written without. */
 const REQUIRED: Record<string, string[]> = {
   'ui-view': ['view'], 'ui-view-end': ['view', 'dwellMs'], 'ask-shown': ['askKey', 'surface'],
-  'ask-submitted': ['askKey', 'surface', 'answerLen', 'answerShape'], 'app-focus': ['state']
+  'ask-submitted': ['askKey', 'surface', 'answerLen', 'answerShape'], 'app-focus': ['state'],
+  'write-roots': ['agentId', 'role', 'effective', 'excess'], 'write-would-refuse': ['agentId', 'tool', 'via', 'pathClass']
 };
 
 function valid(type: FieldType, v: unknown, known: KnownIds): boolean {
@@ -90,6 +98,7 @@ function valid(type: FieldType, v: unknown, known: KnownIds): boolean {
   if (type === 'id') return typeof v === 'string' && ID.test(v);
   if (type === 'count') return Number.isSafeInteger(v) && (v as number) >= 0;
   if (type === 'bool') return typeof v === 'boolean';
+  if (type === 'classes') return Array.isArray(v) && v.length <= PATH_CLASSES.length && v.every((x) => typeof x === 'string' && (PATH_CLASSES as readonly string[]).includes(x));
   return typeof v === 'string' && type.oneOf.includes(v);
 }
 
