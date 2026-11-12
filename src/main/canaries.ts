@@ -18,6 +18,8 @@
  * name, ok, a duration, counts and short enums. Never recalled text or file bytes.
  */
 import { createConnection } from 'node:net';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 import { randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, openSync, readFileSync, readSync, fstatSync, closeSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -73,7 +75,7 @@ export interface CanaryDeps {
 const PROBE = 'canary probe';
 
 /** Whether the memory canary may probe: only a backend that is provably local and passive. */
-export type MemoryPlan = 'probe' | 'off' | 'not-probed-spawn' | 'not-probed-remote';
+export type MemoryPlan = 'probe' | 'off' | 'not-probed-spawn' | 'not-probed-remote' | 'not-probed-switching';
 
 export interface MemoryCanary {
   plan: MemoryPlan;
@@ -91,21 +93,67 @@ export function isLoopbackUrl(url: string): boolean {
   return h === 'localhost' || h === '[::1]' || h === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h);
 }
 
+// The recall request the hive-memory shim sends, mirrored here (constants as in hindsightAdapter.ts).
+const TOKENS_PER_RESULT = 512;
+const WAKE_UP_QUERY = 'recent important context';
+const WAKE_UP_RESULTS = 8;
+const RECALL_TIMEOUT_MS = 10_000;
+
 /**
- * The memory canary's plan, decided from settings alone, so that deciding never
- * touches the backend. Only a Hindsight server on loopback is probed: the
- * MemPalace backend answers by spawning its CLI (and finds it with a login-shell
- * lookup), and a Hindsight URL elsewhere would send the probe off this machine.
+ * One recall request of the canary's own, to a loopback server only. It is not
+ * the shared adapter: it never follows a redirect (any 3xx is a failure), so a
+ * loopback endpoint cannot send the probe anywhere else.
+ */
+export function localRecall(base: string, bank: string, query: string, results: number, wing: string): Promise<TextResult> {
+  return new Promise((resolve) => {
+    if (!isLoopbackUrl(base)) { resolve({ ok: false, output: '', error: 'not-loopback' }); return; }
+    const url = new URL(`${base.replace(/\/+$/, '')}/v1/default/banks/${encodeURIComponent(bank)}/memories/recall`);
+    const body = JSON.stringify({ query, max_tokens: Math.max(1, results) * TOKENS_PER_RESULT, tags: [`owner:${wing}`] });
+    const send = url.protocol === 'https:' ? httpsRequest : httpRequest;
+    const req = send(url, { method: 'POST', headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) }, timeout: RECALL_TIMEOUT_MS }, (res) => {
+      const status = res.statusCode ?? 0;
+      if (status >= 300 && status < 400) { res.resume(); resolve({ ok: false, output: '', error: 'redirect' }); return; }
+      let data = '';
+      res.setEncoding('utf8');
+      res.on('data', (d) => { if (data.length < 1 << 20) data += d; });
+      res.on('end', () => {
+        if (status < 200 || status >= 300) { resolve({ ok: false, output: '', error: `HTTP ${status}` }); return; }
+        try {
+          const n = ((JSON.parse(data) as { results?: unknown[] }).results ?? []).length;
+          resolve({ ok: true, output: Array.from({ length: n }, () => '— hit').join('\n') });
+        } catch { resolve({ ok: false, output: '', error: 'bad-reply' }); }
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', () => resolve({ ok: false, output: '', error: 'error' }));
+    req.end(body);
+  });
+}
+
+/**
+ * The memory canary's plan. Only a Hindsight server on loopback is probed, and
+ * only when the saved settings AND the backend the manager currently holds both
+ * say so (a settings change takes effect in the manager only on its next
+ * refresh, and the old backend may be MemPalace, which spawns its CLI). The
+ * probe is the canary's own loopback request, never the shared adapter.
  */
 export function memoryCanary(
-  memory: { search: (q: string, o: { wing: string }) => Promise<TextResult>; wakeUp: (wing: string) => Promise<TextResult> },
-  settings: { enabled: boolean; backend: string; hindsight?: { url?: string } },
+  live: { backendId: () => string },
+  settings: { enabled: boolean; backend: string; hindsight?: { url?: string; bank?: string } },
   wing: string
 ): MemoryCanary {
+  const url = settings.hindsight?.url ?? '';
+  const bank = settings.hindsight?.bank ?? '';
+  const holds = live.backendId();
   const plan: MemoryPlan = !settings.enabled ? 'off'
-    : settings.backend !== 'hindsight' ? 'not-probed-spawn'
-      : isLoopbackUrl(settings.hindsight?.url ?? '') ? 'probe' : 'not-probed-remote';
-  return { plan, search: (q, o) => memory.search(q, o), wakeUp: (w) => memory.wakeUp(w), wing };
+    : settings.backend !== holds ? 'not-probed-switching'
+      : settings.backend !== 'hindsight' ? 'not-probed-spawn'
+        : isLoopbackUrl(url) ? 'probe' : 'not-probed-remote';
+  return {
+    plan, wing,
+    search: (q, o) => localRecall(url, bank, q, 5, o.wing),
+    wakeUp: (w) => localRecall(url, bank, WAKE_UP_QUERY, WAKE_UP_RESULTS, w)
+  };
 }
 
 /** Hits in a rendered recall: one per non-empty line that starts a result. */
@@ -115,6 +163,7 @@ function countHits(output: string): number {
 
 function judgeRecall(r: TextResult): Omit<CanaryResult, 'feature' | 'ms'> {
   if (!r.ok) {
+    if (r.error === 'redirect') return { ok: false, detail: 'redirect' };
     const code = /HTTP (\d{3})/.exec(r.error ?? '');
     return { ok: false, detail: code ? `refused-${code[1]}` : 'error' };
   }

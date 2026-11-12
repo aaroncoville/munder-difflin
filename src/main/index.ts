@@ -5478,10 +5478,7 @@ async function runCanaryPass(): Promise<void> {
   const sock = hive.sockPath();
   const results = await runCanaries({
     // Decided from settings only: asking the backend (even its status) may spawn its CLI.
-    memory: memoryCanary(
-      { search: (q, o) => memory.search(q, { wing: o.wing }), wakeUp: (w) => memory.wakeUp(w) },
-      migrateMemorySettings(readConfig()), godId
-    ),
+    memory: memoryCanary(memory, migrateMemorySettings(readConfig()), godId),
     kg: knowledge.active() ? { search: (q, limit) => knowledge.search(q, limit) } : null,
     hook: sock ? { sock, instance: hookServer.instance() } : null,
     helpers: hive.installedHelpers(),
