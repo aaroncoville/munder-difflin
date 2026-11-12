@@ -315,3 +315,25 @@ test('the new log, the genesis anchor and every anchor move are synced in their 
     fs.fsyncSync = real;
   }
 });
+
+test('an append that fails after its line is on disk means reopen and look, not retry: the line is kept once', () => {
+  const r = roots();
+  const log = open(r);
+  log.append({ type: 'fact', n: 1 });
+  const real = fs.renameSync;
+  fs.renameSync = (from, to) => {
+    if (path.basename(to) === 'head.json') throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+    return real(from, to);
+  };
+  try {
+    assert.throws(() => log.append({ type: 'fact', n: 2 }), /ENOSPC/);
+  } finally {
+    fs.renameSync = real;
+  }
+  // The line is on disk; this writer is done rather than writing it a second time.
+  assert.throws(() => log.append({ type: 'fact', n: 2 }), LogTamperError);
+  const again = open(r);
+  assert.deepEqual(again.lines().map((l) => l.n), [1, 2]);
+  assert.equal(again.append({ type: 'fact', n: 3 }).seq, 3);
+  assert.deepEqual(fs.readdirSync(path.join(r.authRoot, 'WF-FB-VEHICLES')).sort(), ['head.json', 'log.jsonl']);
+});

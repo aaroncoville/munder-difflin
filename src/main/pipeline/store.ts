@@ -32,7 +32,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import {
-  appendFileSync, closeSync, constants, existsSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readFileSync, renameSync, writeSync,
+  appendFileSync, closeSync, constants, existsSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeSync,
 } from 'node:fs';
 import { join } from 'node:path';
 
@@ -113,10 +113,18 @@ export class CardLog {
     this.open();
   }
 
-  /** Appends one line to the authoritative log, flushed to disk, moves the anchor, then copies it to the export. */
+  /**
+   * Appends one line to the authoritative log, flushed to disk, moves the anchor,
+   * then copies the line to the export.
+   *
+   * An error does not mean the line is absent. If the line reached disk and the
+   * anchor update then failed (a full disk, say), this throws, the line stays, and
+   * this writer refuses every further append. Reopen the log and read it before
+   * deciding anything: retrying the same entry would record it twice.
+   */
   append(entry: LogEntry): LogLine {
     if (!sameAnchor(this.readAnchor(), headOf(this.seq, this.last))) {
-      throw new LogTamperError(this.card, this.seq + 1, 'the log moved under this writer (another writer, or an edit)');
+      throw new LogTamperError(this.card, this.seq + 1, 'the log moved under this writer (another writer, an edit, or an earlier failed append)');
     }
     const line: LogLine = { ...entry, v: 1, seq: this.seq + 1, at: this.now().toISOString(), card: this.card, prev: this.last };
     const text = JSON.stringify(line);
@@ -240,7 +248,12 @@ export class CardLog {
     const tmp = join(this.authDir, `.head.${randomBytes(8).toString('hex')}.tmp`);
     const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW, 0o600);
     try { writeSync(fd, JSON.stringify(a)); fsyncSync(fd); } finally { closeSync(fd); }
-    renameSync(tmp, this.anchorFile);
+    try {
+      renameSync(tmp, this.anchorFile);
+    } catch (e) {
+      rmSync(tmp, { force: true });
+      throw e;
+    }
     fsyncDir(this.authDir);
   }
 
