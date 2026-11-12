@@ -142,7 +142,11 @@ const ptyManager = new PtyManager();
 
 // Local usage log of the owner's side (docs/usage-log.md): never sent anywhere,
 // allowlisted ids/enums/durations only, switchable and deletable in Settings.
-const usageLog = new UsageLog({ root: () => hive.root(), enabled: () => readConfig().usageLog !== false });
+const usageLog = new UsageLog({
+  root: () => hive.root(), enabled: () => readConfig().usageLog !== false,
+  // Checked when an event arrives, after start-up has defined usageIds.
+  isAgent: (id) => usageIds.isAgent(id), isCard: (id) => usageIds.isCard(id)
+});
 const usageSession = randomUUID();
 ipcMain.on('usage:event', (e, event: unknown) => {
   if (!event || typeof event !== 'object') return;

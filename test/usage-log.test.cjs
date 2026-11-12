@@ -16,7 +16,10 @@ function setup(t, { enabled = true, now = Date.parse('2026-11-12T15:00:00Z') } =
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'md-usage-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const state = { enabled, now };
-  const log = new UsageLog({ root: () => root, enabled: () => state.enabled, now: () => state.now });
+  const log = new UsageLog({
+    root: () => root, enabled: () => state.enabled, now: () => state.now,
+    isAgent: (id) => ['jc', 'god'].includes(id), isCard: (id) => ['CARD-1'].includes(id)
+  });
   const dir = path.join(root, 'usage');
   const read = (day = '2026-11-12') => {
     const p = path.join(dir, `${day}.jsonl`);
@@ -95,4 +98,16 @@ test('a folder that is a link is refused, so the log cannot be redirected', (t) 
   fs.symlinkSync(elsewhere, path.join(root, 'usage'));
   assert.equal(log.record({ kind: 'ui-view', view: 'settings' }), false);
   assert.deepEqual(fs.readdirSync(elsewhere), []);
+});
+
+test('agent and card ids are written only when the roster or tasks.json holds them', (t) => {
+  const { log, read } = setup(t);
+  const long = 'Owner-said-the-unreleased-project-is-ORCHID.Owner-said-the-unreleased-project-is';
+  assert.equal(log.record({ kind: 'ui-view', view: 'agent-detail', agentId: 'jc', cardId: 'CARD-1' }), true);
+  assert.equal(log.record({ kind: 'ui-view', view: 'agent-detail', agentId: long, cardId: long }), true, 'the view still counts');
+  assert.equal(log.record({ kind: 'ask-shown', askKey: `${long}@2026-11-12T10:00:00.000Z`, surface: 'ask-me' }), false);
+  assert.equal(log.record({ kind: 'ask-shown', askKey: 'CARD-1@2026-11-12T10:00:00Z', surface: 'ask-me' }), false, 'not the canonical key');
+  const rows = read();
+  assert.deepEqual(rows.map((r) => [r.agentId, r.cardId]), [['jc', 'CARD-1'], [undefined, undefined]]);
+  assert.doesNotMatch(JSON.stringify(rows), /ORCHID/);
 });

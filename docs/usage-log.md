@@ -105,9 +105,9 @@ Every row carries `ts`, `v` (schema version), `session` (one id per app run), `w
 
 | kind | Fields | Written when |
 |---|---|---|
-| `ui-view` | `view`, `agentId?`, `cardId?` | A screen or panel opens: `command-center:<tab>`, `agent-detail:<sidebar tab>`, `settings`, `memory`, `task-detail`, `terminal-fullscreen` |
+| `ui-view` | `view`, `agentId?`, `cardId?` | A screen or panel opens: `command-center:<tab>`, `agent-detail:<sidebar tab>`, `settings`, `memory`, `task-detail`, `terminal-fullscreen`. `agentId` only when it is on the roster and `cardId` only when it is in `tasks.json`; otherwise the field is left out and the view still counts |
 | `ui-view-end` | `view`, `dwellMs` | It closes or changes. `dwellMs` counts only time the window was visible and focused |
-| `ask-shown` | `askKey`, `surface`, `ageMs?` | An ask row on the Ask Me board has been on screen, with the window focused, for 1 s (once per ask per window). `ageMs` is the time since it was asked |
+| `ask-shown` | `askKey` (`<cardId>@<ISO time>`, card in `tasks.json`; otherwise not written), `surface`, `ageMs?` | An ask row on the Ask Me board has been on screen, with the window focused, for 1 s (once per ask per window). `ageMs` is the time since it was asked |
 | `ask-submitted` | `askKey`, `surface`, `answerLen`, `answerShape`, `msSinceShown?` | An answer is sent from the Ask Me board. The text is never copied |
 | `app-focus` | `state` (`focus` / `blur`) | A window gains or loses focus |
 
