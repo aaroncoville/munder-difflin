@@ -4,87 +4,151 @@
  * The prompts tell every agent it can recall semantic memory, query the
  * knowledge graph, and that its hooks reach the harness. When one of those
  * quietly breaks, nothing in the app says so: semantic search returned nothing
- * for eleven weeks because the shim sent a malformed request and reported the
- * refusal as "unavailable". Each canary runs the same path an agent uses and
- * writes one `canary` line to the hive log.
+ * for eleven weeks because the installed shim sent a malformed request. Each
+ * canary writes one `canary` line to the hive log.
  *
- * Measure only: a failing canary changes no behaviour. A `canary` line holds
- * a feature name, ok, a duration and a short enum or code. It never holds
- * query results, command output or file contents.
+ * SECURITY: the main process never executes, requires or evals anything under
+ * the hive root. Every agent can write there, so running a file from it would
+ * turn an agent's file write into code running as the app user. Backends are
+ * probed in-process; the helpers agents run are READ and compared with what the
+ * app would install, never run.
+ *
+ * Measure only: a failing canary changes no behaviour. A line holds a feature
+ * name, ok, a duration, counts and short enums. Never recalled text or file bytes.
  */
-import { execFile } from 'node:child_process';
 import { createConnection } from 'node:net';
 import { randomUUID } from 'node:crypto';
-import { existsSync, openSync, readSync, fstatSync, closeSync } from 'node:fs';
+import { existsSync, lstatSync, openSync, readFileSync, readSync, fstatSync, closeSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 
 export type CanaryFeature =
-  | 'memory-search' | 'memory-wakeup' | 'kg-search' | 'hook-socket' | 'model-matches-launch';
+  | 'memory-search' | 'memory-wakeup' | 'kg-search' | 'hook-socket'
+  | 'helpers-intact' | 'node-on-path' | 'model-matches-launch';
+
+export type HelperProblem = 'missing' | 'not-regular' | 'not-executable' | 'stale' | 'modified';
 
 export interface CanaryResult {
   feature: CanaryFeature;
   /** null = the feature is off on this install, so there was nothing to check. */
   ok: boolean | null;
   ms: number;
-  /** An enum or code only, e.g. 'unavailable', 'refused-422', 'exit-1', 'off'. */
+  /** An enum or code only, e.g. 'off', 'refused-422', 'timeout', 'no-hits'. */
   detail?: string;
-  /** model-matches-launch only: how many agents were compared, and which differed. */
+  hits?: number;
+  problems?: Record<string, HelperProblem>;
   checked?: number;
   mismatched?: string[];
 }
 
-export interface RunOutcome { code: number | null; stdout: string; stderr: string }
-
-/** What a run of the hive-memory shim came to, judged from its exit and output shape only. */
-export function classifyMemoryRun(run: RunOutcome): { ok: boolean; detail?: string } {
-  const refused = /HTTP (\d{3})/.exec(run.stderr);
-  if (refused) return { ok: false, detail: `refused-${refused[1]}` };
-  if (/memory recall unavailable/.test(run.stdout)) return { ok: false, detail: 'unavailable' };
-  if (run.code !== 0) return { ok: false, detail: `exit-${run.code ?? 'signal'}` };
-  return { ok: true };
-}
-
+interface TextResult { ok: boolean; output: string; error?: string }
 export interface Seen { model: string; ts: number }
 
-/** Agents whose newest ledger model, written after their launch, differs from the model they were launched with. */
-export function modelMismatches(
-  launched: Map<string, Seen>, ledger: Map<string, Seen>
-): { checked: number; mismatched: string[] } {
-  let checked = 0;
-  const mismatched: string[] = [];
-  for (const [agent, launch] of launched) {
-    const seen = ledger.get(agent);
-    // Aliases ('opus') cannot be compared to a full model id, and a row from
-    // before the launch belongs to the previous session.
-    if (!seen || !launch.model.startsWith('claude-') || seen.ts < launch.ts) continue;
-    checked++;
-    if (seen.model !== launch.model) mismatched.push(agent);
-  }
-  return { checked, mismatched: mismatched.sort() };
+/** A helper agents run, and the bytes the app would install for it. */
+export interface Helper {
+  name: string;
+  path: string;
+  expected: string;
+  /** For a helper copied from a bundled source: that source's mtime. Absent for generated helpers. */
+  sourceMtimeMs?: number;
 }
 
-/** Newest launch model per agent from hive log lines (`agent-model` events). */
-export function launchModelsFromLog(lines: string[]): Map<string, Seen> {
-  const out = new Map<string, Seen>();
-  for (const line of lines) {
-    if (!line.includes('"agent-model"')) continue;
-    try {
-      const e = JSON.parse(line) as { kind?: string; agentId?: string; model?: string; ts?: number };
-      if (e.kind === 'agent-model' && e.agentId && e.model) out.set(e.agentId, { model: e.model, ts: e.ts ?? 0 });
-    } catch { /* a torn line */ }
-  }
-  return out;
+export interface CanaryDeps {
+  /** In-process memory probes; `wing` is the owner tag agents send (god's id). null when memory is off. */
+  memory: { search: (q: string, o: { wing: string }) => Promise<TextResult>; wakeUp: (wing: string) => Promise<TextResult>; wing: string } | null;
+  /** In-process knowledge-graph search; null when the graph is off. */
+  kg: { search: (q: string, limit: number) => unknown[] } | null;
+  /** The hook socket and this app's instance id; null without a hive root. */
+  hook: { sock: string; instance: string } | null;
+  helpers: Helper[];
+  /** The PATH directories agents are launched with. */
+  pathDirs: string[];
+  /** Launch model per agent, kept in memory at spawn. */
+  launches: Map<string, Seen>;
+  ledgerPath: string;
+  timeoutMs?: number;
+  now?: () => number;
 }
 
-/** Newest non-empty ledger model per agent from cost-ledger lines. */
-export function ledgerModelsFromLines(lines: string[]): Map<string, Seen> {
-  const out = new Map<string, Seen>();
-  for (const line of lines) {
+const PROBE = 'canary probe';
+
+/** Hits in a rendered recall: one per non-empty line that starts a result. */
+function countHits(output: string): number {
+  return output.split('\n').filter((l) => l.trim().length > 0 && !l.startsWith(' ')).length;
+}
+
+function judgeRecall(r: TextResult): Omit<CanaryResult, 'feature' | 'ms'> {
+  if (!r.ok) {
+    const code = /HTTP (\d{3})/.exec(r.error ?? '');
+    return { ok: false, detail: code ? `refused-${code[1]}` : 'error' };
+  }
+  const hits = countHits(r.output);
+  return hits === 0 ? { ok: true, hits, detail: 'no-hits' } : { ok: true, hits };
+}
+
+/** What is wrong with an installed helper, judged by reading it (never running it); null when intact. */
+export function checkHelper(h: Helper): HelperProblem | null {
+  let st;
+  try { st = lstatSync(h.path); } catch { return 'missing'; }
+  if (!st.isFile()) return 'not-regular';
+  if (process.platform !== 'win32' && (st.mode & 0o111) === 0) return 'not-executable';
+  let bytes: string;
+  try { bytes = readFileSync(h.path, 'utf8'); } catch { return 'missing'; }
+  if (bytes === h.expected) return null;
+  // Older than the bundled source it is copied from: the app has not re-installed it since an update.
+  return h.sourceMtimeMs !== undefined && st.mtimeMs < h.sourceMtimeMs ? 'stale' : 'modified';
+}
+
+/** Whether `node` resolves on the given PATH directories (lookup only). */
+export function nodeOnPath(dirs: string[]): boolean {
+  const names = process.platform === 'win32' ? ['node.exe', 'node.cmd'] : ['node'];
+  for (const d of dirs) {
+    for (const n of names) {
+      try {
+        const st = statSync(join(d, n));
+        if (st.isFile() && (process.platform === 'win32' || (st.mode & 0o111) !== 0)) return true;
+      } catch { /* not here */ }
+    }
+  }
+  return false;
+}
+
+/** Rows per agent kept for the model check. */
+const MODEL_WINDOW = 50;
+/** Other-model rows must run this long at the end to count as a move (a subagent burst is shorter). */
+export const MODEL_MOVE_MS = 10 * 60_000;
+
+/**
+ * Agents whose newest ledger rows, written after their launch, have been on
+ * another model for at least MODEL_MOVE_MS. A refusal fallback moves the
+ * session for good; a subagent on another model is a short burst between rows
+ * of the launch model, so it is not flagged.
+ */
+export function checkModels(launches: Map<string, Seen>, ledgerLines: string[]): { checked: number; mismatched: string[] } {
+  const recent = new Map<string, Seen[]>();
+  for (const line of ledgerLines) {
     try {
       const r = JSON.parse(line) as { agent_id?: string; model?: string; ts?: number };
-      if (r.agent_id && r.model) out.set(r.agent_id, { model: r.model, ts: r.ts ?? 0 });
+      if (!r.agent_id || !r.model || typeof r.ts !== 'number') continue;
+      const list = recent.get(r.agent_id) ?? [];
+      list.push({ model: r.model, ts: r.ts });
+      if (list.length > MODEL_WINDOW) list.shift();
+      recent.set(r.agent_id, list);
     } catch { /* a torn line */ }
   }
-  return out;
+  let checked = 0;
+  const mismatched: string[] = [];
+  for (const [agent, launch] of launches) {
+    if (!launch.model.startsWith('claude-')) continue;
+    const after = (recent.get(agent) ?? []).filter((s) => s.ts >= launch.ts);
+    if (after.length === 0) continue;
+    checked++;
+    // The trailing run of rows on another model, oldest to newest.
+    let i = after.length;
+    while (i > 0 && after[i - 1].model !== launch.model) i--;
+    const run = after.slice(i);
+    if (run.length > 0 && run[run.length - 1].ts - run[0].ts >= MODEL_MOVE_MS) mismatched.push(agent);
+  }
+  return { checked, mismatched: mismatched.sort() };
 }
 
 /** The last `bytes` of a file, split into whole lines (the first, partial line is dropped). */
@@ -102,17 +166,8 @@ export function tailLines(path: string, bytes = 512 * 1024): string[] {
   } finally { closeSync(fd); }
 }
 
-export function runFile(cmd: string, args: string[], env: Record<string, string>, timeoutMs = 20_000): Promise<RunOutcome> {
-  return new Promise((resolve) => {
-    execFile(cmd, args, { env: { ...process.env, ...env }, encoding: 'utf8', timeout: timeoutMs }, (error, stdout, stderr) => {
-      const code = error ? (typeof (error as { code?: unknown }).code === 'number' ? (error as { code: number }).code : null) : 0;
-      resolve({ code, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
-    });
-  });
-}
-
-/** Ask the hook socket for a pong, as a hook shim's connection would. */
-export function pingHookSocket(sock: string, timeoutMs = 1500): Promise<{ ok: boolean; detail?: string }> {
+/** Ask the hook socket for a pong carrying this app's instance id. */
+export function pingHookSocket(sock: string, instance: string, timeoutMs = 1500): Promise<{ ok: boolean; detail?: string }> {
   return new Promise((resolve) => {
     let settled = false;
     let data = '';
@@ -127,64 +182,53 @@ export function pingHookSocket(sock: string, timeoutMs = 1500): Promise<{ ok: bo
     c.setEncoding('utf8');
     c.on('data', (d) => { data += d; });
     c.on('end', () => {
-      try { done((JSON.parse(data) as { pong?: string }).pong === nonce ? { ok: true } : { ok: false, detail: 'wrong-pong' }); }
-      catch { done({ ok: false, detail: 'bad-reply' }); }
+      try {
+        const r = JSON.parse(data) as { pong?: string; instance?: string };
+        if (r.pong !== nonce) done({ ok: false, detail: 'wrong-pong' });
+        else done(r.instance === instance ? { ok: true } : { ok: false, detail: 'other-instance' });
+      } catch { done({ ok: false, detail: 'bad-reply' }); }
     });
     c.on('error', (e: NodeJS.ErrnoException) => done({ ok: false, detail: e.code ?? 'error' }));
     setTimeout(() => done({ ok: false, detail: 'timeout' }), timeoutMs).unref();
   });
 }
 
-export interface CanaryDeps {
-  /** Absolute path to the installed hive-memory shim agents run, or null. */
-  memoryShim: string | null;
-  /** The env an agent gets for memory; empty when semantic memory is off. */
-  memoryEnv: Record<string, string>;
-  /** The kg CLI path and its env; null when the knowledge graph is off. */
-  kg: { cli: string; env: Record<string, string> } | null;
-  /** The node used to run .cjs helpers (the hive's bundled launcher). */
-  node: string;
-  hookSocket: string | null;
-  hiveLogPath: string;
-  ledgerPath: string;
-  run?: typeof runFile;
-  ping?: typeof pingHookSocket;
-  now?: () => number;
-}
-
 /** Run every canary once and return the results (in a fixed order). */
 export async function runCanaries(d: CanaryDeps): Promise<CanaryResult[]> {
-  const run = d.run ?? runFile;
-  const ping = d.ping ?? pingHookSocket;
   const now = d.now ?? Date.now;
+  const limit = d.timeoutMs ?? 20_000;
   const timed = async (feature: CanaryFeature, f: () => Promise<Omit<CanaryResult, 'feature' | 'ms'>>): Promise<CanaryResult> => {
     const t0 = now();
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<Omit<CanaryResult, 'feature' | 'ms'>>((res) => {
+      // Not unref'd: a hung probe must still end at the limit. It is always cleared below.
+      timer = setTimeout(() => res({ ok: false, detail: 'timeout' }), limit);
+    });
     try {
-      const r = await f();
+      const r = await Promise.race([f(), timeout]);
       return { feature, ms: now() - t0, ...r };
     } catch {
       return { feature, ok: false, ms: now() - t0, detail: 'threw' };
-    }
+    } finally { if (timer) clearTimeout(timer); }
   };
-  const memoryOn = !!d.memoryShim && Object.keys(d.memoryEnv).length > 0;
+  const m = d.memory;
   return [
-    await timed('memory-search', async () => memoryOn
-      ? classifyMemoryRun(await run(d.node, [d.memoryShim!, 'search', 'canary probe'], d.memoryEnv))
-      : { ok: null, detail: 'off' }),
-    await timed('memory-wakeup', async () => memoryOn
-      ? classifyMemoryRun(await run(d.node, [d.memoryShim!, 'wake-up'], d.memoryEnv))
-      : { ok: null, detail: 'off' }),
+    await timed('memory-search', async () => (m ? judgeRecall(await m.search(PROBE, { wing: m.wing })) : { ok: null, detail: 'off' })),
+    await timed('memory-wakeup', async () => (m ? judgeRecall(await m.wakeUp(m.wing)) : { ok: null, detail: 'off' })),
     await timed('kg-search', async () => {
       if (!d.kg) return { ok: null, detail: 'off' };
-      const r = await run(d.node, [d.kg.cli, 'search', 'canary probe'], d.kg.env);
-      return r.code === 0 ? { ok: true } : { ok: false, detail: `exit-${r.code ?? 'signal'}` };
+      const hits = d.kg.search(PROBE, 1).length;
+      return hits === 0 ? { ok: true, hits, detail: 'no-hits' } : { ok: true, hits };
     }),
-    await timed('hook-socket', async () => d.hookSocket ? ping(d.hookSocket) : { ok: false, detail: 'no-root' }),
+    await timed('hook-socket', async () => (d.hook ? pingHookSocket(d.hook.sock, d.hook.instance) : { ok: false, detail: 'no-root' })),
+    await timed('helpers-intact', async () => {
+      const problems: Record<string, HelperProblem> = {};
+      for (const h of d.helpers) { const p = checkHelper(h); if (p) problems[h.name] = p; }
+      return Object.keys(problems).length ? { ok: false, problems } : { ok: true };
+    }),
+    await timed('node-on-path', async () => (nodeOnPath(d.pathDirs) ? { ok: true } : { ok: false, detail: 'not-found' })),
     await timed('model-matches-launch', async () => {
-      const { checked, mismatched } = modelMismatches(
-        launchModelsFromLog(tailLines(d.hiveLogPath, 16 * 1024 * 1024)),
-        ledgerModelsFromLines(tailLines(d.ledgerPath))
-      );
+      const { checked, mismatched } = checkModels(d.launches, tailLines(d.ledgerPath));
       return { ok: mismatched.length === 0, checked, mismatched };
     })
   ];

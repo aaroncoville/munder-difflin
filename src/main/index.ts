@@ -7,10 +7,10 @@ import {
   unlinkSync, mkdirSync, renameSync, createWriteStream, copyFileSync
 } from 'node:fs';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
-import { join, resolve, sep, basename, dirname, isAbsolute } from 'node:path';
+import { join, resolve, sep, basename, dirname, isAbsolute, delimiter } from 'node:path';
 import { homedir } from 'node:os';
 import { request as httpsRequest } from 'node:https';
-import { PtyManager, type SpawnOptions } from './pty';
+import { PtyManager, withHiveRuntimeFallback, type SpawnOptions } from './pty';
 import { resolveCommand as resolveCliCommand, isSafeCommandName } from './shellEnv';
 import { initAutoUpdater, abortPendingRestart } from './updater';
 import { askToConfirmQuit } from './quitRequest';
@@ -2992,7 +2992,10 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     // Measure only: which model this agent was launched with, so the
     // model-matches-launch canary can spot a session that moved to another one.
     const launchedModel = args[args.indexOf('--model') + 1];
-    if (args.includes('--model') && launchedModel) hive.appendLog({ kind: 'agent-model', agentId: opts.hive.id, model: launchedModel });
+    if (args.includes('--model') && launchedModel) {
+      canaryLaunches.set(opts.hive.id, { model: launchedModel, ts: Date.now() });
+      hive.appendLog({ kind: 'agent-model', agentId: opts.hive.id, model: launchedModel });
+    }
     // Name the Remote Control session after the agent (Michael, Jim, Dev1…) so it
     // is identifiable in claude.ai / the mobile app. Otherwise Claude defaults the
     // prefix to the machine hostname (e.g. "vyapaks-macbook-pro-…"), which is
@@ -5461,19 +5464,27 @@ function bootstrapHiveServices(): void {
 const CANARY_FIRST_MS = 60_000;
 const CANARY_EVERY_MS = 60 * 60_000;
 let canaryTimer: ReturnType<typeof setInterval> | null = null;
+let canaryFirst: ReturnType<typeof setTimeout> | null = null;
+/** Launch model per agent this run, for the model-matches-launch canary. */
+const canaryLaunches = new Map<string, { model: string; ts: number }>();
 
-/** Run the feature canaries and log one `canary` line each. Measure only. */
+/** Run the feature canaries and log one `canary` line each. Measure only, and
+ *  nothing under the hive root is executed: backends are probed in-process and
+ *  the installed helpers are only read. */
 async function runCanaryPass(): Promise<void> {
   const root = hive.root();
   if (!root) return;
-  const kgEnv = knowledge.env();
+  const godId = hive.registry().godId ?? 'god';
+  const sock = hive.sockPath();
   const results = await runCanaries({
-    memoryShim: join(root, 'bin', process.platform === 'win32' ? 'hive-memory.cjs' : 'hive-memory'),
-    memoryEnv: memory.env(),
-    kg: kgEnv.KG_CLI ? { cli: kgEnv.KG_CLI, env: kgEnv } : null,
-    node: hive.nodeCommand(),
-    hookSocket: hive.sockPath(),
-    hiveLogPath: join(root, 'log.jsonl'),
+    memory: memory.status().active
+      ? { search: (q, o) => memory.search(q, { wing: o.wing }), wakeUp: (w) => memory.wakeUp(w), wing: godId }
+      : null,
+    kg: knowledge.active() ? { search: (q, limit) => knowledge.search(q, limit) } : null,
+    hook: sock ? { sock, instance: hookServer.instance() } : null,
+    helpers: hive.installedHelpers(),
+    pathDirs: withHiveRuntimeFallback(process.env.PATH ?? '', root).split(delimiter).filter(Boolean),
+    launches: canaryLaunches,
     ledgerPath: join(root, 'cost-ledger.jsonl')
   });
   for (const r of results) hive.appendLog({ kind: 'canary', ...r });
@@ -5481,8 +5492,10 @@ async function runCanaryPass(): Promise<void> {
 
 function startCanaries(): void {
   if (canaryTimer) clearInterval(canaryTimer);
+  if (canaryFirst) clearTimeout(canaryFirst);
   const pass = (): void => { runCanaryPass().catch((e) => console.error('[canaries]', e)); };
-  setTimeout(pass, CANARY_FIRST_MS).unref();
+  canaryFirst = setTimeout(pass, CANARY_FIRST_MS);
+  canaryFirst.unref();
   canaryTimer = setInterval(pass, CANARY_EVERY_MS);
   canaryTimer.unref();
 }

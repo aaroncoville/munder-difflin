@@ -12,20 +12,31 @@ The canaries run a minute after the app starts, then every hour. Each pass write
 {"ts":1794500000000,"kind":"canary","feature":"memory-search","ok":false,"ms":84,"detail":"refused-422"}
 ```
 
-| feature | What it runs | `ok:false` details |
+| feature | What it checks | `ok:false` details |
 |---|---|---|
-| `memory-search` | The installed `hive-memory search` shim, with the memory env an agent gets | `refused-<HTTP code>` (the backend rejected the request), `unavailable` (backend unreachable), `exit-<n>` |
-| `memory-wakeup` | `hive-memory wake-up` | Same as above |
-| `kg-search` | The knowledge-graph CLI's `search` | `exit-<n>` |
-| `hook-socket` | A ping over the hook socket, the way a hook shim connects | `ENOENT` (nothing at the path), `ECONNREFUSED`, `timeout`, `wrong-pong`, `no-root` |
-| `model-matches-launch` | For each Claude agent: the newest `cost-ledger.jsonl` model written after its launch, compared with its launch model | `ok:false` with `mismatched: [agent ids]`; `checked` is how many agents could be compared |
+| `memory-search` | The memory backend's search, called in-process with the owner tag agents send (god's id). `hits` is a count | `refused-<HTTP code>`, `error`, `timeout`. `ok:true` with `detail: "no-hits"` means it answered but recalled nothing |
+| `memory-wakeup` | The backend's wake-up, called in-process | Same as above |
+| `kg-search` | The knowledge graph's search, called in-process. `hits` is a count | `timeout`, `threw`. `no-hits` as above |
+| `hook-socket` | A ping over the hook socket. The pong must carry this app's instance id | `ENOENT`, `ECONNREFUSED`, `timeout`, `wrong-pong`, `other-instance` (another app owns the socket), `no-root` |
+| `helpers-intact` | Reads `bin/hive-memory`, `bin/hive-node` and `bin/runtime/node` and compares them with what this app installs | `problems: {name: missing / not-regular / not-executable / stale / modified}`. `stale` = older than the bundled source (the app has not reinstalled it since an update; a restart fixes it). `modified` = different bytes |
+| `node-on-path` | Looks for an executable `node` on the PATH agents are launched with (lookup only) | `not-found` |
+| `model-matches-launch` | For each Claude agent launched this run: whether its newest ledger rows have been on a model other than its launch model for at least 10 minutes | `mismatched: [agent ids]`; `checked` is how many agents could be compared |
 
-- `ok: null` with `detail: "off"` means the feature is disabled on this install, so there was nothing to check.
+- `ok: null` with `detail: "off"` means the feature is disabled on this install.
 - A failing canary only logs; it changes no behaviour.
 
-**Launch models (`kind: "agent-model"`).** Each Claude agent spawn records `{agentId, model}`. The model check compares against this line. Agents launched with an alias such as `opus` are skipped, because an alias cannot be matched to a full model id.
+**Security: canaries never execute anything.** The main process does not run, require or eval files under the hive root, because every agent can write there. Backends are probed in-process, and the helpers agents run are only read and compared. A test plants hostile helpers and asserts that a pass never runs them.
 
-**Not covered:** the orchestrator's scheduled crons live inside its Claude Code session, which the harness cannot see, so there is no cron canary.
+**Known limits:**
+- The memory canaries test the backend, not the agents' shim and launcher. `helpers-intact` covers the shim by comparing bytes, and `node-on-path` covers the launcher by lookup.
+- `model-matches-launch` is an hourly sample. A model move that lasts under 10 minutes, or that comes and goes between passes, is missed.
+- Agents launched with an alias (`opus`) or without `--model`, and agents launched before this app run, are not checked.
+- The ledger is read from its last 512 KB, so an agent quiet for long drops out of `checked`.
+- Ledger rows written with an empty model are ignored.
+
+**Launch models (`kind: "agent-model"`).** Each Claude agent spawn records `{agentId, model}`. The canary keeps the same values in memory.
+
+**Not covered:** the orchestrator's scheduled crons live inside its Claude Code session, which the harness cannot see.
 
 ### Quick reads
 ```sh

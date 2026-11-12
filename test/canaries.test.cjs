@@ -4,12 +4,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const http = require('node:http');
 const net = require('node:net');
 const loadTs = require('./load-ts.cjs');
 
 const C = loadTs('src/main/canaries.ts');
-const SHIM = path.resolve(__dirname, '..', 'resources', 'hive-memory.cjs');
 
 function tmp(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-canary-'));
@@ -17,100 +15,162 @@ function tmp(t) {
   return dir;
 }
 
-async function backend(t, status, body) {
-  const server = http.createServer((req, res) => {
-    req.resume();
-    req.on('end', () => { res.statusCode = status; res.setHeader('content-type', 'application/json'); res.end(body); });
-  });
-  await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  t.after(() => server.close());
-  return { HIVE_MEMORY_BACKEND: 'hindsight', HINDSIGHT_URL: `http://127.0.0.1:${server.address().port}`, HINDSIGHT_BANK: 'b' };
+/** A hive bin folder whose helpers write a sentinel file if anything ever runs them. */
+function hostileBin(dir) {
+  const bin = path.join(dir, 'hive', 'bin');
+  fs.mkdirSync(path.join(bin, 'runtime'), { recursive: true });
+  const sentinel = path.join(dir, 'EXECUTED');
+  const body = `#!/bin/sh\necho ran >> "${sentinel}"\n`;
+  for (const f of ['hive-memory', 'hive-node', 'runtime/node']) {
+    fs.writeFileSync(path.join(bin, f), body);
+    fs.chmodSync(path.join(bin, f), 0o755);
+  }
+  return { bin, sentinel };
 }
 
-function baseDeps(dir, extra = {}) {
+function deps(dir, extra = {}) {
   return {
-    memoryShim: SHIM, memoryEnv: {}, kg: null, node: process.execPath, hookSocket: null,
-    hiveLogPath: path.join(dir, 'log.jsonl'), ledgerPath: path.join(dir, 'cost-ledger.jsonl'), ...extra
+    memory: null, kg: null, hook: null, helpers: [], pathDirs: [],
+    launches: new Map(), ledgerPath: path.join(dir, 'cost-ledger.jsonl'), ...extra
   };
 }
 
 const byFeature = (results) => Object.fromEntries(results.map((r) => [r.feature, r]));
+const recall = (output, ok = true, error) => async () => ({ ok, output, ...(error ? { error } : {}) });
 
-test('a refusing memory backend fails the search canary with its status code, through the real shim', async (t) => {
+// ── never execute anything under the hive root ───────────────────────────────
+
+test('a canary pass never executes the installed helpers, and reports them as modified', async (t) => {
   const dir = tmp(t);
-  const env = await backend(t, 422, '{"detail":"no"}');
-  const r = byFeature(await C.runCanaries(baseDeps(dir, { memoryEnv: env })));
-  assert.equal(r['memory-search'].ok, false);
-  assert.equal(r['memory-search'].detail, 'refused-422');
+  const { bin, sentinel } = hostileBin(dir);
+  const expected = '#!/usr/bin/env node\n// the real shim\n';
+  const helpers = [
+    { name: 'hive-memory', path: path.join(bin, 'hive-memory'), expected, sourceMtimeMs: 0 },
+    { name: 'hive-node', path: path.join(bin, 'hive-node'), expected },
+    { name: 'runtime-node', path: path.join(bin, 'runtime', 'node'), expected }
+  ];
+  const r = byFeature(await C.runCanaries(deps(dir, {
+    helpers, pathDirs: [path.join(bin, 'runtime')],
+    memory: { search: recall('— a'), wakeUp: recall('— a'), wing: 'god' }
+  })));
+  await new Promise((res) => setTimeout(res, 200));
+  assert.equal(fs.existsSync(sentinel), false, 'a helper under the hive root was executed');
+  assert.equal(r['helpers-intact'].ok, false);
+  assert.deepEqual(r['helpers-intact'].problems, { 'hive-memory': 'modified', 'hive-node': 'modified', 'runtime-node': 'modified' });
 });
 
-test('a working memory backend passes both memory canaries', async (t) => {
+// ── installed helpers, read not run ──────────────────────────────────────────
+
+test('helper integrity: intact, stale, missing, not executable, not a regular file', (t) => {
   const dir = tmp(t);
-  const env = await backend(t, 200, JSON.stringify({ results: [{ text: 'secret memory text', score: 1 }] }));
-  const results = await C.runCanaries(baseDeps(dir, { memoryEnv: env }));
+  const expected = 'shim v2\n';
+  const p = (n) => path.join(dir, n);
+  fs.writeFileSync(p('good'), expected); fs.chmodSync(p('good'), 0o755);
+  fs.writeFileSync(p('old'), 'shim v1\n'); fs.chmodSync(p('old'), 0o755);
+  fs.utimesSync(p('old'), new Date(1000), new Date(1000));
+  fs.writeFileSync(p('noexec'), expected); fs.chmodSync(p('noexec'), 0o644);
+  fs.symlinkSync(p('good'), p('link'));
+  const check = (name, extra = {}) => C.checkHelper({ name, path: p(name), expected, sourceMtimeMs: 5_000_000, ...extra });
+  assert.equal(check('good'), null);
+  assert.equal(check('old'), 'stale');
+  assert.equal(check('missing'), 'missing');
+  assert.equal(check('noexec'), 'not-executable');
+  assert.equal(check('link'), 'not-regular');
+  // A generated helper has no source file: any difference is a modification.
+  assert.equal(C.checkHelper({ name: 'old', path: p('old'), expected }), 'modified');
+});
+
+test('node is found on the agents\' PATH by lookup only', (t) => {
+  const dir = tmp(t);
+  fs.writeFileSync(path.join(dir, 'node'), '#!/bin/sh\n'); fs.chmodSync(path.join(dir, 'node'), 0o755);
+  assert.equal(C.nodeOnPath([path.join(dir, 'none'), dir]), true);
+  assert.equal(C.nodeOnPath([path.join(dir, 'none')]), false);
+});
+
+// ── memory and knowledge, probed in-process ──────────────────────────────────
+
+test('memory canaries count hits and name a refusal by its status code', async (t) => {
+  const dir = tmp(t);
+  const seen = [];
+  const memory = {
+    wing: 'god',
+    search: async (q, o) => { seen.push(['search', q, o]); return { ok: true, output: '— one\n— two' }; },
+    wakeUp: async (w) => { seen.push(['wake', w]); return { ok: false, output: '', error: 'HTTP 422' }; }
+  };
+  const r = byFeature(await C.runCanaries(deps(dir, { memory })));
+  assert.deepEqual([r['memory-search'].ok, r['memory-search'].hits], [true, 2]);
+  assert.deepEqual([r['memory-wakeup'].ok, r['memory-wakeup'].detail], [false, 'refused-422']);
+  // The tagged request form agents send: a wing (owner tag) is always passed.
+  assert.deepEqual(seen, [['search', 'canary probe', { wing: 'god' }], ['wake', 'god']]);
+});
+
+test('zero hits is its own detail, and nothing recalled reaches the result', async (t) => {
+  const dir = tmp(t);
+  const results = await C.runCanaries(deps(dir, {
+    memory: { wing: 'god', search: recall(''), wakeUp: recall('— secret memory text') },
+    kg: { search: () => [{ title: 'secret doc' }] }
+  }));
   const r = byFeature(results);
-  assert.equal(r['memory-search'].ok, true);
-  assert.equal(r['memory-wakeup'].ok, true);
-  // Measure only: nothing the backend returned is carried into the result.
-  assert.doesNotMatch(JSON.stringify(results), /secret memory text/);
+  assert.deepEqual([r['memory-search'].ok, r['memory-search'].hits, r['memory-search'].detail], [true, 0, 'no-hits']);
+  assert.deepEqual([r['kg-search'].ok, r['kg-search'].hits], [true, 1]);
+  assert.doesNotMatch(JSON.stringify(results), /secret/);
 });
 
-test('an unreachable memory backend reads as unavailable', () => {
-  assert.deepEqual(C.classifyMemoryRun({ code: 0, stdout: 'memory recall unavailable — continue without it\n', stderr: '' }), { ok: false, detail: 'unavailable' });
-  assert.deepEqual(C.classifyMemoryRun({ code: 2, stdout: '', stderr: 'usage' }), { ok: false, detail: 'exit-2' });
-});
-
-test('features that are off are reported as not checked, not as failures', async (t) => {
+test('a probe that hangs times out instead of holding the pass', async (t) => {
   const dir = tmp(t);
-  const r = byFeature(await C.runCanaries(baseDeps(dir, { memoryShim: null })));
-  assert.equal(r['memory-search'].ok, null);
-  assert.equal(r['kg-search'].ok, null);
-  assert.equal(r['kg-search'].detail, 'off');
+  const never = () => new Promise(() => {});
+  const r = byFeature(await C.runCanaries(deps(dir, { memory: { wing: 'god', search: never, wakeUp: never }, timeoutMs: 50 })));
+  assert.deepEqual([r['memory-search'].ok, r['memory-search'].detail], [false, 'timeout']);
 });
 
-test('the hook canary gets a pong from a live socket and fails on a missing one', async (t) => {
-  const dir = tmp(t);
+test('features that are off are reported as not checked', async (t) => {
+  const r = byFeature(await C.runCanaries(deps(tmp(t))));
+  assert.deepEqual([r['memory-search'].ok, r['memory-search'].detail], [null, 'off']);
+  assert.deepEqual([r['kg-search'].ok, r['kg-search'].detail], [null, 'off']);
+});
+
+// ── hook socket ──────────────────────────────────────────────────────────────
+
+async function pongServer(t, dir, instance) {
   const sock = path.join(dir, 'h.sock');
   const server = net.createServer((c) => {
     let buf = '';
-    c.on('data', (d) => { buf += d; if (buf.includes('\n')) c.end(JSON.stringify({ pong: JSON.parse(buf).ping, instance: 'x' })); });
+    c.on('data', (d) => { buf += d; if (buf.includes('\n')) c.end(JSON.stringify({ pong: JSON.parse(buf).ping, instance })); });
   });
   await new Promise((r) => server.listen(sock, r));
   t.after(() => server.close());
-  assert.deepEqual(await C.pingHookSocket(sock), { ok: true });
-  const missing = await C.pingHookSocket(path.join(dir, 'nobody.sock'));
-  assert.equal(missing.ok, false);
-  assert.equal(missing.detail, 'ENOENT');
+  return sock;
+}
+
+test('the hook canary wants this app\'s instance, not just any listener', async (t) => {
+  const dir = tmp(t);
+  const sock = await pongServer(t, dir, 'me');
+  assert.deepEqual(await C.pingHookSocket(sock, 'me'), { ok: true });
+  assert.deepEqual(await C.pingHookSocket(sock, 'someone-else'), { ok: false, detail: 'other-instance' });
+  const missing = await C.pingHookSocket(path.join(dir, 'nobody.sock'), 'me');
+  assert.deepEqual(missing, { ok: false, detail: 'ENOENT' });
 });
 
-test('a kg CLI that exits non-zero fails its canary with the exit code', async (t) => {
-  const dir = tmp(t);
-  const cli = path.join(dir, 'kg.cjs');
-  fs.writeFileSync(cli, 'process.exit(3)');
-  const r = byFeature(await C.runCanaries(baseDeps(dir, { memoryShim: null, kg: { cli, env: {} } })));
-  assert.deepEqual([r['kg-search'].ok, r['kg-search'].detail], [false, 'exit-3']);
-});
+// ── model check ──────────────────────────────────────────────────────────────
 
-test('model canary flags an agent whose ledger model differs from its launch model after launch', async (t) => {
+test('model canary: a session that moved off its launch model is flagged; subagent rows are not', (t) => {
   const dir = tmp(t);
-  const log = [
-    { ts: 100, kind: 'agent-model', agentId: 'rev', model: 'claude-fable-5-1' },
-    { ts: 100, kind: 'agent-model', agentId: 'dev', model: 'claude-opus-5-5' },
-    { ts: 100, kind: 'agent-model', agentId: 'old', model: 'claude-opus-5-5' },
-    { ts: 100, kind: 'agent-model', agentId: 'alias', model: 'opus' }
+  const launches = new Map([
+    ['rev', { model: 'claude-fable-5-1', ts: 100 }],
+    ['dev', { model: 'claude-opus-5-5', ts: 100 }],
+    ['old', { model: 'claude-opus-5-5', ts: 100 }],
+    ['alias', { model: 'opus', ts: 100 }]
+  ]);
+  const MIN = 60_000;
+  const rows = [
+    ['rev', 1 * MIN, 'claude-fable-5-1'], ['rev', 2 * MIN, 'claude-opus-4-8'], ['rev', 20 * MIN, 'claude-opus-4-8'], // fallback, 18 min
+    ['dev', 1 * MIN, 'claude-opus-5-5'], ['dev', 2 * MIN, 'claude-haiku-5-5'], ['dev', 3 * MIN, 'claude-haiku-5-5'],  // subagent burst, 1 min
+    ['old', 50, 'claude-fable-5-1'],                                                                                    // before launch
+    ['alias', 2 * MIN, 'claude-opus-5-5']
   ];
-  const ledger = [
-    { agent_id: 'rev', ts: 200, model: 'claude-opus-4-8' },   // refusal fallback
-    { agent_id: 'dev', ts: 200, model: 'claude-opus-5-5' },
-    { agent_id: 'old', ts: 50, model: 'claude-fable-5-1' },   // before its launch: ignored
-    { agent_id: 'alias', ts: 200, model: 'claude-opus-5-5' }  // alias pin: not comparable
-  ];
-  fs.writeFileSync(path.join(dir, 'log.jsonl'), log.map((e) => JSON.stringify(e)).join('\n') + '\n');
-  fs.writeFileSync(path.join(dir, 'cost-ledger.jsonl'), ledger.map((e) => JSON.stringify(e)).join('\n') + '\n');
-  const r = byFeature(await C.runCanaries(baseDeps(dir, { memoryShim: null })));
-  assert.equal(r['model-matches-launch'].ok, false);
-  assert.equal(r['model-matches-launch'].checked, 2);
-  assert.deepEqual(r['model-matches-launch'].mismatched, ['rev']);
+  fs.writeFileSync(path.join(dir, 'l'), rows.map(([agent_id, ts, model]) => JSON.stringify({ agent_id, ts, model })).join('\n') + '\n');
+  const res = C.checkModels(launches, C.tailLines(path.join(dir, 'l')));
+  assert.deepEqual(res, { checked: 2, mismatched: ['rev'] });
 });
 
 test('tailLines drops the partial first line of a tail read', (t) => {
@@ -119,13 +179,4 @@ test('tailLines drops the partial first line of a tail read', (t) => {
   fs.writeFileSync(p, 'aaaa\nbbbb\ncccc\n');
   assert.deepEqual(C.tailLines(p, 7), ['cccc']);
   assert.deepEqual(C.tailLines(path.join(dir, 'missing')), []);
-});
-
-test('the memory canary runs search exactly as agents do, without --results', async (t) => {
-  const dir = tmp(t);
-  const calls = [];
-  const run = async (cmd, args) => { calls.push(args); return { code: 0, stdout: '', stderr: '' }; };
-  await C.runCanaries(baseDeps(dir, { memoryEnv: { HIVE_MEMORY_BACKEND: 'hindsight' }, run }));
-  const search = calls.find((a) => a[1] === 'search');
-  assert.deepEqual(search.slice(1), ['search', 'canary probe']);
 });
