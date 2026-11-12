@@ -110,7 +110,7 @@ export function MiniButton({ children, onClick, tone = 'plain', disabled }: {
         background: tone === 'good' ? 'var(--cth-mint)' : 'var(--cth-cream-200)',
         boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)',
         fontFamily: 'var(--cth-font-ui)', fontSize: 11,
-        color: disabled ? 'var(--cth-ink-300)' : tone === 'danger' ? 'var(--cth-coral)' : tone === 'good' ? 'var(--cth-on-accent)' : 'var(--cth-ink-900)'
+        color: tone === 'good' ? 'var(--cth-on-accent)' : disabled ? 'var(--cth-ink-300)' : tone === 'danger' ? 'var(--cth-coral)' : 'var(--cth-ink-900)'
       }}
     >{children}</button>
   );

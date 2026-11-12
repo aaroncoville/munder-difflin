@@ -139,7 +139,7 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
                         fontFamily: 'var(--cth-font-display)',
                         fontSize: 8,
                         lineHeight: '14px',
-                        color: on && !isConsent ? 'var(--cth-on-accent)' : 'var(--cth-ink-900)',
+                        color: on ? (isConsent ? 'var(--cth-ink-900)' : 'var(--cth-on-accent)') : 'var(--cth-ink-900)',
                         cursor: 'pointer',
                         textTransform: 'uppercase'
                       }}

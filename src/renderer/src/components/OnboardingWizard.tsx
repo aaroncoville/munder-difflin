@@ -483,6 +483,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
                           <span style={{
                             fontSize: 10, padding: '1px 5px', lineHeight: '16px',
                             background: 'var(--cth-lemon)',
+                            color: 'var(--cth-on-accent)',
                             boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)',
                             fontFamily: 'var(--cth-font-display)', flexShrink: 0
                           }}>{t('onboarding.orchestrator.recommended')}</span>
