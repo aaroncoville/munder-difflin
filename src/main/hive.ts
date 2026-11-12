@@ -55,6 +55,7 @@ import { withCodexWritableRoots } from '../shared/codexWritableRoots';
 import { resolveGodName } from '../shared/godIdentity';
 import { appendSession } from './codexActivity';
 import { isSafeMessageId, publishMessage, sweepInboxLeftovers } from './messageId';
+import { PIPELINE, pipelineIntake, refusalBody } from './pipeline/route';
 
 /** The subset of HarnessConfig the hive consumes for the default-MCP merge.
  *  Kept as a local shape so hive.ts never imports the foundation-owned config
@@ -93,6 +94,8 @@ export interface HiveMessage {
   created_at: string;
   /** The created_at the sender wrote, kept for reference when the router stamped its own. */
   client_created_at?: string;
+  /** A structured payload (spec 5.1). Only the app's own `pipeline` sender sets one; an agent's is read only on mail to the pipeline. */
+  payload?: Record<string, unknown>;
 }
 
 /** One hive message reshaped for the voice read-layer (`hive:messages`): the
@@ -1816,6 +1819,29 @@ export class HiveManager {
     return this.deliver({ ...msg, hops, to: godId, subject }, godId);
   }
 
+  private pipelineSink: ((msg: HiveMessage) => void) | null = null;
+
+  /** Attaches the merge-request pipeline's conductor, or detaches it with null. With none, mail to the pipeline is refused. */
+  setPipelineSink(sink: ((msg: HiveMessage) => void) | null): void {
+    this.pipelineSink = sink;
+  }
+
+  /** One outbox message addressed to the pipeline: read [text] strictly, hand a valid payload to the conductor, else refuse it to the sender. */
+  private routeToPipeline(msg: HiveMessage, text: string): void {
+    const sink = this.pipelineSink;
+    const intake = pipelineIntake(text, sink !== null);
+    if (intake.kind === 'refuse') {
+      this.deliver(this.normalize({
+        from: PIPELINE, to: msg.from, act: 'refuse', conversation: msg.conversation, in_reply_to: msg.id,
+        subject: `Refused: ${msg.subject}`.slice(0, 200), body: refusalBody(intake.errors), requires_reply: false,
+      }, PIPELINE), msg.from);
+      this.appendLog({ kind: 'pipeline-refused', from: msg.from, id: msg.id, errors: intake.errors.slice(0, 20) });
+      return;
+    }
+    try { sink?.({ ...msg, payload: intake.payload }); } catch (e) { this.appendLog({ kind: 'pipeline-sink-error', from: msg.from, id: msg.id, error: String(e).slice(0, 200) }); }
+    this.appendLog({ kind: 'message', from: msg.from, to: PIPELINE, act: msg.act, subject: msg.subject, id: msg.id, delivered: [PIPELINE], schema: intake.schema });
+  }
+
   /** Inject a message directly (used by the orchestrator / UI / tests). */
   send(partial: Partial<HiveMessage>, from = 'system'): HiveMessage {
     const msg = this.normalize(partial, from);
@@ -2205,6 +2231,7 @@ export class HiveManager {
         let hops = 0;
         try {
           const raw = readFileSync(full, 'utf8');
+          let text = raw;
           let partial: Partial<HiveMessage>;
           try {
             partial = JSON.parse(raw) as Partial<HiveMessage>;
@@ -2216,6 +2243,7 @@ export class HiveManager {
             }
             try {
               partial = JSON.parse(repaired.text) as Partial<HiveMessage>;
+              text = repaired.text;
             } catch {
               this.dropMalformedAfterRetry(id, outbox, f, now);
               continue;
@@ -2232,13 +2260,21 @@ export class HiveManager {
           const msg = this.normalize(partial, id);
           msg.from = id; // sender is authoritative — the owning directory
           hops = msg.hops;
-          if (this.recentSends.isRepeat({ ...msg, conversation: partial.conversation }, join(outbox, '.sent'), now)) { stage = 'archive'; this.appendLog({ kind: 'outbox-duplicate', from: id, file: f, archived: moveWithoutReplacing(full, join(outbox, '.sent'), (n) => (n === 0 ? `dup-${f}` : `dup-${n}-${f}`)) }); continue; } // written again after it was routed: file it, deliver nothing
+          // Mail to the pipeline differs by its payload, so its own text is part of what makes it a repeat.
+          const sendable = { ...msg, conversation: partial.conversation, ...(msg.to === PIPELINE ? { body: `${msg.body}\u0000${text}` } : {}) };
+          if (this.recentSends.isRepeat(sendable, join(outbox, '.sent'), now)) { stage = 'archive'; this.appendLog({ kind: 'outbox-duplicate', from: id, file: f, archived: moveWithoutReplacing(full, join(outbox, '.sent'), (n) => (n === 0 ? `dup-${f}` : `dup-${n}-${f}`)) }); continue; } // written again after it was routed: file it, deliver nothing
+          // An agent's payload is read only on mail to the pipeline; elsewhere it is dropped (normalize never copies it).
+          if (msg.to !== PIPELINE && partial !== null && typeof partial === 'object' && Object.hasOwn(partial, 'payload')) {
+            this.appendLog({ kind: 'payload-dropped', from: id, to: shortTarget(msg.to), id: msg.id });
+          }
           stage = 'route';
-          if (!this.routeMessage(msg)) {
+          if (msg.to === PIPELINE) {
+            this.routeToPipeline(msg, text);
+          } else if (!this.routeMessage(msg)) {
             this.outboxFailed(isKnownTarget(this.routingRegistry().agents, msg.to, this.agentsDir()) ? 'not-delivered' : 'recipient', outbox, f, id, undefined, hops);
             continue;
           }
-          this.recentSends.routed({ ...msg, conversation: partial.conversation }, now);
+          this.recentSends.routed(sendable, now);
           stage = 'archive';
           const stamp = stampSentCopy(join(outbox, '.sent'), archiveOutboxFile(outbox, f), msg); if (stamp !== 'stamped') this.appendLog({ kind: `sent-stamp-${stamp}`, from: id, file: f }); // archive, don't reprocess
           routed++;
