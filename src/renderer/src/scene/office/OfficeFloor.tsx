@@ -20,9 +20,8 @@ import { planFloorRelease } from './floorRelease';
 import type { Tile, Facing, ErrandKind, ErrandSpot } from './themeRegistry';
 
 // The map, tileset atlases, desk-claim order, errand spots, coffee-economy
-// tiles, prop anchors, monitor gids and palette all come from the active
-// ThemeConfig now (see themeRegistry.ts / themeLoader.ts). Phase 0 ships the
-// existing office unchanged as `theme: 'office'`.
+// tiles, prop anchors, monitor gids and palette come from the office
+// ThemeConfig (see themeRegistry.ts / themeLoader.ts).
 
 /** A cafeteria break in progress for one agent — set by the coffee-break
  *  director, cleared when the agent leaves or gets pulled back to work. */
@@ -183,9 +182,6 @@ export function OfficeFloor() {
   // A ref, not state: the budget has to survive the rebuilds it schedules, which
   // re-run the effect below and would reset anything scoped to it.
   const initRetriesRef = useRef(0);
-  // The active office theme (store mirror of config.officeTheme). Changing it
-  // tears down and rebuilds the whole scene on the new map/cast (see deps below).
-  const officeTheme = useStore((s) => s.officeTheme);
 
   // Is the floor actually on screen? A fullscreen terminal or file editor covers
   // it completely, and a hidden window shows nothing at all — but the Pixi ticker
@@ -278,8 +274,7 @@ export function OfficeFloor() {
     const MAX_ENVELOPES = 16;
 
     const init = async () => {
-      // Load the active theme bundle (falls back to 'office' on a bad/absent bundle).
-      const theme = await loadTheme(officeTheme);
+      const theme = await loadTheme();
       await app.init({
         background: hexNum(theme.palette.background),
         antialias: false,
@@ -1820,7 +1815,7 @@ export function OfficeFloor() {
       appRef.current = null;
       while (host.firstChild) host.removeChild(host.firstChild);
     };
-  }, [officeTheme, glGeneration, i18n.language, released]);
+  }, [glGeneration, i18n.language, released]);
 
   return (
     <div

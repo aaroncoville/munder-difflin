@@ -168,12 +168,6 @@
       "idle": "at rest"
     }
   },
-  "officeTheme": {
-    "stillWorking": "⚠ {{count}} assistant is still reading.",
-    "stillWorkingPlural": "⚠ {{count}} assistants are still reading.",
-    "deleteCount": "Your {{count}} present assistant will be dismissed — their speaking-glasses close and any work in hand stops.",
-    "deleteCountPlural": "Your {{count}} present assistants will be dismissed — their speaking-glasses close and any work in hand stops."
-  },
   "memoryPanel": {
     "openTitle": "Search the memory your assistants have built",
     "title": "THE HOUSE'S MEMORY",
