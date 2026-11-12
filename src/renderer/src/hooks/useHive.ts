@@ -22,7 +22,6 @@ import { inboxNudgeText } from '../../../shared/hiveNudge';
 import { resolveGodName } from '../../../shared/godIdentity';
 import { acquireTerminal, resetTerminal, isTerminalAutomationSafe } from '@/components/terminalPool';
 import { canDeliverToAgent, deliverWithAcknowledgement, checkPrecondition } from './queueDelivery';
-import { OFFICE_CAST, DEFAULT_CHARACTER } from '@/scene/office/cast';
 
 const GOD_ID = 'god';
 /** Accent palette for MAIN-spawned (voice-hired) agents — picked deterministically
@@ -424,7 +423,6 @@ export function useHive(config: HarnessConfig | null): void {
       const god: Agent = {
         id: GOD_ID,
         name: godName,
-        character: 'michael',
         accent: 'lemon',
         description: 'god — runs the floor, triages requests, escalates only critical calls to you',
         project: 'hive',
@@ -1017,18 +1015,6 @@ export function useHive(config: HarnessConfig | null): void {
       if (!rec?.id) return;
       // addAgent is idempotent, but bail early if the renderer already carded it.
       if (useStore.getState().agents.some((a) => a.id === rec.id)) return;
-      // An explicit character wins; otherwise infer it from the name, which is
-      // what makes "spawn one called Meredith" land on the Meredith avatar with
-      // nothing else asked for. The explicit field covers what inference cannot
-      // express: an agent named something else that should still look like a
-      // particular character. Unknown values fall through to the inference rather
-      // than breaking the card.
-      const castMember = (q?: string) =>
-        q ? OFFICE_CAST.find((m) => m.name === q || m.displayName.toLowerCase() === q)?.name : undefined;
-      const character =
-        castMember(rec.character?.trim().toLowerCase()) ??
-        castMember((rec.name || rec.id).toLowerCase()) ??
-        DEFAULT_CHARACTER;
       // Accent is otherwise hashed from the worker id, which is stable but not
       // choosable. An unrecognised accent keeps the hash.
       const askedAccent = SPAWN_ACCENTS.find((a) => a === rec.accent?.trim().toLowerCase());
@@ -1038,7 +1024,6 @@ export function useHive(config: HarnessConfig | null): void {
       const agent: Agent = {
         id: rec.id,
         name: rec.name || rec.id,
-        character,
         accent: askedAccent ?? SPAWN_ACCENTS[h],
         description: rec.role || 'a fresh harness',
         project,

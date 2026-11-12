@@ -7,7 +7,6 @@ import { AgentFace } from './AgentFace';
 import { RealtimeMichaelToggle } from './RealtimeMichaelToggle';
 import { CostHud } from '@/realtime/CostHud';
 import { AccentColorName } from '@/design/tokens';
-import { OfficeCharacterName } from '@/scene/office/cast';
 import { AgentNameEditor } from './AgentNameEditor';
 
 export interface AgentCardProps {
@@ -15,7 +14,6 @@ export interface AgentCardProps {
    *  when the name matches no face in the pack. */
   id: string;
   name: string;
-  character: OfficeCharacterName;
   accent: AccentColorName;
   status: StatusKind;
   /** This agent's pty, if it has one. Only used to notice that the USER has
@@ -58,7 +56,7 @@ const fmtK = (n: number): string => `${Math.round(n / 1000)}k`;
  * and a slim gauge pinned to the bottom edge. Nothing overlaps anything.
  */
 export function AgentCard({
-  id, name, character, accent, status, ptyId, project, action, progress = 0,
+  id, name, accent, status, ptyId, project, action, progress = 0,
   contextTokens, contextLimit, selected, isGod, onClick, onRename,
   doingCount = 0, onTaskNoteClick, draggable, note, onEditNote
 }: AgentCardProps) {
@@ -200,7 +198,7 @@ export function AgentCard({
             display: 'flex', alignItems: 'flex-start', justifyContent: 'center', overflow: 'hidden',
             flexShrink: 0
           }}>
-            <AgentFace id={id} name={name} character={character} scale={2} isGod={isGod} />
+            <AgentFace id={id} name={name} isGod={isGod} />
           </div>
 
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>

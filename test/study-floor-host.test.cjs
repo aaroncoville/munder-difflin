@@ -98,8 +98,10 @@ function afterFailure(error) {
 function assertPanel({ shown, StudyUnavailable }) {
   assert.ok(shown && shown.type === StudyUnavailable,
     'the panel is standing where the Study would have been');
-  assert.match(text(shown.type(shown.props)).join(' '), /could not be drawn/i,
-    'the panel does not say what happened');
+  const en = require('../src/renderer/src/i18n/locales/en.json');
+  assert.match(en.study.unavailable, /could not be drawn/i, 'the English sentence changed meaning');
+  assert.equal(text(shown.type(shown.props)).join(' ').trim(), en.study.unavailable,
+    'the panel does not say what happened, in the reader\'s language');
 }
 
 test('a floor plan that will not validate leaves the failure panel standing', () => {

@@ -3,7 +3,7 @@ import { Trans, useTranslation } from 'react-i18next';
 import { PixelPanel } from './PixelPanel';
 import { PixelButton } from './PixelButton';
 import { Icon, type IconName } from './Icon';
-import { SpritePortrait } from './SpritePortrait';
+import { AgentFace } from './AgentFace';
 import { ProviderLogo } from './ProviderLogo';
 import { modelsForProvider, onboardingEngineChoices, type AgentProvider, type HarnessConfig } from '@/store/config';
 import { providerPreset } from '@shared/agentProvider';
@@ -274,7 +274,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
                     boxShadow: 'inset 0 0 0 1.5px var(--cth-ink-500)',
                     display: 'flex', alignItems: 'flex-end', justifyContent: 'center', overflow: 'hidden'
                   }}>
-                    <SpritePortrait character="michael" scale={2} />
+                    <AgentFace id="god" name={godName} isGod />
                   </div>
                   <div>
                     <div style={{ fontFamily: 'var(--cth-font-display)', fontSize: 12, lineHeight: '18px' }}>
@@ -318,7 +318,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
                     boxShadow: 'inset 0 0 0 1.5px var(--cth-ink-500)',
                     display: 'flex', alignItems: 'flex-end', justifyContent: 'center', overflow: 'hidden'
                   }}>
-                    <SpritePortrait character="michael" scale={2} />
+                    <AgentFace id="god" name={godName} isGod />
                   </div>
                   <div>
                     <div style={{

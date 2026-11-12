@@ -11,10 +11,10 @@ Two data planes feed one renderer:
 ┌───────────────────────────────────────────────────────────────┐
 │                     Electron Renderer (React)                  │
 │   ┌──────────────────┐    ┌──────────────────────────────┐    │
-│   │ Office Floor      │    │ Terminal + Command Bar       │    │
-│   │ (Pixi.js)        │    │ Files + Git tabs (xterm.js)  │    │
+│   │ The Study        │    │ Terminal + Command Bar       │    │
+│   │ (DOM + Pixi.js)  │    │ Files + Git tabs (xterm.js)  │    │
 │   └─────────▲────────┘    └────────────▲─────────────────┘    │
-│             │ avatar state             │ pty bytes / fs / git  │
+│             │ agent + task state       │ pty bytes / fs / git  │
 └─────────────┼──────────────────────────┼───────────────────────┘
               │ IPC (contextBridge: window.cth)
        ┌──────┴──────────┐        ┌──────┴─────────────┐
@@ -68,9 +68,9 @@ src/
     TasksKanban,             dependency-aware kanban board (Tasks tab)
     ThreadsPanel,            hive message conversation viewer (Messages tab)
     MessageQueueComposer,    park messages for a busy agent
-    scene/office/            Pixi office floor: OfficeFloor, Character, Camera, cast, pathfinding, …
+    scene/study/             the Study floor: FloorHost, StudyScene, painted portraits
     store/ · hooks/          zustand store, event loop, PTY parser, typewriter
-    assets/                  tilesets, maps, character sheets (see ATTRIBUTION.md)
+    assets/                  fonts and the Sixth History logo (see ATTRIBUTION.md)
 docs/                        `logo.png`, `banner.png`, landing page (GitHub Pages → munderdiffl.in)
 docs/media/                  `og.png` (social previews) + rendered Remotion clips
 landing-remotion/            Remotion project that renders the landing page's "how it works" clips
@@ -82,8 +82,11 @@ docs/message-queue.md        who may type into an agent's terminal, and when
 
 ## Design system
 
-The aesthetic is **Animal Crossing × Earthbound × SNES menu UI** — pixel-snapped, chunky, friendly.
-[`DESIGN.md`](../DESIGN.md) is canonical; every component derives from its tokens. The Munder Difflin
-brand layers a **Dunder-Mifflin maroon** (`#6E1423`) and **gold** (`#F4D35E`) on top for logo and
-chrome. The 15 avatars are the cast of *The Office*, differentiated by hair/skin/shirt recipes.
+The app has one look, Sixth History: painted rooms, gilt frames, candlelight and a parchment-and-ink
+palette. Every component derives from the design tokens ([`DESIGN.md`](../DESIGN.md),
+`src/renderer/src/design/tokens.ts` and `tokens.css`); the Sixth History values are set under
+`src/renderer/src/design/occult/`. Agents are shown as painted portraits from the pack in
+`src/renderer/src/scene/study/assets/portraits/`, dealt by name, with a monogram where the pack has
+no portrait. The Study is drawn as DOM layers over the painted room panels, with a Pixi.js canvas for
+candlelight, dust and the hearth.
 

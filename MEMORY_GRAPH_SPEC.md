@@ -30,7 +30,7 @@ Everything comes from the existing preload bridge — **no new IPC handlers, no 
 
 ```ts
 // Agent (store) — the primary node payload
-{ id: string; name: string; accent: AccentColorName; character: OfficeCharacterName;
+{ id: string; name: string; accent: AccentColorName;
   status: StatusKind; isGod?: boolean }
 
 // LogEntry (hiveLog) — loosely typed; we read the 'message' kind only
@@ -79,7 +79,7 @@ type GraphEdge =
 ### 4.1 Message edges
 - One edge per **ordered (from,to) pair**, `weight` = number of messages exchanged (aggregated from the 200-entry log). Thicker line = more traffic (clamped 1–4px).
 - Directionality shown with a small arrowhead toward `target` (SVG `marker`). Reciprocal pairs (A→B and B→A) render as one line with arrowheads at both ends.
-- Colour by the **most recent** `act` on that pair, using the message-envelope palette already in `MessageEnvelope.tsx` (request/inform/propose/query/agree/refuse/done) so the graph speaks the same visual language as the floor's flying envelopes.
+- Colour by the **most recent** `act` on that pair, using one colour per speech act (request/inform/propose/query/agree/refuse/done) so the graph keeps the app's speech-act colours.
 
 ### 4.2 Topic edges (bipartite, agent ↔ topic)
 - An edge connects an agent to a topic node when that agent's `memory.md` mentions the topic.
@@ -130,7 +130,7 @@ Render the graph as inline SVG inside the panel: `<line>`/`<polyline>` edges wit
 | Interaction | **Native DOM** `onClick`/`onMouseEnter` per node → zero hit-testing code | Manual `eventMode`/hit-area wiring on every object |
 | Text labels | Crisp, free, reflowable `<text>` | `Text`/`BitmapText` objects, manual layout, blurry under camera zoom |
 | Theming | `--cth-cream/ink` CSS vars used directly | Must convert tokens to `0x` numbers (`hexToNumber`), no live CSS theming |
-| Lifecycle | None — React owns the DOM | `Application` create/`Ticker`/`safeDestroy` teardown (see `OfficeFloor.tsx`'s 700+ lines of lifecycle care) |
+| Lifecycle | None — React owns the DOM | `Application` create/`Ticker`/`safeDestroy` teardown (the Pixi office floor this app once had needed 700+ lines of it) |
 | Tooltips | Plain HTML overlay | Needs an HTML overlay *anyway* |
 | Aesthetic | Square nodes + hard offset shadows + pixel fonts → fully on-brand | Same look achievable, more code |
 
@@ -164,7 +164,7 @@ Tooltips and the navigate-to-memory hook are the two requirements called out in 
 - Agent node fill: `--cth-<accent>`; border `--cth-ink-900` 2px; offset shadow `2px 2px 0 --cth-ink-900`. God: 1.4× size + double border.
 - Status: a 1px ring in the `status-<kind>` colour (idle/thinking/working/blocked/success) so liveness reads at a glance.
 - Topic node: `--cth-cream-200` fill, `--cth-ink-700` hairline, VT323 label `--cth-ink-700`.
-- Edges: message palette per act (mirror `MessageEnvelope.tsx`); topic edges = ink-300 dashed.
+- Edges: message palette per act; topic edges = ink-300 dashed.
 - Labels: Pixelify Sans 12–13px for agent names; VT323 for topics/paths. Never bold (DESIGN.md rule — emphasise with colour).
 - Legend: a compact key (node kinds, act colours) in a corner, collapsible.
 

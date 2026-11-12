@@ -1,7 +1,8 @@
 'use strict';
-// The TV-show office themes are gone: one office floor, no theme picker, no
-// theme settings. A config saved by an older build that still names a show or
-// turns the flag on must load and change nothing.
+// The TV-show office themes are gone: no theme picker, no theme settings. A
+// config saved by an older build that still names a show or turns the flag on
+// must load and change nothing. (The office floor itself is gone too; see
+// test/remove-office-scene.test.cjs.)
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -18,12 +19,8 @@ test.after(() => fs.rmSync(userData, { recursive: true, force: true }));
 const ROOT = path.join(__dirname, '..');
 const R = (...p) => path.join(ROOT, 'src', 'renderer', 'src', ...p);
 
-test('the office is the only floor theme: no show maps, no picker, no theme table', () => {
-  // themeRegistry.ts imports Vite asset URLs, so it is checked on disk, not loaded.
-  assert.deepEqual(fs.readdirSync(R('assets', 'maps')).filter((f) => f.endsWith('.tmj')), ['office.tmj']);
+test('there is no office theme picker', () => {
   assert.equal(fs.existsSync(R('components', 'OfficeThemePicker.tsx')), false);
-  const registry = fs.readFileSync(R('scene', 'office', 'themeRegistry.ts'), 'utf8');
-  assert.doesNotMatch(registry, /brooklyn99|BROOKLYN99|THEMES\b|ThemeId/);
 });
 
 test('no locale carries the theme picker strings', () => {

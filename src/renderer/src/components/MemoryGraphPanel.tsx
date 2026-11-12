@@ -4,7 +4,7 @@ import type { TFunction } from 'i18next';
 import { useStore } from '@/store/store';
 import { PixelBadge } from './PixelBadge';
 import { Icon } from './Icon';
-import type { MessageAct } from '@/scene/office/MessageEnvelope';
+import type { MessageAct } from './memoryGraph/buildGraph';
 import {
   buildGraph,
   type GraphData,
@@ -478,8 +478,7 @@ function Toggle({ on, onClick, label }: { on: boolean; onClick: () => void; labe
 
 const MARKER_ACTS: MessageAct[] = ['request', 'inform', 'propose', 'query', 'agree', 'refuse', 'done'];
 
-/** Speech-act → colour. Mirrors ACT_COLOR in MessageEnvelope.ts so the graph
- *  speaks the same visual language as the floor's flying envelopes. */
+/** Speech-act → colour, one per act the hive routes. */
 function actColor(act?: MessageAct): string {
   switch (act) {
     case 'request': return 'var(--cth-sky)';

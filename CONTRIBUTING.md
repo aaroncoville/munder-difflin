@@ -153,8 +153,7 @@ someone who has.
 |---|---|
 | `src/main/` | Electron main process — PTYs (`pty.ts`), fs/git bridges, the hive (`hive.ts`, `hooks.ts`, `memory.ts`), config. |
 | `src/preload/` | Context-bridge IPC surface. |
-| `src/renderer/` | React UI, Pixi.js office scene (`scene/office/`), components, design system, stores. |
-| `tools/mapgen/` | Python helpers for building/rendering the Tiled office map. |
+| `src/renderer/` | React UI, the Study floor (`scene/study/`), components, design system, stores. |
 
 See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the data-flow overview,
 the module by module layout, and the design system.
@@ -185,11 +184,9 @@ the module by module layout, and the design system.
 
 ## A note on assets
 
-The bundled tilesets are LimeZu's *Modern Interiors*, used under the **Complete
-Version licence**. See [`ATTRIBUTION.md`](./src/renderer/src/assets/ATTRIBUTION.md).
-That licence requires credit to LimeZu, so don't remove the acknowledgement from
-the README, the app, or the website. The Office cast is drawn procedurally in
-`portraitArt.ts` and carries no third-party licence.
+Third-party assets that ship with the app, and the credits their licences
+require, are listed in [`ATTRIBUTION.md`](./src/renderer/src/assets/ATTRIBUTION.md).
+Don't remove a credit that file says is required.
 If you contribute new art, it must be either your own work or compatibly
 licensed, and you must add it to `ATTRIBUTION.md`. Don't add unlicensed assets.
 

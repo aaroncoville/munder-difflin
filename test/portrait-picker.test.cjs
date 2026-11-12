@@ -80,7 +80,6 @@ test('the add-agent screen offers the wall of portraits, and nothing else', () =
   // Sixth History is the only theme, so there is no pixel cast to switch back
   // to and nothing to gate the wall on.
   assert.doesNotMatch(src, /useAppTheme/, 'the picker is still gated on a theme');
-  assert.doesNotMatch(src, /OFFICE_CAST\.map/, 'the pixel cast tiles are still drawn');
   // Choosing a portrait names the assistant, the same as clicking a character
   // tile already does. Without this the name rule never reaches the agent.
   assert.match(src, /setName\(/, 'choosing a face does not name the assistant');
