@@ -31,6 +31,7 @@ faq:
 <video controls preload="none" playsinline poster="/media/demo/orchestrator-poster.jpg" style="width:100%; border-radius:12px; margin:12px 0 24px;">
   <source src="/media/demo/orchestrator.mp4" type="video/mp4" />
 </video>
+<p class="credit"><small>Recorded in an earlier version, when the floor was a pixel office drawn with <a href="https://limezu.itch.io/moderninteriors" target="_blank" rel="noopener">Modern Interiors by LimeZu</a> tilesets, used under the Complete Version licence (the app no longer ships them).</small></p>
 
 Munder Difflin puts one agent between you and the floor: the GOD orchestrator — Michael — who reads every request, decomposes it, routes work to the right agents, and escalates only critical items back to you. (The full mechanics are in [how the GOD orchestrator works](/blog/how-the-god-orchestrator-works/).) That design has one implication people keep missing: **the quality of what the floor ships is mostly the quality of your brief.**
 

@@ -72,6 +72,28 @@ test('LimeZu is credited wherever media of the old office are still shown, and n
   assert.equal(fs.existsSync(R('LICENSE-ASSETS')), false, 'the asset licence carve-out has nothing left to carve out');
 });
 
+test('a blog post that plays a recording of the old office credits LimeZu beside it', () => {
+  // The demo recordings under /media/demo/ were made in the pixel office, so
+  // the licence credit goes with them wherever the blog embeds one, in the
+  // post's source and in the page built from it.
+  const posts = fs.readdirSync(R('blog/src/posts')).filter((f) => f.endsWith('.md'));
+  const embedding = posts.filter((f) => /\/media\/demo\//.test(read(`blog/src/posts/${f}`)));
+  assert.ok(embedding.length >= 3, `only ${embedding.length} posts embed a recording; the scan no longer sees them`);
+  const missing = [];
+  for (const f of embedding) {
+    const slug = f.replace(/\.md$/, '');
+    for (const rel of [`blog/src/posts/${f}`, `docs/blog/${slug}/index.html`]) {
+      if (!fs.existsSync(R(rel))) { missing.push(`${rel} (not built)`); continue; }
+      const text = read(rel);
+      // The credit sits right after each recording, not somewhere else on the page.
+      for (const m of text.matchAll(/<\/video>/g)) {
+        if (!/limezu/i.test(text.slice(m.index, m.index + 600))) missing.push(`${rel}:${text.slice(0, m.index).split('\n').length}`);
+      }
+    }
+  }
+  assert.deepEqual(missing, []);
+});
+
 test('the asset attribution lists only files that still ship', () => {
   const doc = read('src/renderer/src/assets/ATTRIBUTION.md');
   const linked = [...doc.matchAll(/\]\(([^)#]+)\)/g)].map((m) => m[1]).filter((l) => !/^https?:/.test(l));

@@ -37,6 +37,7 @@ the Command Center for the whole fleet over time</strong>.</p></div>
 <video controls preload="none" playsinline poster="/media/demo/features-poster.jpg" style="width:100%; border-radius:12px; margin:12px 0 24px;">
   <source src="/media/demo/features.mp4" type="video/mp4" />
 </video>
+<p class="credit"><small>Recorded in an earlier version, when the floor was a pixel office drawn with <a href="https://limezu.itch.io/moderninteriors" target="_blank" rel="noopener">Modern Interiors by LimeZu</a> tilesets, used under the Complete Version licence (the app no longer ships them).</small></p>
 
 Munder Difflin gives you two views of the same office. The **floor** is the ambient one: characters at desks and envelopes
 flying between them. The **Command Center** is the management one, where you go when the question changes from "what is Dwight
