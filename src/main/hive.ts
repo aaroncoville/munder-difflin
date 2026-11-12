@@ -552,19 +552,46 @@ export class HiveManager {
     const p = this.nodeLauncherPath();
     if (!p) return;
     try {
-      const runtimeNode = join(this.runtimeBinDir() ?? '', process.platform === 'win32' ? 'node.cmd' : 'node');
-      writeFileSync(p, nodeLauncherScript(process.execPath, process.platform, runtimeNode), 'utf8');
+      writeFileSync(p, this.nodeLauncherContent(), 'utf8');
       if (process.platform !== 'win32') chmodSync(p, 0o755);
     } catch (e) {
       console.error('[hive] writeNodeLauncher failed:', e);
     }
   }
 
+  private nodeLauncherContent(): string {
+    const runtimeNode = join(this.runtimeBinDir() ?? '', process.platform === 'win32' ? 'node.cmd' : 'node');
+    return nodeLauncherScript(process.execPath, process.platform, runtimeNode);
+  }
+
+  private memoryShimSource(): string {
+    return join(__dirname, '../../resources/hive-memory.cjs');
+  }
+
+  private runtimeNodeContent(): string {
+    return `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec "${process.execPath}" "$@"\n`;
+  }
+
+  /** The helpers agents run from `<root>/bin`, with the bytes this app installs for each, so a
+   *  canary can READ them and spot a stale, altered or missing copy. Nothing here runs them. */
+  installedHelpers(): Array<{ name: string; path: string; expected: string; sourceMtimeMs?: number }> {
+    const root = this.root();
+    if (!root || process.platform === 'win32') return [];
+    const out: Array<{ name: string; path: string; expected: string; sourceMtimeMs?: number }> = [];
+    try {
+      const source = this.memoryShimSource();
+      out.push({ name: 'hive-memory', path: join(root, 'bin', 'hive-memory'), expected: readFileSync(source, 'utf8'), sourceMtimeMs: statSync(source).mtimeMs });
+    } catch { /* no bundled shim to compare with */ }
+    out.push({ name: 'hive-node', path: join(root, 'bin', 'hive-node'), expected: this.nodeLauncherContent() });
+    out.push({ name: 'runtime-node', path: join(root, 'bin', 'runtime', 'node'), expected: this.runtimeNodeContent() });
+    return out;
+  }
+
   private writeMemoryShim(): void {
     const root = this.root();
     if (!root) return;
     try {
-      const source = join(__dirname, '../../resources/hive-memory.cjs');
+      const source = this.memoryShimSource();
       const target = join(root, 'bin', process.platform === 'win32' ? 'hive-memory.cjs' : 'hive-memory');
       writeFileSync(target, readFileSync(source, 'utf8'), 'utf8');
       if (process.platform !== 'win32') chmodSync(target, 0o755);
@@ -634,7 +661,7 @@ export class HiveManager {
         );
       } else {
         const p = join(dir, 'node');
-        writeFileSync(p, `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec "${process.execPath}" "$@"\n`, 'utf8');
+        writeFileSync(p, this.runtimeNodeContent(), 'utf8');
         chmodSync(p, 0o755);
       }
     } catch (e) {

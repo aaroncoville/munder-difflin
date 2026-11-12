@@ -7,10 +7,10 @@ import {
   unlinkSync, mkdirSync, renameSync, createWriteStream, copyFileSync
 } from 'node:fs';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
-import { join, resolve, sep, basename, dirname, isAbsolute } from 'node:path';
+import { join, resolve, sep, basename, dirname, isAbsolute, delimiter } from 'node:path';
 import { homedir } from 'node:os';
 import { request as httpsRequest } from 'node:https';
-import { PtyManager, type SpawnOptions } from './pty';
+import { PtyManager, withHiveRuntimeFallback, type SpawnOptions } from './pty';
 import { resolveCommand as resolveCliCommand, isSafeCommandName } from './shellEnv';
 import { initAutoUpdater, abortPendingRestart } from './updater';
 import { askToConfirmQuit } from './quitRequest';
@@ -30,6 +30,7 @@ import {
 import { linkWorktreeDeps, unlinkWorktreeDeps } from './worktreeDeps';
 import { saveAskAttachment } from './askAttachments';
 import { HiveManager, type AgentMeta, type HiveMessage, type HiveTask } from './hive';
+import { runCanaries, memoryCanary } from './canaries';
 import { HookServer } from './hooks';
 import { HeavyJobLock, heavyLimit, heavySlotNotice, probeProcesses } from './heavyJob';
 import { suiteJobLimit } from './heavyJobRules';
@@ -2988,6 +2989,13 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
         : cfg.defaultModel ?? modelForRole(opts.hive, cfg);
       if (m) args.push('--model', m);
     }
+    // Measure only: which model this agent was launched with, so the
+    // model-matches-launch canary can spot a session that moved to another one.
+    const launchedModel = args[args.indexOf('--model') + 1];
+    if (args.includes('--model') && launchedModel) {
+      canaryLaunches.set(opts.hive.id, { model: launchedModel, ts: Date.now() });
+      hive.appendLog({ kind: 'agent-model', agentId: opts.hive.id, model: launchedModel });
+    }
     // Name the Remote Control session after the agent (Michael, Jim, Dev1…) so it
     // is identifiable in claude.ai / the mobile app. Otherwise Claude defaults the
     // prefix to the machine hostname (e.g. "vyapaks-macbook-pro-…"), which is
@@ -5449,6 +5457,46 @@ function bootstrapHiveServices(): void {
   reflector.start(); // bound oversized memory.md files on a timer (no-op until threshold)
 
   armAlwaysOnBeats();
+  startCanaries();
+}
+
+/** First canary pass a minute after start (agents are up by then), then hourly. */
+const CANARY_FIRST_MS = 60_000;
+const CANARY_EVERY_MS = 60 * 60_000;
+let canaryTimer: ReturnType<typeof setInterval> | null = null;
+let canaryFirst: ReturnType<typeof setTimeout> | null = null;
+/** Launch model per agent this run, for the model-matches-launch canary. */
+const canaryLaunches = new Map<string, { model: string; ts: number }>();
+
+/** Run the feature canaries and log one `canary` line each. Measure only, and
+ *  nothing under the hive root is executed: backends are probed in-process and
+ *  the installed helpers are only read. */
+async function runCanaryPass(): Promise<void> {
+  const root = hive.root();
+  if (!root) return;
+  const godId = hive.registry().godId ?? 'god';
+  const sock = hive.sockPath();
+  const results = await runCanaries({
+    // Decided from settings only: asking the backend (even its status) may spawn its CLI.
+    memory: memoryCanary(memory, migrateMemorySettings(readConfig()), godId),
+    kg: knowledge.active() ? { search: (q, limit) => knowledge.search(q, limit) } : null,
+    hook: sock ? { sock, instance: hookServer.instance() } : null,
+    helpers: hive.installedHelpers(),
+    pathDirs: withHiveRuntimeFallback(process.env.PATH ?? '', root).split(delimiter).filter(Boolean),
+    launches: canaryLaunches,
+    ledgerPath: join(root, 'cost-ledger.jsonl')
+  });
+  for (const r of results) hive.appendLog({ kind: 'canary', ...r });
+}
+
+function startCanaries(): void {
+  if (canaryTimer) clearInterval(canaryTimer);
+  if (canaryFirst) clearTimeout(canaryFirst);
+  const pass = (): void => { runCanaryPass().catch((e) => console.error('[canaries]', e)); };
+  canaryFirst = setTimeout(pass, CANARY_FIRST_MS);
+  canaryFirst.unref();
+  canaryTimer = setInterval(pass, CANARY_EVERY_MS);
+  canaryTimer.unref();
 }
 
 /** Cadence of the worker inbox-wake watchdog (#151). Well under the renderer's

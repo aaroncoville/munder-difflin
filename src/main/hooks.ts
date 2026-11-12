@@ -107,6 +107,8 @@ export class HookServer {
   /** This process's identity, echoed back by the ownership ping so a probe can
    *  tell "our listener" from "some other live instance" at the same path. */
   private readonly instanceId = randomUUID();
+  /** This server's identity, as its ownership ping answers it. */
+  instance(): string { return this.instanceId; }
   /** The socket FILE we bound (POSIX), so stop() and the beat can tell our
    *  socket from one another instance created at the same path (#277). */
   private mark: FileMark | null = null;

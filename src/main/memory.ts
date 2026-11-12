@@ -45,6 +45,8 @@ export class MemoryManager {
   ) {
     this.backend = this.makeBackend(this.getSettings().backend);
   }
+  /** The backend this manager holds right now (it swaps only on refresh after a settings change). */
+  backendId(): BackendId { return this.backend.id; }
   palacePath(): string | null { const home = this.getHome(); return home ? join(home, 'palace') : null; }
   bin(): string | null { return this.backend.status(this.enabled(), this.getHome()).bin; }
   available(): boolean { return this.backend.available(); }
