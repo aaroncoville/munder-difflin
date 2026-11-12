@@ -31,11 +31,39 @@ const command = (over = {}) => ({
 const errorsOf = (r) => (r.ok ? [] : r.errors.join(' | '));
 
 test('a well-formed submit, verdict and command are accepted as they are', () => {
+  // Optional fields left out come back as null, so every reader sees one shape.
+  const canonical = (m) => (m.schema === 'mr.command/1' ? { ...m, args: { review_hints: null, risk: null, ...m.args } } : m);
   for (const m of [submit(), verdict(), command()]) {
     const r = core.validatePayload(m);
     assert.equal(r.ok, true, errorsOf(r));
-    assert.equal(r.value, m);
+    // A fresh, rebuilt value, never the sender's own object.
+    assert.deepEqual(r.value, canonical(m));
+    assert.notEqual(r.value, m);
   }
+});
+
+test('a schema name that is an inherited property of a plain object is refused, never answered ok or thrown', () => {
+  const names = Object.getOwnPropertyNames(Object.prototype);
+  assert.ok(names.includes('constructor') && names.includes('__proto__'));
+  for (const name of names) {
+    const forged = { schema: name, ok: true, value: { schema: 'mr.verdict/1', verdict: 'CONFIRMED', reviewed_sha: 'abc' } };
+    let r;
+    assert.doesNotThrow(() => { r = core.validatePayload(forged); }, name);
+    assert.equal(r.ok, false, name);
+    assert.match(r.errors[0], /unknown schema/, name);
+  }
+});
+
+test('the value returned holds only the schema\'s own fields: unknown and prototype-named keys are refused at every level', () => {
+  const extra = core.validateVerdict({ ...verdict(), vendor: 'anthropic', model: 'claude' });
+  assert.equal(extra.ok, false);
+  assert.ok(extra.errors.some((e) => e.startsWith('vendor:')), extra.errors.join(' | '));
+  const proto = JSON.parse(`{"schema":"mr.submit/1","__proto__":{"x":1}}`);
+  assert.equal(core.validateSubmit({ ...submit(), ...proto }).ok, false);
+  const nested = core.validateVerdict(verdict({ verdict: 'BLOCK', findings: [{ ...finding(), extra: 1 }] }));
+  assert.ok(nested.errors.some((e) => e.startsWith('findings[0].extra:')), nested.errors.join(' | '));
+  const nestedSubmit = core.validateSubmit(submit({ tests: [{ suite: 'web', passed: 1, failed: 0, bogus: true }] }));
+  assert.ok(nestedSubmit.errors.some((e) => e.startsWith('tests[0].bogus:')), nestedSubmit.errors.join(' | '));
 });
 
 // [description, verdict overrides, field the refusal must name]
@@ -53,6 +81,10 @@ const VERDICT_RULES = [
   ['an unknown verdict word', { verdict: 'LGTM' }, 'verdict'],
   ['a finding of an unknown class', { verdict: 'BLOCK', findings: [finding({ class: 'nit' })] }, 'findings[0].class'],
   ['a finding body over 600 characters', { verdict: 'BLOCK', findings: [finding({ body: 'x'.repeat(601) })] }, 'findings[0].body'],
+  ['a LOW finding marked must-fix: a LOW never blocks', { verdict: 'BLOCK', findings: [finding({ severity: 'LOW', must_fix: true })] }, 'findings[0].must_fix'],
+  ['two findings with the same id', { verdict: 'BLOCK', findings: [finding(), finding()] }, 'findings[1].id'],
+  ['a finding id with a space or newline in it', { verdict: 'BLOCK', findings: [finding({ id: 'a b\nc' })] }, 'findings[0].id'],
+  ['more than 50 findings', { verdict: 'CONFIRMED', findings: Array.from({ length: 51 }, (_, i) => finding({ id: `f${i}`, severity: 'LOW', must_fix: false })) }, 'findings'],
 ];
 
 for (const [what, over, field] of VERDICT_RULES) {
@@ -88,6 +120,11 @@ const SUBMIT_RULES = [
   ['a negative test count', { tests: [{ suite: 'web', passed: -1, failed: 0 }] }, 'tests[0].passed'],
   ['needs_owner with no question', { needs_owner: {} }, 'needs_owner.question'],
   ['a card id with a slash in it', { card: '../tasks' }, 'card'],
+  ['a repo id that is a path', { repo: '../outside' }, 'repo'],
+  ['a fix that answers no request', { kind: 'fix', answers: null }, 'answers'],
+  ['two dispositions for one finding', { kind: 'fix', answers: 'req-1', dispositions: [{ finding: 'f', status: 'fixed', commit: null }, { finding: 'f', status: 'declined', commit: null }] }, 'dispositions[1].finding'],
+  ['more than 20 test lines', { tests: Array.from({ length: 21 }, () => ({ suite: 's', passed: 1, failed: 0 })) }, 'tests'],
+  ['more than 20 decisions', { decisions_taken: Array.from({ length: 21 }, () => 'd') }, 'decisions_taken'],
 ];
 for (const [what, over, field] of SUBMIT_RULES) {
   test(`a submit is refused for ${what}, naming ${field}`, () => {
@@ -108,6 +145,9 @@ const COMMAND_RULES = [
   ['enrol without a branch', { args: { repo: 'wayfarer', implementer: 'm-1' } }, 'args.branch'],
   ['enrol with an implementer that is not an agent id', { args: { repo: 'wayfarer', implementer: 'a b', branch: 'x' } }, 'args.implementer'],
   ['review hints over 800 characters', { args: { repo: 'w', implementer: 'm', branch: 'b', review_hints: 'x'.repeat(801) } }, 'args.review_hints'],
+  ['enrol with an unknown argument', { args: { repo: 'w', implementer: 'm', branch: 'b', merge: true } }, 'args.merge'],
+  ['pause with arguments', { command: 'pause', args: { force: true } }, 'args.force'],
+  ['an enrol repo that is a path', { args: { repo: '../x', implementer: 'm', branch: 'b' } }, 'args.repo'],
 ];
 for (const [what, over, field] of COMMAND_RULES) {
   test(`a command is refused for ${what}, naming ${field}`, () => {
