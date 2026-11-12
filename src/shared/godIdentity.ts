@@ -21,9 +21,11 @@ export function resolveGodName(persistedName: unknown): string {
   // The registry is a file on disk, so the saved name can be anything JSON
   // holds. It is spoken by the voice and written into prompts, so only text
   // counts, and it is reduced to one short line: control and format characters
-  // (newlines, escapes, zero-width marks) become spaces and the length is capped.
+  // (newlines, escapes, zero-width spaces) become spaces and the length is
+  // capped. The zero-width joiner and non-joiner are kept: they are part of how
+  // some scripts and emoji are written, not layout.
   if (typeof persistedName !== 'string') return DEFAULT_GOD_NAME;
-  const line = persistedName.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' ').replace(/\s+/g, ' ').trim();
+  const line = persistedName.replace(/(?![\u200C\u200D])[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' ').replace(/\s+/g, ' ').trim();
   const capped = Array.from(line).slice(0, GOD_NAME_MAX).join('').trim();
   return capped ? capped : DEFAULT_GOD_NAME;
 }
