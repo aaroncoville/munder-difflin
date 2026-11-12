@@ -128,8 +128,10 @@ At start and once a day, while the usage log is on, the app writes the digest fo
 - asks filed and answered, with answer shapes and the medians and p90s of time unseen and time thinking;
 - asks filed but never seen on the Ask Me board;
 - screens by attended time;
-- hours cards spent in each state, from the gaps between a card's consecutive transition rows (a restart breaks the chain);
+- hours cards spent in each state, from the gaps between a card's consecutive transition rows (a restart breaks the chain; the rows are sampled, so a status passed through between reads gets no hours of its own);
 - heavy-lock waits;
 - canary failures.
+
+The logs live in the hive folder, which agents can write, so the digest checks every string again before printing it: ids must be id tokens, ask keys must be `<cardId>@<ISO time>`, and triggers, statuses, answer shapes and views must be known values. Anything else is not printed.
 
 It reads the ledger and the hive log backwards, only as far as the week needs, so a large history is never loaded whole. The file is `0600` and is never rewritten. **Delete usage log** in Settings removes digests too. The daily research pass reads the newest digest instead of mining the logs.

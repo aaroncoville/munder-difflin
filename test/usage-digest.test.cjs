@@ -29,9 +29,9 @@ function week() {
     { ts: MON + 6 * H, kind: 'card-transition', cardId: 'CARD-3', from: 'todo', to: 'doing' },
     { ts: MON + 7 * H, kind: 'app-start' },
     { ts: MON + 9 * H, kind: 'card-transition', cardId: 'CARD-3', from: 'doing', to: 'done' },
-    { ts: MON + 4 * H, kind: 'ask-filed', cardId: 'CARD-1', askKey: 'CARD-1@a' },
-    { ts: MON + 5 * H, kind: 'ask-answered', cardId: 'CARD-1', askKey: 'CARD-1@a', msSinceAsked: H, answerLen: 4, answerShape: 'done-ack' },
-    { ts: MON + 4 * H, kind: 'ask-filed', cardId: 'CARD-2', askKey: 'CARD-2@b' },
+    { ts: MON + 4 * H, kind: 'ask-filed', cardId: 'CARD-1', askKey: 'CARD-1@2026-11-02T04:00:00.000Z' },
+    { ts: MON + 5 * H, kind: 'ask-answered', cardId: 'CARD-1', askKey: 'CARD-1@2026-11-02T04:00:00.000Z', msSinceAsked: H, answerLen: 4, answerShape: 'done-ack' },
+    { ts: MON + 4 * H, kind: 'ask-filed', cardId: 'CARD-2', askKey: 'CARD-2@2026-11-02T04:00:00.000Z' },
     { ts: MON + 6 * H, kind: 'heavy-lock', action: 'acquire', agentId: 'jc', heavyKind: 'suite', waitMs: 4 * MIN },
     { ts: MON + 7 * H, kind: 'canary', feature: 'memory-search', ok: false, detail: 'refused-422' },
     { ts: MON + 8 * H, kind: 'canary', feature: 'memory-search', ok: true },
@@ -49,8 +49,8 @@ function week() {
     { ts: MON + 4 * H, kind: 'ui-view', view: 'command-center:human' },
     { ts: MON + 4 * H + MIN, kind: 'ui-view-end', view: 'command-center:human', dwellMs: 3 * MIN },
     { ts: MON + 4 * H, kind: 'ui-view-end', view: 'settings', dwellMs: MIN },
-    { ts: MON + 4 * H + 10 * MIN, kind: 'ask-shown', askKey: 'CARD-1@a', ageMs: 10 * MIN },
-    { ts: MON + 5 * H, kind: 'ask-submitted', askKey: 'CARD-1@a', msSinceShown: 50 * MIN, answerLen: 4, answerShape: 'done-ack' }
+    { ts: MON + 4 * H + 10 * MIN, kind: 'ask-shown', askKey: 'CARD-1@2026-11-02T04:00:00.000Z', ageMs: 10 * MIN },
+    { ts: MON + 5 * H, kind: 'ask-submitted', askKey: 'CARD-1@2026-11-02T04:00:00.000Z', msSinceShown: 50 * MIN, answerLen: 4, answerShape: 'done-ack' }
   ]);
   return { log, ledger, usage };
 }
@@ -74,7 +74,7 @@ test('asks: unseen and thinking times, plus filed-but-never-seen and seen-but-un
   assert.equal(s.asks.answered, 1);
   assert.equal(s.asks.unseenMedianMs, 10 * MIN);
   assert.equal(s.asks.thinkingMedianMs, 50 * MIN);
-  assert.deepEqual(s.asks.neverSeen, ['CARD-2@b']);
+  assert.deepEqual(s.asks.neverSeen, ['CARD-2@2026-11-02T04:00:00.000Z']);
   assert.deepEqual(s.asks.shapes, { 'done-ack': 1 });
 });
 
@@ -92,7 +92,7 @@ test('the markdown names the week and carries no text beyond ids and numbers', (
   const md = D.renderDigest(D.summarize({ log, ledger, usage, start: MON, end: MON + 7 * 86400_000 }), '2026-W45');
   assert.match(md, /^# Usage digest 2026-W45/m);
   assert.match(md, /\| heartbeat \| 1 \| \$0\.50 \|/);
-  assert.match(md, /CARD-2@b/);
+  assert.match(md, /CARD-2@2026-11-02T04:00:00.000Z/);
   assert.match(md, /memory-search/);
 });
 
@@ -110,4 +110,26 @@ test('the weekly file is written once for the last full week, private, and not r
   assert.match(fs.readFileSync(file, 'utf8'), /Usage digest 2026-W45/);
   if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o777, 0o600);
   assert.equal(D.writeWeeklyDigest(root, now + H), null, 'an existing digest is left alone');
+});
+
+test('prose written into any string field of the logs never reaches the digest', () => {
+  const P = (n) => `the owner's secret plan number ${n}, please keep it`;
+  const log = j([
+    { ts: MON + H, kind: 'turn', agentId: P(1), startTs: MON + H, durationMs: MIN, trigger: P(2), conversation: P(3) },
+    { ts: MON + H, kind: 'turn', agentId: 'god', startTs: MON + H, durationMs: MIN, trigger: P(4), conversation: P(5) },
+    { ts: MON + 2 * H, kind: 'card-transition', cardId: 'C-1', from: 'todo', to: P(6) },
+    { ts: MON + 3 * H, kind: 'card-transition', cardId: 'C-1', from: P(7), to: 'done' },
+    { ts: MON + 4 * H, kind: 'ask-filed', cardId: 'C-1', askKey: P(8) },
+    { ts: MON + 4 * H, kind: 'ask-answered', cardId: 'C-1', askKey: P(9), answerShape: P(10) },
+    { ts: MON + 5 * H, kind: 'heavy-lock', action: 'acquire', heavyKind: P(11), waitMs: MIN },
+    { ts: MON + 6 * H, kind: 'canary', feature: P(12), ok: false, detail: P(13) },
+    { ts: MON + 6 * H, kind: 'canary', feature: 'memory-search', ok: false, detail: P(14) }
+  ]);
+  const usage = j([
+    { ts: MON + 4 * H, kind: 'ui-view', view: P(15) },
+    { ts: MON + 4 * H, kind: 'ui-view-end', view: P(16), dwellMs: MIN },
+    { ts: MON + 4 * H, kind: 'ask-shown', askKey: P(17), ageMs: MIN }
+  ]);
+  const md = D.renderDigest(D.summarize({ log, ledger: [], usage, start: MON, end: MON + 7 * 86400_000 }), '2026-W45');
+  assert.doesNotMatch(md, /secret plan/);
 });

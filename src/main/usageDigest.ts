@@ -7,6 +7,8 @@
  */
 import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { CARD_STATUSES } from './usageEvents';
+import { VIEWS } from './usageLog';
 
 const DAY = 86_400_000;
 
@@ -32,6 +34,19 @@ const parse = (lines: string[]): Row[] => {
 };
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
+// The log files sit in the hive folder, which agents can write, so every string
+// the digest prints is checked again here: an id token, a known enum or a known
+// view, or it is not used.
+const ID = /^[A-Za-z0-9][\w.:-]{0,79}$/;
+const ASK_KEY = /^[A-Za-z0-9][\w.:-]{0,79}@\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+const oneOf = <T extends string>(list: readonly T[]) => (v: unknown): T | null =>
+  (typeof v === 'string' && (list as readonly string[]).includes(v) ? (v as T) : null);
+const id = (v: unknown): string | null => (typeof v === 'string' && ID.test(v) ? v : null);
+const askKey = (v: unknown): string | null => (typeof v === 'string' && ASK_KEY.test(v) ? v : null);
+const trigger = oneOf(['mail', 'heartbeat', 'scheduler', 'breaker', 'system', 'direct']);
+const shape = oneOf(['done-ack', 'option', 'short', 'sentence', 'long']);
+const status = oneOf(CARD_STATUSES);
+const view = oneOf(VIEWS);
 const cents = (x: number): number => Math.round(x * 100) / 100;
 function quantile(xs: number[], q: number): number | null {
   if (!xs.length) return null;
@@ -73,26 +88,26 @@ export function summarize(i: DigestInput) {
 
   for (const r of log) {
     if (r.kind === 'turn') {
-      const agent = str(r.agentId); const start = num(r.startTs); const dur = num(r.durationMs);
+      const agent = id(r.agentId); const start = num(r.startTs); const dur = num(r.durationMs);
       if (!agent || start === null || dur === null) continue;
       const usd = usdIn(agent, start, start + dur);
-      const t = (turnsByTrigger[str(r.trigger) ?? 'unknown'] ??= { turns: 0, usd: 0 });
+      const t = (turnsByTrigger[trigger(r.trigger) ?? 'other'] ??= { turns: 0, usd: 0 });
       t.turns++; t.usd += usd;
-      const conv = str(r.conversation);
+      const conv = id(r.conversation);
       if (conv) usdByConversation[conv] = (usdByConversation[conv] ?? 0) + usd;
     } else if (r.kind === 'heavy-lock' && r.action === 'acquire') {
       const w = num(r.waitMs);
-      if (w !== null) { const k = (lockWaits[str(r.heavyKind) ?? 'unknown'] ??= { n: 0, totalMs: 0 }); k.n++; k.totalMs += w; }
+      if (w !== null) { const k = (lockWaits[id(r.heavyKind) ?? 'other'] ??= { n: 0, totalMs: 0 }); k.n++; k.totalMs += w; }
     } else if (r.kind === 'canary') {
-      const f = str(r.feature); if (!f) continue;
+      const f = id(r.feature); if (!f) continue;
       const c = (canaries[f] ??= { failed: 0, runs: 0, details: new Set() });
       c.runs++;
-      if (r.ok === false) { c.failed++; const d = str(r.detail); if (d) c.details.add(d); }
+      if (r.ok === false) { c.failed++; const d = id(r.detail); if (d) c.details.add(d); }
     } else if (r.kind === 'ask-filed') {
-      const k = str(r.askKey); if (k) filed.push(k);
+      const k = askKey(r.askKey); if (k) filed.push(k);
     } else if (r.kind === 'ask-answered') {
       answered++;
-      const s = str(r.answerShape); if (s) shapes[s] = (shapes[s] ?? 0) + 1;
+      const s = shape(r.answerShape); if (s) shapes[s] = (shapes[s] ?? 0) + 1;
     }
   }
   for (const t of Object.values(turnsByTrigger)) t.usd = cents(t.usd);
@@ -106,9 +121,9 @@ export function summarize(i: DigestInput) {
     const t = num(r.ts);
     if (r.kind === 'app-start') { lastMove.clear(); continue; }
     if (r.kind !== 'card-transition' || t === null) continue;
-    const card = str(r.cardId); if (!card) continue;
+    const card = id(r.cardId); if (!card) continue;
     const prevTs = lastMove.get(card);
-    const from = str(r.from);
+    const from = status(r.from);
     if (from && prevTs !== undefined && t >= prevTs && inWeek(r)) stateHours[from] = (stateHours[from] ?? 0) + (t - prevTs) / 3_600_000;
     lastMove.set(card, t);
   }
@@ -117,10 +132,10 @@ export function summarize(i: DigestInput) {
   const seen = new Set<string>(); const unseen: number[] = []; const thinking: number[] = [];
   const views = new Map<string, { view: string; opens: number; dwellMs: number }>();
   for (const r of usage) {
-    if (r.kind === 'ask-shown') { const k = str(r.askKey); if (k) seen.add(k); const a = num(r.ageMs); if (a !== null) unseen.push(a); }
+    if (r.kind === 'ask-shown') { const k = askKey(r.askKey); if (k) seen.add(k); const a = num(r.ageMs); if (a !== null) unseen.push(a); }
     else if (r.kind === 'ask-submitted') { const m = num(r.msSinceShown); if (m !== null) thinking.push(m); }
     else if (r.kind === 'ui-view' || r.kind === 'ui-view-end') {
-      const v = str(r.view); if (!v) continue;
+      const v = view(r.view); if (!v) continue;
       const e = views.get(v) ?? views.set(v, { view: v, opens: 0, dwellMs: 0 }).get(v)!;
       if (r.kind === 'ui-view') e.opens++; else e.dwellMs += num(r.dwellMs) ?? 0;
     }
