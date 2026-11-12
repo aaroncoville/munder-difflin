@@ -67,3 +67,18 @@ for l in open('log.jsonl'):
             print(e['ts'], e['feature'], e.get('detail'), e.get('mismatched'))
 PY
 ```
+
+## Floor events (`<hive>/log.jsonl`)
+
+| kind | Fields | Written when |
+|---|---|---|
+| `turn` | `agentId`, `startTs`, `durationMs`, `trigger` (`mail` / `heartbeat` / `scheduler` / `breaker` / `system` / `direct`), `from?`, `triggerId?` (the message id), `conversation?` | A Claude agent's turn ends (Stop hook). The trigger is the newest hive delivery to that agent in the 10 minutes before its prompt. `direct` means no delivery, so someone typed or the session resumed |
+| `card-transition` | `cardId`, `from` (null for a new card), `to`, `msInState?` | A card's status changes in `tasks.json`. The file is checked every 30 s; the first read after start is the baseline and logs nothing |
+| `ask-filed` | `cardId`, `askKey` (`<cardId>@<askedAt>`) | A new `humanQA` entry appears |
+| `ask-answered` | `cardId`, `askKey`, `msSinceAsked?`, `answerLen`, `answerShape` (`done-ack` / `option` / `short` / `sentence` / `long`) | An ask gets its answer. The answer text is never copied |
+| `heavy-lock` `acquire` | adds `waitMs` | The agent had been queued for that slot |
+| `hook-frame-rejected` | adds `agentId?`, `hookEvent?`, `toolName?` | Read from the first 4 KB of the oversized message, and kept only if id-shaped |
+
+**Dollars per turn:** join `turn` spans with `cost-ledger.jsonl` rows for the same agent between `startTs` and `startTs + durationMs` (the `usd` column is cumulative per session, so take positive differences).
+
+**Not logged:** review rounds and verdicts. Today they exist only in message text, so capturing them would mean logging content. They become measurable once verdicts are sent as structured fields.

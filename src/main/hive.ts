@@ -1859,6 +1859,7 @@ export class HiveManager {
       const replaced = this.replacedIds.get(msg.id) ?? {};
       this.replacedIds.delete(msg.id);
       try { this.routedObserver?.(msg, landed, replaced); } catch { /* observer error */ }
+      try { this.deliveryListener?.(msg, landed, replaced); } catch { /* listener error */ }
     };
     let bounced = false;
     const bounce = (subject: string): void => { if (this.bounceToGod(msg, godId, subject)) bounced = true; };
@@ -1965,6 +1966,12 @@ export class HiveManager {
   private readonly replacedIds = new Map<string, Record<string, string>>();
   setRoutedObserver(cb: ((msg: HiveMessage, targets: string[], replaced: Record<string, string>) => void) | null): void {
     this.routedObserver = cb;
+  }
+
+  /** A second, independent listener for routed mail (the usage log's turn tracker), so it never shares the routed observer's slot. */
+  private deliveryListener: ((msg: HiveMessage, landed: string[], replaced: Record<string, string>) => void) | null = null;
+  setDeliveryListener(cb: ((msg: HiveMessage, landed: string[], replaced: Record<string, string>) => void) | null): void {
+    this.deliveryListener = cb;
   }
 
   /** Tell the renderer a message was routed, with its resolved recipients, so

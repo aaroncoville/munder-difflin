@@ -31,6 +31,7 @@ import { linkWorktreeDeps, unlinkWorktreeDeps } from './worktreeDeps';
 import { saveAskAttachment } from './askAttachments';
 import { HiveManager, type AgentMeta, type HiveMessage, type HiveTask } from './hive';
 import { runCanaries, memoryCanary } from './canaries';
+import { TurnTracker, diffTasks } from './usageEvents';
 import { HookServer } from './hooks';
 import { HeavyJobLock, heavyLimit, heavySlotNotice, probeProcesses } from './heavyJob';
 import { suiteJobLimit } from './heavyJobRules';
@@ -319,6 +320,16 @@ const workerWake = new WorkerWakeWatchdog();
 const wakeSkipLog = new WakeSkipLog();
 // HookServer needs BOTH: Oscar's control registry (HITL pause/gate/steer/halt via
 // hook returns) AND Jim's breaker (feed recordToolUse on each PostToolUse).
+// Usage log (measure only): what starts each agent turn and how long it runs.
+const turns = new TurnTracker();
+function noteTurnHook(agentId: string | undefined, event: string): void {
+  if (!agentId) return;
+  try {
+    if (event === 'UserPromptSubmit') turns.prompt(agentId, Date.now());
+    else if (event === 'Stop') { const ev = turns.stop(agentId, Date.now()); if (ev) hive.appendLog({ ...ev }); }
+  } catch { /* best effort */ }
+}
+
 const hookServer = new HookServer(
   hive,
   () => liveWebContents(),
@@ -326,7 +337,7 @@ const hookServer = new HookServer(
   control,
   breaker,
   standingGoalFromRoster,
-  (agentId, event, message) => workerWake.noteHook(agentId, event, message)
+  (agentId, event, message) => { workerWake.noteHook(agentId, event, message); noteTurnHook(agentId, event); }
 );
 // The machine's heavy-job slots. A queued agent is told on both channels when one is reserved for
 // it: mail wakes an idle agent, and a steer reaches a busy one at its next hook.
@@ -4075,6 +4086,11 @@ hive.setRoutedObserver((msg, targets, replaced) => {
 });
 ipcMain.handle('app:startClosingTime', () => closingTime.start());
 ipcMain.handle('app:cancelClosingTime', () => closingTime.cancel());
+// Usage log: remember each delivery so the recipient's next turn can name what started it.
+hive.setDeliveryListener((msg, landed, replaced) => {
+  const at = Date.now();
+  for (const t of landed) turns.noteDelivery(t, { from: msg.from, id: replaced[t] ?? msg.id, conversation: msg.conversation }, at);
+});
 
 // ─── IPC: full reset (wipe data + config, relaunch into onboarding) ──────────
 ipcMain.handle('app:resetAll', () => {
@@ -5458,6 +5474,32 @@ function bootstrapHiveServices(): void {
 
   armAlwaysOnBeats();
   startCanaries();
+  startTasksWatch();
+}
+
+/** Card transitions and ask filed/answered events, from changes to tasks.json
+ *  (the orchestrator writes it directly, so the app's own write path misses most
+ *  changes). The first read is the baseline and logs nothing. Measure only. */
+const TASKS_WATCH_MS = 30_000;
+let tasksWatchTimer: ReturnType<typeof setInterval> | null = null;
+let tasksSeen: { mark: string; cards: unknown } | null = null;
+function tasksWatchTick(): void {
+  const root = hive.root();
+  if (!root) return;
+  const path = join(root, 'tasks.json');
+  let mark: string;
+  try { const st = statSync(path); mark = `${st.mtimeMs}:${st.size}`; } catch { return; }
+  if (tasksSeen?.mark === mark) return;
+  let cards: unknown;
+  try { cards = (JSON.parse(readFileSync(path, 'utf8')) as { tasks?: unknown })?.tasks; } catch { return; }
+  if (tasksSeen) for (const ev of diffTasks(tasksSeen.cards, cards, Date.now())) hive.appendLog({ ...ev });
+  tasksSeen = { mark, cards };
+}
+function startTasksWatch(): void {
+  if (tasksWatchTimer) clearInterval(tasksWatchTimer);
+  tasksWatchTick();
+  tasksWatchTimer = setInterval(() => { try { tasksWatchTick(); } catch (e) { console.error('[tasks watch]', e); } }, TASKS_WATCH_MS);
+  tasksWatchTimer.unref();
 }
 
 /** First canary pass a minute after start (agents are up by then), then hourly. */
