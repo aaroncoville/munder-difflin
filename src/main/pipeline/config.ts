@@ -57,7 +57,7 @@ export interface PipelineSettings {
  * configs live in deploy/fly/, so the spec's suggested `**\/fly*.toml` would not
  * have matched them.
  */
-export const WAYFARER: RepoPipeline = {
+export const WAYFARER: RepoPipeline = deepFreeze({
   forge: 'gitlab',
   project: 'wooden-bird/wayfarer',
   remote: 'https://gitlab.com/wooden-bird/wayfarer.git',
@@ -67,26 +67,42 @@ export const WAYFARER: RepoPipeline = {
   minVendors: 2,
   maxRounds: 3,
   humanOnlyPaths: ['.gitlab-ci.yml', 'scripts/ci/**', 'deploy/**', '**/Dockerfile*'],
-  sensitivePaths: ['api/src/main/resources/db/migration/**', '**/auth/**', '**/Auth*.kt'],
-};
+  // Migrations, the auth package, and the authorization and session code that lives outside it:
+  // domain/Visibility.kt, and the session, sign-in, OAuth and PIN-reset routes and repositories.
+  sensitivePaths: [
+    'api/src/main/resources/db/migration/**', '**/auth/**', 'api/src/main/kotlin/io/wayfarer/domain/Visibility.kt',
+    '**/*Auth*.kt', '**/*Session*.kt', '**/*PinReset*.kt',
+  ],
+});
+
+/** Freezes [o] and everything in it, so a default handed out by reference cannot be changed by whoever holds it. */
+function deepFreeze<T>(o: T): T {
+  if (o && typeof o === 'object') {
+    for (const v of Object.values(o)) deepFreeze(v);
+    Object.freeze(o);
+  }
+  return o;
+}
 
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
 const isObject = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
 
-/** An https URL with no user or password in it. */
+/** An https URL with no user, password, query or fragment: nowhere a credential could ride. */
 function cleanHttps(v: unknown): string | null {
   if (typeof v !== 'string') return null;
   try {
     const u = new URL(v);
     if (u.protocol !== 'https:' || u.username !== '' || u.password !== '') return null;
+    if (u.search !== '' || u.hash !== '' || /[?#]/.test(v)) return null;
     return v;
   } catch {
     return null;
   }
 }
 
-const globs = (v: unknown, fallback: string[]): string[] =>
-  Array.isArray(v) && v.every((g) => typeof g === 'string' && g.length > 0) ? (v as string[]) : fallback;
+/** A list of non-empty globs, or null: a missing or malformed list drops the repo (the guards fail closed). */
+const globs = (v: unknown): string[] | null =>
+  Array.isArray(v) && v.every((g) => typeof g === 'string' && g.length > 0) ? [...(v as string[])] : null;
 
 function repoEntry(raw: unknown): RepoPipeline | null {
   if (!isObject(raw)) return null;
@@ -103,8 +119,14 @@ function repoEntry(raw: unknown): RepoPipeline | null {
   for (const vendor of VENDORS) {
     const list = raw.panel[vendor];
     if (!Array.isArray(list) || list.length === 0 || !list.every((n) => typeof n === 'string' && NAME_RE.test(n))) return null;
-    panel[vendor] = list as string[];
+    panel[vendor] = [...(list as string[])];
   }
+  // One agent cannot sit for two vendors.
+  const seated = VENDORS.flatMap((v) => panel[v]);
+  if (new Set(seated).size !== seated.length) return null;
+  const humanOnlyPaths = globs(raw.humanOnlyPaths);
+  const sensitivePaths = globs(raw.sensitivePaths);
+  if (!humanOnlyPaths || !sensitivePaths) return null;
   const int = (v: unknown, d: number) => (Number.isInteger(v) && (v as number) > 0 ? (v as number) : d);
   return {
     forge: 'gitlab', project: raw.project, remote, target: raw.target,
@@ -113,8 +135,8 @@ function repoEntry(raw: unknown): RepoPipeline | null {
     // Never fewer than two: the conductor does not merge on one vendor's review.
     minVendors: Math.max(2, int(raw.minVendors, 2)),
     maxRounds: int(raw.maxRounds, 3),
-    humanOnlyPaths: globs(raw.humanOnlyPaths, []),
-    sensitivePaths: globs(raw.sensitivePaths, []),
+    humanOnlyPaths,
+    sensitivePaths,
   };
 }
 

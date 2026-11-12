@@ -63,6 +63,17 @@ test('a repo entry with a credential in its remote or a non-https URL is dropped
     { ...WAYFARER, forge: 'github' },
     { ...WAYFARER, target: '' },
     { ...WAYFARER, panel: { anthropic: ['orsolina'], openai: ['bad name!'] } },
+    // A secret in a query string or fragment is still a secret on an argument list or in a log.
+    { ...WAYFARER, remote: 'https://gitlab.com/wooden-bird/wayfarer.git?private_token=SECRET' },
+    { ...WAYFARER, live: { ...WAYFARER.live, url: 'https://wayfarer-home.fly.dev/api/version?token=SECRET' } },
+    { ...WAYFARER, live: { ...WAYFARER.live, url: 'https://wayfarer-home.fly.dev/api/version#token=SECRET' } },
+    // The path guards fail closed: a missing or malformed list drops the repo, like any other bad field.
+    { ...WAYFARER, humanOnlyPaths: undefined },
+    { ...WAYFARER, sensitivePaths: undefined },
+    { ...WAYFARER, humanOnlyPaths: ['.gitlab-ci.yml', 7] },
+    { ...WAYFARER, sensitivePaths: ['', '**/auth/**'] },
+    // One agent cannot fill both vendors' seats.
+    { ...WAYFARER, panel: { anthropic: ['orsolina'], openai: ['orsolina'] } },
   ];
   for (const entry of bad) {
     const s = pipelineSettings({ enabled: true, repos: { wayfarer: entry } });
@@ -77,4 +88,32 @@ test('glob matching: ** crosses directories, * stays inside one', () => {
   assert.equal(matchesAny('a/b/c.toml', ['a/*.toml']), false);
   assert.equal(matchesAny('a/c.toml', ['a/*.toml']), true);
   assert.equal(matchesAny('a.b', ['a?b']), false);
+});
+
+test('an explicit empty human-only list is allowed: the operator said so', () => {
+  const s = pipelineSettings({ repos: { wayfarer: { ...WAYFARER, humanOnlyPaths: [], sensitivePaths: [] } } });
+  assert.deepEqual(s.repos.wayfarer.humanOnlyPaths, []);
+});
+
+test('Wayfarer\'s sensitive paths cover its authorization rules and session code, not only auth/ and migrations', () => {
+  const { matchesAny } = loadTs('src/main/pipeline/config.ts');
+  for (const p of [
+    'api/src/main/kotlin/io/wayfarer/domain/Visibility.kt',
+    'api/src/main/kotlin/io/wayfarer/auth/AuthService.kt',
+    'api/src/main/kotlin/io/wayfarer/data/SessionRepository.kt',
+    'api/src/main/kotlin/io/wayfarer/routes/SessionRoutes.kt',
+    'api/src/main/kotlin/io/wayfarer/routes/AuthRoutes.kt',
+    'api/src/main/kotlin/io/wayfarer/routes/GoogleAuthRoutes.kt',
+    'api/src/main/kotlin/io/wayfarer/data/OAuthStateRepository.kt',
+    'api/src/main/kotlin/io/wayfarer/routes/PinResetRoutes.kt',
+    'api/src/main/kotlin/io/wayfarer/data/GuardianPinResetRepository.kt',
+    'api/src/main/resources/db/migration/V41__x.sql',
+  ]) assert.equal(matchesAny(p, WAYFARER.sensitivePaths), true, p);
+  assert.equal(matchesAny('web/src/components/TaskList.tsx', WAYFARER.sensitivePaths), false);
+});
+
+test('the Wayfarer default cannot be changed by whoever holds it', () => {
+  assert.throws(() => { WAYFARER.minVendors = 1; }, TypeError);
+  assert.throws(() => { WAYFARER.panel.openai.push('mallory'); }, TypeError);
+  assert.equal(pipelineSettings(undefined).repos.wayfarer.minVendors, 2);
 });
