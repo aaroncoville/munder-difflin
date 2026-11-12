@@ -238,3 +238,12 @@ test('the terminal and editor take the open ANSI set', () => {
   assert.equal(rule('function'), DRACULA.green);
   assert.equal(editor.colors['editor.selectionBackground'].toUpperCase(), DRACULA.currentLine);
 });
+
+test('the UA draws its controls for a dark ground', () => {
+  // Without `color-scheme: dark`, Chromium paints scrollbars, native selects
+  // and date pickers for a light page: pale slabs on the dark chrome.
+  const css = read('src/renderer/src/design/global.css');
+  assert.match(css, /:root\s*{\s*color-scheme:\s*dark;\s*}/);
+  // The caret follows the ink rather than the UA scheme either way.
+  assert.match(css, /input, textarea\s*{\s*caret-color:\s*var\(--cth-ink-900\);\s*}/);
+});

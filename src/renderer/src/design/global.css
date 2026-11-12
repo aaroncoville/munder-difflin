@@ -5,10 +5,10 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 
-/* The app is a fixed cream/light design. Without declaring it, Chromium on a
-   dark-mode OS styles form controls with the DARK UA scheme — most visibly a
-   white (invisible) text caret on our cream textareas. */
-:root { color-scheme: light; }
+/* The app's chrome is dark (the panel palette in tokens.css). Declaring it
+   makes Chromium draw scrollbars, native selects and pickers for a dark page
+   rather than as pale slabs on the dark panels. */
+:root { color-scheme: dark; }
 
 html, body, #root {
   margin: 0;
