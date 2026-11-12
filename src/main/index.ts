@@ -31,7 +31,8 @@ import { linkWorktreeDeps, unlinkWorktreeDeps } from './worktreeDeps';
 import { saveAskAttachment } from './askAttachments';
 import { HiveManager, type AgentMeta, type HiveMessage, type HiveTask } from './hive';
 import { runCanaries, memoryCanary } from './canaries';
-import { TurnTracker, diffTasks, type SeenTransition } from './usageEvents';
+import { TurnTracker, diffTasks, type UsageIds } from './usageEvents';
+import { loadUsageSecret, usageRef } from './usageRef';
 import { HookServer } from './hooks';
 import { HeavyJobLock, heavyLimit, heavySlotNotice, probeProcesses } from './heavyJob';
 import { suiteJobLimit } from './heavyJobRules';
@@ -321,7 +322,16 @@ const wakeSkipLog = new WakeSkipLog();
 // HookServer needs BOTH: Oscar's control registry (HITL pause/gate/steer/halt via
 // hook returns) AND Jim's breaker (feed recordToolUse on each PostToolUse).
 // Usage log (measure only): what starts each agent turn and how long it runs.
-const turns = new TurnTracker();
+// The harness's own sets: an agent or card id is logged only when one of these
+// holds it; any other sender-chosen value is logged as a keyed digest.
+const knownCards = new Set<string>();
+let usageSecret: Buffer | null = null;
+const usageIds: UsageIds = {
+  isAgent: (id) => Object.hasOwn(hive.registry().agents, id),
+  isCard: (id) => knownCards.has(id),
+  ref: (value) => usageRef(usageSecret ??= loadUsageSecret(app.getPath('userData')), value)
+};
+const turns = new TurnTracker(usageIds);
 function noteTurnHook(agentId: string | undefined, event: string): void {
   if (!agentId) return;
   try {
@@ -5483,8 +5493,6 @@ function bootstrapHiveServices(): void {
 const TASKS_WATCH_MS = 30_000;
 let tasksWatchTimer: ReturnType<typeof setInterval> | null = null;
 let tasksSeen: { mark: string; cards: unknown } | null = null;
-/** Each card's last logged transition time, for msInState. In memory only. */
-const cardTransitions = new Map<string, SeenTransition>();
 function tasksWatchTick(): void {
   const root = hive.root();
   if (!root) return;
@@ -5494,7 +5502,9 @@ function tasksWatchTick(): void {
   if (tasksSeen?.mark === mark) return;
   let cards: unknown;
   try { cards = (JSON.parse(readFileSync(path, 'utf8')) as { tasks?: unknown })?.tasks; } catch { return; }
-  if (tasksSeen) for (const ev of diffTasks(tasksSeen.cards, cards, Date.now(), cardTransitions)) hive.appendLog({ ...ev });
+  if (tasksSeen) for (const ev of diffTasks(tasksSeen.cards, cards, Date.now())) hive.appendLog({ ...ev });
+  knownCards.clear();
+  if (Array.isArray(cards)) for (const c of cards) { const id = (c as { id?: unknown })?.id; if (typeof id === 'string') knownCards.add(id); }
   tasksSeen = { mark, cards };
 }
 function startTasksWatch(): void {

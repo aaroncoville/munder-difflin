@@ -37,7 +37,8 @@ async function openServer(t) {
   const logs = [];
   const hive = {
     sockPath: () => sock,
-    appendLog: (entry) => logs.push(entry)
+    appendLog: (entry) => logs.push(entry),
+    registry: () => ({ agents: { 'worker-big': {} } })
   };
   const server = new HookServer(hive, () => null, () => ({ notifications: false }));
 

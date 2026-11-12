@@ -13,20 +13,66 @@ const loadTs = require('./load-ts.cjs');
 const U = loadTs('src/main/usageEvents.ts');
 const { HeavyJobLock } = loadTs('src/main/heavyJob.ts');
 const { HiveManager } = loadTs('src/main/hive.ts');
+const crypto = require('node:crypto');
+
+// The harness's own sets: agents on the roster, cards in tasks.json, and a keyed
+// digest for anything else that has to be groupable.
+const AGENTS = ['jc', 'god', 'worker-ysabet'];
+const CARDS = ['CARD-1', 'A', 'B'];
+const ref = (v) => crypto.createHmac('sha256', 'test-secret').update(v).digest('hex').slice(0, 12);
+const IDS = { isAgent: (id) => AGENTS.includes(id), isCard: (id) => CARDS.includes(id), ref };
+const isAgent = IDS.isAgent;
+const MINTED_ID = '2026-11-12T15-38-04-411Z-e9dd00';
 
 // ── turns ────────────────────────────────────────────────────────────────────
 
 test('a turn runs from prompt to stop and names the delivery that started it', () => {
-  const t = new U.TurnTracker();
-  t.noteDelivery('jc', { from: 'god', id: 'god-1', conversation: 'CARD-1' }, 1000);
+  const t = new U.TurnTracker(IDS);
+  t.noteDelivery('jc', { from: 'god', id: MINTED_ID, conversation: 'CARD-1' }, 1000);
   t.prompt('jc', 1500);
   assert.deepEqual(t.stop('jc', 9500), {
-    kind: 'turn', agentId: 'jc', startTs: 1500, durationMs: 8000, trigger: 'mail', from: 'god', triggerId: 'god-1', conversation: 'CARD-1'
+    kind: 'turn', agentId: 'jc', startTs: 1500, durationMs: 8000, trigger: 'mail', from: 'god', triggerId: MINTED_ID, conversation: 'CARD-1'
   });
 });
 
+test('ids the router did not mint and conversations that are not cards are logged only as keyed digests', () => {
+  const t = new U.TurnTracker(IDS);
+  t.noteDelivery('jc', { from: 'god', id: 'god-chose-this-id', conversation: 'MD-launch-plan' }, 1000);
+  t.prompt('jc', 1500);
+  const ev = t.stop('jc', 9500);
+  assert.equal(ev.triggerId, undefined);
+  assert.equal(ev.triggerRef, ref('god-chose-this-id'));
+  assert.equal(ev.conversation, undefined);
+  assert.equal(ev.conversationRef, ref('MD-launch-plan'));
+  t.noteDelivery('jc', { from: 'god', id: MINTED_ID, conversation: 'conv-a1b2c3' }, 10_000);
+  t.prompt('jc', 10_500);
+  assert.equal(t.stop('jc', 11_000).conversation, 'conv-a1b2c3', 'a router-minted conversation is kept');
+});
+
+test('agent ids are kept only when the roster or the fixed system senders hold them', () => {
+  const t = new U.TurnTracker(IDS);
+  t.noteDelivery('stranger-agent', { from: 'someone-else', id: MINTED_ID }, 1000);
+  t.prompt('stranger-agent', 1500);
+  const ev = t.stop('stranger-agent', 2000);
+  assert.equal(ev.agentId, undefined);
+  assert.equal(ev.from, undefined);
+  assert.equal(ev.trigger, 'mail');
+  t.noteDelivery('jc', { from: 'pipeline', id: MINTED_ID }, 3000);
+  t.prompt('jc', 3500);
+  assert.equal(t.stop('jc', 4000).from, 'pipeline');
+});
+
+test('a sender named after an object property is mail, not an inherited value', () => {
+  const t = new U.TurnTracker(IDS);
+  for (const from of ['__proto__', 'constructor', 'toString']) {
+    t.noteDelivery('jc', { from, id: MINTED_ID }, 0);
+    t.prompt('jc', 10);
+    assert.equal(t.stop('jc', 20).trigger, 'mail', from);
+  }
+});
+
 test('heartbeat, scheduler and breaker deliveries are their own triggers', () => {
-  const t = new U.TurnTracker();
+  const t = new U.TurnTracker(IDS);
   for (const [from, trigger] of [['heartbeat', 'heartbeat'], ['scheduler', 'scheduler'], ['breaker', 'breaker'], ['system', 'system']]) {
     t.noteDelivery('god', { from, id: `${from}-1` }, 0);
     t.prompt('god', 10);
@@ -35,7 +81,7 @@ test('heartbeat, scheduler and breaker deliveries are their own triggers', () =>
 });
 
 test('a prompt with no recent delivery is a direct prompt, and a delivery is used by one turn only', () => {
-  const t = new U.TurnTracker();
+  const t = new U.TurnTracker(IDS);
   t.noteDelivery('jc', { from: 'god', id: 'g' }, 0);
   t.prompt('jc', 10); t.stop('jc', 20);
   t.prompt('jc', 30);
@@ -46,16 +92,16 @@ test('a prompt with no recent delivery is a direct prompt, and a delivery is use
 });
 
 test('a conversation that is not id-shaped is left out of the turn row', () => {
-  const t = new U.TurnTracker();
+  const t = new U.TurnTracker(IDS);
   t.noteDelivery('jc', { from: 'god', id: 'god-1', conversation: 'please fix the login bug for Pam' }, 1000);
   t.prompt('jc', 1500);
   const ev = t.stop('jc', 9500);
   assert.equal(ev.conversation, undefined);
-  assert.equal(ev.triggerId, 'god-1');
+  assert.doesNotMatch(JSON.stringify(ev), /login bug/);
 });
 
 test('a stop with no prompt yields nothing', () => {
-  assert.equal(new U.TurnTracker().stop('jc', 5), null);
+  assert.equal(new U.TurnTracker(IDS).stop('jc', 5), null);
 });
 
 // ── tasks.json diff ──────────────────────────────────────────────────────────
@@ -63,21 +109,16 @@ test('a stop with no prompt yields nothing', () => {
 const card = (id, status, extra = {}) => ({ id, status, updatedAt: '2026-11-12T10:00:00.000Z', ...extra });
 const NOW = Date.parse('2026-11-12T12:00:00.000Z');
 
-test('time in state runs from the card\'s previous transition, not from its last edit', () => {
-  const seen = new Map();
-  // First transition after start: no earlier transition known, so no duration.
-  const e1 = U.diffTasks([card('A', 'todo')], [card('A', 'doing')], NOW, seen);
-  assert.deepEqual(e1, [{ kind: 'card-transition', sampled: true, cardId: 'A', from: 'todo', to: 'doing' }]);
-  // A later edit that is not a status change moves updatedAt but not the clock.
-  const edited = card('A', 'doing', { updatedAt: '2026-11-12T14:59:00.000Z' });
-  assert.deepEqual(U.diffTasks([card('A', 'doing')], [edited], NOW + 3 * 3600_000, seen), []);
-  const e2 = U.diffTasks([edited], [card('A', 'done')], NOW + 3 * 3600_000 + 60_000, seen);
-  assert.deepEqual(e2, [{ kind: 'card-transition', sampled: true, cardId: 'A', from: 'doing', to: 'done', msInState: 3 * 3600_000 + 60_000 }]);
-});
-
-test('with no transition memory, no time in state is guessed', () => {
-  const ev = U.diffTasks([card('A', 'todo')], [card('A', 'doing')], NOW);
-  assert.deepEqual(ev, [{ kind: 'card-transition', sampled: true, cardId: 'A', from: 'todo', to: 'doing' }]);
+test('sampled task rows never claim a time in state', () => {
+  // doing -> done between reads may hide doing -> blocked -> done, so no dwell is trustworthy.
+  const rows = [
+    ...U.diffTasks([card('A', 'todo')], [card('A', 'doing')], NOW),
+    ...U.diffTasks([card('A', 'doing')], [card('A', 'done')], NOW + 60_000)
+  ];
+  assert.deepEqual(rows, [
+    { kind: 'card-transition', sampled: true, cardId: 'A', from: 'todo', to: 'doing' },
+    { kind: 'card-transition', sampled: true, cardId: 'A', from: 'doing', to: 'done' }
+  ]);
 });
 
 test('a new card is reported with its first status; unchanged cards are silent', () => {
@@ -115,8 +156,16 @@ test('an unreadable or non-list ledger diffs to nothing', () => {
 
 test('ids are read from the head of an oversized hook message; anything not id-shaped is dropped', () => {
   const head = Buffer.from('{"hook_event_name":"PostToolUse","agent_id":"worker-ysabet","tool_name":"Read","tool_response":"' + 'x'.repeat(5000));
-  assert.deepEqual(U.frameIds(head), { agentId: 'worker-ysabet', hookEvent: 'PostToolUse', toolName: 'Read' });
-  assert.deepEqual(U.frameIds(Buffer.from('{"agent_id":"has spaces and text"}')), {});
+  assert.deepEqual(U.frameIds(head, isAgent), { agentId: 'worker-ysabet', hookEvent: 'PostToolUse', toolName: 'Read' });
+  assert.deepEqual(U.frameIds(Buffer.from('{"agent_id":"has spaces and text"}'), isAgent), {});
+});
+
+test('a hook agent id off the roster is dropped; unknown events and tools are "other"', () => {
+  const long = 'Owner-said-the-unreleased-project-is-ORCHID.Owner-said-the-unreleased-project-is';
+  const head = Buffer.from(JSON.stringify({ hook_event_name: long, agent_id: long, tool_name: long }) + 'x'.repeat(10));
+  assert.deepEqual(U.frameIds(head, isAgent), { hookEvent: 'other', toolName: 'other' });
+  const mcp = Buffer.from('{"hook_event_name":"PreToolUse","agent_id":"jc","tool_name":"mcp__notes__read_secret_file"}');
+  assert.deepEqual(U.frameIds(mcp, isAgent), { agentId: 'jc', hookEvent: 'PreToolUse', toolName: 'other' });
 });
 
 // ── heavy-lock waits ─────────────────────────────────────────────────────────
@@ -142,10 +191,13 @@ test('a queued agent\'s acquire logs how long it waited', () => {
 // ── nothing but validated ids, enums and numbers reaches a row ───────────────
 
 test('probe: a sentence used as a conversation is not logged', () => {
-  const t = new U.TurnTracker();
+  const t = new U.TurnTracker(IDS);
   t.noteDelivery('jc', { from: 'god', id: 'god-1', conversation: 'Owner said the unreleased project is ORCHID' }, 1000);
   t.prompt('jc', 1500);
   assert.doesNotMatch(JSON.stringify(t.stop('jc', 9000)), /ORCHID/);
+  t.noteDelivery('jc', { from: 'god', id: MINTED_ID, conversation: 'Owner-said-the-unreleased-project-is-ORCHID.Owner-said-the-unreleased-project-is' }, 10_000);
+  t.prompt('jc', 10_500);
+  assert.doesNotMatch(JSON.stringify(t.stop('jc', 11_000)), /ORCHID/);
 });
 
 test('probe: free-text statuses, ask times and card ids are dropped field by field', () => {
@@ -166,48 +218,40 @@ test('probe: hook ids are read from the top level only, never from nested tool i
     tool_input: { agent_id: 'nested-agent', tool_name: 'NestedTool', hook_event_name: 'Nested' },
     hook_event_name: 'PostToolUse', agent_id: 'worker-ysabet', tool_name: 'Read'
   }).slice(0, -1) + ',"tool_response":"' + 'x'.repeat(5000));
-  assert.deepEqual(U.frameIds(head), { agentId: 'worker-ysabet', hookEvent: 'PostToolUse', toolName: 'Read' });
+  assert.deepEqual(U.frameIds(head, isAgent), { agentId: 'worker-ysabet', hookEvent: 'PostToolUse', toolName: 'Read' });
   const onlyNested = Buffer.from('{"tool_input":{"agent_id":"nested-agent","tool_name":"NestedTool"},"tool_response":"' + 'y'.repeat(5000));
-  assert.deepEqual(U.frameIds(onlyNested), {});
+  assert.deepEqual(U.frameIds(onlyNested, isAgent), {});
 });
 
 test('property: random prose in every input field never appears in any emitted row', () => {
   let seed = 42;
   const rand = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
   const WORDS = ['owner', 'secret', 'Pam', 'invoice', 'ORCHID', 'is', 'the', 'project', 'please', 'paste', 'here', 'v2', 'a-b'];
-  const prose = () => Array.from({ length: 2 + Math.floor(rand() * 5) }, () => WORDS[Math.floor(rand() * WORDS.length)]).join(rand() < 0.5 ? ' ' : ', ') + (rand() < 0.5 ? '.' : '?');
+  const words = () => Array.from({ length: 3 + Math.floor(rand() * 5) }, () => WORDS[Math.floor(rand() * WORDS.length)]);
+  // Half the inputs are plain prose; half are prose joined so it fits an id's character set.
+  const prose = () => (rand() < 0.5
+    ? words().join(rand() < 0.5 ? ' ' : ', ') + (rand() < 0.5 ? '.' : '?')
+    : words().join(['.', '-', ':', '_'][Math.floor(rand() * 4)]).slice(0, 80));
   for (let i = 0; i < 300; i++) {
     const p = Array.from({ length: 12 }, prose);
     const rows = [];
-    const t = new U.TurnTracker();
+    const t = new U.TurnTracker(IDS);
     t.noteDelivery(p[0], { from: p[1], id: p[2], conversation: p[3] }, 1000);
     t.prompt(p[0], 1500);
     rows.push(t.stop(p[0], 2000));
     rows.push(...U.diffTasks(
-      [{ id: p[4], status: p[5], updatedAt: p[6], humanQA: [] }, { id: 'C-1', status: 'todo', humanQA: [] }],
-      [{ id: p[4], status: p[7], humanQA: [{ q: p[8], askedAt: p[9], a: p[10], answeredAt: p[11] }] },
+      // Card ids are the one input whose authority is tasks.json itself, so they are fixed here.
+      [{ id: 'C-2', status: p[5], updatedAt: p[6], humanQA: [] }, { id: 'C-1', status: 'todo', humanQA: [] }],
+      [{ id: 'C-2', status: p[7], humanQA: [{ q: p[8], askedAt: p[9], a: p[10], answeredAt: p[11] }] },
         { id: 'C-1', status: p[5], humanQA: [{ q: p[8], askedAt: p[9], a: p[10] }] }],
       NOW, new Map()));
-    rows.push(U.frameIds(Buffer.from(JSON.stringify({ agent_id: p[0], hook_event_name: p[1], tool_name: p[2], tool_input: { agent_id: 'x' } }))));
+    rows.push(U.frameIds(Buffer.from(JSON.stringify({ agent_id: p[0], hook_event_name: p[1], tool_name: p[2], tool_input: { agent_id: 'x' } })), isAgent));
     const text = JSON.stringify(rows);
     for (const s of p) assert.equal(text.includes(s), false, `prose reached a row: ${s}`);
   }
 });
 
 // ── sampled task rows ────────────────────────────────────────────────────────
-
-test('task rows are marked sampled, and a move that skipped a status carries no time in state', () => {
-  const seen = new Map([['A', { ts: NOW - 3600_000, to: 'todo' }]]);
-  // todo -> doing -> done between two reads arrives as one todo -> done.
-  const rows = U.diffTasks([card('A', 'todo')], [card('A', 'done')], NOW, seen);
-  assert.deepEqual(rows, [{ kind: 'card-transition', cardId: 'A', from: 'todo', to: 'done', sampled: true }]);
-});
-
-test('time in state needs the previous transition to have been seen ending in this state', () => {
-  const seen = new Map([['A', { ts: NOW - 3600_000, to: 'blocked' }]]);
-  const rows = U.diffTasks([card('A', 'doing')], [card('A', 'done')], NOW, seen);
-  assert.equal(rows[0].msInState, undefined);
-});
 
 // ── delivered, not intended ──────────────────────────────────────────────────
 

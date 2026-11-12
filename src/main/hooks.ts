@@ -295,7 +295,7 @@ export class HookServer {
         bytes,
         limit: MAX_HOOK_FRAME_BYTES,
         // Who sent it, from the head of the message: ids only, never its content.
-        ...frameIds(pending),
+        ...frameIds(pending, (id) => { try { return Object.hasOwn(this.hive.registry().agents, id); } catch { return false; } }),
       });
       conn.destroy();
     };

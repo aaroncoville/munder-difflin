@@ -7,16 +7,37 @@
  * how long cards sit in each state, and how fast the owner's asks are answered.
  */
 
-import { isSafeMessageId } from './messageId';
 
 // ── field validators ─────────────────────────────────────────────────────────
-// Every string written to a row passes one of these, or the field is left out
-// (the row stays). Nothing is copied through because it is merely non-empty.
+// A string an agent or a sender controls is written verbatim only when it is a
+// member of a set the harness itself holds: agents on the roster, cards in
+// tasks.json, ids the router minted, or a fixed enum. Anything else is dropped,
+// or (when rows must still be groupable) written as a keyed digest that cannot
+// be read back or guessed from the log. A character-class test alone is not
+// enough: words joined with dots or dashes pass it.
 
-/** Agent, card and conversation ids: a short token, no spaces or punctuation runs. */
+/** The harness's own sets, and the keyed digest, supplied by the main process. */
+export interface UsageIds {
+  /** True for an id on the agent roster. */
+  isAgent(id: string): boolean;
+  /** True for a card id in the current tasks.json. */
+  isCard(id: string): boolean;
+  /** A short keyed digest of a value (HMAC with a per-install secret). */
+  ref(value: string): string;
+}
+
+/** Senders that are the harness itself, not agents. */
+export const SYSTEM_SENDERS = ['heartbeat', 'scheduler', 'breaker', 'system', 'human', 'pipeline'] as const;
+const knownAgent = (ids: { isAgent(id: string): boolean }, v: unknown): string | undefined =>
+  (typeof v === 'string' && ((SYSTEM_SENDERS as readonly string[]).includes(v) || ids.isAgent(v)) ? v : undefined);
+
+/** Ids the router mints: `<ISO stamp with - for : and .>-<6 hex>` and `conv-<6 hex>`. */
+const MINTED_MESSAGE_ID = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[0-9a-f]{6}$/;
+const MINTED_CONVERSATION = /^conv-[0-9a-f]{6}$/;
+
+/** Card ids also pass a token check, so a card id with spaces is still dropped. */
 const ID_SHAPED = /^[A-Za-z0-9][\w.:-]{0,79}$/;
 const asId = (v: unknown): string | undefined => (typeof v === 'string' && ID_SHAPED.test(v) ? v : undefined);
-const asMessageId = (v: unknown): string | undefined => (isSafeMessageId(v) ? v : undefined);
 export const CARD_STATUSES = ['todo', 'doing', 'blocked', 'done'] as const;
 type CardStatus = typeof CARD_STATUSES[number];
 const asStatus = (v: unknown): CardStatus | undefined =>
@@ -26,6 +47,19 @@ const asIso = (v: unknown): string | undefined => {
   const t = typeof v === 'string' ? Date.parse(v) : NaN;
   return Number.isFinite(t) ? new Date(t).toISOString() : undefined;
 };
+
+/** Hook event names the harness handles; anything else is logged as 'other'. */
+export const HOOK_EVENTS = [
+  'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'UserPromptSubmit', 'Stop', 'SubagentStart', 'SubagentStop',
+  'SessionStart', 'SessionEnd', 'Notification', 'PreCompact', 'PostCompact', 'PermissionRequest', 'Status', 'CostSample'
+] as const;
+/** Built-in tool names; MCP and any other tool is logged as 'other'. */
+export const TOOL_NAMES = [
+  'Agent', 'Bash', 'BashOutput', 'Edit', 'ExitPlanMode', 'Glob', 'Grep', 'KillShell', 'LS', 'MultiEdit', 'NotebookEdit',
+  'NotebookRead', 'Read', 'Skill', 'SlashCommand', 'Task', 'TodoWrite', 'ToolSearch', 'WebFetch', 'WebSearch', 'Write'
+] as const;
+const inEnumOrOther = (list: readonly string[], v: unknown): string | undefined =>
+  (typeof v !== 'string' ? undefined : list.includes(v) ? v : 'other');
 
 /** A delivery older than this when a prompt starts is not what started it. */
 export const TRIGGER_WINDOW_MS = 10 * 60_000;
@@ -39,8 +73,14 @@ export interface TurnEvent {
   durationMs: number;
   trigger: TurnTrigger;
   from?: string;
+  /** The message id, when the router minted it. */
   triggerId?: string;
+  /** A keyed digest of a message id the sender chose. */
+  triggerRef?: string;
+  /** The conversation, when it is a card id or router-minted. */
   conversation?: string;
+  /** A keyed digest of any other conversation value: groupable, not readable. */
+  conversationRef?: string;
 }
 
 interface Delivery { from: string; id?: string; conversation?: string; ts: number }
@@ -55,6 +95,8 @@ const SENDER_TRIGGERS: Record<string, TurnTrigger> = {
  * started the turn. A delivery starts at most one turn.
  */
 export class TurnTracker {
+  constructor(private readonly ids: UsageIds) {}
+
   private readonly pending = new Map<string, Delivery>();
   private readonly open = new Map<string, { startTs: number; cause: Delivery | null }>();
 
@@ -76,14 +118,20 @@ export class TurnTracker {
     const c = o.cause;
     const ev: TurnEvent = {
       kind: 'turn', startTs: o.startTs, durationMs: ts - o.startTs,
-      trigger: c ? (SENDER_TRIGGERS[c.from] ?? 'mail') : 'direct'
+      trigger: c ? (Object.hasOwn(SENDER_TRIGGERS, c.from) ? SENDER_TRIGGERS[c.from] : 'mail') : 'direct'
     };
-    const id = asId(agentId); if (id) ev.agentId = id;
+    const id = knownAgent(this.ids, agentId); if (id) ev.agentId = id;
     if (c) {
-      const from = asId(c.from); if (from) ev.from = from;
-      const triggerId = asMessageId(c.id); if (triggerId) ev.triggerId = triggerId;
-      // Chosen by the sender, so kept only when it is id-shaped, never as free text.
-      const conversation = asId(c.conversation); if (conversation) ev.conversation = conversation;
+      const from = knownAgent(this.ids, c.from); if (from) ev.from = from;
+      if (typeof c.id === 'string' && c.id) {
+        if (MINTED_MESSAGE_ID.test(c.id)) ev.triggerId = c.id; else ev.triggerRef = this.ids.ref(c.id);
+      }
+      // Chosen by the sender: verbatim only when it is a card or router-minted.
+      const conv = c.conversation;
+      if (typeof conv === 'string' && conv) {
+        if (MINTED_CONVERSATION.test(conv) || (asId(conv) && this.ids.isCard(conv))) ev.conversation = conv;
+        else ev.conversationRef = this.ids.ref(conv);
+      }
     }
     return ev;
   }
@@ -107,19 +155,12 @@ interface Card { id?: unknown; status?: unknown; updatedAt?: unknown; humanQA?: 
 interface Ask { askedAt?: unknown; a?: unknown; answeredAt?: unknown }
 
 /** Rows from comparing two reads of tasks.json, so `sampled`: a change between
- *  reads that was undone, or a status passed through, is never seen. */
+ *  reads that was undone, or a status passed through, is never seen. For the
+ *  same reason no row claims a time in state. */
 export type TaskEvent =
-  | { kind: 'card-transition'; sampled: true; cardId?: string; from?: CardStatus | null; to?: CardStatus; msInState?: number }
+  | { kind: 'card-transition'; sampled: true; cardId?: string; from?: CardStatus | null; to?: CardStatus }
   | { kind: 'ask-filed'; sampled: true; cardId?: string; askKey?: string }
   | { kind: 'ask-answered'; sampled: true; cardId?: string; askKey?: string; msSinceAsked?: number; answerLen: number; answerShape: AnswerShape };
-
-/** A card's last observed transition, kept by the caller in memory. */
-export interface SeenTransition { ts: number; to: string }
-
-/** A move between 'todo' and 'blocked' or 'done' skipped 'doing' (or was sampled
- *  across it), so the time it reports in its old state is not that state's. */
-const skipsAStatus = (from: string, to: string): boolean =>
-  (from === 'todo' && (to === 'blocked' || to === 'done')) || (to === 'todo' && (from === 'blocked' || from === 'done'));
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
 const time = (v: unknown): number | null => { const t = typeof v === 'string' ? Date.parse(v) : NaN; return Number.isFinite(t) ? t : null; };
@@ -128,13 +169,10 @@ const answered = (q: Ask): boolean => typeof q.a === 'string' && q.a.trim().leng
 
 /**
  * Events between two reads of tasks.json's card list. Either side unreadable -> no events.
- * `transitions` holds each card's last observed transition, kept by the caller
- * in memory. msInState is the time since that transition, and only when it was
- * seen ending in this row's old status and the move did not skip a status;
- * otherwise it is left out rather than guessed (updatedAt moves on any edit, so
- * it does not say when the status last changed).
+ * Card ids come from tasks.json itself, the authority for them; one that is not
+ * an id token is still left out.
  */
-export function diffTasks(prev: unknown, next: unknown, now: number, transitions?: Map<string, SeenTransition>): TaskEvent[] {
+export function diffTasks(prev: unknown, next: unknown, now: number): TaskEvent[] {
   if (!Array.isArray(prev) || !Array.isArray(next)) return [];
   const before = new Map<string, Card>();
   for (const c of prev as Card[]) { const id = str(c?.id); if (id) before.set(id, c); }
@@ -151,9 +189,6 @@ export function diffTasks(prev: unknown, next: unknown, now: number, transitions
       if (cardId) ev.cardId = cardId;
       if (from === null) ev.from = null; else { const f = asStatus(from); if (f) ev.from = f; }
       const t = asStatus(to); if (t) ev.to = t;
-      const seen = transitions?.get(key);
-      if (from && seen && seen.to === from && !skipsAStatus(from, to) && now >= seen.ts) ev.msInState = now - seen.ts;
-      transitions?.set(key, { ts: now, to });
       out.push(ev);
     }
     const oldAsks = new Map<string, Ask>();
@@ -227,12 +262,13 @@ function topLevelStrings(text: string, want: readonly string[]): Map<string, str
 }
 
 /** agent_id, hook_event_name and tool_name from the top level of the first 4 KB
- *  of a raw hook message, each kept only if id-shaped. */
-export function frameIds(head: Buffer): { agentId?: string; hookEvent?: string; toolName?: string } {
+ *  of a raw hook message: the agent only if it is on the roster, the event and
+ *  tool as a known name or 'other'. */
+export function frameIds(head: Buffer, isAgent: (id: string) => boolean): { agentId?: string; hookEvent?: string; toolName?: string } {
   const top = topLevelStrings(head.subarray(0, 4096).toString('utf8'), ['agent_id', 'hook_event_name', 'tool_name']);
   const out: { agentId?: string; hookEvent?: string; toolName?: string } = {};
-  const agentId = asId(top.get('agent_id')); if (agentId) out.agentId = agentId;
-  const hookEvent = asId(top.get('hook_event_name')); if (hookEvent) out.hookEvent = hookEvent;
-  const toolName = asId(top.get('tool_name')); if (toolName) out.toolName = toolName;
+  const agentId = knownAgent({ isAgent }, top.get('agent_id')); if (agentId) out.agentId = agentId;
+  const hookEvent = inEnumOrOther(HOOK_EVENTS, top.get('hook_event_name')); if (hookEvent) out.hookEvent = hookEvent;
+  const toolName = inEnumOrOther(TOOL_NAMES, top.get('tool_name')); if (toolName) out.toolName = toolName;
   return out;
 }
