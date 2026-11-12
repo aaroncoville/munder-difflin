@@ -54,6 +54,9 @@ export function AskSeen({ askKey, askedAt }: { askKey: string; askedAt?: string 
     const obs = new IntersectionObserver(([entry]) => {
       if (entry?.isIntersecting && attending()) {
         timer ??= setTimeout(() => {
+          timer = null;
+          // Still attending when the second is up, not only when the row scrolled in.
+          if (!attending()) return;
           const now = Date.now();
           shownAt.set(askKey, now);
           const asked = askedAt ? Date.parse(askedAt) : NaN;

@@ -13,19 +13,20 @@ const loadTs = require('./load-ts.cjs');
 const { UsageLog, RETENTION_DAYS } = loadTs('src/main/usageLog.ts');
 
 function setup(t, { enabled = true, now = Date.parse('2026-11-12T15:00:00Z') } = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'md-usage-'));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  // The app's own data folder; the hive is a separate folder agents can write.
+  const appData = fs.mkdtempSync(path.join(os.tmpdir(), 'md-usage-appdata-'));
+  t.after(() => fs.rmSync(appData, { recursive: true, force: true }));
   const state = { enabled, now };
+  const dir = path.join(appData, 'usage');
   const log = new UsageLog({
-    root: () => root, enabled: () => state.enabled, now: () => state.now,
+    dir: () => dir, enabled: () => state.enabled, now: () => state.now,
     isAgent: (id) => ['jc', 'god'].includes(id), isCard: (id) => ['CARD-1'].includes(id)
   });
-  const dir = path.join(root, 'usage');
   const read = (day = '2026-11-12') => {
     const p = path.join(dir, `${day}.jsonl`);
     return fs.existsSync(p) ? fs.readFileSync(p, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
   };
-  return { root, dir, log, read, state };
+  return { appData, dir, log, read, state };
 }
 
 test('an allowlisted event is appended to today\'s file with ts and schema version', (t) => {
@@ -90,14 +91,29 @@ test('delete removes every usage file and reports how many', (t) => {
   assert.deepEqual(fs.readdirSync(dir), []);
 });
 
-test('a folder that is a link is refused, so the log cannot be redirected', (t) => {
-  if (process.platform === 'win32') return;
-  const { root, log } = setup(t);
-  const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'md-elsewhere-'));
-  t.after(() => fs.rmSync(elsewhere, { recursive: true, force: true }));
-  fs.symlinkSync(elsewhere, path.join(root, 'usage'));
-  assert.equal(log.record({ kind: 'ui-view', view: 'settings' }), false);
-  assert.deepEqual(fs.readdirSync(elsewhere), []);
+test('nothing is written under the hive root: the log lives in the app\'s data folder', (t) => {
+  const hive = fs.mkdtempSync(path.join(os.tmpdir(), 'md-usage-hive-'));
+  t.after(() => fs.rmSync(hive, { recursive: true, force: true }));
+  const { log, dir, appData } = setup(t);
+  log.record({ kind: 'ui-view', view: 'settings' });
+  log.prune();
+  log.deleteAll();
+  log.record({ kind: 'ui-view', view: 'settings' });
+  assert.deepEqual(fs.readdirSync(hive), []);
+  assert.ok(dir.startsWith(appData));
+  assert.deepEqual(fs.readdirSync(dir), ['2026-11-12.jsonl']);
+});
+
+test('a kind named after an object property is refused, not thrown on', (t) => {
+  const { log } = setup(t);
+  for (const kind of ['constructor', '__proto__', 'toString']) assert.equal(log.record({ kind }), false, kind);
+});
+
+test('only states and surfaces the app emits are accepted', (t) => {
+  const { log } = setup(t);
+  assert.equal(log.record({ kind: 'app-focus', state: 'hidden' }), false);
+  assert.equal(log.record({ kind: 'ask-shown', askKey: 'CARD-1@2026-11-12T10:00:00.000Z', surface: 'card-overlay' }), false);
+  assert.equal(log.record({ kind: 'app-focus', state: 'blur' }), true);
 });
 
 test('agent and card ids are written only when the roster or tasks.json holds them', (t) => {
@@ -110,4 +126,12 @@ test('agent and card ids are written only when the roster or tasks.json holds th
   const rows = read();
   assert.deepEqual(rows.map((r) => [r.agentId, r.cardId]), [['jc', 'CARD-1'], [undefined, undefined]]);
   assert.doesNotMatch(JSON.stringify(rows), /ORCHID/);
+});
+
+test('the hive ignores a usage folder, so no usage file can enter its git history', (t) => {
+  const { HiveManager } = loadTs('src/main/hive.ts');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-usage-ignore-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  new HiveManager(() => home).ensureHive();
+  assert.ok(fs.readFileSync(path.join(home, 'hive', '.gitignore'), 'utf8').split('\n').includes('usage/'));
 });

@@ -2,9 +2,12 @@
  * The local usage log for the owner's side of the app: which screens are open,
  * for how long, and how asks are seen and answered (docs/usage-log.md).
  *
- * Local only: daily files at <hive>/usage/YYYY-MM-DD.jsonl, folder 0700, files
- * 0600, kept RETENTION_DAYS. There is no network code here, and these events
- * are never handed to the outbound analytics module.
+ * Local only, and in the app's own data folder (<userData>/usage), never in the
+ * hive: the hive is a git repository agents can read and write, so rows kept
+ * there could be read, edited or redirected by an agent and would enter git
+ * history. Daily files YYYY-MM-DD.jsonl, folder 0700, files 0600, kept
+ * RETENTION_DAYS. There is no network code here, and these events are never
+ * handed to the outbound analytics module.
  *
  * Ids, enums and durations only, enforced by an allowlist: an unknown kind is
  * refused, an unknown field is dropped, and every string must be a known enum,
@@ -12,7 +15,7 @@
  * tasks.json), so free text (message, question, answer, typed input) cannot be
  * written even by a buggy caller.
  */
-import { appendFileSync, chmodSync, closeSync, lstatSync, mkdirSync, openSync, readdirSync, rmSync } from 'node:fs';
+import { appendFileSync, chmodSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 export const RETENTION_DAYS = 90;
@@ -41,13 +44,13 @@ const COMMON: Record<string, FieldType> = { session: 'id', win: 'count', focused
 const EVENTS: Record<string, Record<string, FieldType>> = {
   'ui-view': { view: 'view', agentId: 'agent', cardId: 'card' },
   'ui-view-end': { view: 'view', dwellMs: 'count' },
-  'ask-shown': { askKey: 'askKey', ageMs: 'count', surface: { oneOf: ['ask-me', 'card-overlay'] } },
+  'ask-shown': { askKey: 'askKey', ageMs: 'count', surface: { oneOf: ['ask-me'] } },
   'ask-submitted': {
     askKey: 'askKey', msSinceShown: 'count', answerLen: 'count',
     answerShape: { oneOf: ['done-ack', 'option', 'short', 'sentence', 'long'] },
-    surface: { oneOf: ['ask-me', 'card-overlay'] }
+    surface: { oneOf: ['ask-me'] }
   },
-  'app-focus': { state: { oneOf: ['focus', 'blur', 'hidden', 'shown'] } }
+  'app-focus': { state: { oneOf: ['focus', 'blur'] } }
 };
 /** Fields a kind cannot be written without. */
 const REQUIRED: Record<string, string[]> = {
@@ -71,8 +74,8 @@ function valid(type: FieldType, v: unknown, known: KnownIds): boolean {
 /** The allowlisted copy of an event, or null when it must not be written. */
 export function sanitize(event: Record<string, unknown>, known: KnownIds = NONE): Record<string, unknown> | null {
   const kind = typeof event.kind === 'string' ? event.kind : '';
+  if (!Object.hasOwn(EVENTS, kind)) return null;
   const fields = EVENTS[kind];
-  if (!fields) return null;
   const out: Record<string, unknown> = { kind };
   for (const [k, type] of Object.entries({ ...COMMON, ...fields })) {
     if (!(k in event) || event[k] === undefined) continue;
@@ -83,12 +86,13 @@ export function sanitize(event: Record<string, unknown>, known: KnownIds = NONE)
     }
     out[k] = event[k];
   }
-  for (const k of REQUIRED[kind] ?? []) if (!(k in out)) return null;
+  for (const k of Object.hasOwn(REQUIRED, kind) ? REQUIRED[kind] : []) if (!(k in out)) return null;
   return out;
 }
 
 export interface UsageLogDeps {
-  root: () => string | null;
+  /** The usage folder in the app's own data folder (<userData>/usage). */
+  dir: () => string | null;
   enabled: () => boolean;
   now?: () => number;
   /** True for an id on the agent roster. */
@@ -102,19 +106,12 @@ export class UsageLog {
 
   private now(): number { return (this.d.now ?? Date.now)(); }
 
-  /** The usage folder, created private; null when there is no root or the path is not a real folder. */
+  /** The usage folder, created private when asked to; null when unavailable. */
   private dir(create: boolean): string | null {
-    const root = this.d.root();
-    if (!root) return null;
-    const dir = join(root, 'usage');
-    try {
-      const st = lstatSync(dir);
-      if (!st.isDirectory() || st.isSymbolicLink()) return null;
-      return dir;
-    } catch {
-      if (!create) return null;
-      try { mkdirSync(dir, { mode: 0o700 }); chmodSync(dir, 0o700); return dir; } catch { return null; }
-    }
+    const dir = this.d.dir();
+    if (!dir) return null;
+    if (!create) return dir;
+    try { mkdirSync(dir, { recursive: true, mode: 0o700 }); chmodSync(dir, 0o700); return dir; } catch { return null; }
   }
 
   /** Append one event if the log is on and the event passes the allowlist. */
@@ -127,7 +124,6 @@ export class UsageLog {
     const ts = this.now();
     const file = join(dir, `${new Date(ts).toISOString().slice(0, 10)}.jsonl`);
     try {
-      try { if (lstatSync(file).isSymbolicLink()) return false; } catch { closeSync(openSync(file, 'a', 0o600)); }
       appendFileSync(file, JSON.stringify({ ts, v: SCHEMA, ...clean }) + '\n', { mode: 0o600 });
       return true;
     } catch { return false; }
@@ -139,7 +135,9 @@ export class UsageLog {
     if (!dir) return 0;
     const cutoff = new Date(this.now() - RETENTION_DAYS * 86_400_000).toISOString().slice(0, 10);
     let removed = 0;
-    for (const name of readdirSync(dir)) {
+    let names: string[];
+    try { names = readdirSync(dir); } catch { return 0; }
+    for (const name of names) {
       const m = DAY_FILE.exec(name);
       if (m && m[1] < cutoff) { try { rmSync(join(dir, name)); removed++; } catch { /* keep going */ } }
     }

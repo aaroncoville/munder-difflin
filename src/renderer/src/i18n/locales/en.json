@@ -242,7 +242,7 @@
       "telemetry": "Anonymous usage stats",
       "telemetryDesc": "A handful of anonymous events (app opened, agent spawned, feature used) — never prompts, code, paths, or agent output. Full list in TELEMETRY.md.",
       "usageLog": "Local usage log",
-      "usageLogDesc": "Records which screens you open and how you see and answer asks, as ids, counts and durations only, in this hive's usage folder. Never sent anywhere; kept 90 days.",
+      "usageLogDesc": "Records which screens you open and how you see and answer asks, as ids, counts and durations only, in this app's data folder, not the hive. Never sent anywhere; kept 90 days. Takes effect when you save.",
       "usageLogDelete": "Delete usage log",
       "usageLogDeleted": "Deleted {{count}} file(s).",
       "language": "Language",

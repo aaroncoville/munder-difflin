@@ -242,7 +242,7 @@
       "telemetry": "匿名使用统计",
       "telemetryDesc": "少量匿名事件（打开应用、生成智能体、使用功能）——绝不包含提示词、代码、路径或智能体输出。完整清单见 TELEMETRY.md。",
       "usageLog": "本地使用日志",
-      "usageLogDesc": "仅以 ID、计数和时长记录你打开的界面以及你查看和回答提问的方式，保存在此蜂巢的 usage 文件夹中。绝不外传；保留 90 天。",
+      "usageLogDesc": "仅以 ID、计数和时长记录你打开的界面以及你查看和回答提问的方式，保存在本应用的数据文件夹中，不在蜂巢内。绝不外传；保留 90 天。保存后生效。",
       "usageLogDelete": "删除使用日志",
       "usageLogDeleted": "已删除 {{count}} 个文件。",
       "language": "语言",

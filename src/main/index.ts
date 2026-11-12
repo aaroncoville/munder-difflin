@@ -143,7 +143,8 @@ const ptyManager = new PtyManager();
 // Local usage log of the owner's side (docs/usage-log.md): never sent anywhere,
 // allowlisted ids/enums/durations only, switchable and deletable in Settings.
 const usageLog = new UsageLog({
-  root: () => hive.root(), enabled: () => readConfig().usageLog !== false,
+  // The app's own data folder, never the hive (agents can write there).
+  dir: () => join(app.getPath('userData'), 'usage'), enabled: () => readConfig().usageLog !== false,
   // Checked when an event arrives, after start-up has defined usageIds.
   isAgent: (id) => usageIds.isAgent(id), isCard: (id) => usageIds.isCard(id)
 });
