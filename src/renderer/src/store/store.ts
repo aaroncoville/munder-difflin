@@ -490,13 +490,13 @@ function persistedSlice(
   key: string,
   fromFile: unknown[] | undefined
 ): PersistedAgent[] {
-  if (useFileRoster) return Array.isArray(fromFile) ? (fromFile as PersistedAgent[]).map(withoutRetiredFields) : [];
+  if (useFileRoster) return Array.isArray(fromFile) ? storedAgents(fromFile) : [];
   if (!useLocalFallback) return [];
   try {
     const raw = window.localStorage.getItem(key);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as PersistedAgent[]).map(withoutRetiredFields) : [];
+    return Array.isArray(parsed) ? storedAgents(parsed) : [];
   } catch {
     return [];
   }
@@ -508,6 +508,14 @@ function persistedSlice(
  *  `character` named the pixel office cast member drawn for the agent. The
  *  office is gone and a face is dealt from the name and id instead, so the
  *  field is ignored rather than migrated: the agent keeps its name. */
+/** The agents in a stored list. An entry that is not an object (a hand edit,
+ *  a torn write) is skipped rather than allowed to empty the whole list. */
+function storedAgents(list: unknown[]): PersistedAgent[] {
+  return list
+    .filter((e): e is PersistedAgent => !!e && typeof e === 'object' && !Array.isArray(e))
+    .map(withoutRetiredFields);
+}
+
 function withoutRetiredFields(stored: PersistedAgent): PersistedAgent {
   const { character, ...rest } = stored as PersistedAgent & { character?: unknown };
   void character;

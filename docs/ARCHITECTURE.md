@@ -68,9 +68,9 @@ src/
     TasksKanban,             dependency-aware kanban board (Tasks tab)
     ThreadsPanel,            hive message conversation viewer (Messages tab)
     MessageQueueComposer,    park messages for a busy agent
-    scene/office/            Pixi office floor: OfficeFloor, Character, Camera, cast, pathfinding, …
+    scene/study/             the Study floor: FloorHost, StudyScene, painted portraits
     store/ · hooks/          zustand store, event loop, PTY parser, typewriter
-    assets/                  tilesets, maps, character sheets (see ATTRIBUTION.md)
+    assets/                  fonts and the Sixth History logo (see ATTRIBUTION.md)
 docs/                        `logo.png`, `banner.png`, landing page (GitHub Pages → munderdiffl.in)
 docs/media/                  `og.png` (social previews) + rendered Remotion clips
 landing-remotion/            Remotion project that renders the landing page's "how it works" clips

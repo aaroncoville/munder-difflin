@@ -117,7 +117,7 @@ ${L[28]}
   The page is one workday: a clock runs from 08:59 to 18:00 as you scroll, each chapter is one core feature, the page goes dark after hours.
   Built by the scratchpad build.cjs from the previous page: fonts, tokens, blobatar and the interactive Stapler are carried over verbatim.
   Media: ./media/munder-difflin-053.mp4 (the launch video, remuxed with faststart so it streams) and ./media/munder-difflin-053-poster.jpg.
-  The two old loops (hero-demo.mp4 and pro-stapler.gif) are no longer used here. The pixel cast is the app's own portraitArt.ts, rendered to PNG.
+  The two old loops (hero-demo.mp4 and pro-stapler.gif) are no longer used here. The pixel cast is tools/logo/portraitArt.ts (the art the app used to draw), rendered to PNG.
 -->`;
 
 let body = rd('body.html')

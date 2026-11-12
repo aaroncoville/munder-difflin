@@ -507,6 +507,13 @@ source, forks compile with no key and send nothing) are documented in
 
 ## License
 
+> [!IMPORTANT]
+> **Media licensing.** The screenshots and video of the pixel office in this README and on the website
+> (for example `docs/media/floor.png` and `hero.mp4`) show **Modern Interiors - RPG Tileset [16X16]** by
+> [LimeZu](https://limezu.itch.io/moderninteriors), used under the **Complete Version licence**, which
+> requires credit to LimeZu. The app itself no longer ships those tilesets; this credit stays until
+> the media are replaced.
+
 The **source code** is licensed under the **MIT License**. See [`LICENSE`](./LICENSE). The bundled
 fonts and the Sixth History logo carry their own licences, listed in
 [`src/renderer/src/assets/ATTRIBUTION.md`](./src/renderer/src/assets/ATTRIBUTION.md). *Munder Difflin* is an affectionate parody and is not affiliated with NBC's *The Office* or
@@ -514,6 +521,7 @@ Dunder Mifflin.
 
 ## Acknowledgements
 
+- [LimeZu](https://limezu.itch.io/) for the *Modern Interiors* tilesets shown in the README and website screenshots and video (Complete Version licence).
 - [Pixi.js](https://pixijs.com/) · [xterm.js](https://xtermjs.org/) · [node-pty](https://github.com/microsoft/node-pty) · [electron-vite](https://electron-vite.org/) · [CodeMirror](https://codemirror.net/) for the libraries this is built on.
 - [Remotion](https://www.remotion.dev/) for the landing page's animated "how it works" clips (`landing-remotion/`).
 - *The Office* (US) for Munder Difflin, Inc.

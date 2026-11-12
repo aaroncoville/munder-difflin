@@ -45,7 +45,6 @@ const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$
 
 const THEME = 'src/renderer/src/design/theme.ts';
 const HOST = 'src/renderer/src/scene/study/FloorHost.tsx';
-const OFFICE = 'src/renderer/src/scene/office/OfficeFloor.tsx';
 
 /** A fresh theme module over a fake DOM whose storage starts as `stored`. */
 function freshTheme(stored) {
@@ -152,11 +151,6 @@ test('the licence credit renders whatever was saved before', () => {
 
 // ─── the floor ───────────────────────────────────────────────────────────────
 
-/** The pixel office, stood in for at its real path so a host that still
- *  reaches for it is caught in the tree rather than by a load error. */
-const OfficeFloor = () => null;
-loadTs.stub(OFFICE, { OfficeFloor });
-
 const find = (n, pred) => {
   if (!n || typeof n !== 'object') return undefined;
   if (pred(n)) return n;
@@ -178,7 +172,6 @@ test('the Study mounts whatever was saved before', () => {
     const mod = loadTs.fresh(HOST);
     const tree = mount(mod.FloorHost, {}).tree;
     assert.ok(find(tree, (n) => n.type === mod.StudySceneLazy), `${saved}: no Study`);
-    assert.equal(find(tree, (n) => n.type === OfficeFloor), undefined, `${saved}: office mounted`);
   }
 });
 
@@ -191,7 +184,6 @@ test('a Study that fails says so in its own panel, not the pixel office', () => 
   boundary.state = mod.FloorErrorBoundary.getDerivedStateFromError(new Error('boom'));
   const shown = boundary.render();
   assert.ok(shown, 'the boundary shows nothing once the Study fails');
-  assert.equal(find(shown, (n) => n.type === OfficeFloor), undefined, 'fell back to the office');
   assert.equal(find(shown, (n) => n.type === mod.StudySceneLazy), undefined, 'the failed Study is still up');
   // The fallback is a component of the host's own: render it and read it.
   const rendered = typeof shown.type === 'function' ? shown.type(shown.props) : shown;

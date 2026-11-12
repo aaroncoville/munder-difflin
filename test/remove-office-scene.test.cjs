@@ -57,13 +57,18 @@ test('nothing in the renderer imports from the office scene', () => {
   assert.deepEqual(offenders, []);
 });
 
-test('the LimeZu credits go with the tilesets they credited', () => {
-  for (const rel of [
-    'README.md', 'CONTRIBUTING.md', 'docs/index.html', 'docs/pro/index.html',
-    'tools/landing-halloween/base.html', 'src/renderer/src/assets/ATTRIBUTION.md'
-  ]) {
-    assert.doesNotMatch(read(rel), /limezu/i, `${rel} still credits art that no longer ships`);
+test('LimeZu is credited wherever media of the old office are still shown, and nowhere the app ships', () => {
+  // The app no longer ships the tilesets, but the README and site still show
+  // screenshots and video drawn with them; the licence credit stays beside them.
+  for (const rel of ['README.md', 'docs/index.html', 'docs/pro/index.html', 'tools/landing-halloween/base.html']) {
+    assert.match(read(rel), /limezu/i, `${rel} shows office media without the LimeZu credit`);
   }
+  assert.match(read('README.md'), /docs\/media\/floor\.png/, 'the README credit is there because it shows the office');
+  for (const rel of ['CONTRIBUTING.md', 'src/renderer/src/assets/ATTRIBUTION.md']) {
+    assert.doesNotMatch(read(rel), /limezu/i, `${rel} credits art the app no longer ships`);
+  }
+  assert.doesNotMatch(read('docs/terms.html'), /assets bundled with the app[^.]*tilesets/i, 'terms still say the app bundles the tilesets');
+  assert.doesNotMatch(read('.github/CODEOWNERS'), /LICENSE-ASSETS/);
   assert.equal(fs.existsSync(R('LICENSE-ASSETS')), false, 'the asset licence carve-out has nothing left to carve out');
 });
 
@@ -143,6 +148,20 @@ test('agents an older build wrote to localStorage load, and shed `character`', (
   const state = storeWith({
     cth: { rosterReadSync: () => null, harnessHomeSync: () => '/hive' },
     localStorage: { getItem: (k) => stored[k] ?? null, setItem: () => {}, removeItem: () => {} },
+    addEventListener: () => {}
+  });
+  assertLoaded(state);
+});
+
+test('a stray non-object entry in the stored roster is skipped, not fatal to the rest', () => {
+  const state = storeWith({
+    cth: {
+      rosterReadSync: () => ({
+        agents: [old('w-1', 'Dwight Schrute'), null, 7], archived: [null, old('w-2', 'Kevin')], restorable: ['x', old('w-3', 'Pam')]
+      }),
+      harnessHomeSync: () => '/hive'
+    },
+    localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
     addEventListener: () => {}
   });
   assertLoaded(state);
