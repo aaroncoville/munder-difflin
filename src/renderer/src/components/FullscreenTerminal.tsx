@@ -19,8 +19,7 @@ import { useStore, type Agent } from '@/store/store';
 import { usePtyParser } from '@/hooks/usePtyParser';
 import { useRestoreTeam } from '@/hooks/useRestoreTeam';
 import { useTerminalFontSize } from './terminalFontSize';
-import { useHasTerminalDraft, disposeTerminal, reflowTerminal, notifyThemeChangeAll } from './terminalPool';
-import { useAppTheme, toggleAppTheme, terminalThemeFor, themeControlFace } from '@/design/theme';
+import { useHasTerminalDraft, disposeTerminal, reflowTerminal } from './terminalPool';
 import type { HarnessConfig } from '@/store/config';
 import { useRtl } from '@/i18n/useDirection';
 
@@ -166,7 +165,6 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
   // The floor strip (and with it the restore button) is hidden behind the
   // overlay, so the roster carries restore too.
   const { restoring, autoRestoring, restoreTeam } = useRestoreTeam(config);
-  const appThemeNow = useAppTheme();
 
   const agent = agents.find(a => a.id === fullscreenAgentId);
   const parser = usePtyParser(agent?.id ?? '__none__');
@@ -331,28 +329,6 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
             }}
           >
             <Icon name="sidebar" size={1} style={{ width: 16, height: 16 }} />
-          </button>
-          <button
-            onClick={() => {
-              const next = toggleAppTheme();
-              void window.cth.updateConfig({ terminalTheme: terminalThemeFor(next) });
-              // Focus mode has its OWN theme button, so notifying only from the
-              // title-bar toggle meant a flip made from in here never reached a
-              // running TUI. Both entry points must tell them.
-              notifyThemeChangeAll(terminalThemeFor(next));
-            }}
-            title={t(themeControlFace(appThemeNow).labelKey)}
-            aria-label={t(themeControlFace(appThemeNow).labelKey)}
-            style={{
-              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-              width: 28, height: 28, padding: 0,
-              background: 'var(--cth-paper-100)',
-              boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)',
-              border: 'none', borderRadius: 2, cursor: 'pointer',
-              color: 'var(--cth-ink-900)', fontSize: 13, lineHeight: 1
-            }}
-          >
-            {themeControlFace(appThemeNow).icon}
           </button>
           {/* Settings — the main title bar has it, so fullscreen must too:
               anything reachable in one mode and not the other is a trap. Uses

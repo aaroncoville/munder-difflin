@@ -115,7 +115,7 @@ void i18n
       // A REGISTER of English, not a language: it re-voices the nouns the Study
       // renames and leaves every other key to fall through to `en` below. That
       // is why it is absent from LANGUAGES — Settings offers languages, and
-      // this one is chosen by the theme (see useThemeVoice.ts), not by a
+      // this one is chosen by the app (see useThemeVoice.ts), not by a
       // reader who wants the app in a different tongue.
       'en-SH': { translation: enSH }
     },

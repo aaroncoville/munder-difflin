@@ -30,7 +30,7 @@
  */
 import type { IconName } from './Icon';
 
-/** Same shape `Icon.tsx`'s own table uses — see `IconDef` there. */
+/** One icon: its ink path, an optional accent path and the accent's colour. */
 export interface DecoIconDef {
   ink: string;
   accent?: string;

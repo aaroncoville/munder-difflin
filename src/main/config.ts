@@ -337,10 +337,6 @@ export interface HarnessConfig {
    *  The on-disk hive (god orchestration under harnessHome) stays process-global;
    *  floors share it. */
   multiWindow?: boolean;
-  /** Terminal theme — mirrored into each agent's per-session Claude settings
-   *  ("theme" key) at spawn so the TUI's truecolor palette matches. Scoped to
-   *  harness agents only; the user's global Claude theme is never touched. */
-  terminalTheme?: 'light' | 'dark';
   /** Anonymous product analytics (PostHog) — the exact events/properties are
    *  documented in TELEMETRY.md. Default ON (opt-out, like autoUpdate); builds
    *  without an injected key and environments with DO_NOT_TRACK set never send
@@ -681,10 +677,24 @@ export function readConfig(): HarnessConfig {
   try {
     const raw = readFileSync(p, 'utf8');
     const parsed = JSON.parse(raw);
-    return normalizeStoredHomes(migrateTriggersV1(withTriggerDefaults({ ...DEFAULTS, ...parsed })));
+    return normalizeStoredHomes(migrateTriggersV1(withTriggerDefaults({ ...DEFAULTS, ...dropRetiredKeys(parsed) })));
   } catch {
     return withTriggerDefaults({ ...DEFAULTS });
   }
+}
+
+/** Settings older builds wrote that nothing reads any more: the TV-show office
+ *  flag and its show, and the light/dark terminal choice that followed the
+ *  removed app themes. Every save spreads the loaded config back to disk, so
+ *  without this a stale key would ride along into the renderer and be written
+ *  back on every save, for ever. Dropping it on read makes the next save the
+ *  one that cleans the file. */
+const RETIRED_KEYS = ['tvShowOffices', 'officeTheme', 'terminalTheme'] as const;
+
+function dropRetiredKeys(parsed: Record<string, unknown>): Record<string, unknown> {
+  const kept = { ...parsed };
+  for (const key of RETIRED_KEYS) delete kept[key];
+  return kept;
 }
 
 /** (#140, the upgrade path) A config.json persisted BEFORE `writeConfig`

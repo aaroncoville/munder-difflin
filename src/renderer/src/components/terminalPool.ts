@@ -96,23 +96,11 @@ import { parseHexColor, oscColorBody, isDarkBackground } from './termColor';
 type ThemeMap = Record<string, string>;
 
 
-/** Tell a running program the terminal's theme changed.
+/** Tell a running program which ground the terminal has.
  *
  *  The reply half of DEC mode 2031: `CSI ? 997 ; 1 n` for dark, `; 2 n` for
  *  light. Sent ONLY to programs that enabled 2031, because a program that did not
- *  ask would receive this as unsolicited bytes on its input.
- *
- *  Without it the app theme and the TUI disagree until the agent restarts:
- *  xterm's own cells flip, and everything the program painted explicitly does
- *  not. */
-export function notifyThemeChangeAll(theme: 'light' | 'dark'): void {
-  const all = [...pool.keys()];
-  const told = all.filter((id) => pool.get(id)?.themeNotify);
-  console.log(`[theme] -> ${theme}: notified ${told.length}/${all.length} terminal(s)`
-    + (told.length ? ` (${told.join(', ')})` : ' — none opted into DEC 2031'));
-  for (const ptyId of all) notifyThemeChange(ptyId, theme);
-}
-
+ *  ask would receive this as unsolicited bytes on its input. */
 function notifyThemeChange(ptyId: string, theme: 'light' | 'dark'): void {
   const entry = pool.get(ptyId);
   if (!entry || entry.exited || !entry.themeNotify) return;

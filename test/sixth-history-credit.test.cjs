@@ -30,11 +30,12 @@ test('the credit carries the licence wording and the logo under occult', () => {
   assert.match(img.node.props.src, /sixth-history\/logo\.png$/);
 });
 
-test('the credit is absent in every other theme', () => {
-  // Not cosmetic: it is the theme that triggers the licence obligation, so the
-  // two have to be inseparable in both directions.
+test('the credit renders whatever theme an older build saved', () => {
+  // Not cosmetic: the theme triggers the licence obligation and it is the only
+  // theme there is, so a stale saved choice must not be able to hide it.
   for (const theme of ['light', 'dark']) {
-    assert.equal(creditUnder(theme).tree, null, `credit rendered under ${theme}`);
+    assert.match(text(creditUnder(theme).tree).join(' '), /unofficial content/i,
+      `credit missing after a saved ${theme}`);
   }
 });
 

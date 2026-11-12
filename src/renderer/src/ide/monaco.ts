@@ -52,44 +52,10 @@ import TsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker'
 
 let themesDefined = false;
 
-/** Register the CTH Monaco themes (idempotent). */
+/** Register the editor's theme (idempotent). */
 function defineThemes(m: typeof monaco): void {
   if (themesDefined) return;
   themesDefined = true;
-  m.editor.defineTheme('cth-light', {
-    base: 'vs',
-    inherit: true,
-    rules: [
-      { token: '', foreground: '1A1320', background: 'FCFAF0' },
-      { token: 'comment', foreground: '6B5878', fontStyle: 'italic' },
-      { token: 'keyword', foreground: '8B5CF6' },
-      { token: 'string', foreground: '3FA45B' },
-      { token: 'number', foreground: 'D94F4F' },
-      { token: 'type', foreground: '2A9D94' },
-      { token: 'function', foreground: 'C2603A' },
-      { token: 'variable', foreground: '1A1320' },
-      { token: 'delimiter', foreground: '6B5878' }
-    ],
-    colors: {
-      'editor.background': '#FCFAF0',
-      'editor.foreground': '#1A1320',
-      'editorLineNumber.foreground': '#A899B5',
-      'editorLineNumber.activeForeground': '#3D2E4A',
-      'editor.selectionBackground': '#FFEC99',
-      'editor.lineHighlightBackground': '#FFF8E7',
-      'editorCursor.foreground': '#FF6B6B',
-      'editorGutter.background': '#F0EAD2',
-      'editorWidget.background': '#FFF8E7',
-      'editorIndentGuide.background1': '#E8D9A0',
-      'diffEditor.insertedTextBackground': '#6BCF7F33',
-      'diffEditor.removedTextBackground': '#FF6B6B33',
-      'diffEditor.insertedLineBackground': '#6BCF7F22',
-      'diffEditor.removedLineBackground': '#FF6B6B22'
-    }
-  });
-  // The Study's editor. Defined unconditionally alongside the others because
-  // defineTheme only registers a name — nothing renders until setTheme picks
-  // one, and monacoThemeFor is the only thing that picks.
   m.editor.defineTheme(OCCULT_MONACO_THEME, occultMonacoTheme);
 }
 
@@ -104,8 +70,6 @@ export function setupMonaco(): typeof monaco {
   defineThemes(monaco);
   return monaco;
 }
-
-export { CTH_MONACO_THEME, monacoThemeFor } from './monacoTheme';
 
 /** Map a filename to a Monaco language id (used to set the model language). */
 export function languageForPath(path: string): string {
