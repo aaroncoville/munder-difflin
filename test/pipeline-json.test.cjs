@@ -61,4 +61,3 @@ test('"__proto__" in JSON is an ordinary own name, as JSON.parse makes it, and s
   assert.equal(Object.hasOwn(r.value, '__proto__'), true);
   assert.equal(r.value.state, undefined);
 });
-

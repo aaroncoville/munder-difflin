@@ -27,9 +27,9 @@ const MR = { state: 'opened', draft: false, sha: S, source_branch: 'feat/x', tar
 
 test('a GitLab answer that gives a name twice is no answer: the MR is unknown and a merge is refused', async () => {
   const twice = '{"state":"opened","state":"merged","sha":"' + S + '","source_branch":"feat/x","target_branch":"main"}';
-  const forge = new GitlabForge('wooden-bird/wayfarer', async () => ({ code: 0, stdout: twice, stderr: '' }));
+  const forge = new GitlabForge({ host: 'gitlab.com', project: 'wooden-bird/wayfarer', forbidden: [], run: async () => ({ code: 0, stdout: twice, stderr: '' }) });
   assert.equal(await forge.mr(7), null);
-  const merged = new GitlabForge('wooden-bird/wayfarer', async () => ({ code: 0, stdout: `{"merge_commit_sha":"${M}","merge_commit_sha":"${S}"}`, stderr: '' }));
+  const merged = new GitlabForge({ host: 'gitlab.com', project: 'wooden-bird/wayfarer', forbidden: [], run: async () => ({ code: 0, stdout: `{"state":"merged","merge_commit_sha":"${M}","merge_commit_sha":"${S}"}`, stderr: '' }) });
   assert.equal((await merged.merge(7, S)).ok, false);
 });
 
@@ -37,9 +37,10 @@ test('an MR field is read only if the answer itself has it, never from a prototy
   assert.equal(toForgeMr(Object.create(MR)), null);
   const withInherited = Object.assign(Object.create({ draft: true, head_pipeline: MR.head_pipeline }), { ...MR, draft: undefined, head_pipeline: undefined });
   delete withInherited.draft; delete withInherited.head_pipeline;
-  const r = toForgeMr(withInherited);
-  assert.equal(r.draft, false);
-  assert.equal(r.pipeline, null);
+  assert.equal(toForgeMr(withInherited), null, 'an inherited draft flag is not a stated one');
+  const noPipeline = { ...MR };
+  delete noPipeline.head_pipeline;
+  assert.equal(toForgeMr(Object.assign(Object.create({ head_pipeline: MR.head_pipeline }), noPipeline)).pipeline, null);
 });
 
 test('reading any JSON value as an MR refuses or answers, and never throws', () => {
@@ -79,7 +80,7 @@ test('git runs with no user or system config and no GIT_ variables from the app\
   assert.equal(env.GIT_CONFIG_GLOBAL, '/dev/null');
   assert.equal(env.GIT_CONFIG_NOSYSTEM, '1');
   assert.equal(env.GIT_TERMINAL_PROMPT, '0');
-  assert.equal(env.GITLAB_HOST, 'gitlab.com', 'glab\'s own settings are kept');
+  assert.equal(env.GITLAB_HOST, undefined, 'the host is named on the command line, not taken from the environment');
 });
 
 // --- the mirror ---
@@ -87,7 +88,7 @@ test('git runs with no user or system config and no GIT_ variables from the app\
 test('the mirror refuses, and never throws, on a malformed sha, ref or branch from outside', async () => {
   const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mr-mirror-')), 'm.git');
   const calls = [];
-  const m = new GitMirror(dir, 'https://gitlab.com/wooden-bird/wayfarer.git', async (f, a) => { calls.push(a); return { code: 0, stdout: '', stderr: '' }; });
+  const m = new GitMirror({ dir, remote: 'https://gitlab.com/wooden-bird/wayfarer.git', forbidden: [], run: async (f, a) => { calls.push(a); return { code: 0, stdout: '', stderr: '' }; } });
   for (const bad of ['', 'HEAD', S.slice(0, 7), `${S}x`, '--upload-pack=x', S.toUpperCase()]) {
     assert.equal(await m.hasCommit(bad), false, bad);
     assert.equal(await m.mergeTree(bad, S), null, bad);
@@ -103,11 +104,11 @@ test('the mirror refuses, and never throws, on a malformed sha, ref or branch fr
 
 test('the mirror folder must be an absolute path outside every forbidden folder', () => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'mr-mirror-'));
-  assert.throws(() => new GitMirror('rel/m.git', 'x', undefined, null, []), /absolute/);
-  assert.throws(() => new GitMirror(path.join(base, 'hive', 'm.git'), 'x', undefined, null, [path.join(base, 'hive')]), /forbidden|under/);
+  assert.throws(() => new GitMirror({ dir: 'rel/m.git', remote: 'https://gitlab.com/a/b.git', forbidden: [] }), /absolute/);
+  assert.throws(() => new GitMirror({ dir: path.join(base, 'hive', 'm.git'), remote: 'https://gitlab.com/a/b.git', forbidden: [path.join(base, 'hive')] }), /forbidden|under/);
   fs.mkdirSync(path.join(base, 'hive'));
   fs.symlinkSync(path.join(base, 'hive'), path.join(base, 'appdata'));
-  assert.throws(() => new GitMirror(path.join(base, 'appdata', 'm.git'), 'x', undefined, null, [path.join(base, 'hive')]), /forbidden|under/, 'through a link');
+  assert.throws(() => new GitMirror({ dir: path.join(base, 'appdata', 'm.git'), remote: 'https://gitlab.com/a/b.git', forbidden: [path.join(base, 'hive')] }), /forbidden|under/, 'through a link');
 });
 
 /** A real repo with random history: branches, merges, file edits. Returns its commits. */
@@ -137,7 +138,7 @@ test('property: on random histories the mirror\'s answers match git\'s own in th
     const src = randomRepo(seed);
     const branches = src.git('for-each-ref', '--format=%(refname:short)', 'refs/heads').split('\n').filter(Boolean);
     const mirrorDir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mr-mir-')), 'm.git');
-    const mirror = new GitMirror(mirrorDir, src.dir, undefined, null, []);
+    const mirror = new GitMirror({ dir: mirrorDir, remote: src.dir, forbidden: [] });
     assert.equal(await mirror.fetch(branches), true, `seed ${seed}: fetch`);
     const cs = src.commits;
     for (let i = 0; i < cs.length; i++) {
@@ -172,7 +173,7 @@ test('changed files come back exactly, whatever characters a file name holds', a
   for (const n of odd) fs.writeFileSync(path.join(dir, n), 'x\n');
   git('add', '-A'); git('commit', '--quiet', '-m', 'b');
   const S2 = git('rev-parse', 'HEAD');
-  const mirror = new GitMirror(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mr-mir-')), 'm.git'), dir, undefined, null, []);
+  const mirror = new GitMirror({ dir: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mr-mir-')), 'm.git'), remote: dir, forbidden: [] });
   assert.equal(await mirror.fetch(['main']), true);
   assert.deepEqual((await mirror.changedFiles(T, S2)).sort(), [...odd].sort());
 });
@@ -180,7 +181,7 @@ test('changed files come back exactly, whatever characters a file name holds', a
 // --- the live probe ---
 
 test('the live probe reads only the answer\'s own field, and a name given twice is unknown', async () => {
-  const answer = (text) => async () => ({ ok: true, text: async () => text, json: async () => JSON.parse(text) });
+  const answer = (text) => async () => ({ ok: true, body: new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(text)); c.close(); } }), text: async () => { throw new Error('unbounded read'); } });
   const cfg = (field) => ({ kind: 'http-json', url: 'https://x.example/api/version', field });
   assert.deepEqual(await probeLive(cfg('commit'), answer(`{"commit":"${S}"}`)), { deployed: S });
   assert.deepEqual(await probeLive(cfg('commit'), answer(`{"commit":"${M}","commit":"${S}"}`)), { deployed: null });

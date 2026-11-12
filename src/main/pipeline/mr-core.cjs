@@ -322,7 +322,7 @@ function parseJson(text) {
     }
   };
   const value = (depth) => {
-    if (depth > MAX_DEPTH) fail(`nested deeper than ${MAX_DEPTH}`);
+    if (depth >= MAX_DEPTH) fail(`nested deeper than ${MAX_DEPTH}`);
     ws();
     const c = text[i];
     if (c === '{') {
