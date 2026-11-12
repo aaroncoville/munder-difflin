@@ -449,3 +449,17 @@ test('the renderer applies the palette before the first render', () => {
   assert.match(code('src/renderer/src/components/PtyTerminalView.tsx'), /paletteTerminalTheme\(occultTerminalTheme\)/);
   assert.match(code('src/renderer/src/ide/monaco.ts'), /defineTheme\(OCCULT_MONACO_THEME, paletteMonacoTheme\(occultMonacoTheme\)\)/);
 });
+
+test('the documentation lists exactly the tokens the file may set', () => {
+  const { PANEL_PALETTE_TOKENS } = loadTs(SHARED);
+  const doc = readRaw('docs/panel-palette.md');
+  const list = doc.match(/### Tokens you can set[\s\S]*?```\n([\s\S]*?)```/);
+  assert.ok(list, 'the token list is missing from docs/panel-palette.md');
+  assert.deepEqual(list[1].split(/\s+/).filter(Boolean).sort(), [...PANEL_PALETTE_TOKENS].sort());
+  // …and its example is a file the validator accepts.
+  const example = doc.match(/### Format[\s\S]*?```json\n([\s\S]*?)```/);
+  const { checkPanelPalette } = loadTs(SHARED);
+  const check = checkPanelPalette(JSON.parse(example[1]));
+  assert.equal(check.ok, true);
+  assert.equal(Object.keys(check.palette).length, Object.keys(JSON.parse(example[1])).length);
+});
