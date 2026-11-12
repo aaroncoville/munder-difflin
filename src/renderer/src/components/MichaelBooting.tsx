@@ -44,8 +44,7 @@ export function MichaelBooting() {
               margin: 0, fontSize: 13, lineHeight: '20px', textAlign: 'center',
               color: 'var(--cth-ink-700)'
             }}>
-              {godName} is settling into the corner office and getting the floor
-              ready. Hang tight…
+              {godName} is getting the floor ready. Hang tight…
             </p>
           </div>
         </PixelPanel>

@@ -407,7 +407,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
                         A <strong>CLI agent</strong> is an AI coding assistant that runs on your
                         computer — popular ones are Claude Code (Anthropic), Codex (OpenAI) and
                         Antigravity (Google Gemini). <strong>Your clone</strong> is the always-on
-                        one that runs your whole office. We recommend Claude Code on Opus 4.8 (1M).
+                        one that runs your whole floor. We recommend Claude Code on Opus 4.8 (1M).
                         You can add or switch the others later.
                       </Trans>
                     ) : (

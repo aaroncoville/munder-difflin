@@ -564,7 +564,7 @@
   "onboarding": {
     "titles": {
       "persona": "WELCOME TO MUNDER DIFFLIN",
-      "welcome": "MEET YOUR OFFICE",
+      "welcome": "MEET YOUR FLOOR",
       "home": "STEP 1 OF 4 · HARNESS HOME",
       "homePlain": "STEP 1 OF 4 · A HOME FOR THE APP",
       "orchestrator": "STEP 2 OF 4 · YOUR CLONE'S ENGINE",
@@ -576,7 +576,7 @@
     },
     "persona": {
       "headline": "A CLONE OF YOU, WORKING 24/7",
-      "body": "Munder Difflin turns the CLI agent you already use into a clone of you — one that runs an office of long-running agents and keeps working while you're away. It manages everything around them: context, memory, tasks, triggers, environment, files, and integrations.",
+      "body": "Munder Difflin turns the CLI agent you already use into a clone of you — one that runs a floor of long-running agents and keeps working while you're away. It manages everything around them: context, memory, tasks, triggers, environment, files, and integrations.",
       "bodyLocal": " Everything runs on this machine.",
       "ask": "FIRST — WHO ARE YOU? (we'll tailor the setup)",
       "technicalTitle": "I'M TECHNICAL",
@@ -586,13 +586,13 @@
     },
     "welcome": {
       "headline": "YOUR CLONE AND THE FLOOR IT RUNS",
-      "descPlain": "Your clone runs a small office of AI workers, and you watch it all from one screen. Here's what's inside:",
+      "descPlain": "Your clone runs a small team of AI workers, and you watch it all from one screen. Here's what's inside:",
       "desc": "Your clone coordinates a hive of AI coding agents — persistent, watchable, all local. Here's what's inside:",
       "features": {
         "engines": {
-          "label": "ELEVEN ENGINES, ONE OFFICE",
+          "label": "ELEVEN ENGINES, ONE FLOOR",
           "desc": "Claude Code, Codex, Grok, Kimi, Antigravity, Qwen, OpenCode, Crush, pi, Copilot & Cursor — live agents on one floor.",
-          "descPlain": "Eleven AI assistants — Claude, Codex, Cursor, Gemini, Grok and more — working side by side in one shared office."
+          "descPlain": "Eleven AI assistants — Claude, Codex, Cursor, Gemini, Grok and more — working side by side on one shared floor."
         },
         "clone": {
           "label": "{{godName}} IS YOUR CLONE",
@@ -641,7 +641,7 @@
     "orchestrator": {
       "descPlain": "{{godName}} is your clone — he reads your requests, breaks them into tasks, and hands them to the right agent. He's the boss of the floor; you're still the boss of him. Choose which AI engine powers him.",
       "desc": "{{godName}} is your clone — the boss of the floor you just met. He triages your requests, assigns tasks, and manages the team, while escalating anything that genuinely needs you. Pick the engine and model that power him; give him a longer-context, higher-capability model.",
-      "cliAgentPlain": "A <strong>CLI agent</strong> is an AI coding assistant that runs on your computer — popular ones are Claude Code (Anthropic), Codex (OpenAI) and Antigravity (Google Gemini). <strong>Your clone</strong> is the always-on one that runs your whole office. We recommend Claude Code on Opus 4.8 (1M). You can add or switch the others later.",
+      "cliAgentPlain": "A <strong>CLI agent</strong> is an AI coding assistant that runs on your computer — popular ones are Claude Code (Anthropic), Codex (OpenAI) and Antigravity (Google Gemini). <strong>Your clone</strong> is the always-on one that runs your whole floor. We recommend Claude Code on Opus 4.8 (1M). You can add or switch the others later.",
       "cliAgent": "Each option is a <strong>CLI engine</strong> (Claude Code, Codex, Antigravity/Gemini, or a local proxy like Qwen). Engines marked INSTALLED are already on this machine; INSTALLS ON FIRST RUN means the app sets it up when {{godName}} first starts. <strong>Your clone</strong> ({{godName}}) is the engine that orchestrates the whole hive. Recommended: Claude Code · Opus 4.8 · 1M. Other providers can be wired per agent later.",
       "recommended": "RECOMMENDED",
       "workersOnly": "WORKERS ONLY",
