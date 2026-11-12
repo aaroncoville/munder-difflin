@@ -89,7 +89,7 @@ test('delete removes every usage file and reports how many', (t) => {
   fs.writeFileSync(path.join(dir, '2026-11-01.jsonl'), '{}\n');
   fs.writeFileSync(path.join(dir, 'digest-2026-W44.md'), '# digest\n');
   assert.equal(log.deleteAll(), 3);
-  assert.deepEqual(fs.readdirSync(dir), []);
+  assert.deepEqual(fs.readdirSync(dir), ['.deleted-at'], 'only the marker that keeps deleted weeks deleted');
 });
 
 test('nothing is written under the hive root: the log lives in the app\'s data folder', (t) => {
@@ -102,7 +102,7 @@ test('nothing is written under the hive root: the log lives in the app\'s data f
   log.record({ kind: 'ui-view', view: 'settings' });
   assert.deepEqual(fs.readdirSync(hive), []);
   assert.ok(dir.startsWith(appData));
-  assert.deepEqual(fs.readdirSync(dir), ['2026-11-12.jsonl']);
+  assert.deepEqual(fs.readdirSync(dir).sort(), ['.deleted-at', '2026-11-12.jsonl']);
 });
 
 test('a kind named after an object property is refused, not thrown on', (t) => {
@@ -200,5 +200,15 @@ test('Delete removes the day files and digests the app wrote, and nothing else',
   fs.writeFileSync(path.join(dir, 'digest-2026-W45.md'), '# d\n');
   fs.writeFileSync(path.join(dir, 'weekly-notes.md'), 'not written by the app');
   assert.equal(log.deleteAll(), 2);
-  assert.deepEqual(fs.readdirSync(dir), ['weekly-notes.md']);
+  assert.deepEqual(fs.readdirSync(dir).filter((n) => n !== '.deleted-at'), ['weekly-notes.md']);
+});
+
+test('prune also removes digests older than the retention window', (t) => {
+  const { log, dir } = setup(t);
+  fs.mkdirSync(dir, { recursive: true });
+  // now = 2026-11-12, so the window starts 2026-08-14. W32 (Aug 3-9) is wholly
+  // older and goes; W33 (Aug 10-16) straddles the boundary and stays.
+  for (const f of ['digest-2020-W01.md', 'digest-2026-W01.md', 'digest-2026-W32.md', 'digest-2026-W33.md', 'digest-2026-W45.md', 'notes.md']) fs.writeFileSync(path.join(dir, f), '# d\n');
+  assert.equal(log.prune(), 3);
+  assert.deepEqual(fs.readdirSync(dir).sort(), ['digest-2026-W33.md', 'digest-2026-W45.md', 'notes.md']);
 });

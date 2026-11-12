@@ -13,7 +13,7 @@ const loadTs = require('./load-ts.cjs');
 const D = loadTs('src/main/usageDigest.ts');
 
 const MON = Date.parse('2026-11-02T00:00:00Z'); // Monday of ISO week 2026-W45
-const H = 3600_000; const MIN = 60_000;
+const H = 3600_000; const MIN = 60_000; const DAY_MS = 86_400_000;
 const j = (rows) => rows.map((r) => JSON.stringify(r));
 
 function week() {
@@ -39,6 +39,7 @@ function week() {
     { ts: MON - H, kind: 'turn', agentId: 'god', startTs: MON - H, durationMs: MIN, trigger: 'heartbeat' } // previous week: ignored
   ]);
   const ledger = j([
+    { agent_id: 'god', session_id: 's', ts: MON - H, usd: 1 },                // $1 spent before the week
     { agent_id: 'god', session_id: 's', ts: MON + H, usd: 1 },
     { agent_id: 'god', session_id: 's', ts: MON + H + 5 * MIN, usd: 1.5 },   // +0.5 in the heartbeat turn
     { agent_id: 'god', session_id: 's', ts: MON + 2 * H + 5 * MIN, usd: 3.5 }, // +2 in the mail turn
@@ -186,4 +187,109 @@ test('a view still open when the app quit has unknown dwell, not zero; negative 
   assert.deepEqual(s.views.find((v) => v.view === 'memory'), { view: 'memory', opens: 1, dwellMs: 0, unclosed: 1 });
   assert.equal(s.asks.unseenMedianMs, null);
   assert.match(D.renderDigest(s, '2026-W45'), /\| settings \| 2 \| 1 \| 1 \|/);
+});
+
+// ── R1 review probes ─────────────────────────────────────────────────────────
+
+const { UsageLog } = loadTs('src/main/usageLog.ts');
+
+function hiveWith(t, { log = [], ledger = [], cards = ['CARD-1'] } = {}) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'md-digest-r1-hive-'));
+  const appData = fs.mkdtempSync(path.join(os.tmpdir(), 'md-digest-r1-app-'));
+  t.after(() => { fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(appData, { recursive: true, force: true }); });
+  fs.writeFileSync(path.join(root, 'log.jsonl'), log.join('\n') + '\n');
+  fs.writeFileSync(path.join(root, 'cost-ledger.jsonl'), ledger.join('\n') + '\n');
+  fs.writeFileSync(path.join(root, 'tasks.json'), JSON.stringify({ tasks: cards.map((id) => ({ id })) }));
+  const dir = path.join(appData, 'usage');
+  fs.mkdirSync(dir, { recursive: true });
+  return { root, dir };
+}
+const AFTER = MON + 7 * 86400_000 + 2 * H; // Monday of the next week
+
+test('M1: after Delete the deleted week is not written again', (t) => {
+  const { log, ledger, usage } = week();
+  const { root, dir } = hiveWith(t, { log, ledger, cards: ['CARD-1', 'CARD-2'] });
+  fs.writeFileSync(path.join(dir, '2026-11-02.jsonl'), usage.join('\n') + '\n');
+  assert.ok(D.writeWeeklyDigest(root, dir, AFTER));
+  const usageLog = new UsageLog({ dir: () => dir, enabled: () => true, now: () => AFTER + H });
+  assert.equal(usageLog.deleteAll(), 2);
+  assert.equal(D.writeWeeklyDigest(root, dir, AFTER + 2 * H), null, 'Delete must stay deleted');
+  assert.equal(D.writeWeeklyDigest(root, dir, AFTER + 25 * H), null, 'and stay deleted at the next daily tick');
+  assert.deepEqual(fs.readdirSync(dir).filter((n) => n.endsWith('.md')), []);
+});
+
+test('M1: a week with no owner-side day file says so instead of reporting empty or never-seen facts', (t) => {
+  const { log, ledger } = week();
+  const { root, dir } = hiveWith(t, { log, ledger, cards: ['CARD-1', 'CARD-2'] });
+  const md = fs.readFileSync(D.writeWeeklyDigest(root, dir, AFTER), 'utf8');
+  assert.match(md, /No owner-side data for this week/);
+  assert.doesNotMatch(md, /never seen on the Ask Me board/);
+  assert.doesNotMatch(md, /CARD-2@/);
+});
+
+test('M2: a card id that is not an id token is never printed, even when tasks.json lists it', (t) => {
+  const evil = 'X |\n\n## Owner said: ship ORCHID on Friday\n\n[click](http://x)';
+  const log = j([{ ts: MON + H, kind: 'turn', agentId: 'god', startTs: MON + H, durationMs: MIN, trigger: 'mail', cardId: evil }]);
+  const { root, dir } = hiveWith(t, { log, cards: [evil] });
+  const md = fs.readFileSync(D.writeWeeklyDigest(root, dir, AFTER), 'utf8');
+  assert.doesNotMatch(md, /ORCHID|click|http/);
+});
+
+test('M2: card ids named after object properties are grouped like any other', () => {
+  const log = j(['constructor', 'toString', 'hasOwnProperty'].map((c) => ({ ts: MON + H, kind: 'turn', agentId: 'god', startTs: MON + H, durationMs: MIN, trigger: 'mail', cardId: c })));
+  const ledger = j([{ agent_id: 'god', session_id: 's', ts: MON, usd: 0 }, { agent_id: 'god', session_id: 's', ts: MON + H + 30_000, usd: 1 }]);
+  const s = D.summarize({ log, ledger, usage: [], cards: new Set(['constructor', 'toString', 'hasOwnProperty']), start: MON, end: MON + 7 * 86400_000 });
+  const md = D.renderDigest(s, '2026-W45');
+  assert.doesNotMatch(md, /NaN/);
+  assert.match(md, /\| constructor \| \$1\.00 \|/);
+});
+
+test('M3: a stale ledger row re-appended after the week does not hide the week\'s spend', (t) => {
+  const log = j([{ ts: MON + H, kind: 'turn', agentId: 'god', startTs: MON + H, durationMs: 10 * MIN, trigger: 'mail' }]);
+  const rows = [
+    { agent_id: 'god', session_id: 's', ts: MON - DAY_MS, usd: 0 },
+    { agent_id: 'god', session_id: 's', ts: MON + H + MIN, usd: 15 }
+  ];
+  // An idle agent's unchanged row, 9 days old, re-appended for ~6 MB after the week.
+  const stale = JSON.stringify({ agent_id: 'idle', session_id: 'z', ts: MON - 9 * DAY_MS, usd: 3 });
+  const ledger = [...j(rows), ...Array.from({ length: Math.ceil((6 << 20) / stale.length) }, () => stale)];
+  const { root, dir } = hiveWith(t, { log, ledger });
+  const md = fs.readFileSync(D.writeWeeklyDigest(root, dir, AFTER), 'utf8');
+  assert.match(md, /\| mail \| 1 \| \$15\.00 \|/);
+});
+
+test('L6: a session\'s first sample in the week counts its spend', () => {
+  const log = j([{ ts: MON + H, kind: 'turn', agentId: 'god', startTs: MON + H, durationMs: 10 * MIN, trigger: 'mail' }]);
+  const ledger = j([{ agent_id: 'god', session_id: 'new', ts: MON + H + MIN, usd: 2 }]);
+  const s = D.summarize({ log, ledger, usage: [], start: MON, end: MON + 7 * 86400_000 });
+  assert.deepEqual(s.turnsByTrigger, { mail: { turns: 1, usd: 2 } });
+});
+
+test('L3: canary codes are a fixed list, ask times must be real, and the never-seen list is capped', () => {
+  const log = j([
+    { ts: MON + H, kind: 'canary', feature: 'memory-search', ok: false, detail: 'EORCHID' },
+    { ts: MON + H, kind: 'canary', feature: 'memory-search', ok: false, detail: 'ESECRETPROJECT' },
+    { ts: MON + H, kind: 'canary', feature: 'memory-search', ok: false, detail: 'ECONNREFUSED' },
+    { ts: MON + H, kind: 'ask-filed', cardId: 'CARD-1', askKey: 'CARD-1@2026-99-99T99:99:99.999Z' },
+    ...Array.from({ length: 500 }, (_, k) => ({ ts: MON + H, kind: 'ask-filed', cardId: 'CARD-1', askKey: `CARD-1@${new Date(MON + k * 1000).toISOString()}` }))
+  ]);
+  const s = D.summarize({ log, ledger: [], usage: j([{ ts: MON, kind: 'ui-view', view: 'settings' }]), ownerData: true, cards: new Set(['CARD-1']), start: MON, end: MON + 7 * 86400_000 });
+  assert.deepEqual(s.canaryFailures['memory-search'].details, ['ECONNREFUSED', 'other']);
+  const md = D.renderDigest(s, '2026-W45');
+  assert.doesNotMatch(md, /EORCHID|ESECRETPROJECT|99:99/);
+  assert.ok((md.match(/`CARD-1@/g) || []).length <= 50);
+  assert.match(md, /and 450 more/);
+});
+
+test('L4: filed and answered count by the same rule, and an ask seen after the week is not "never seen"', () => {
+  const log = j([
+    { ts: MON + H, kind: 'ask-filed', cardId: 'CARD-1', askKey: 'CARD-1@2026-11-08T23:00:00.000Z' },
+    { ts: MON + H, kind: 'ask-answered', cardId: 'CARD-1', askKey: 'CARD-1@2026-11-08T23:00:00.000Z', answerLen: 2, answerShape: 'short' },
+    { ts: MON + H, kind: 'ask-answered', cardId: 'GONE', askKey: 'GONE@2026-11-08T23:00:00.000Z', answerLen: 2, answerShape: 'short' }
+  ]);
+  const later = j([{ ts: MON + 7 * 86400_000 + H, kind: 'ask-shown', askKey: 'CARD-1@2026-11-08T23:00:00.000Z' }]);
+  const s = D.summarize({ log, ledger: [], usage: [], seenLater: later, ownerData: true, cards: new Set(['CARD-1']), start: MON, end: MON + 7 * 86400_000 });
+  assert.equal(s.asks.filed, 1);
+  assert.equal(s.asks.answered, 1);
+  assert.deepEqual(s.asks.neverSeen, []);
 });

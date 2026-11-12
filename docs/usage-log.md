@@ -98,8 +98,8 @@ These events have their own daily files, so they can be switched off and deleted
 | | |
 |---|---|
 | **Where** | `<userData>/usage/`, the app's own data folder (on macOS `~/Library/Application Support/<app name>/usage/`), folder `0700`, files `0600`. Never the hive: the hive is a git repository that agents can read and write, so rows kept there could be read, changed or redirected by an agent and would be committed into its history. The hive's `.gitignore` also lists `usage/` |
-| **Retention** | Files older than 90 days are removed at start and daily |
-| **Off switch and delete** | Settings → General → *Local usage log*; the switch takes effect when Settings is saved. **Delete usage log** removes what the app wrote in that folder: the daily `YYYY-MM-DD.jsonl` files and the weekly `digest-YYYY-Www.md` files. Any other file there is left alone, since the app did not write it |
+| **Retention** | Day files and weekly digests older than 90 days are removed at start and daily |
+| **Off switch and delete** | Settings → General → *Local usage log*; the switch takes effect when Settings is saved. **Delete usage log** removes what the app wrote in that folder: the daily `YYYY-MM-DD.jsonl` files and the weekly `digest-YYYY-Www.md` files. Any other file there is left alone, since the app did not write it. Delete also records its time in `.deleted-at`, and no digest is ever written for a week that began before it, so a delete stays a delete |
 | **Allowlist** | `src/main/usageLog.ts`. Unknown kinds are refused and unknown fields dropped. Every string must be a known enum, a known view, or an agent or card id the app holds, so typed text cannot be written even by a buggy caller |
 | **Outbound** | None. `test/usage-log-not-outbound.test.cjs` proves the analytics module drops every one of these kinds |
 
@@ -126,12 +126,14 @@ At start and once a day, while the usage log is on, the app writes the digest fo
 - agent turns and dollars by trigger;
 - dollars by conversation (turn spans joined with the ledger);
 - asks filed and answered, with answer shapes and the medians and p90s of time unseen and time thinking;
-- asks filed but never seen on the Ask Me board;
-- screens by attended time; a view still open when the app quit (no `ui-view-end`) is counted as open at quit with unknown dwell, not as zero;
+- asks filed in the week and not seen on the Ask Me board by the time the digest was written (the first 50 keys, then a count);
+- screens by attended time; a view still open at the end of the week or when the app quit (no `ui-view-end`) is counted apart, with unknown dwell, not as zero;
+
+When no owner-side day file covers the week (the log was off, or deleted), the owner-side parts (screens, time unseen and thinking, never seen) say "no data" instead of reporting empty results. Filed and answered asks count by the same rule: a valid key on a card that `tasks.json` holds.
 - hours cards spent in each state, from the gaps between a card's consecutive transition rows (a restart breaks the chain; the rows are sampled, so a status passed through between reads gets no hours of its own);
 - heavy-lock waits;
 - canary failures.
 
-The logs live in the hive folder, which agents can write, so the digest never prints a string because it looks like an id. It prints only known values (triggers, statuses, answer shapes, views, lock kinds, canary features and failure codes, with anything else shown as `other`), card ids present in the current `tasks.json` (a turn's `cardId` and ask keys), and `ref:<hex>` for a conversation logged as a keyed ref. Dollars by conversation are grouped by those two only. The digest never joins a turn to its `message` row, so it needs neither the message id nor the ref secret.
+The hive's log and `tasks.json` are files agents can write, so the digest never prints a string because it looks like an id. It prints only known values (triggers, statuses, answer shapes, views, lock kinds, canary features, and failure codes from a fixed list, with anything else shown as `other`), card ids that are id tokens and present in the current `tasks.json` (a turn's `cardId` and ask keys, whose time must be a real ISO time), and `ref:<hex>` for a conversation logged as a keyed ref. Dollars by conversation are grouped by those two only. The digest never joins a turn to its `message` row, so it needs neither the message id nor the ref secret.
 
-It reads the ledger and the hive log backwards, only as far as the week needs, so a large history is never loaded whole. It only reads the hive (`log.jsonl`, `cost-ledger.jsonl`, `tasks.json`); the digest is written beside the owner's usage files in the app's data folder, never into the hive. The file is `0600` and is never rewritten. **Delete usage log** in Settings removes digests too. The daily research pass reads the newest `digest-*.md` from `<userData>/usage/` (on macOS `~/Library/Application Support/<app name>/usage/`) instead of mining the logs; it reads that folder and never writes to it.
+It reads the hive log backwards, only as far as the week needs. The cost ledger is not in time order (an idle agent's unchanged row is re-appended with its old time), so it is read forward in full, in chunks, keeping each session's last row before the week as its baseline; this is one pass on the main process once a week and grows with the ledger. It only reads the hive (`log.jsonl`, `cost-ledger.jsonl`, `tasks.json`); the digest is written beside the owner's usage files in the app's data folder, never into the hive. The file is `0600` and is never rewritten. **Delete usage log** in Settings removes digests too. The daily research pass reads only the newest `digest-*.md` in `<userData>/usage/` (on macOS `~/Library/Application Support/<app name>/usage/`), never the raw `YYYY-MM-DD.jsonl` day files beside it, and never writes there.
