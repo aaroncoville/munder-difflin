@@ -65,22 +65,22 @@ Darkest is deepest.
 
 ### 3.3 Agent accents (character colors)
 
-Each avatar gets one — the strip badge, the agent's chat selection highlight, their nameplate. Each `-light` is the accent 78% of the way to the ground: a deep chip fill that `ink-900` reads on.
+Each avatar gets one — the strip badge, the agent's chat selection highlight, their nameplate. Each `-light` is the accent 80% of the way to the ground: a deep chip fill that `ink-900` reads on.
 
 | Token | Hex | Dracula |
 |---|---|---|
 | `coral` | `#FF5555` | red |
-| `coral-light` | `#57333D` | |
+| `coral-light` | `#53333C` | |
 | `mint` | `#50FA7B` | green |
-| `mint-light` | `#315845` | |
+| `mint-light` | `#305444` | |
 | `sky` | `#8BE9FD` | cyan |
-| `sky-light` | `#3E5462` | |
+| `sky-light` | `#3C505E` | |
 | `lemon` | `#F1FA8C` | yellow |
-| `lemon-light` | `#545849` | |
+| `lemon-light` | `#505447` | |
 | `lilac` | `#BD93F9` | purple |
-| `lilac-light` | `#494161` | |
+| `lilac-light` | `#463F5D` | |
 | `peach` | `#FFB86C` | orange |
-| `peach-light` | `#574942` | |
+| `peach-light` | `#534641` | |
 
 Text on a filled accent is `on-accent` (the ground), never `ink-900`.
 

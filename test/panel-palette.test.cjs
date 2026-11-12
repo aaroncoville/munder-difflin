@@ -47,7 +47,7 @@ const toHex = (c) => `#${c.map((v) => Math.round(v).toString(16).padStart(2, '0'
 /** `a` moved fraction `t` of the way to `b`, per channel. */
 const mix = (a, b, t) => toHex(rgb(a).map((v, i) => v + (rgb(b)[i] - v) * t));
 const darken = (t) => mix(DRACULA.background, '#000000', t);
-const tint = (accent) => mix(accent, DRACULA.background, 0.78);
+const tint = (accent) => mix(accent, DRACULA.background, 0.8);
 
 /** Every panel colour token and the value it must default to. */
 const EXPECTED = {
@@ -217,6 +217,7 @@ test('the defaults keep the contrast floors', () => {
   for (const a of ['coral', 'mint', 'sky', 'lemon', 'lilac', 'peach']) {
     floor('--cth-on-accent', `--cth-${a}`, 4.5);   // text on an accent fill
     floor('--cth-ink-900', `--cth-${a}-light`, 4.5); // text on a chip
+    floor('--cth-ink-700', `--cth-${a}-light`, 4.5); // secondary text on a tinted panel
   }
   floor('--cth-ink-900', '--cth-gilt-soft', 4.5);   // selected text
   floor('--cth-status-ghost', '--cth-cream-50', 3); // the quietest mark, still findable

@@ -26,17 +26,17 @@ export const colors = {
   },
   accent: {
     coral: 0xff5555,
-    coralLight: 0x57333d,
+    coralLight: 0x53333c,
     mint: 0x50fa7b,
-    mintLight: 0x315845,
+    mintLight: 0x305444,
     sky: 0x8be9fd,
-    skyLight: 0x3e5462,
+    skyLight: 0x3c505e,
     lemon: 0xf1fa8c,
-    lemonLight: 0x545849,
+    lemonLight: 0x505447,
     lilac: 0xbd93f9,
-    lilacLight: 0x494161,
+    lilacLight: 0x463f5d,
     peach: 0xffb86c,
-    peachLight: 0x574942
+    peachLight: 0x534641
   },
   status: {
     idle: 0x808db4,

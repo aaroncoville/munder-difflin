@@ -24,7 +24,7 @@
      (cream-50..300, paper-100, paper-200):
        ink-900 11.5-16.1:1   ink-700 7.4-10.4:1   ink-500 5.2-7.2:1
        ink-300 / hairline 3.7-5.2:1 (the structural border floor is 3.0)
-       on-accent on each accent 4.5-12.7:1, ink-900 on each -light 6.9-10.1:1,
+       on-accent on each accent 4.5-12.7:1, ink-900 on each -light 7.3-10.3:1, ink-700 on each 4.7-6.7:1,
        ink-900 on gilt-soft (selection) 8.6:1, status-ghost 3.1:1 or better on every surface, cards included.
      test/panel-palette.test.cjs holds every one of these floors. */
 
@@ -46,14 +46,14 @@
   --cth-ink-100: #44475A;   /* Dracula current line — dividers, meant to recede */
 
   /* Accents — the six hue slots take the six palette hues. Each -light is the
-     DERIVED chip / selection fill: the accent 78% toward the background, deep
+     DERIVED chip / selection fill: the accent 80% toward the background, deep
      enough for ink-900 to read on top. */
-  --cth-coral: #FF5555;       --cth-coral-light: #57333D;   /* red */
-  --cth-mint:  #50FA7B;       --cth-mint-light:  #315845;   /* green */
-  --cth-sky:   #8BE9FD;       --cth-sky-light:   #3E5462;   /* cyan */
-  --cth-lemon: #F1FA8C;       --cth-lemon-light: #545849;   /* yellow */
-  --cth-lilac: #BD93F9;       --cth-lilac-light: #494161;   /* purple */
-  --cth-peach: #FFB86C;       --cth-peach-light: #574942;   /* orange */
+  --cth-coral: #FF5555;       --cth-coral-light: #53333C;   /* red */
+  --cth-mint:  #50FA7B;       --cth-mint-light:  #305444;   /* green */
+  --cth-sky:   #8BE9FD;       --cth-sky-light:   #3C505E;   /* cyan */
+  --cth-lemon: #F1FA8C;       --cth-lemon-light: #505447;   /* yellow */
+  --cth-lilac: #BD93F9;       --cth-lilac-light: #463F5D;   /* purple */
+  --cth-peach: #FFB86C;       --cth-peach-light: #534641;   /* orange */
 
   /* Status — hue meanings unchanged. Ghost is the quietest mark and still has
      to be findable, so it sits at the 3:1 floor rather than below it. */

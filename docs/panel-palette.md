@@ -30,12 +30,12 @@ it by a per-channel mix of two palette colours (or of the background and black),
 | `--cth-ink-500` | `#9EA8C3` | derived: foreground 60% toward comment (hints) |
 | `--cth-ink-300` | `#808DB4` | derived: comment 20% toward foreground (structural borders) |
 | `--cth-ink-100` | `#44475A` | current line (dividers) |
-| `--cth-coral` / `-light` | `#FF5555` / `#57333D` | red / derived: 78% toward background |
-| `--cth-mint` / `-light` | `#50FA7B` / `#315845` | green / derived |
-| `--cth-sky` / `-light` | `#8BE9FD` / `#3E5462` | cyan / derived |
-| `--cth-lemon` / `-light` | `#F1FA8C` / `#545849` | yellow / derived |
-| `--cth-lilac` / `-light` | `#BD93F9` / `#494161` | purple / derived |
-| `--cth-peach` / `-light` | `#FFB86C` / `#574942` | orange / derived |
+| `--cth-coral` / `-light` | `#FF5555` / `#53333C` | red / derived: 80% toward background |
+| `--cth-mint` / `-light` | `#50FA7B` / `#305444` | green / derived |
+| `--cth-sky` / `-light` | `#8BE9FD` / `#3C505E` | cyan / derived |
+| `--cth-lemon` / `-light` | `#F1FA8C` / `#505447` | yellow / derived |
+| `--cth-lilac` / `-light` | `#BD93F9` / `#463F5D` | purple / derived |
+| `--cth-peach` / `-light` | `#FFB86C` / `#534641` | orange / derived |
 | `--cth-status-idle` | `#808DB4` | as ink-300 |
 | `--cth-status-thinking` | `#8BE9FD` | cyan |
 | `--cth-status-working` | `#F1FA8C` | yellow |
