@@ -7,7 +7,7 @@
  * The secret lives in the app's own data folder, never in the hive folder.
  */
 import { createHmac, randomBytes } from 'node:crypto';
-import { closeSync, lstatSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs';
+import { closeSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 
 const FILE = 'usage-ref-secret';
@@ -21,21 +21,38 @@ function readKey(path: string): Buffer | null {
   } catch { return null; }
 }
 
-/** This install's secret, created (0600) on first use. If it cannot be stored,
- *  a key for this run only is returned, so refs are then stable within a run. */
-export function loadUsageSecret(dir: string): Buffer {
+/** Write the key to a temp file and rename it into place, so an interrupted
+ *  write never leaves a partial secret behind. */
+function storeKey(dir: string, path: string, key: Buffer): boolean {
+  const tmp = join(dir, `.${FILE}-${process.pid}-${randomBytes(4).toString('hex')}`);
+  try {
+    mkdirSync(dir, { recursive: true });
+    const fd = openSync(tmp, 'wx', 0o600);
+    try { writeSync(fd, key.toString('hex')); } finally { closeSync(fd); }
+    renameSync(tmp, path);
+    return true;
+  } catch {
+    try { rmSync(tmp, { force: true }); } catch { /* nothing to clean */ }
+    return false;
+  }
+}
+
+/**
+ * This install's 32-byte secret, created (0600) on first use. A file that is
+ * there but unreadable, short or malformed is replaced once, and `onReset` is
+ * called so the break in ref continuity can be recorded. If the secret cannot
+ * be stored, a key for this run only is returned.
+ */
+export function loadUsageSecret(dir: string, onReset?: () => void): Buffer {
   const path = join(dir, FILE);
   const existing = readKey(path);
   if (existing) return existing;
+  let present = false;
+  try { lstatSync(path); present = true; } catch { /* first use */ }
   const key = randomBytes(32);
-  try {
-    mkdirSync(dir, { recursive: true });
-    const fd = openSync(path, 'wx', 0o600);
-    try { writeSync(fd, key.toString('hex')); } finally { closeSync(fd); }
-    return key;
-  } catch {
-    return readKey(path) ?? key;
-  }
+  if (!storeKey(dir, path, key)) return readKey(path) ?? key;
+  if (present) onReset?.();
+  return key;
 }
 
 /** The first 12 hex of HMAC-SHA-256(secret, value). */

@@ -329,7 +329,7 @@ let usageSecret: Buffer | null = null;
 const usageIds: UsageIds = {
   isAgent: (id) => Object.hasOwn(hive.registry().agents, id),
   isCard: (id) => knownCards.has(id),
-  ref: (value) => usageRef(usageSecret ??= loadUsageSecret(app.getPath('userData')), value)
+  ref: (value) => usageRef(usageSecret ??= loadUsageSecret(app.getPath('userData'), () => hive.appendLog({ kind: 'usage-ref-secret-reset' })), value)
 };
 const turns = new TurnTracker(usageIds);
 function noteTurnHook(agentId: string | undefined, event: string): void {

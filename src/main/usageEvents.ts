@@ -5,16 +5,22 @@
  * message, question or answer text. They let a weekly review answer what the
  * hive log alone cannot: what starts each agent turn and how long it runs,
  * how long cards sit in each state, and how fast the owner's asks are answered.
+ *
+ * Limit, by design: the roster (registry.json) and tasks.json are files agents
+ * can write. Checking ids against them keeps unintended text out of the log; it
+ * is not a defence against an agent that edits those files to plant text. That
+ * boundary is handled separately.
  */
 
 
 // ── field validators ─────────────────────────────────────────────────────────
 // A string an agent or a sender controls is written verbatim only when it is a
 // member of a set the harness itself holds: agents on the roster, cards in
-// tasks.json, ids the router minted, or a fixed enum. Anything else is dropped,
-// or (when rows must still be groupable) written as a keyed digest that cannot
-// be read back or guessed from the log. A character-class test alone is not
-// enough: words joined with dots or dashes pass it.
+// tasks.json, or a fixed enum. Message ids and conversations are never written
+// as they are, whatever their shape (a sender can pick values that look exactly
+// like the router's own): they are written as keyed digests, which keep rows
+// groupable without the text being readable or guessable. A conversation that
+// names a card in tasks.json is written as that cardId.
 
 /** The harness's own sets, and the keyed digest, supplied by the main process. */
 export interface UsageIds {
@@ -30,10 +36,6 @@ export interface UsageIds {
 export const SYSTEM_SENDERS = ['heartbeat', 'scheduler', 'breaker', 'system', 'human', 'pipeline'] as const;
 const knownAgent = (ids: { isAgent(id: string): boolean }, v: unknown): string | undefined =>
   (typeof v === 'string' && ((SYSTEM_SENDERS as readonly string[]).includes(v) || ids.isAgent(v)) ? v : undefined);
-
-/** Ids the router mints: `<ISO stamp with - for : and .>-<6 hex>` and `conv-<6 hex>`. */
-const MINTED_MESSAGE_ID = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[0-9a-f]{6}$/;
-const MINTED_CONVERSATION = /^conv-[0-9a-f]{6}$/;
 
 /** Card ids also pass a token check, so a card id with spaces is still dropped. */
 const ID_SHAPED = /^[A-Za-z0-9][\w.:-]{0,79}$/;
@@ -73,13 +75,11 @@ export interface TurnEvent {
   durationMs: number;
   trigger: TurnTrigger;
   from?: string;
-  /** The message id, when the router minted it. */
-  triggerId?: string;
-  /** A keyed digest of a message id the sender chose. */
+  /** A keyed digest of the message id. */
   triggerRef?: string;
-  /** The conversation, when it is a card id or router-minted. */
-  conversation?: string;
-  /** A keyed digest of any other conversation value: groupable, not readable. */
+  /** The conversation, when it names a card in tasks.json. */
+  cardId?: string;
+  /** A keyed digest of any other conversation: groupable, not readable. */
   conversationRef?: string;
 }
 
@@ -123,13 +123,10 @@ export class TurnTracker {
     const id = knownAgent(this.ids, agentId); if (id) ev.agentId = id;
     if (c) {
       const from = knownAgent(this.ids, c.from); if (from) ev.from = from;
-      if (typeof c.id === 'string' && c.id) {
-        if (MINTED_MESSAGE_ID.test(c.id)) ev.triggerId = c.id; else ev.triggerRef = this.ids.ref(c.id);
-      }
-      // Chosen by the sender: verbatim only when it is a card or router-minted.
+      if (typeof c.id === 'string' && c.id) ev.triggerRef = this.ids.ref(c.id);
       const conv = c.conversation;
       if (typeof conv === 'string' && conv) {
-        if (MINTED_CONVERSATION.test(conv) || (asId(conv) && this.ids.isCard(conv))) ev.conversation = conv;
+        if (asId(conv) && this.ids.isCard(conv)) ev.cardId = conv;
         else ev.conversationRef = this.ids.ref(conv);
       }
     }

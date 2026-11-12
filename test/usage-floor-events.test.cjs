@@ -31,22 +31,44 @@ test('a turn runs from prompt to stop and names the delivery that started it', (
   t.noteDelivery('jc', { from: 'god', id: MINTED_ID, conversation: 'CARD-1' }, 1000);
   t.prompt('jc', 1500);
   assert.deepEqual(t.stop('jc', 9500), {
-    kind: 'turn', agentId: 'jc', startTs: 1500, durationMs: 8000, trigger: 'mail', from: 'god', triggerId: MINTED_ID, conversation: 'CARD-1'
+    kind: 'turn', agentId: 'jc', startTs: 1500, durationMs: 8000, trigger: 'mail', from: 'god', triggerRef: ref(MINTED_ID), cardId: 'CARD-1'
   });
 });
 
-test('ids the router did not mint and conversations that are not cards are logged only as keyed digests', () => {
+test('message ids and conversations are always keyed refs, whatever their shape; a card conversation is its cardId', () => {
   const t = new U.TurnTracker(IDS);
-  t.noteDelivery('jc', { from: 'god', id: 'god-chose-this-id', conversation: 'MD-launch-plan' }, 1000);
-  t.prompt('jc', 1500);
-  const ev = t.stop('jc', 9500);
-  assert.equal(ev.triggerId, undefined);
-  assert.equal(ev.triggerRef, ref('god-chose-this-id'));
-  assert.equal(ev.conversation, undefined);
-  assert.equal(ev.conversationRef, ref('MD-launch-plan'));
-  t.noteDelivery('jc', { from: 'god', id: MINTED_ID, conversation: 'conv-a1b2c3' }, 10_000);
-  t.prompt('jc', 10_500);
-  assert.equal(t.stop('jc', 11_000).conversation, 'conv-a1b2c3', 'a router-minted conversation is kept');
+  for (const [id, conversation] of [['god-chose-this-id', 'MD-launch-plan'], [MINTED_ID, 'conv-a1b2c3']]) {
+    t.noteDelivery('jc', { from: 'god', id, conversation }, 1000);
+    t.prompt('jc', 1500);
+    const ev = t.stop('jc', 9500);
+    assert.equal(ev.triggerId, undefined);
+    assert.equal(ev.triggerRef, ref(id));
+    assert.equal(ev.conversation, undefined);
+    assert.equal(ev.conversationRef, ref(conversation));
+    assert.doesNotMatch(JSON.stringify(ev), new RegExp(`${id}|${conversation}`));
+  }
+});
+
+test('end to end through the router: lookalike ids a sender supplies reach the row only as refs', async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-lookalike-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const hive = new HiveManager(() => home);
+  await hive.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: home, isGod: true });
+  await hive.ensureAgent({ id: 'worker-1', name: 'Helper', provider: 'claude', cwd: home });
+  const tracker = new U.TurnTracker({ isAgent: (id) => ['god-1', 'worker-1'].includes(id), isCard: () => false, ref });
+  hive.setDeliveryListener((msg, landed, replaced) => {
+    for (const a of landed) tracker.noteDelivery(a, { from: msg.from, id: replaced[a] ?? msg.id, conversation: msg.conversation }, 1000);
+  });
+  // Shaped exactly like ids the router mints, but chosen by the sender to carry text.
+  const id = '2026-11-12T15-38-04-411Z-0bad1d';
+  const conversation = 'conv-c0ffee';
+  hive.send({ id, conversation, to: 'worker-1', act: 'inform', subject: 's', body: 'b' }, 'god-1');
+  tracker.prompt('worker-1', 1500);
+  const row = tracker.stop('worker-1', 2000);
+  assert.equal(row.from, 'god-1');
+  assert.match(row.triggerRef, /^[0-9a-f]{12}$/);
+  assert.match(row.conversationRef, /^[0-9a-f]{12}$/);
+  assert.doesNotMatch(JSON.stringify(row), /0bad1d|c0ffee/);
 });
 
 test('agent ids are kept only when the roster or the fixed system senders hold them', () => {
