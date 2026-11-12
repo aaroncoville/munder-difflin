@@ -1,10 +1,16 @@
 'use strict';
-// A fault-injection sweep over the card log. Every filesystem call the store makes
-// to change something is wrapped, so a scenario can be run with its Nth call
-// failing (EIO), its Nth write accepting only part of the bytes, or its Nth write
-// landing part of the bytes and then failing, for every N until no call is left.
-// Where the first fault leaves something to recover, the recovering open is swept
-// the same way. After that the log is reopened with no faults and must hold: the
+// A fault-injection sweep over the card log. Every filesystem function the store
+// imports is wrapped (a test below keeps that list in step with store.ts), so a
+// scenario can be run with its Nth call faulted, for every N until no call is left.
+//
+// The fault model: one fault per operation, of one of these kinds: the call fails
+// with EIO (existsSync, which never throws, answers false instead, as it does on any
+// error); a write accepts only part of its bytes; a write accepts none (returns 0); a
+// write lands part of its bytes and then fails. Where that fault leaves something
+// for an open to recover, a second fault (EIO or torn write) is swept over the
+// recovering open. Faults are injected one at a time, never at random, and a crash is
+// modelled as the operation stopping at the faulted call. After that the log is
+// reopened with no faults and must hold: the
 // chain verifies, no committed line is lost or doubled, the sequence numbers run
 // without a gap, every byte dropped from the log is on record in exactly one
 // log-repaired fact, no temp or marker file is left behind, a writer that failed
@@ -22,15 +28,15 @@ const { CardLog } = loadTs('src/main/pipeline/store.ts');
 
 const CARD = 'WF-FB-VEHICLES';
 const TORN = '{"v":1,"seq":3,"note":"é torn';
-const WRAPPED = ['openSync', 'writeSync', 'fsyncSync', 'ftruncateSync', 'renameSync', 'rmSync', 'unlinkSync', 'mkdirSync', 'appendFileSync'];
-const WRITES = ['writeSync', 'appendFileSync'];
+const WRAPPED = ['closeSync', 'existsSync', 'fsyncSync', 'ftruncateSync', 'mkdirSync', 'openSync', 'readFileSync', 'renameSync', 'rmSync', 'writeSync'];
 const injected = (name) => Object.assign(new Error(`EIO: injected at ${name}`), { code: 'EIO' });
 
 function newRoot() {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'mr-faults-'));
   return path.join(base, 'app', 'pipeline');
 }
-const open = (authRoot) => new CardLog({ authRoot, card: CARD });
+// A fixed clock makes equal states byte-equal, so each distinct recovery state is swept once.
+const open = (authRoot) => new CardLog({ authRoot, card: CARD, now: () => new Date('2026-11-12T00:00:00.000Z') });
 const cardDir = (authRoot) => path.join(authRoot, CARD);
 const logFile = (authRoot) => path.join(cardDir(authRoot), 'log.jsonl');
 const exportFile = (authRoot) => path.join(authRoot, '_export', CARD, 'log.jsonl');
@@ -47,8 +53,9 @@ function half(args) {
 
 /**
  * Runs [body] with the [nth] wrapped call faulted. 'eio': that call throws without
- * doing anything. 'short': that write writes half and says so. 'tear': that write
- * lands half and then throws. Returns whether the fault fired.
+ * doing anything (existsSync answers false). 'short': that write writes half and
+ * says so. 'zero': that write writes nothing and returns 0. 'tear': that write lands
+ * half and then throws. Returns whether the fault fired.
  */
 function withFault(mode, nth, body) {
   const real = {};
@@ -56,18 +63,13 @@ function withFault(mode, nth, body) {
   let fired = false;
   for (const name of WRAPPED) {
     real[name] = fs[name];
-    if (mode !== 'eio' && !WRITES.includes(name)) continue;
-    if (mode === 'short' && name !== 'writeSync') continue;
+    if (mode !== 'eio' && name !== 'writeSync') continue;
     fs[name] = (...args) => {
       if (fired || ++calls !== nth) return real[name](...args);
       fired = true;
+      if (mode === 'eio' && name === 'existsSync') return false;
       if (mode === 'eio') throw injected(name);
-      if (name === 'appendFileSync') {
-        const [file, data, opts] = args;
-        const buf = Buffer.from(String(data));
-        real.appendFileSync(file, buf.subarray(0, Math.max(1, Math.floor(buf.length / 2))), opts);
-        throw injected(name);
-      }
+      if (mode === 'zero') return 0;
       const [buf, off, len] = half(args);
       const n = real.writeSync(args[0], buf, off, len);
       if (mode === 'short') return n;
@@ -125,6 +127,19 @@ const SCENARIOS = {
     },
     op: (root, ctx) => { ctx.writer = open(root); },
   },
+  'open resuming a repair from its marker': {
+    // A repair that stopped after its cut: the marker is durable, the log already
+    // truncated, and the log-repaired fact not yet written.
+    setup: (root) => {
+      const w = open(root); w.append({ type: 'fact', n: 1 }); w.append({ type: 'fact', n: 2 });
+      const keep = fs.statSync(logFile(root)).size;
+      const tail = require('node:crypto').createHash('sha256').update(TORN).digest('hex');
+      const marker = { seq: 2, keep_bytes: keep, size: keep + Buffer.byteLength(TORN), tail, dropped_bytes: Buffer.byteLength(TORN) };
+      fs.writeFileSync(path.join(cardDir(root), 'repair.json'), JSON.stringify(marker));
+      return { committed: [1, 2], droppedBefore: Buffer.byteLength(TORN) };
+    },
+    op: (root, ctx) => { ctx.writer = open(root); },
+  },
   'restore of the export copy': {
     setup: (root) => {
       const w = open(root); w.append({ type: 'fact', n: 1 }); w.append({ type: 'fact', n: 2 });
@@ -147,7 +162,7 @@ function verify(root, ctx, sc, say, dropped, error) {
   if (sc.restores && !error && read(exportFile(root)) !== read(logFile(root))) say('the restore reported success but the export is not the log');
   let lines = [];
   let reopened = null;
-  dropped += truncations(() => {
+  dropped += (ctx.droppedBefore ?? 0) + truncations(() => {
     try { reopened = open(root); lines = reopened.lines(); } catch (e) { say(`reopen failed: ${e.message}`); }
   });
   if (!reopened) return;
@@ -179,12 +194,13 @@ function verify(root, ctx, sc, say, dropped, error) {
   } catch (e) { say(`append after reopen failed: ${e.message}`); }
 }
 
-const MODES = ['eio', 'short', 'tear'];
+const MODES = ['eio', 'short', 'zero', 'tear'];
 const SECOND_MODES = ['eio', 'tear'];
 
 test('fault-injection sweep: every failing call, short write and torn write, then a second fault in the recovering open', () => {
   const failures = [];
-  const cells = { eio: 0, short: 0, tear: 0, double: 0 };
+  const cells = { eio: 0, short: 0, zero: 0, tear: 0, double: 0, dedup: 0 };
+  const swept = new Set();
   for (const [name, sc] of Object.entries(SCENARIOS)) {
     for (const mode of MODES) {
       for (let nth = 1; nth < 200; nth++) {
@@ -206,7 +222,11 @@ test('fault-injection sweep: every failing call, short write and torn write, the
         if (mode === 'short' && !error && ctx.writer && !sc.restores && ctx.writer.mirrorStatus() !== 'same') say(`the export copy reads ${ctx.writer.mirrorStatus()} after a short write`);
         // Keep the faulted state to sweep the recovering open over, before the clean reopen recovers it.
         const base = path.dirname(path.dirname(root));
-        const snapshot = pending(root) ? fs.mkdtempSync(path.join(os.tmpdir(), 'mr-snap-')) : null;
+        const state = pending(root) ? [name, ...['log.jsonl', 'head.json', 'repair.json'].map((f) => read(path.join(cardDir(root), f)))].join('\0') : null;
+        const fresh = state !== null && !swept.has(state);
+        if (fresh) swept.add(state);
+        else if (state !== null) cells.dedup += 1;
+        const snapshot = fresh ? fs.mkdtempSync(path.join(os.tmpdir(), 'mr-snap-')) : null;
         if (snapshot) fs.cpSync(base, snapshot, { recursive: true });
         verify(root, ctx, sc, say, dropped, error);
         if (!snapshot) continue;
@@ -228,4 +248,14 @@ test('fault-injection sweep: every failing call, short write and torn write, the
   if (process.env.SWEEP_REPORT) console.log(`cells: ${JSON.stringify(cells)}\n${failures.join('\n')}`);
   assert.ok(cells.eio > 40 && cells.tear > 5 && cells.double > 20, `too few cells: ${JSON.stringify(cells)}`);
   assert.deepEqual(failures, []);
+});
+
+test('the sweep wraps exactly the filesystem functions the store imports', () => {
+  const src = fs.readFileSync(path.join(__dirname, '../src/main/pipeline/store.ts'), 'utf8');
+  const m = src.match(/import \{([^}]*)\} from 'node:fs';/);
+  assert.ok(m, 'store.ts imports from node:fs by name');
+  const used = m[1].split(',').map((x) => x.trim()).filter((x) => x && x !== 'constants').sort();
+  assert.deepEqual(used, [...WRAPPED].sort());
+  // and nothing reaches the filesystem another way
+  assert.doesNotMatch(src.replace(m[0], ''), /from 'node:fs'|require\('(node:)?fs'\)|\bfs\./);
 });
