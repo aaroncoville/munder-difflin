@@ -15,7 +15,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const ROOT = '/Users/chaitanya/dev/claudeTerminalHarness';
+const ROOT = path.resolve(__dirname, '..');
 const loadTs = require(path.join(ROOT, 'test/load-ts.cjs'));
 const art = loadTs('tools/logo/portraitArt.ts');
 

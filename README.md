@@ -11,7 +11,9 @@
   <a href="https://www.producthunt.com/products/munder-difflin?embed=true&utm_source=badge-top-post-badge&utm_medium=badge&utm_campaign=badge-munder-difflin" target="_blank" rel="noopener noreferrer"><img alt="Munder Difflin, #5 Product of the Day on Product Hunt" src="https://api.producthunt.com/widgets/embed-image/v1/top-post-badge.svg?post_id=1221363&theme=light&period=daily" width="250" height="54"></a>
 </p>
 
-<img src="./docs/media/floor.png" alt="The Munder Difflin office floor: agents at desks working in parallel, with the Command Center and a live agent terminal on the right" width="1240">
+<img src="./docs/media/floor.png" alt="An earlier version of the floor, when it was a pixel office: agents at desks working in parallel, with the Command Center and a live agent terminal on the right" width="1240">
+
+<sub>The screenshots and videos in this README were recorded with an earlier version, when the floor was a pixel office. The floor is now the Study, described under <a href="#how-it-works">How it works</a>; the office media are credited under <a href="#license">License</a>.</sub>
 
 **Free, open source and performant.** A multi-agent harness that works with the
 subscriptions you already pay for, on their hourly limits. It turns the terminal coding CLI
@@ -22,7 +24,7 @@ Wraps [Claude Code](https://claude.com/claude-code), Antigravity (Gemini), OpenA
 **xAI Grok**, **Kimi Code**, **Gemini CLI**, **Qwen**, **OpenCode**, **Crush**,
 **pi.dev**, **GitHub Copilot CLI**, and **Cursor**, with bring-your-own keys and local LLMs.
 Agents that message, route, and remember, coordinated by **your clone** (Michael) and
-visualized as avatars at work on a shared office floor.
+shown as portrait cards at work in the Study, a painted cross-section of a house.
 
 <p>
   <em>Electron · React · TypeScript · Pixi.js · xterm.js · node-pty</em>
@@ -67,8 +69,8 @@ countries and as low as $100 a year. <a href="https://app.harnessmd.com/console/
 > **The world's best agents. The world's worst paper company.**
 > Munder Difflin takes the terminal-agent CLIs you already run (`claude`, `agy`, `codex`, `grok`,
 > `kimi`, `qwen`, `opencode`, `crush`, `pi`, and `copilot`) and turns them
-> into a self-coordinating team: each agent gets long-term memory, a mailbox, and a desk on a 2D
-> office floor, and **your clone** (Michael) routes work between them while you watch. He's the
+> into a self-coordinating team: each agent gets long-term memory, a mailbox, and a reading desk in
+> the Study, and **your clone** (Michael) routes work between them while you watch. He's the
 > boss of the floor; you're still the boss of him.
 
 ## Contents
@@ -118,8 +120,9 @@ world** so every agent remembers what it learns and recalls it instantly.
 
 - **Every terminal is an agent.** Each `claude`, `agy`, `codex`, `grok`, `kimi`, `qwen`, `opencode`, `crush`, `pi`, `copilot`, or custom session runs as a real
   process in a pseudo-terminal (`node-pty`), byte-for-byte authentic, rendered with xterm.js.
-- **Every agent is an avatar.** Sessions appear as characters on a Pixi.js office floor. They walk
-  to stations as they work, and envelopes fly desk-to-desk when they message each other.
+- **Every agent is a portrait.** Sessions appear as gilt-framed portrait cards at reading desks in
+  the Study, or as a monogram where no portrait is painted. A slip of parchment above a card shows
+  what that agent is saying, and the work it holds lies on its desk.
 - **The hive coordinates them.** Agents read their memory and drain a mailbox; the router moves
   messages between inboxes; the GOD agent adjudicates, assigns, and escalates only when it needs you.
 - **Memory that's instant.** A markdown-first memory layer with a semantic recall index means agents
@@ -152,7 +155,8 @@ world** so every agent remembers what it learns and recalls it instantly.
 3. **The GOD agent runs the floor**: it reads every request, resolves routine ones itself (keeping
    the system fully autonomous), and only escalates *critical* items (spend, destructive ops, scope
    changes) into an approvals queue you act on.
-4. **Everything is visible**: you watch avatars move, envelopes fly, and the live terminal stream;
+4. **Everything is visible**: you watch each agent's state on its card, work move between the card
+   table, the desks and the shelf wall, and the live terminal stream;
    you can type back into any session, browse its files, and read its git history.
 
 See [`HIVE.md`](./HIVE.md) for the full multi-agent design, [`SPEC.md`](./SPEC.md) for the
@@ -256,12 +260,14 @@ you, and a circuit breaker steers, constrains, then stops anything that loops or
 
 ### Watch the whole floor work
 
-Agents walk to stations as they work and envelopes fly desk to desk when they message each other.
-Click any desk to read that terminal live, and type straight back into it.
+Each agent sits at a desk in the Study with the work it holds, its state on its card, and a slip
+showing what it is saying. Unclaimed work is piled on the card table and finished work is marked
+on the shelf wall; when a piece of work moves, its book flies to where it now belongs. Click a card
+to read that agent's terminal live, and type straight back into it.
 
 </td>
 <td width="50%">
-  <a href="https://github.com/chaitanyagiri/munder-difflin/raw/main/docs/media/demo/agents.mp4"><img src="./docs/media/demo/agents-poster.jpg" alt="Agents working in parallel on the office floor" width="100%"></a>
+  <a href="https://github.com/chaitanyagiri/munder-difflin/raw/main/docs/media/demo/agents.mp4"><img src="./docs/media/demo/agents-poster.jpg" alt="An earlier version: agents working in parallel on the pixel office floor" width="100%"></a>
 </td>
 </tr>
 <tr>
@@ -281,10 +287,10 @@ than sending you to a docs page.
 
 **The floor**
 - **Every terminal is a real agent.** Claude Code, Antigravity (Gemini), OpenAI Codex, xAI Grok, Kimi Code, Gemini CLI, Qwen, OpenCode, Crush, pi.dev, GitHub Copilot CLI, Cursor, or a custom command, each in its own `node-pty` PTY, rendered with xterm.js.
-- **Every agent is an avatar.** A Pixi.js office floor where agents walk to stations, envelopes fly desk to desk, and avatar state reflects real work.
+- **Every agent is a portrait.** The Study shows each agent as a portrait card at a reading desk, with its state, what it is saying, and the work it holds; work moves between the card table, the desks and the shelf wall as it is picked up and finished.
 - **A GOD orchestrator you talk to.** It routes tasks, adjudicates traffic, and escalates only what needs a human. Or press **Talk** and run the floor by voice.
 - **Per-agent git worktrees.** Optional isolation so parallel agents never collide on branches.
-- **More than one floor** (0.5.3). File, New Floor opens another office on its own folder, in its own window, with its own agents, board and memory. A folder only ever opens in one floor, and one licence covers them all.
+- **More than one floor** (0.5.3). File, New Floor opens another floor on its own folder, in its own window, with its own agents, board and memory. A folder only ever opens in one floor, and one licence covers them all.
 
 **Memory & coordination**
 - **The hive**: per-agent memory, atomic-file mailboxes, a shared blackboard, an append-only event log, single-committer git.
@@ -462,7 +468,6 @@ Next up:
 
 - [ ] **More chat integrations**: Telegram and richer chat bridges that pipe a channel into Michael's queue and route replies back out.
 - [ ] **More engines & integration templates**: keep growing the engine roster and the integrations registry.
-- [ ] **Fuller avatar coverage**: drive the remaining station visits and tool-bubbles entirely from real hook events.
 - [ ] **Durable layout & command history**: extend persistence to agent layout and per-session history.
 
 <div align="right">(<a href="#munder-difflin">↑ back to top</a>)</div>
