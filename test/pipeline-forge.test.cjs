@@ -13,6 +13,9 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const loadTs = require('./load-ts.cjs');
 
+/** A forbidden list for tests that are not about it: one folder nothing here uses. */
+const NONE = [require('node:path').join(require('node:os').tmpdir(), 'mr-pipeline-nothing-forbidden')];
+
 const { GitlabForge, toForgeMr } = loadTs('src/main/pipeline/forgeGitlab.ts');
 const { GitMirror } = loadTs('src/main/pipeline/gitMirror.ts');
 const { probeLive } = loadTs('src/main/pipeline/liveProbe.ts');
@@ -37,7 +40,7 @@ const ok = (body) => ({ code: 0, stdout: JSON.stringify(body), stderr: '' });
 
 test('an MR reads as the stage machine needs it, from GitLab\'s own JSON', async () => {
   const { run, calls } = fakeRunner(ok(MR_185));
-  const mr = await new GitlabForge({ host: 'gitlab.com', project: 'wooden-bird/wayfarer', forbidden: [], run }).mr(185);
+  const mr = await new GitlabForge({ host: 'gitlab.com', project: 'wooden-bird/wayfarer', forbidden: NONE, run }).mr(185);
   assert.deepEqual(mr, {
     state: 'opened', draft: false, head: S, source: 'fix/feedback-followups-2', target: 'main',
     pipeline: { id: 3060038898, sha: S, status: 'success' }, mergeCommit: null,
@@ -50,37 +53,37 @@ test('an MR with no head pipeline, a short sha, or a failed read is reported as 
   assert.equal(toForgeMr({ ...MR_185, head_pipeline: { id: 1, sha: 'abc', status: 'success' } }).pipeline, null);
   assert.equal(toForgeMr({ ...MR_185, sha: 'fa862a4a' }), null);
   assert.equal(toForgeMr({ ...MR_185, state: 'weird' }), null);
-  assert.equal(await new GitlabForge({ host: 'gitlab.com', project: 'wooden-bird/wayfarer', forbidden: [], run: fakeRunner({ code: 1, stdout: '', stderr: 'HTTP 404' }).run }).mr(185), null);
-  assert.equal(await new GitlabForge({ host: 'gitlab.com', project: 'wooden-bird/wayfarer', forbidden: [], run: fakeRunner({ code: 0, stdout: 'not json', stderr: '' }).run }).mr(185), null);
+  assert.equal(await new GitlabForge({ host: 'gitlab.com', project: 'wooden-bird/wayfarer', forbidden: NONE, run: fakeRunner({ code: 1, stdout: '', stderr: 'HTTP 404' }).run }).mr(185), null);
+  assert.equal(await new GitlabForge({ host: 'gitlab.com', project: 'wooden-bird/wayfarer', forbidden: NONE, run: fakeRunner({ code: 0, stdout: 'not json', stderr: '' }).run }).mr(185), null);
 });
 
 test('the merge is one PUT that carries the full sha, and returns the merge commit', async () => {
   const M = '2'.repeat(40);
   const { run, calls } = fakeRunner(ok({ ...MR_185, state: 'merged', merge_commit_sha: M }));
-  assert.deepEqual(await new GitlabForge({ host: 'gitlab.com', project: 'wooden-bird/wayfarer', forbidden: [], run }).merge(185, S), { ok: true, mergeCommit: M });
+  assert.deepEqual(await new GitlabForge({ host: 'gitlab.com', project: 'wooden-bird/wayfarer', forbidden: NONE, run }).merge(185, S), { ok: true, mergeCommit: M });
   assert.deepEqual(calls, [['glab', 'api', '--hostname', 'gitlab.com', '--method', 'PUT', 'projects/wooden-bird%2Fwayfarer/merge_requests/185/merge', '--raw-field', `sha=${S}`]]);
 });
 
 test('a refused merge comes back refused with GitLab\'s reason, and a short sha is never sent', async () => {
   const { run } = fakeRunner({ code: 1, stdout: JSON.stringify({ message: 'SHA does not match HEAD of source branch' }), stderr: 'glab: 409 Conflict (HTTP 409)' });
-  const r = await new GitlabForge({ host: 'gitlab.com', project: 'wooden-bird/wayfarer', forbidden: [], run }).merge(185, S);
+  const r = await new GitlabForge({ host: 'gitlab.com', project: 'wooden-bird/wayfarer', forbidden: NONE, run }).merge(185, S);
   assert.equal(r.ok, false);
   assert.equal(r.status, '409');
   assert.match(r.error, /SHA does not match HEAD/);
   const never = fakeRunner();
-  assert.equal((await new GitlabForge({ host: 'gitlab.com', project: 'wooden-bird/wayfarer', forbidden: [], run: never.run }).merge(185, 'fa862a4a')).ok, false);
+  assert.equal((await new GitlabForge({ host: 'gitlab.com', project: 'wooden-bird/wayfarer', forbidden: NONE, run: never.run }).merge(185, 'fa862a4a')).ok, false);
   assert.deepEqual(never.calls, []);
 });
 
 test('open MRs for a branch are counted, with the branch encoded into the query', async () => {
   const { run, calls } = fakeRunner(ok([MR_185]));
-  assert.equal(await new GitlabForge({ host: 'gitlab.com', project: 'wooden-bird/wayfarer', forbidden: [], run }).openMrsForBranch('fix/a&b'), 1);
+  assert.equal(await new GitlabForge({ host: 'gitlab.com', project: 'wooden-bird/wayfarer', forbidden: NONE, run }).openMrsForBranch('fix/a&b'), 1);
   assert.match(calls[0][4], /source_branch=fix%2Fa%26b$/);
 });
 
 test('no argument list carries a credential: the project path is the only thing that varies', async () => {
   const { run, calls } = fakeRunner(ok(MR_185), ok([]), ok({ state: 'merged', merge_commit_sha: '3'.repeat(40) }));
-  const forge = new GitlabForge({ host: 'gitlab.com', project: 'wooden-bird/wayfarer', forbidden: [], run });
+  const forge = new GitlabForge({ host: 'gitlab.com', project: 'wooden-bird/wayfarer', forbidden: NONE, run });
   await forge.mr(185); await forge.openMrsForBranch('b'); await forge.merge(185, S);
   for (const call of calls) for (const arg of call) assert.doesNotMatch(arg, /glpat-|token|oauth2|@gitlab/i, arg);
 });
@@ -110,7 +113,7 @@ function upstream() {
 test('the mirror fetches into its own bare repository and answers merge-tree, ancestry and second parent', async () => {
   const up = upstream();
   const mirrorDir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mr-mirror-')), 'wayfarer.git');
-  const m = new GitMirror({ dir: mirrorDir, remote: up.dir, forbidden: [] });
+  const m = new GitMirror({ dir: mirrorDir, remote: up.dir, forbidden: NONE });
   await m.fetch(['main', 'feat', 'clash']);
   assert.equal(fs.existsSync(path.join(mirrorDir, 'HEAD')), true, 'a bare repository');
   assert.equal(await m.hasCommit(up.S1), true);
@@ -126,7 +129,7 @@ test('the mirror fetches into its own bare repository and answers merge-tree, an
 
 test('the mirror refuses a short or malformed sha rather than letting git resolve it', async () => {
   const up = upstream();
-  const m = new GitMirror({ dir: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mr-mirror-')), 'w.git'), remote: up.dir, forbidden: [] });
+  const m = new GitMirror({ dir: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mr-mirror-')), 'w.git'), remote: up.dir, forbidden: NONE });
   assert.equal(await m.fetch(['main', 'feat']), true);
   assert.equal(await m.mergeTree('main', up.S1), null);
   assert.equal(await m.isAncestor(up.S1.slice(0, 8), up.M1), null);
@@ -136,7 +139,7 @@ test('the mirror refuses a short or malformed sha rather than letting git resolv
 test('the mirror never runs in, or writes to, the repository it fetches from', async () => {
   const up = upstream();
   const before = git(up.dir, 'for-each-ref');
-  const m = new GitMirror({ dir: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mr-mirror-')), 'w.git'), remote: up.dir, forbidden: [] });
+  const m = new GitMirror({ dir: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mr-mirror-')), 'w.git'), remote: up.dir, forbidden: NONE });
   await m.fetch(['main', 'feat']);
   await m.mergeTree(up.T1, up.S1);
   assert.equal(git(up.dir, 'for-each-ref'), before);

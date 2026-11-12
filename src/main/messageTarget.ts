@@ -3,7 +3,7 @@ import { readdirSync } from 'node:fs';
 /** The names routing resolves to god. */
 const GOD_NAMES = new Set(['god', 'human']);
 // The app's own message senders. None has an inbox, but agents reply to them, and routing surfaces such a reply to god.
-const APP_SENDERS = new Set(['heartbeat', 'scheduler', 'breaker', 'system', 'router', 'ephemeral-worker', 'webhook']);
+const APP_SENDERS = new Set(['heartbeat', 'scheduler', 'breaker', 'system', 'router', 'ephemeral-worker', 'webhook', 'pipeline']);
 // What cannot be part of one folder name. A roster is a file on disk, so being listed there is not enough. Ids are
 // otherwise free-form: they can come from an agent's name, in any alphabet.
 const NOT_A_FOLDER_NAME = /[/\\:\u0000-\u001f]|^\.\.?$|^\s*$/;

@@ -58,8 +58,8 @@ export function isUnder(path: string, root: string): boolean {
 
 /** Throws unless [forbidden] is a list of absolute folders: the guard is never left off by default. */
 export function requireForbidden(forbidden: unknown): string[] {
-  if (!Array.isArray(forbidden) || !forbidden.every((f) => typeof f === 'string' && isAbsolute(f))) {
-    throw new Error('a forbidden folder list (absolute paths; the hive root and agents\' folders) is required');
+  if (!Array.isArray(forbidden) || forbidden.length === 0 || !forbidden.every((f) => typeof f === 'string' && isAbsolute(f))) {
+    throw new Error('a forbidden folder list (one or more absolute paths: the hive root and agents\' folders) is required');
   }
   return forbidden;
 }
@@ -192,10 +192,12 @@ export class GitlabForge {
     const body = parse(res.stdout);
     const mc = own(body, 'merge_commit_sha');
     if (res.code === 0 && own(body, 'state') === 'merged' && typeof mc === 'string' && SHA_RE.test(mc)) return { ok: true, mergeCommit: mc };
-    const http = /HTTP (\d{3})/.exec(`${res.stderr} ${res.stdout}`)?.[1];
+    // Only glab's own report of the HTTP status counts, never text in the body. Only a 4xx
+    // means GitLab refused; a 5xx (a gateway timing out, say) can come after the merge landed.
+    const http = /\(HTTP (\d{3})\)/.exec(res.stderr)?.[1];
     const msg = own(body, 'message');
     const error = printable(typeof msg === 'string' ? msg : res.stderr || res.stdout);
-    if (res.code !== 0 && http && /^[45]/.test(http)) return { ok: false, outcome: 'refused', status: http, error };
+    if (res.code !== 0 && http && http.startsWith('4')) return { ok: false, outcome: 'refused', status: http, error };
     return { ok: false, outcome: 'unknown', status: http ?? (res.code === 0 ? 'unclear-answer' : 'no-answer'), error };
   }
 
@@ -226,11 +228,14 @@ export function toForgeMr(raw: unknown): ForgeMr | null {
   if (state !== 'opened' && state !== 'merged' && state !== 'closed' && state !== 'locked') return null;
   if (typeof head !== 'string' || !SHA_RE.test(head)) return null;
   if (typeof source !== 'string' || source === '' || typeof target !== 'string' || target === '') return null;
-  // `draft` is current GitLab; `work_in_progress` is its older name. One must be stated.
+  // `draft` is current GitLab; `work_in_progress` is its older name. At least one must be
+  // stated as a boolean, and when both are given they must agree.
   const d = own(raw, 'draft');
   const w = own(raw, 'work_in_progress');
-  const draft = typeof d === 'boolean' ? d : typeof w === 'boolean' && d === undefined ? w : null;
-  if (draft === null) return null;
+  if ((d !== undefined && typeof d !== 'boolean') || (w !== undefined && typeof w !== 'boolean')) return null;
+  if (d === undefined && w === undefined) return null;
+  if (typeof d === 'boolean' && typeof w === 'boolean' && d !== w) return null;
+  const draft = (d ?? w) as boolean;
   const hp = own(raw, 'head_pipeline');
   const [pid, psha, pstatus] = [own(hp, 'id'), own(hp, 'sha'), own(hp, 'status')];
   const pipeline = isIid(pid) && typeof psha === 'string' && SHA_RE.test(psha) && typeof pstatus === 'string' && pstatus !== ''

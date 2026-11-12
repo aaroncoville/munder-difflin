@@ -73,6 +73,12 @@ extraResources:
     to: kg.cjs
   - from: src/main/kg-core.cjs
     to: kg-core.cjs
+  # Merge-request pipeline agent CLI + its pure-JS core, the same way: agents run
+  # `node <resources>/hive-mr.cjs`; the app never runs it.
+  - from: resources/hive-mr.cjs
+    to: hive-mr.cjs
+  - from: src/main/pipeline/mr-core.cjs
+    to: mr-core.cjs
   # Bundled default skills (read-only/no-secret). copyBundledSkills() reads these
   # from skillsResourceDir() = <process.resourcesPath>/skills in the packaged app
   # and refreshes each agent's .claude/skills/ per spawn (dev resolves to
