@@ -5519,7 +5519,8 @@ async function runCanaryPass(): Promise<void> {
   const godId = hive.registry().godId ?? 'god';
   const sock = hive.sockPath();
   const results = await runCanaries({
-    // Decided from settings only: asking the backend (even its status) may spawn its CLI.
+    // Decided from the saved settings and the live backend's id; the backend itself
+    // is never asked (even its status may spawn its CLI).
     memory: memoryCanary(memory, migrateMemorySettings(readConfig()), godId),
     kg: knowledge.active() ? { search: (q, limit) => knowledge.search(q, limit) } : null,
     hook: sock ? { sock, instance: hookServer.instance() } : null,

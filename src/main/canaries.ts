@@ -116,6 +116,9 @@ export function localRecall(base: string, bank: string, query: string, results: 
       let data = '';
       res.setEncoding('utf8');
       res.on('data', (d) => { if (data.length < 1 << 20) data += d; });
+      // A dropped connection may never emit 'end'; resolve is a no-op after it has.
+      res.on('error', () => resolve({ ok: false, output: '', error: 'error' }));
+      res.on('close', () => resolve({ ok: false, output: '', error: 'closed' }));
       res.on('end', () => {
         if (status < 200 || status >= 300) { resolve({ ok: false, output: '', error: `HTTP ${status}` }); return; }
         try {
