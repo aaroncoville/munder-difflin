@@ -99,3 +99,76 @@ test('hindsight search renders the final score from the scores object', async (t
 
   assert.match(out, /A useful memory {2}\(score 0\.91\)/);
 });
+
+// A stub that answers the way the real recall endpoint does: it refuses a
+// request whose max_tokens is not a positive integer with HTTP 422.
+async function strictRecallBackend(t) {
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      const request = JSON.parse(body);
+      seen.push(request);
+      if (!Number.isInteger(request.max_tokens) || request.max_tokens < 1) {
+        res.statusCode = 422;
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ detail: [{ loc: ['body', 'max_tokens'], msg: 'Input should be a valid integer' }] }));
+        return;
+      }
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ results: [{ text: `recalled for ${request.query}`, score: 0.5 }] }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const env = { HIVE_MEMORY_BACKEND: 'hindsight', HINDSIGHT_URL: `http://127.0.0.1:${server.address().port}`, HINDSIGHT_BANK: 'test-bank' };
+  return { env, seen };
+}
+
+const runShimFull = (env, args) => new Promise((resolve) => {
+  execFile(process.execPath, [SHIM, ...args], { env: { ...process.env, ...env }, encoding: 'utf8' }, (error, stdout, stderr) => {
+    resolve({ code: error ? error.code : 0, stdout, stderr });
+  });
+});
+
+test('search without --results asks for the default five results', async (t) => {
+  const { env, seen } = await strictRecallBackend(t);
+  const out = await runShimFull(env, ['search', 'heartbeat suppression']);
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].query, 'heartbeat suppression');
+  assert.equal(seen[0].max_tokens, 5 * 512);
+  assert.match(out.stdout, /recalled for heartbeat suppression/);
+  assert.equal(out.code, 0);
+});
+
+test('search with --results N asks for N results', async (t) => {
+  const { env, seen } = await strictRecallBackend(t);
+  const out = await runShimFull(env, ['search', 'budget', '--results', '3']);
+  assert.equal(seen[0].query, 'budget');
+  assert.equal(seen[0].max_tokens, 3 * 512);
+  assert.match(out.stdout, /recalled for budget/);
+});
+
+test('search with a non-numeric --results is a usage error and sends nothing', async (t) => {
+  const { env, seen } = await strictRecallBackend(t);
+  for (const junk of [['--results', 'many'], ['--results', '0'], ['--results']]) {
+    const out = await runShimFull(env, ['search', 'budget', ...junk]);
+    assert.equal(out.code, 2, `exit code for ${junk.join(' ')}`);
+    assert.match(out.stderr, /--results/);
+  }
+  assert.equal(seen.length, 0);
+});
+
+test('a refusal from the backend is reported on stderr, not as unavailable', async (t) => {
+  const server = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => { res.statusCode = 422; res.end('{"detail":"bad request"}'); });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const out = await runShimFull({ HIVE_MEMORY_BACKEND: 'hindsight', HINDSIGHT_URL: `http://127.0.0.1:${server.address().port}`, HINDSIGHT_BANK: 'test-bank' }, ['search', 'budget']);
+  assert.match(out.stderr, /HTTP 422/);
+  assert.doesNotMatch(out.stdout, /memory recall unavailable/);
+  assert.equal(out.code, 1);
+});
