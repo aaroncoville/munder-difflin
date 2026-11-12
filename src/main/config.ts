@@ -350,14 +350,6 @@ export interface HarnessConfig {
    *  seen and answered), written to <userData>/usage (the app's data folder, not the hive) and never sent anywhere. Default
    *  ON; Settings has the switch and a delete button. See docs/usage-log.md. */
   usageLog?: boolean;
-  /** Master flag for the TV-show office themes feature (Settings theme picker +
-   *  destructive switch flow). Default false = the picker is hidden and the
-   *  office renders as today (zero behavior change). */
-  tvShowOffices?: boolean;
-  /** Which office map/cast theme the pixel office renders. Only honored when
-   *  `tvShowOffices` is on; otherwise the office theme is used. Unbuilt show
-   *  themes fall back to 'office' in the loader. */
-  officeTheme?: 'office' | 'friends' | 'brooklyn99' | 'siliconvalley' | 'got' | 'hogwarts';
   /** Per-CLI-provider local/self-hosted base URL (Ollama/LM Studio/vLLM, …) for the
    *  OpenCode/Crush/pi/qwen engines; applied at spawn (config-injection or proxy
    *  upstream). API KEYS are NOT stored here — they live write-only in the secret
@@ -500,8 +492,6 @@ const DEFAULTS: HarnessConfig = {
   telemetryEnabled: true,
   usageLog: true,
   multiWindow: true,
-  tvShowOffices: false,
-  officeTheme: 'office',
   slackEnabled: false,
   slackSigningSecret: undefined,
   slackBotToken: undefined,

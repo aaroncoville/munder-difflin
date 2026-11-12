@@ -32,6 +32,6 @@ reading old commits or an old copy of this file, that is the change you are look
 
 ## Tiled map
 
-`maps/office.tmj` and `maps/brooklyn99.tmj` are Tiled JSON maps built on the LimeZu tilesets
-above. Both are imported by `themeRegistry.ts`; a map that nothing imports is not shipped, and
+`maps/office.tmj` is a Tiled JSON map built on the LimeZu tilesets above. It is imported by
+`themeRegistry.ts`; a map that nothing imports is not shipped, and
 should be deleted rather than left to imply an asset is in use.
