@@ -10,6 +10,7 @@
  * around it, the agents and their terminals all keep working.
  */
 import { Component, lazy, Suspense, type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 
 export const StudySceneLazy = lazy(async () => ({
   default: (await import('./StudyScene')).StudyScene
@@ -56,6 +57,7 @@ export class FloorErrorBoundary extends Component<BoundaryProps, { failed: boole
 
 /** What stands where the Study would have been, once it has failed. */
 export function StudyUnavailable(): JSX.Element {
+  const { t } = useTranslation();
   return (
     <div
       role="status"
@@ -70,7 +72,7 @@ export function StudyUnavailable(): JSX.Element {
         textAlign: 'center'
       }}
     >
-      The room could not be drawn.
+      {t('study.unavailable')}
     </div>
   );
 }

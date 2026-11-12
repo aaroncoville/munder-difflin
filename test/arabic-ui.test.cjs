@@ -241,16 +241,11 @@ test('every interpolation variable survives translation', () => {
 });
 
 test('inline markup and array shapes are preserved', () => {
-  // Several onboarding strings carry <strong>; the office flavour lines are
-  // arrays indexed by the scene, so a short array is an out-of-range read.
+  // Several onboarding strings carry <strong>.
   const e = pathsOf(en), a = pathsOf(ar);
   const tags = (s) => [...String(s).matchAll(/<\/?([a-z]+)>/g)].map((m) => m[1]).sort().join(',');
   for (const [k, v] of e) {
     assert.equal(tags(a.get(k)), tags(v), `markup changed in ${k}`);
-  }
-  const count = (o, p) => p.split('.').reduce((n, s) => n?.[s], o);
-  for (const p of ['office.errand.smoke', 'office.suckUp', 'office.gossip', 'office.cheer']) {
-    assert.equal(count(ar, p).length, count(en, p).length, `${p} changed length`);
   }
 });
 

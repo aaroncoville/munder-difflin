@@ -13,28 +13,41 @@
  * call sites picking a portrait each is how they drifted apart in the first
  * place.
  *
- * An assistant the pack cannot cover falls back to the sprite rather than to
- * nothing.
+ * An assistant the pack cannot cover falls back to a monogram rather than to
+ * nothing — the same one, in the same face, as the Study's unillustrated card.
  */
-import { OfficeCharacterName } from '@/scene/office/cast';
 import { portraitFor } from '@/scene/study/portraits';
-import { SpritePortrait } from './SpritePortrait';
+import { monogramFor } from '@/scene/study/AgentCard';
 
 export interface AgentFaceProps {
   /** The assistant's id — what a face is dealt from when the name matches none. */
   id: string;
   name: string;
-  /** The pixel cast member to draw when no portrait can be dealt. */
-  character: OfficeCharacterName;
-  /** Pixels per source pixel, passed straight to the sprite. Ignored by the
-   *  painted portrait, which fills whatever tile it is given. */
-  scale?: number;
   isGod?: boolean;
 }
 
-export function AgentFace({ id, name, character, scale = 2, isGod }: AgentFaceProps) {
+export function AgentFace({ id, name, isGod }: AgentFaceProps) {
   const painted = portraitFor({ id, name, isGod });
-  if (!painted) return <SpritePortrait character={character} scale={scale} />;
+  if (!painted) {
+    return (
+      <div
+        aria-hidden
+        style={{
+          width: '100%',
+          height: '100%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontFamily: 'var(--cth-font-display)',
+          fontSize: 'var(--cth-text-display-md)',
+          color: 'var(--cth-gilt)',
+          userSelect: 'none'
+        }}
+      >
+        {monogramFor(name)}
+      </div>
+    );
+  }
   return (
     <img
       src={painted}

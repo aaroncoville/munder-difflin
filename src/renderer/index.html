@@ -12,10 +12,13 @@
          rather than fetched from fonts.googleapis.com, which is blocked in
          mainland China. The CSP above no longer allows either Google font host. -->
     <style>
+      /* Occult tokens, repeated because nothing loads before this paints:
+         ground --cth-cream-50 (APP_GROUND in src/shared/appGround.ts),
+         text --cth-ink-900, hint --cth-ink-500. */
       #cth-splash {
         position: fixed; inset: 0; display: flex; flex-direction: column;
         align-items: center; justify-content: center; gap: 14px;
-        background: #FFF8E7; color: #1A1320;
+        background: #221E30; color: #EAE0C8;
         font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
       }
       #cth-splash .mk {
@@ -25,7 +28,7 @@
         box-shadow: 4px 4px 0 rgba(26,19,32,0.25);
       }
       #cth-splash .title { font-family: "Press Start 2P", monospace; font-size: 13px; }
-      #cth-splash .hint { font-size: 15px; color: #6B5878; }
+      #cth-splash .hint { font-size: 15px; color: #99907D; }
     </style>
   </head>
   <body>

@@ -1,37 +1,23 @@
 # Asset attribution
 
-The office tilesets and Tiled maps in this directory are vendored from
-[`shahar061/the-office`](https://github.com/shahar061/the-office) (project code: ISC).
+Everything in this directory that is not our own work, and where its licence and credits live.
 
-## Pixel art from LimeZu (licensed)
+## Fonts
 
-The tilesets (`tilesets/*.png`) are from **Modern Interiors - RPG Tileset [16X16]** by
-[LimeZu](https://limezu.itch.io/moderninteriors), used under the **Complete Version licence**
-purchased on 2026-08-20 (see `tilesets/LIMEZUASSETS-LICENSE.txt`):
+`fonts/` holds the bundled typefaces, all under the SIL Open Font License 1.1. The per-font
+copyright notices and the full licence text are in [`fonts/LICENSE.txt`](fonts/LICENSE.txt), which
+the OFL requires to travel with every copy.
 
-- ✅ May be **edited and used in any commercial or non-commercial project**.
-- ❌ May not be resold, or edited and resold.
-- ⚠️ **Credits are required**, linking to <https://limezu.itch.io/>. This obligation is live. The
-  link must stay in the README acknowledgements, in the app's about/credits surface, and on the
-  website. Removing it breaks the licence.
+## Sixth History
 
-The three bundled tilesets are `interiors.png`, `office-tileset.png` and
-`a5-office-floors-walls.png`. Each one is imported by `scene/office/themeRegistry.ts` and actually
-drawn on the office floor. Nothing else in this directory is LimeZu art.
+`sixth-history/` holds the Sixth History logo, used under Weather Factory Ltd's Sixth History
+Community Licence. The licence's obligations, and where in the app each one is discharged, are in
+[`sixth-history/ATTRIBUTION-SIXTH-HISTORY.md`](sixth-history/ATTRIBUTION-SIXTH-HISTORY.md).
 
-## The Office cast is *not* LimeZu art
+## Elsewhere in the renderer
 
-Every character, meaning the card portraits and the walking sprites on the office floor, is drawn
-procedurally in [`scene/office/portraitArt.ts`](../scene/office/portraitArt.ts) from per-character
-recipes. These are original, fully custom-drawn busts, not recolours of anyone else's sprites, and
-they carry no third-party licence.
+The Study's portrait pack is not in this directory. Its provenance is recorded beside it, in
+[`scene/study/assets/portraits/README.md`](../scene/study/assets/portraits/README.md).
 
-This was not always true. The cast was once recoloured from LimeZu's `Adam/Alex/Amelia/Bob` walk
-sheets; those sheets were deleted on 2026-08-20 once nothing referenced them any more. If you are
-reading old commits or an old copy of this file, that is the change you are looking at.
-
-## Tiled map
-
-`maps/office.tmj` is a Tiled JSON map built on the LimeZu tilesets above. It is imported by
-`themeRegistry.ts`; a map that nothing imports is not shipped, and
-should be deleted rather than left to imply an asset is in use.
+If you add art here, it must be your own work or compatibly licensed, and it gets a section in this
+file.

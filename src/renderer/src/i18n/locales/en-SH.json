@@ -158,16 +158,6 @@
     "closeAgent": "Dismiss {{name}} — ends the process and sets them on the shelves",
     "openTerminalAria": "Open your own terminal in this assistant's folder"
   },
-  "office": {
-    "activity": {
-      "waiting": "waiting",
-      "needsYou": "needs you",
-      "compacting": "condensing what it holds",
-      "looping": "circling — the breaker armed",
-      "runningFloor": "keeping the House",
-      "idle": "at rest"
-    }
-  },
   "memoryPanel": {
     "openTitle": "Search the memory your assistants have built",
     "title": "THE HOUSE'S MEMORY",
@@ -213,5 +203,8 @@
       "velocity": "essence spent per minute",
       "breakerDesc": "A guard against an assistant that runs away with itself, and with your essence. The breaker steers, then constrains, then stops."
     }
+  },
+  "study": {
+    "unavailable": "The Study could not be drawn tonight."
   }
 }

@@ -135,7 +135,6 @@ export function AgentStrip({ config }: AgentStripProps) {
             draggable
             id={a.id}
             name={a.name}
-            character={a.character}
             accent={a.accent}
             status={a.status}
             ptyId={a.ptyId}

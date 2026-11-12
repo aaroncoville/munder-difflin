@@ -1,10 +1,8 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { PixelPanel } from './PixelPanel';
 import { PixelButton } from './PixelButton';
-import { SpritePortrait } from './SpritePortrait';
 import { ProviderLogo } from './ProviderLogo';
 import { useStore, type Agent } from '@/store/store';
-import { OFFICE_CAST, type OfficeCharacterName } from '@/scene/office/cast';
 import { type AccentColorName } from '@/design/tokens';
 import {
   type AgentProvider,
@@ -34,7 +32,6 @@ export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
   const [config, setConfig] = useState<HarnessConfig | null>(null);
 
   const [name, setName] = useState(agent.name);
-  const [character, setCharacter] = useState<OfficeCharacterName>(agent.character);
   const [accent, setAccent] = useState<AccentColorName>(agent.accent);
   const [provider, setProvider] = useState<AgentProvider>(
     inferAgentProvider(agent.command, agent.provider)
@@ -50,7 +47,6 @@ export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
   // Keep form in sync when the selected agent changes while the modal is open.
   useEffect(() => {
     setName(agent.name);
-    setCharacter(agent.character);
     setAccent(agent.accent);
     setProvider(inferAgentProvider(agent.command, agent.provider));
     setModel(agent.model);
@@ -80,7 +76,6 @@ export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
 
     updateAgent(agent.id, {
       name: trimmedName,
-      character,
       accent,
       provider,
       model,
@@ -119,49 +114,15 @@ export function EditAgentModal({ agent, onClose }: EditAgentModalProps) {
               gap: 16, alignItems: 'start', minHeight: 260
             }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 14, minWidth: 0 }}>
-            <Section label="Identity" hint="name · character · color">
+            <Section label="Identity" hint="name · color">
               <Row label="Name">
                 <input
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="Stanley"
+                  placeholder="Enid"
                   style={inputStyle}
                   autoFocus
                 />
-              </Row>
-
-              <Row label="Character">
-                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                  {OFFICE_CAST.map((c) => {
-                    const active = character === c.name;
-                    return (
-                      <button
-                        key={c.name}
-                        type="button"
-                        onClick={() => { setCharacter(c.name); setName(c.displayName); }}
-                        title={c.blurb}
-                        style={{
-                          padding: 4,
-                          background: active ? `var(--cth-${accent}-light)` : 'var(--cth-cream-100)',
-                          boxShadow: active
-                            ? 'inset 0 0 0 1.5px var(--cth-ink-500)'
-                            : 'inset 0 0 0 1px var(--cth-ink-100)',
-                          cursor: 'pointer', border: 'none', width: 52,
-                          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2
-                        }}
-                      >
-                        <div style={{
-                          width: 40, height: 48,
-                          display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
-                          overflow: 'hidden'
-                        }}>
-                          <SpritePortrait character={c.name} scale={1.5} />
-                        </div>
-                        <span style={{ fontSize: 10, color: 'var(--cth-ink-700)' }}>{c.displayName}</span>
-                      </button>
-                    );
-                  })}
-                </div>
               </Row>
 
               <Row label="Color">

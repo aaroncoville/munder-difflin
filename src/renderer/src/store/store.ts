@@ -1,6 +1,5 @@
 import { create } from 'zustand';
 import type { AccentColorName } from '@/design/tokens';
-import type { OfficeCharacterName } from '@/scene/office/cast';
 import type { StatusKind } from '@/components/PixelBadge';
 import type { AgentProvider } from '@shared/agentProvider';
 import type { HireManifest } from '@shared/hire';
@@ -40,8 +39,6 @@ export interface BlockReason {
 export interface Agent {
   id: string;
   name: string;
-  /** which Office character represents this agent on the floor */
-  character: OfficeCharacterName;
   accent: AccentColorName;
   /** persistent job / hire one-liner — same string as hive registry `role`.
    *  Live status belongs on `status` / `action`, never here. */
@@ -493,16 +490,28 @@ function persistedSlice(
   key: string,
   fromFile: unknown[] | undefined
 ): PersistedAgent[] {
-  if (useFileRoster) return Array.isArray(fromFile) ? (fromFile as PersistedAgent[]) : [];
+  if (useFileRoster) return Array.isArray(fromFile) ? (fromFile as PersistedAgent[]).map(withoutRetiredFields) : [];
   if (!useLocalFallback) return [];
   try {
     const raw = window.localStorage.getItem(key);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as PersistedAgent[]) : [];
+    return Array.isArray(parsed) ? (parsed as PersistedAgent[]).map(withoutRetiredFields) : [];
   } catch {
     return [];
   }
+}
+
+/** A stored agent minus the fields older builds wrote that nothing reads now.
+ *  Dropped on load, so the next save does not write them back.
+ *
+ *  `character` named the pixel office cast member drawn for the agent. The
+ *  office is gone and a face is dealt from the name and id instead, so the
+ *  field is ignored rather than migrated: the agent keeps its name. */
+function withoutRetiredFields(stored: PersistedAgent): PersistedAgent {
+  const { character, ...rest } = stored as PersistedAgent & { character?: unknown };
+  void character;
+  return rest;
 }
 
 function loadPersistedAgents(): Agent[] {

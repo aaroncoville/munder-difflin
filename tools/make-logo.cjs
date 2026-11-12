@@ -37,7 +37,7 @@ const { execFileSync } = require('node:child_process');
 // repo's sprite and written its assets.
 const ROOT = path.resolve(__dirname, '..');
 const loadTs = require(path.join(ROOT, 'test/load-ts.cjs'));
-const art = loadTs('src/renderer/src/scene/office/portraitArt.ts');
+const art = loadTs('tools/logo/portraitArt.ts');
 
 const SW = art.SCENE_W;
 

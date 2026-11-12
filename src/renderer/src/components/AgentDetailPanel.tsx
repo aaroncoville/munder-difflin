@@ -153,7 +153,7 @@ export function AgentDetailPanel({ agent }: AgentDetailPanelProps) {
           display: 'flex', alignItems: 'flex-end', justifyContent: 'center', overflow: 'hidden',
           flexShrink: 0
         }}>
-          <AgentFace id={agent.id} name={agent.name} character={agent.character} scale={1} isGod={agent.isGod} />
+          <AgentFace id={agent.id} name={agent.name} isGod={agent.isGod} />
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', minWidth: 0, lineHeight: '14px' }}>

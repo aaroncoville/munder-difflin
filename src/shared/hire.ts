@@ -49,8 +49,6 @@ export interface HireManifest {
   description?: string;
   /** The standing goal/mission text pre-filled into the goal field. */
   goal?: string;
-  /** Office cast sprite id (e.g. 'pam'); unknown values fall back to default. */
-  character?: string;
   /** Accent color name (e.g. 'mint'); unknown values fall back to default. */
   accent?: string;
   /** Which CLI the role is designed for. Default: the user's default provider. */
@@ -181,7 +179,10 @@ export function validateHireManifest(raw: unknown): HireValidation {
   const name = capped(o.name, 40, 'name', errors, true);
   const description = capped(o.description, 200, 'description', errors);
   const goal = capped(o.goal, 4000, 'goal', errors);
-  const character = capped(o.character, 24, 'character', errors)?.toLowerCase();
+  // `character` picked a pixel office cast member, which the app no longer
+  // draws. Manifests written for it are still valid: the field is accepted,
+  // held to the same cap the published gallery validator applies, and dropped.
+  capped(o.character, 24, 'character', errors);
   const accent = capped(o.accent, 24, 'accent', errors)?.toLowerCase();
   const model = capped(o.model, 80, 'model', errors);
   if (model !== undefined && !MODEL_RE.test(model)) {
@@ -313,7 +314,7 @@ export function validateHireManifest(raw: unknown): HireValidation {
     ok: true,
     errors: [],
     consentRequired: consentRequired.length > 0 ? consentRequired : undefined,
-    manifest: { spec: HIRE_SPEC_V1, name, description, goal, character, accent, provider, model, commandFlags, capabilities, isolate, tokenCap, author, homepage, skills, mcpServers }
+    manifest: { spec: HIRE_SPEC_V1, name, description, goal, accent, provider, model, commandFlags, capabilities, isolate, tokenCap, author, homepage, skills, mcpServers }
   };
 }
 

@@ -12,7 +12,6 @@ import { CommandCenterPanel } from './CommandCenterPanel';
 import { EditAgentModal } from './EditAgentModal';
 import { Icon } from './Icon';
 import { AgentFace } from './AgentFace';
-import { PORTRAIT_W } from '@/scene/office/portraitArt';
 import { RealtimeMichaelToggle } from './RealtimeMichaelToggle';
 import { CostHud } from '@/realtime/CostHud';
 import { useStore, type Agent } from '@/store/store';
@@ -29,6 +28,12 @@ import { useRtl } from '@/i18n/useDirection';
 const SIDEBAR_WIDTH = 'clamp(232px, 14vw, 340px)';
 /** Remembers the roster collapse across fullscreen sessions and app restarts. */
 const ROSTER_COLLAPSED_KEY = 'cth.fullscreen.rosterCollapsed';
+
+/** Width of the roster portrait tile at 1×, in px. The tile grows in the same
+ *  half-steps it always has, so the roster keeps its proportions now that it
+ *  shows painted portraits rather than the 18px-wide pixel sprites it was sized
+ *  for. */
+const PORTRAIT_W = 18;
 
 /** Roster type scale, derived from the shared terminal zoom so Cmd +/- resizes
  *  the whole roster along with the terminal — one knob for the whole view
@@ -50,7 +55,6 @@ function rosterScale(zoom: number) {
     name: clamp(zoom * 0.48, 7, 14),
     group: clamp(zoom * 0.45, 7, 13),
     note: clamp(zoom * 0.68, 10, 20),
-    portraitScale,
     portrait: Math.round(PORTRAIT_W * portraitScale)
   };
 }
@@ -732,7 +736,7 @@ function SidebarRow({
         }}>
           {/* The sprite is drawn at exactly the tile's width, so the figure
               grows with the tile instead of floating in it. */}
-          <AgentFace id={agent.id} name={agent.name} character={agent.character} scale={scale.portraitScale} isGod={agent.isGod} />
+          <AgentFace id={agent.id} name={agent.name} isGod={agent.isGod} />
         </div>
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>

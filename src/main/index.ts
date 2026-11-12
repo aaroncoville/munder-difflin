@@ -23,6 +23,7 @@ import {
 } from './config';
 import { listDir, readFileText, readFileBinary, writeFileText, statAbs, expandTilde } from './fs';
 import { normalizeWeekly, weeklyDelayMs } from '../shared/weeklySchedule';
+import { APP_GROUND } from '../shared/appGround';
 import {
   getBranch, getStatus, getLog, getBranches, getAheadBehind, isRepo, getDiff, mainRepoRoot,
   addWorktree, removeWorktree, worktreeHasUnintegratedWork, worktreeIsGcSafe,
@@ -2484,7 +2485,7 @@ function createWindow(opts: { floor?: boolean } = {}): BrowserWindow {
     minWidth: MIN_WIN.width,
     minHeight: MIN_WIN.height,
     title: isFloor ? 'Sixth History — Floor' : 'Sixth History',
-    backgroundColor: '#FFF8E7',
+    backgroundColor: APP_GROUND,
     titleBarStyle: 'hiddenInset',
     show: false,
     webPreferences: {
@@ -4898,17 +4899,12 @@ interface SpawnRequest {
   slack?: { channel: string; thread_ts: string };     // reply target + where failures surface
   isolate?: boolean;                                   // default true (fresh worktree)
   tokenCap?: number;                                   // optional per-worker token cap (advisory P1)
-  // Appearance on the office floor. Both optional and both validated renderer-side
-  // against the real cast and accent lists, so a bad value degrades to the default
-  // rather than breaking the card.
-  //
-  // Naming a worker after a cast member ALREADY gets you their avatar: the floor
-  // card infers it from the name. These two exist for the case that inference
-  // cannot express, an agent called something else that should still look like a
-  // particular character, and picking the accent instead of taking the one hashed
-  // from the worker id.
-  character?: string;
+  // The card's accent, instead of the one hashed from the worker id. Optional
+  // and validated renderer-side, so a bad value degrades to the hash.
   accent?: string;
+  // Picked a pixel office cast member, which the app no longer draws. Still
+  // accepted so requests written for it parse, and otherwise ignored.
+  character?: string;
 }
 
 /** Polling cadence — matches the hive router. */
@@ -5121,7 +5117,6 @@ async function processSpawnRequest(filePath: string): Promise<void> {
       command: launch.command,
       role: meta.role,
       worktreePath: res.worktreePath,
-      character: typeof raw.character === 'string' ? raw.character : undefined,
       accent: typeof raw.accent === 'string' ? raw.accent : undefined
     });
   } catch { /* window torn down */ }

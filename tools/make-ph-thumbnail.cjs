@@ -3,7 +3,7 @@
  * Product Hunt thumbnail generator — 240x240 animated GIF.
  *
  * Michael alone, avatar-style, on a light brand ground, glancing around and
- * blinking. Renders the REAL sprite (src/renderer/src/scene/office/portraitArt.ts
+ * blinking. Renders the REAL sprite (tools/logo/portraitArt.ts
  * is procedural pixel art with no DOM dependency outside its paint helper, so it
  * runs straight in Node), then patches the eye pixels per frame.
  *
@@ -17,7 +17,7 @@ const path = require('node:path');
 
 const ROOT = '/Users/chaitanya/dev/claudeTerminalHarness';
 const loadTs = require(path.join(ROOT, 'test/load-ts.cjs'));
-const art = loadTs('src/renderer/src/scene/office/portraitArt.ts');
+const art = loadTs('tools/logo/portraitArt.ts');
 
 const W = 240, H = 240;
 const SW = art.SCENE_W, SH = art.SCENE_H;
