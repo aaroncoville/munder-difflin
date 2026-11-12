@@ -49,11 +49,11 @@ test('the candlelit palette is complete — every ANSI slot and the ground', () 
 
 test('the terminal sits on the same deepest scene ground as its panel', () => {
   // xterm takes literal colours and cannot read a CSS custom property, so this
-  // hex is RE-STATED from occult-tokens.css and would drift silently the first
+  // hex is RE-STATED from the palette in tokens.css and would drift silently the first
   // time the palette moved. Holding the two against each other is the whole
   // reason this assertion reads the stylesheet rather than a second constant.
   const { occultTerminalTheme } = loadTs('src/renderer/src/design/occult/occultTerminal.ts');
-  const css = read('src/renderer/src/design/occult/occult-tokens.css')
+  const css = read('src/renderer/src/design/tokens.css')
     .replace(/\/\*[\s\S]*?\*\//g, '');
   const ground = css.match(/--cth-cream-300:\s*(#[0-9A-Fa-f]{6})/)[1];
   assert.equal(occultTerminalTheme.background.toUpperCase(), ground.toUpperCase(),

@@ -1,42 +1,81 @@
 /* Design tokens — mirrors tokens.ts. Update both together. */
 :root {
-  /* Base */
-  --cth-cream-50:  #FFFDF5;
-  --cth-cream-100: #FFF8E7;
-  --cth-cream-200: #F4E9C7;
-  --cth-cream-300: #E8D9A0;
-  --cth-paper-100: #FCFAF0;
-  --cth-paper-200: #F0EAD2;
+  /* ── Panel palette ─────────────────────────────────────────────────────────
+     Every colour the chrome is painted with: panels, the command centre,
+     settings, dialogs, cards, and (restated as literals in
+     occult/occultTerminal.ts) the terminal and the editor. This block is the
+     one place those colours are set; nothing else declares them. A user can
+     replace any of them at launch with <userData>/panel-palette.json, which
+     is validated and applied as inline properties on <html> (see
+     docs/panel-palette.md).
 
-  /* Ink */
-  --cth-ink-900: #1A1320;
-  --cth-ink-700: #3D2E4A;
-  --cth-ink-500: #6B5878;
-  --cth-ink-300: #A899B5;
-  --cth-ink-100: #D9CFE0;
+     The defaults are the open, MIT-licensed Dracula palette
+     (https://draculatheme.com, spec at /spec):
+       background #282A36   current line #44475A   foreground #F8F8F2
+       comment    #6272A4   cyan #8BE9FD   green #50FA7B   orange #FFB86C
+       pink #FF79C6   purple #BD93F9   red #FF5555   yellow #F1FA8C
+     The palette has one ground, and the elevation ramp needs six, so the
+     values marked DERIVED below are arithmetic on it — a per-channel mix of
+     two palette colours (or of the background and black) at the stated
+     fraction. No other source contributes a colour.
 
-  /* Accents — v0.3.4 recalibration: same hues, professional saturation.
-     The originals (#FFD93D, #FF6B6B, …) were full-saturation arcade tones that
-     read as noise at UI density; these sit in the calmer band that products
-     like Linear/Radix use — recognizable color, no glare. */
-  --cth-coral: #D96A62;       --cth-coral-light: #F3D3CD;
-  --cth-mint:  #5CA97A;       --cth-mint-light:  #D2E7DA;
-  --cth-sky:   #4F9FAF;       --cth-sky-light:   #CFE5E9;
-  --cth-lemon: #DCAB3C;       --cth-lemon-light: #F3E4BC;
-  --cth-lilac: #9482D3;       --cth-lilac-light: #E0DAF2;
-  --cth-peach: #D99168;       --cth-peach-light: #F3DACA;
+     Contrast, measured with WCAG relative luminance over the six surfaces
+     (cream-50..300, paper-100, paper-200):
+       ink-900 11.5-16.1:1   ink-700 7.4-10.4:1   ink-500 5.2-7.2:1
+       ink-300 / hairline 3.7-5.2:1 (the structural border floor is 3.0)
+       on-accent on each accent 4.5-12.7:1, ink-900 on each -light 6.9-10.1:1,
+       ink-900 on gilt-soft (selection) 8.6:1, status-ghost on the ground 3.0:1.
+     test/panel-palette.test.cjs holds every one of these floors. */
 
-  /* Status — same recalibration; hue meanings unchanged */
-  --cth-status-idle:     #A199AB;
-  --cth-status-thinking: #4F9FAF;
-  --cth-status-working:  #DCAB3C;
-  --cth-status-waiting:  #6D87D6;
-  --cth-status-blocked:  #D96A62;
-  --cth-status-success:  #5CA97A;
-  --cth-status-ghost:    #D9D3DE;
-  --cth-status-compacting: #8F7CC7; /* #5C — mid-/compact, "boxing up context" */
-  --cth-status-looping:    #D6903F; /* #5C — circuit-breaker armed (runaway) */
-  --cth-status-typing:     #C89838; /* unsent text on the prompt — queue is held */
+  /* Grounds — darkest is deepest. cream-50 is the app ground and must equal
+     APP_GROUND (src/shared/appGround.ts), which paints the window before the
+     renderer does. */
+  --cth-cream-50:  #282A36;   /* Dracula background */
+  --cth-cream-100: #232530;   /* DERIVED: background 12% toward black */
+  --cth-cream-200: #1E2029;   /* DERIVED: background 24% toward black */
+  --cth-cream-300: #1A1B23;   /* DERIVED: background 36% toward black; terminal and editor ground */
+  --cth-paper-100: #323443;   /* DERIVED: background 35% toward current line; cards, inputs */
+  --cth-paper-200: #21222C;   /* Dracula ANSI black; recessed gutters */
+
+  /* Ink — text, then the structural line, then the receding divider */
+  --cth-ink-900: #F8F8F2;   /* Dracula foreground — primary text */
+  --cth-ink-700: #C4C9D7;   /* DERIVED: foreground 35% toward comment — secondary text */
+  --cth-ink-500: #9EA8C3;   /* DERIVED: foreground 60% toward comment — hints */
+  --cth-ink-300: #808DB4;   /* DERIVED: comment 20% toward foreground — BORDERS, must stay >= 3:1 */
+  --cth-ink-100: #44475A;   /* Dracula current line — dividers, meant to recede */
+
+  /* Accents — the six hue slots take the six palette hues. Each -light is the
+     DERIVED chip / selection fill: the accent 78% toward the background, deep
+     enough for ink-900 to read on top. */
+  --cth-coral: #FF5555;       --cth-coral-light: #57333D;   /* red */
+  --cth-mint:  #50FA7B;       --cth-mint-light:  #315845;   /* green */
+  --cth-sky:   #8BE9FD;       --cth-sky-light:   #3E5462;   /* cyan */
+  --cth-lemon: #F1FA8C;       --cth-lemon-light: #545849;   /* yellow */
+  --cth-lilac: #BD93F9;       --cth-lilac-light: #494161;   /* purple */
+  --cth-peach: #FFB86C;       --cth-peach-light: #574942;   /* orange */
+
+  /* Status — hue meanings unchanged. Ghost is the quietest mark and still has
+     to be findable, so it sits at the 3:1 floor rather than below it. */
+  --cth-status-idle:       #808DB4;   /* = ink-300 */
+  --cth-status-thinking:   #8BE9FD;   /* cyan */
+  --cth-status-working:    #F1FA8C;   /* yellow */
+  --cth-status-waiting:    #BD93F9;   /* purple */
+  --cth-status-blocked:    #FF5555;   /* red */
+  --cth-status-success:    #50FA7B;   /* green */
+  --cth-status-ghost:      #6272A4;   /* comment */
+  --cth-status-compacting: #FF79C6;   /* pink — mid-/compact, "boxing up context" */
+  --cth-status-looping:    #FFB86C;   /* orange — circuit-breaker armed (runaway) */
+  --cth-status-typing:     #F1FA8C;   /* yellow — unsent text on the prompt, queue held */
+
+  /* Text that sits ON an accent fill (a selected tab, a filled chip). The
+     accents are bright, so this is the ground, not the ink. */
+  --cth-on-accent: var(--cth-cream-50);
+
+  /* The hairline that edges panels, the gilt rule that marks dialogs and the
+     focused thing, and the soft gilt that fills a selection. */
+  --cth-hairline: var(--cth-ink-300);
+  --cth-gilt: var(--cth-lilac);
+  --cth-gilt-soft: var(--cth-ink-100);
 
   /* Spacing */
   --cth-space-0: 0px;
@@ -85,30 +124,18 @@
      boxed every surface in thick chrome; structure now comes from surface
      contrast, not outlines. Dialogs keep one slightly stronger line. */
   --cth-panel-border:          inset 0 0 0 1px var(--cth-ink-300);
-  /* Text that sits ON an accent fill (a selected tab, a filled chip). The
-     accents are LIGHT surfaces in BOTH themes, so this is dark in both — using
-     ink-900 here inverts with the theme and paints near-white on a pale accent,
-     which is the one place the theme switch actively hurts legibility. */
-  --cth-on-accent: #1A1320;
-
   --cth-panel-border-inset:    inset 0 0 0 1px var(--cth-ink-100);
   --cth-panel-border-terminal: inset 0 0 0 1px var(--cth-ink-300);
   --cth-panel-border-dialog:   inset 0 0 0 1px var(--cth-ink-500);
 
   /* Theme-shape families. A theme can differ from another in more than colour:
-     corner radius, the weight and hue of a hairline, and how long a transition
-     takes are all part of a dress. These are declared here so components can
-     read them unconditionally, and they are deliberately INERT — radius 0,
-     hairline and gilt aliased to the tokens the components already used, the
-     existing durations — so light and dark render exactly as they did before
-     the families existed. Only a theme block that overrides them changes
-     anything. */
+     corner radius and how long a transition takes are part of a dress too.
+     These are declared here so components can read them unconditionally, and
+     they are INERT (radius 0, the plain durations) until the occult block
+     overrides them. The hairline and gilt colours are in the palette above. */
   --cth-radius-panel: 0px;
   --cth-radius-control: 0px;
   --cth-radius-badge: 0px;
-  --cth-hairline: var(--cth-ink-300);
-  --cth-gilt: var(--cth-lemon);
-  --cth-gilt-soft: var(--cth-lemon-light);
   --cth-dur-slow: 200ms;
   --cth-dur-drift: 1200ms;
   --cth-ease-glide: cubic-bezier(0.4, 0.0, 0.2, 1);

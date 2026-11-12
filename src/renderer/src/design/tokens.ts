@@ -2,45 +2,46 @@
 // Any change here must also update tokens.css.
 
 export const colors = {
+  // The panel palette: open Dracula values plus derived ground steps. The
+  // derivations and contrast figures are written out in tokens.css.
   cream: {
-    50: 0xfffdf5,
-    100: 0xfff8e7,
-    200: 0xf4e9c7,
-    300: 0xe8d9a0
+    50: 0x282a36,
+    100: 0x232530,
+    200: 0x1e2029,
+    300: 0x1a1b23
   },
   paper: {
-    100: 0xfcfaf0,
-    200: 0xf0ead2
+    100: 0x323443,
+    200: 0x21222c
   },
   ink: {
-    900: 0x1a1320,
-    700: 0x3d2e4a,
-    500: 0x6b5878,
-    300: 0xa899b5,
-    100: 0xd9cfe0
+    900: 0xf8f8f2,
+    700: 0xc4c9d7,
+    500: 0x9ea8c3,
+    300: 0x808db4,
+    100: 0x44475a
   },
-  // v0.3.4 recalibration: same hues, professional saturation (mirrors tokens.css)
   accent: {
-    coral: 0xd96a62,
-    coralLight: 0xf3d3cd,
-    mint: 0x5ca97a,
-    mintLight: 0xd2e7da,
-    sky: 0x4f9faf,
-    skyLight: 0xcfe5e9,
-    lemon: 0xdcab3c,
-    lemonLight: 0xf3e4bc,
-    lilac: 0x9482d3,
-    lilacLight: 0xe0daf2,
-    peach: 0xd99168,
-    peachLight: 0xf3daca
+    coral: 0xff5555,
+    coralLight: 0x57333d,
+    mint: 0x50fa7b,
+    mintLight: 0x315845,
+    sky: 0x8be9fd,
+    skyLight: 0x3e5462,
+    lemon: 0xf1fa8c,
+    lemonLight: 0x545849,
+    lilac: 0xbd93f9,
+    lilacLight: 0x494161,
+    peach: 0xffb86c,
+    peachLight: 0x574942
   },
   status: {
-    idle: 0xa199ab,
-    thinking: 0x4f9faf,
-    working: 0xdcab3c,
-    blocked: 0xd96a62,
-    success: 0x5ca97a,
-    ghost: 0xd9d3de
+    idle: 0x808db4,
+    thinking: 0x8be9fd,
+    working: 0xf1fa8c,
+    blocked: 0xff5555,
+    success: 0x50fa7b,
+    ghost: 0x6272a4
   },
   world: {
     grassLight: 0xd4eab0,

@@ -29,15 +29,19 @@ const occult = read('src/renderer/src/design/occult/occult-tokens.css');
 const baseRoot = tokensOf(base, /:root\s*{([\s\S]*?)\n}/);
 const occultRoot = tokensOf(occult, /:root\[data-cth-theme='occult'\]\s*{([\s\S]*?)\n}/);
 
-test('occult redefines every base token', () => {
-  const missing = [...baseRoot].filter((t) => !occultRoot.has(t));
+test('occult restates every base token except the panel palette', () => {
+  // The palette's colours are declared once, in tokens.css, so they can be
+  // swapped in one place (test/panel-palette.test.cjs). Everything else the
+  // base declares is a pre-theme default the occult dress replaces; a token it
+  // forgets keeps that default, which is the pixel face or a zero radius.
+  const palette = /^--cth-(cream|paper|ink|coral|mint|sky|lemon|lilac|peach|status|on-accent|hairline|gilt)\b/;
+  const missing = [...baseRoot].filter((t) => !occultRoot.has(t) && !palette.test(t));
   assert.deepEqual(missing, [], 'tokens the occult theme forgot');
 });
 
 test('occult invents no token the base does not declare', () => {
-  // A token only the occult block knows about is a token light/dark resolve to
-  // nothing — the fallback path is silently broken until someone opens that
-  // screen in the wrong theme.
+  // A token only the occult block knows about has no default, so anything
+  // that reads it before the theme is stamped resolves to nothing.
   const stray = [...occultRoot].filter((t) => !baseRoot.has(t));
   assert.deepEqual(stray, [], 'tokens missing an inert base default');
 });

@@ -190,11 +190,11 @@ test('an assistant the pack cannot cover wears a monogram in the display face', 
 
 // ─── the window before the renderer paints ──────────────────────────────────
 
-test('the window and the boot splash open on the occult ground, not cream', () => {
+test('the window and the boot splash open on the palette ground, not cream', () => {
   const { APP_GROUND } = loadTs('src/shared/appGround.ts');
-  const tokens = read('src/renderer/src/design/occult/occult-tokens.css');
+  const tokens = read('src/renderer/src/design/tokens.css');
   const ground = tokens.match(/--cth-cream-50:\s*(#[0-9A-Fa-f]{6})/)[1];
-  assert.equal(APP_GROUND.toLowerCase(), ground.toLowerCase(), 'the shared ground drifted from the occult token');
+  assert.equal(APP_GROUND.toLowerCase(), ground.toLowerCase(), 'the shared ground drifted from the palette token');
 
   const main = stripComments(read('src/main/index.ts'));
   assert.doesNotMatch(main, /#FFF8E7/i, 'main still opens the window cream');
@@ -202,7 +202,7 @@ test('the window and the boot splash open on the occult ground, not cream', () =
 
   const html = read('src/renderer/index.html');
   const splash = html.match(/#cth-splash\s*\{[^}]*\}/)[0];
-  assert.match(splash, new RegExp(`background:\\s*${APP_GROUND}\\b`, 'i'), 'the boot splash is not on the occult ground');
+  assert.match(splash, new RegExp(`background:\\s*${APP_GROUND}\\b`, 'i'), 'the boot splash is not on the palette ground');
 });
 
 // ─── the Study's failure panel ──────────────────────────────────────────────

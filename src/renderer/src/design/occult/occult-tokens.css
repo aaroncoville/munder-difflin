@@ -1,59 +1,18 @@
 /* ── Occult theme ────────────────────────────────────────────────────────────
-   The whole app in candlelight. Same token swap the dark theme uses — stamped
-   as data-cth-theme='occult' on <html> by design/theme.ts — but a warmer,
-   deeper register: ink-blue night grounds, parchment text, candleflame gold,
-   crimson and a muted teal.
+   Sixth History's dress, stamped as data-cth-theme='occult' on <html> by
+   design/theme.ts. It is the app's only theme.
 
-   EVERY token the base :root declares is redefined here. That is not tidiness,
-   it is the contract: a token this block forgets falls back to the LIGHT value,
-   which lands a cream surface in the middle of a night palette. Enforced by
-   test/occult-tokens.test.cjs, which diffs the two blocks' key sets.
+   COLOUR IS NOT SET HERE. Every colour token lives once, in the panel palette
+   at the top of tokens.css, so the palette can be swapped in one place (and
+   overridden per user by panel-palette.json). This block re-dresses the
+   theme's shape: the display face and its sizes, the shadow, the border
+   recipes, corner radii and motion. A colour token declared here would win
+   over the palette and silently undo a swap; test/panel-palette.test.cjs
+   fails if one appears.
 
-   Contrast is measured, not eyeballed, following the dark theme's precedent:
-   body text clears 4.5:1 and the structural border token (ink-300, the app's
-   whole outline language) clears 3.0:1 on every surface it can appear on —
-   including the lightest, paper-100. */
+   Every token this block declares also has a base default in tokens.css
+   (test/occult-tokens.test.cjs). */
 :root[data-cth-theme='occult'] {
-  /* Base surfaces — deep ink-blue, warmer and more violet than the dark
-     theme's neutral charcoal. Same elevation ramp: darkest where light mode
-     was lightest. */
-  --cth-cream-50:  #221E30;   /* app ground */
-  --cth-cream-100: #1C1828;
-  --cth-cream-200: #171322;
-  --cth-cream-300: #120F1B;
-  --cth-paper-100: #352531;   /* raised aubergine: cards, inputs, terminal */
-  --cth-paper-200: #211923;   /* recessed ink: gutters and quiet panels */
-
-  /* Ink → parchment ramp */
-  --cth-ink-900: #EAE0C8;   /* 11.5-12.0:1 — primary text, aged paper */
-  --cth-ink-700: #C9BEA4;   /*  8.1:1      — secondary text */
-  --cth-ink-500: #99907D;   /*  4.55:1     — tertiary / hints */
-  --cth-ink-300: #786E90;   /*  3.04:1     — BORDERS. must stay >= 3.0 */
-  --cth-ink-100: #3A3450;   /*  1.5:1      — dividers, meant to recede */
-
-  /* Accents — the same six hue slots, dropped into an occult register. Held to
-     a narrow luminance band so no single hue flares against the night. */
-  --cth-coral: #B0524E;       --cth-coral-light: #4A2C31;
-  --cth-mint:  #5F7E5A;       --cth-mint-light:  #2C3A2E;
-  --cth-sky:   #3E7C7B;       --cth-sky-light:   #24393E;
-  --cth-lemon: #C9A227;       --cth-lemon-light: #453A1E;
-  --cth-lilac: #7B6AA8;       --cth-lilac-light: #322C4A;
-  --cth-peach: #C98A4B;       --cth-peach-light: #45321F;
-
-  /* Status — hue meanings unchanged, candlelit values. Ghost is the quietest
-     mark and still has to be FINDABLE (3.2:1); the dark theme learned that the
-     hard way when its ghost measured 1.54:1 and simply vanished. */
-  --cth-status-idle:       #837C99;
-  --cth-status-thinking:   #3E7C7B;
-  --cth-status-working:    #C9A227;
-  --cth-status-waiting:    #6D7CB8;
-  --cth-status-blocked:    #B0524E;
-  --cth-status-success:    #5F7E5A;
-  --cth-status-ghost:      #6A6480;
-  --cth-status-compacting: #7B6AA8;
-  --cth-status-looping:    #C98A4B;
-  --cth-status-typing:     #B8912F;
-
   /* Spacing — geometry is not themed; repeated because the block must be
      complete, not because the values differ. */
   --cth-space-0: 0px;
@@ -105,26 +64,17 @@
      theme rather than only its colour. */
   --cth-shadow-hard: 0 2px 10px rgba(0, 0, 0, 0.55);
 
-  /* Borders. The default hairline goes gilt, so panel edges read as thin gold
-     leaf rather than as grey outline; dialogs get the brighter gilt. */
+  /* Borders. Panel edges take the hairline rather than the plain ink line,
+     and dialogs the brighter gilt. */
   --cth-panel-border:          inset 0 0 0 1px var(--cth-hairline);
   --cth-panel-border-inset:    inset 0 0 0 1px var(--cth-ink-100);
   --cth-panel-border-terminal: inset 0 0 0 1px var(--cth-hairline);
   --cth-panel-border-dialog:   inset 0 0 0 1px var(--cth-gilt);
 
-  /* Text ON an accent fill. The base comment holds this dark because accents
-     are LIGHT surfaces in light and dark alike — here they are mid-dark, so
-     the same reasoning inverts the answer: parchment clears 4.8:1 on coral
-     where the base's near-black would sit at 2.7:1. */
-  --cth-on-accent: #EAE0C8;
-
   /* The theme-shape families come alive. Everywhere else they are inert. */
   --cth-radius-panel: 3px;
   --cth-radius-control: 2px;
   --cth-radius-badge: 2px;
-  --cth-hairline: #8A7440;
-  --cth-gilt: #C9A227;
-  --cth-gilt-soft: #6B5A2E;
   --cth-dur-slow: 320ms;
   --cth-dur-drift: 2400ms;
   --cth-ease-glide: cubic-bezier(0.33, 0, 0.2, 1);
@@ -143,13 +93,13 @@
   --cth-drop-maroon:    #B0524E;
 }
 
-/* The ground itself. global.css lays a cream diagonal noise over body; under
-   occult that gradient is a pale scratch on a night surface, so this replaces
-   it wholesale with a fainter gilt weave. Higher specificity, so import order
-   does not matter. */
+/* The ground itself. global.css lays a cream diagonal noise over body; on a
+   dark ground that gradient is a pale scratch, so this replaces it wholesale
+   with a faint weave in the gilt's hue (Dracula purple, at 4%). Higher
+   specificity, so import order does not matter. */
 :root[data-cth-theme='occult'] body {
   background:
-    repeating-linear-gradient(-45deg, transparent 0 14px, rgba(201, 162, 39, 0.04) 14px 15px),
+    repeating-linear-gradient(-45deg, transparent 0 14px, rgba(189, 147, 249, 0.04) 14px 15px),
     var(--cth-cream-200);
 }
 
@@ -158,17 +108,17 @@
    paint it white with a hairline outline — invisible over a pale input. That
    replacement wears an INKED stroke inside a cream halo, which is sized for a
    cream input and inverts the problem here: on a night ground the halo is what
-   disappears. Same glyph, colours swapped — a parchment stroke inside a dark
-   halo, so it reads on the occult grounds and on the terminal alike. */
+   disappears. Same glyph, colours swapped — a foreground stroke inside a halo
+   of the deepest ground, so it reads on every surface and on the terminal. */
 :root[data-cth-theme='occult'] input,
 :root[data-cth-theme='occult'] textarea,
 :root[data-cth-theme='occult'] [contenteditable='true'] {
-  cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='17' height='18'><g fill='none' stroke='%23120f1b' stroke-width='4' stroke-linecap='round'><path d='M5 2.5h7M8.5 3v12M5 15.5h7'/></g><g fill='none' stroke='%23eae0c8' stroke-width='1.6' stroke-linecap='round'><path d='M5 2.5h7M8.5 3v12M5 15.5h7'/></g></svg>") 8 9, text;
+  cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='17' height='18'><g fill='none' stroke='%231a1b23' stroke-width='4' stroke-linecap='round'><path d='M5 2.5h7M8.5 3v12M5 15.5h7'/></g><g fill='none' stroke='%23f8f8f2' stroke-width='1.6' stroke-linecap='round'><path d='M5 2.5h7M8.5 3v12M5 15.5h7'/></g></svg>") 8 9, text;
 }
 
 /* Selection has no styling anywhere else, so it falls to the UA's blue — the
-   one saturated non-palette colour that can appear on screen under this theme.
-   Gilt-soft is dark enough to leave the parchment text readable on top. */
+   one non-palette colour that could appear on screen. Gilt-soft is Dracula's
+   own selection colour and leaves the text readable on top. */
 :root[data-cth-theme='occult'] ::selection {
   background: var(--cth-gilt-soft);
   color: var(--cth-ink-900);
@@ -176,8 +126,7 @@
 
 /* Focus mode is the app's long-session CLI workspace. Give it one calm ink
    plane, a clearly separated roster, and a gilt rule instead of stacking tan
-   panels around the terminal. These selectors are theme-gated: upstream light
-   and dark remain byte-for-byte in their existing presentation. */
+   panels around the terminal. */
 :root[data-cth-theme='occult'] .cth-focus-shell {
   background: var(--cth-cream-300) !important;
 }
@@ -194,17 +143,19 @@
 }
 
 /* The Librarian and CLI are instruments inside the House, not sheets of
-   simulated paper. Keep their full component trees on the same night ramp as
-   the Study and Focus workspace; parchment remains a text colour only. The
+   simulated paper. Keep their full component trees on the deepest grounds of
+   the ramp, like the Focus workspace; the light ink stays a text colour. The
    local token override is deliberate: other cards retain their normal
    elevation, while every nested command-center control that asks for a paper
-   surface receives ink instead. */
+   surface receives ink instead. The one literal, #15161C, is one DERIVED step
+   below cream-300 (Dracula background 48% toward black); it is not a palette
+   token, so panel-palette.json does not reach it. */
 :root[data-cth-theme='occult'] .cth-librarian-panel {
   --cth-cream-50: var(--cth-cream-200);
   --cth-cream-100: var(--cth-cream-300);
-  --cth-cream-200: #0F0C17;
+  --cth-cream-200: #15161C;
   --cth-paper-100: var(--cth-cream-300);
-  --cth-paper-200: #0F0C17;
+  --cth-paper-200: #15161C;
   background: var(--cth-cream-300) !important;
 }
 :root[data-cth-theme='occult'] .cth-cli-surface {
