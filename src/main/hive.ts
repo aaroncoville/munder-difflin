@@ -519,6 +519,9 @@ export class HiveManager {
   private proxyBridgeScript: string | null = null;
   setProxyBridgeScript(path: string | null): void {
     this.proxyBridgeScript = path;
+    // A build that shipped without the helper would otherwise run every proxy-tier
+    // agent un-proxied with nothing saying why.
+    if (path && !existsSync(path)) console.warn(`[hive] proxy bridge helper missing at ${path}; proxy-tier agents will run without it`);
   }
 
   /**
@@ -739,9 +742,10 @@ export class HiveManager {
     // on every bootstrap so it tracks code changes.
     mkdirSync(join(root, 'bin'), { recursive: true });
     writeFileSync(this.shimPath()!, HOOK_SHIM, 'utf8');
-    // Older builds wrote the proxy-bridge sidecar here. It now runs from the app's
-    // resources, so remove the stale copy rather than leave it looking live.
-    rmSync(join(root, 'bin', 'hive-proxy.cjs'), { force: true });
+    // Older builds also wrote the proxy-bridge sidecar here. A copy left behind is
+    // inert (the bridge runs only from the app's resources) and is deliberately
+    // not removed: an agent can redirect any path under the hive, so deleting
+    // through it could remove a file elsewhere.
     // The bundled-node launcher every shim above is invoked through — MUST be
     // written before any hook installer runs (they probe for it).
     this.writeNodeLauncher();

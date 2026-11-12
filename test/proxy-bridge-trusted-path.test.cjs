@@ -62,14 +62,48 @@ test('with no resource helper configured the bridge does not start, and nothing 
   assert.equal(fs.existsSync(marker), false, 'the hive copy of hive-proxy.cjs was executed');
 });
 
-test('bootstrap no longer writes the helper into the hive, and removes a stale copy', (t) => {
+test('bootstrap does not write the helper into the hive and leaves an old copy alone', (t) => {
   const home = tmp(t, 'md-proxy-boot-');
   const hive = new HiveManager(() => home);
+  hive.ensureHive();
   const stale = path.join(home, 'hive', 'bin', 'hive-proxy.cjs');
-  fs.mkdirSync(path.dirname(stale), { recursive: true });
+  assert.equal(fs.existsSync(stale), false, 'bootstrap wrote the helper into the hive');
   fs.writeFileSync(stale, '// old copy\n');
   hive.ensureHive();
-  assert.equal(fs.existsSync(stale), false);
+  assert.equal(fs.readFileSync(stale, 'utf8'), '// old copy\n');
+});
+
+test('a hive bin folder linked elsewhere: bootstrap leaves the outside hive-proxy.cjs untouched', (t) => {
+  if (process.platform === 'win32') return;
+  const home = tmp(t, 'md-proxy-link-');
+  const outside = tmp(t, 'md-proxy-outside-');
+  const victim = path.join(outside, 'hive-proxy.cjs');
+  fs.writeFileSync(victim, 'not the hive\'s\n');
+  fs.mkdirSync(path.join(home, 'hive'), { recursive: true });
+  fs.symlinkSync(outside, path.join(home, 'hive', 'bin'));
+  new HiveManager(() => home).ensureHive();
+  assert.equal(fs.readFileSync(victim, 'utf8'), 'not the hive\'s\n');
+});
+
+test('a folder where the old helper used to be does not stop bootstrap', (t) => {
+  const home = tmp(t, 'md-proxy-dir-');
+  fs.mkdirSync(path.join(home, 'hive', 'bin', 'hive-proxy.cjs'), { recursive: true });
+  const hive = new HiveManager(() => home);
+  assert.doesNotThrow(() => hive.ensureHive());
+  assert.ok(fs.existsSync(path.join(home, 'hive', 'registry.json')), 'bootstrap stopped before finishing');
+});
+
+test('setting a resource path that does not exist warns once, at set time', (t) => {
+  const warned = [];
+  const real = console.warn;
+  console.warn = (...a) => warned.push(a.join(' '));
+  t.after(() => { console.warn = real; });
+  const hive = new HiveManager(() => null);
+  hive.setProxyBridgeScript(path.join(os.tmpdir(), 'no-such-dir-md', 'hive-proxy.cjs'));
+  assert.equal(warned.filter((w) => w.includes('hive-proxy.cjs')).length, 1);
+  warned.length = 0;
+  hive.setProxyBridgeScript(__filename);
+  assert.deepEqual(warned, []);
 });
 
 test('the resource path resolves under resourcesPath when packaged and under the app in development', () => {
