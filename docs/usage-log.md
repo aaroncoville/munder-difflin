@@ -85,6 +85,8 @@ The roster and `tasks.json` are themselves files agents can write: this rule kee
 
 **Sampled task rows.** `tasks.json` is written directly by the orchestrator, so the app compares one read every 30 s with the previous one. These rows are therefore samples, and carry `sampled: true`: a card that goes `todo -> doing -> done` between two reads appears as one `todo -> done` row, and an ask filed and removed between reads never appears. For the same reason no row claims a time in state: `doing -> done` can hide `doing -> blocked -> done`. The weekly digest takes state hours from the rows' own timestamps and labels them as sampled. Authoritative transition events, one per change, arrive with the pipeline's card log; until then, read these rows as samples.
 
+**Joining a turn to its message:** the router's own `message` row keeps the message id as it is, while the `turn` row has only `triggerRef`. To join them, compute the same ref over the message row's `id`: HMAC-SHA-256 keyed with the secret in the app's data folder (`usage-ref-secret`), first 12 hex. That is possible only on this machine, by design.
+
 **Dollars per turn:** join `turn` spans with `cost-ledger.jsonl` rows for the same agent between `startTs` and `startTs + durationMs` (the `usd` column is cumulative per session, so take positive differences).
 
 **Not logged:** review rounds and verdicts. Today they exist only in message text, so capturing them would mean logging content. They become measurable once verdicts are sent as structured fields.
