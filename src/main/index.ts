@@ -273,6 +273,13 @@ const hive = new HiveManager(
 hive.setProxyBridgeScript(bundledResourcePath('hive-proxy.cjs', {
   isPackaged: app.isPackaged, resourcesPath: process.resourcesPath, appPath: app.getAppPath()
 }));
+// Claude and Codex hooks run outside the agent's sandbox, so their command loads the
+// shim from the app's resources and the node launcher from the app's data folder,
+// never from the hive folder, which every agent can write.
+hive.setHookRuntime(
+  bundledResourcePath('cth-hook.cjs', { isPackaged: app.isPackaged, resourcesPath: process.resourcesPath, appPath: app.getAppPath() }),
+  join(app.getPath('userData'), 'hook-runtime')
+);
 // #7C — operator control state (pause/gate/steer/halt), read by the HookServer
 // when deciding hook returns.
 const control = new ControlRegistry();

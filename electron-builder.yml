@@ -73,6 +73,10 @@ extraResources:
     to: kg.cjs
   - from: src/main/kg-core.cjs
     to: kg-core.cjs
+  # Claude and Codex hook shim. Hooks run outside the agent's sandbox, so the
+  # command loads it from here, never from the hive folder every agent can write.
+  - from: resources/cth-hook.cjs
+    to: cth-hook.cjs
   # Merge-request pipeline agent CLI + its pure-JS core, the same way: agents run
   # `node <resources>/hive-mr.cjs`; the app never runs it.
   - from: resources/hive-mr.cjs

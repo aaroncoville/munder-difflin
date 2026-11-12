@@ -515,6 +515,37 @@ export class HiveManager {
     const root = this.root();
     return root ? join(root, 'bin', 'cth-hook.cjs') : null;
   }
+
+  /** Where Claude and Codex hook commands load from: the shim shipped in the app's
+   *  resources and a node launcher in a folder of the app's own data. Hooks run
+   *  outside the agent's sandbox, so they must not come from the hive folder, which
+   *  every agent can write. Null (no app paths given, or the shipped shim missing)
+   *  keeps the hive/bin copies. */
+  private hookRuntime: { shim: string; launcher: string } | null = null;
+  setHookRuntime(shim: string | null, launcherDir: string | null): void {
+    this.hookRuntime = null;
+    if (!shim || !launcherDir || !isAbsolute(shim) || !isAbsolute(launcherDir)) return;
+    const root = this.root();
+    const under = (p: string): boolean => !!root && (p === root || !relative(root, p).startsWith('..') && !isAbsolute(relative(root, p)));
+    if (under(shim) || under(launcherDir)) { console.warn('[hive] hook runtime refused: it is inside the hive folder'); return; }
+    if (!existsSync(shim)) { console.warn(`[hive] hook shim missing at ${shim}; hooks load from the hive folder`); return; }
+    const launcher = join(launcherDir, process.platform === 'win32' ? 'hive-node.cmd' : 'hive-node');
+    try {
+      mkdirSync(launcherDir, { recursive: true, mode: 0o700 });
+      writeFileSync(launcher, this.nodeLauncherContent(), 'utf8');
+      if (process.platform !== 'win32') chmodSync(launcher, 0o755);
+    } catch (e) { console.error('[hive] hook launcher not written:', e); return; }
+    this.hookRuntime = { shim, launcher };
+  }
+
+  /** The command a Claude or Codex hook runs: quoted for POSIX JSON/TOML, unquoted where quotes do not survive. */
+  private hookCommand(quoted: boolean): string | null {
+    const rt = this.hookRuntime;
+    if (rt) return quoted ? `"${rt.launcher}" "${rt.shim}"` : `${rt.launcher} ${rt.shim}`;
+    const shim = this.shimPath();
+    if (!shim) return null;
+    return quoted ? this.nodeRun(shim) : this.nodeRunUnquoted(shim);
+  }
   /** The proxy-bridge sidecar (qwen): resources/hive-proxy.cjs, shipped with the
    *  app. Set by the main process to the app's own resource path. Never a path
    *  under the hive root: every agent can write there, and the main process
@@ -1107,11 +1138,11 @@ export class HiveManager {
     // Phase 1 — autonomy: attach lifecycle hooks via --settings (no edits to the
     // user's repo) so the agent reports activity and drains its inbox on Stop.
     const sock = this.sockPath();
-    const shim = this.shimPath();
-    if (sock && shim) {
+    const hookCmd = this.hookCommand(true);
+    if (sock && hookCmd) {
       env.HIVE_SOCK = sock;
       const settingsPath = join(dir, 'settings.json');
-      this.writeJson(settingsPath, this.hookSettings(shim, meta.cwd, opts.mcpDefaults, opts.theme, this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs)));
+      this.writeJson(settingsPath, this.hookSettings(hookCmd, meta.cwd, opts.mcpDefaults, opts.theme, this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs)));
       args.push('--settings', settingsPath);
     }
     return { args, env };
@@ -1372,10 +1403,10 @@ export class HiveManager {
     return Array.from(new Set(out));
   }
 
-  private hookSettings(shim: string, cwd: string, cfg: McpDefaultsMap, theme?: 'light' | 'dark', writableDirs: string[] = []): unknown {
-    // Bundled node, NOT bare `node` — see nodeLauncherPath(). Claude runs each of
-    // these through `sh -c` with a stripped PATH, where `node` is often absent.
-    const cmd = this.nodeRun(shim);
+  private hookSettings(cmd: string, cwd: string, cfg: McpDefaultsMap, theme?: 'light' | 'dark', writableDirs: string[] = []): unknown {
+    // `cmd` runs the shim under the bundled node, NOT bare `node` — see
+    // nodeLauncherPath(). Claude runs each of these through `sh -c` with a
+    // stripped PATH, where `node` is often absent.
     const entry = (matcher?: string) => ({
       ...(matcher ? { matcher } : {}),
       hooks: [{ type: 'command', command: cmd }]
@@ -2738,18 +2769,15 @@ export class HiveManager {
       // freeze. Verify any change with codex's own resolver, no model spend:
       // `codex app-server` → initialize → `hooks/list` reports the normalized
       // timeoutSec per event.
-      const shim = this.shimPath();
+      // Preserve the existing Windows .cmd shape: nested command quotes pass
+      // through a different shell stack there (#350). The reported Codex bug
+      // is POSIX, where ordinary shell quoting is both necessary and verified.
+      const command = this.hookCommand(process.platform !== 'win32');
       let config = existsSync(join(userHome, 'config.toml'))
         ? readFileSync(join(userHome, 'config.toml'), 'utf8') : '';
-      if (shim) {
+      if (command) {
         const events = ['PreToolUse', 'PostToolUse', 'Stop', 'SubagentStop',
           'SessionStart', 'UserPromptSubmit', 'PreCompact', 'PostCompact'];
-        // Preserve the existing Windows .cmd shape: nested command quotes pass
-        // through a different shell stack there (#350). The reported Codex bug
-        // is POSIX, where ordinary shell quoting is both necessary and verified.
-        const command = process.platform === 'win32'
-          ? this.nodeRunUnquoted(shim)
-          : this.nodeRun(shim);
         config += '\n# --- munder-hive lifecycle hooks (auto-generated; do not edit) ---\n';
         for (const ev of events) {
           config += `\n[[hooks.${ev}]]\n[[hooks.${ev}.hooks]]\ntype = "command"\ncommand = ${JSON.stringify(command)}\ntimeout = 30\n`;
