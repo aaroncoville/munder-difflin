@@ -24,7 +24,7 @@
        ink-900 11.5-16.1:1   ink-700 7.4-10.4:1   ink-500 5.2-7.2:1
        ink-300 / hairline 3.7-5.2:1 (the structural border floor is 3.0)
        on-accent on each accent 4.5-12.7:1, ink-900 on each -light 6.9-10.1:1,
-       ink-900 on gilt-soft (selection) 8.6:1, status-ghost on the ground 3.0:1.
+       ink-900 on gilt-soft (selection) 8.6:1, status-ghost 3.1:1 or better on every surface, cards included.
      test/panel-palette.test.cjs holds every one of these floors. */
 
   /* Grounds — darkest is deepest. cream-50 is the app ground and must equal
@@ -62,7 +62,8 @@
   --cth-status-waiting:    #BD93F9;   /* purple */
   --cth-status-blocked:    #FF5555;   /* red */
   --cth-status-success:    #50FA7B;   /* green */
-  --cth-status-ghost:      #6272A4;   /* comment */
+  --cth-status-ghost:      #717FAC;   /* DERIVED: comment 10% toward foreground, so the
+                                          archived mark clears 3:1 on cards (paper-100) too */
   --cth-status-compacting: #FF79C6;   /* pink — mid-/compact, "boxing up context" */
   --cth-status-looping:    #FFB86C;   /* orange — circuit-breaker armed (runaway) */
   --cth-status-typing:     #F1FA8C;   /* yellow — unsent text on the prompt, queue held */

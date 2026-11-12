@@ -74,7 +74,7 @@ const EXPECTED = {
   '--cth-status-waiting': DRACULA.purple,
   '--cth-status-blocked': DRACULA.red,
   '--cth-status-success': DRACULA.green,
-  '--cth-status-ghost': DRACULA.comment,
+  '--cth-status-ghost': mix(DRACULA.comment, DRACULA.foreground, 0.1),
   '--cth-status-compacting': DRACULA.pink,
   '--cth-status-looping': DRACULA.orange,
   '--cth-status-typing': DRACULA.yellow,
@@ -462,4 +462,112 @@ test('the documentation lists exactly the tokens the file may set', () => {
   const check = checkPanelPalette(JSON.parse(example[1]));
   assert.equal(check.ok, true);
   assert.equal(Object.keys(check.palette).length, Object.keys(JSON.parse(example[1])).length);
+});
+
+// ─── the read, at the edges ──────────────────────────────────────────────────
+
+test('only a small regular file is read; a pipe, a link or a huge file is refused unread', () => {
+  const { readPanelPalette, PANEL_PALETTE_MAX_BYTES } = loadTs(MAIN);
+  assert.ok(PANEL_PALETTE_MAX_BYTES >= 4096 && PANEL_PALETTE_MAX_BYTES <= 65536);
+  const attempt = (stat) => {
+    const warnings = [];
+    let reads = 0;
+    const palette = readPanelPalette('/x/panel-palette.json', {
+      stat: () => stat,
+      read: () => { reads++; return '{"--cth-cream-50":"#000000"}'; },
+      warn: (m) => warnings.push(m)
+    });
+    return { palette, warnings, reads };
+  };
+  const kinds = {
+    fifo: { isFile: () => false, size: 0 },
+    link: { isFile: () => false, isSymbolicLink: () => true, size: 30 },
+    huge: { isFile: () => true, size: PANEL_PALETTE_MAX_BYTES + 1 }
+  };
+  for (const [kind, stat] of Object.entries(kinds)) {
+    const r = attempt(stat);
+    assert.equal(r.reads, 0, `${kind}: the file was opened`);
+    assert.deepEqual(r.palette, {}, kind);
+    assert.equal(r.warnings.length, 1, kind);
+  }
+  const ok = attempt({ isFile: () => true, size: 40 });
+  assert.equal(ok.reads, 1);
+  assert.deepEqual(ok.palette, { '--cth-cream-50': '#000000' });
+});
+
+test('a real named pipe at the path does not hold the launch', { skip: process.platform === 'win32' }, () => {
+  const fifo = path.join(tmp, 'fifo-case', 'panel-palette.json');
+  fs.mkdirSync(path.dirname(fifo), { recursive: true });
+  require('node:child_process').execFileSync('mkfifo', [fifo]);
+  const r = readWith(fifo);
+  assert.deepEqual(r.palette, {});
+  assert.equal(r.warnings.length, 1);
+});
+
+test('whitespace inside rgb() is a plain space or tab, nothing wider', () => {
+  const { isPaletteColour } = loadTs(SHARED);
+  assert.equal(isPaletteColour('rgb(1, 2,\t3)'), true);
+  for (const v of ['rgb( 1,2,3)', 'rgb(1, 2,3)', 'rgba(1,2,3,　1)', 'rgb(1,2,3\n)']) {
+    assert.equal(isPaletteColour(v), false, JSON.stringify(v));
+  }
+});
+
+test('a file saved with a byte-order mark still applies', () => {
+  const file = paletteFile('﻿{"--cth-cream-50": "#000000"}');
+  const r = readWith(file);
+  assert.deepEqual(r.palette, { '--cth-cream-50': '#000000' });
+  assert.deepEqual(r.warnings, []);
+});
+
+test('the docs say the window fill and splash keep the default ground', () => {
+  const doc = readRaw('docs/panel-palette.md');
+  assert.match(doc, /splash/i);
+  assert.match(doc, /window/i);
+  assert.match(doc, /--cth-cream-50/);
+});
+
+// ─── pairs the floors did not hold ───────────────────────────────────────────
+
+test('the archived mark stays findable on every surface, cards included', () => {
+  const t = resolved();
+  for (const s of ['--cth-cream-50', '--cth-cream-100', '--cth-cream-200', '--cth-cream-300',
+    '--cth-paper-100', '--cth-paper-200']) {
+    const r = contrast(t['--cth-status-ghost'], t[s]);
+    assert.ok(r >= 3, `status-ghost on ${s}: ${r.toFixed(2)}`);
+  }
+  assert.notEqual(t['--cth-status-ghost'], t['--cth-status-idle'], 'archived and idle read the same');
+});
+
+test('a disabled button\'s label clears 4.5:1 on its disabled fill', () => {
+  const src = readRaw('src/renderer/src/components/PixelButton.tsx');
+  const text = src.match(/const disabledText = 'var\((--cth-[\w-]+)\)'/)[1];
+  const fill = src.match(/fill:\s*disabled \? 'var\((--cth-[\w-]+)\)'/)[1];
+  const t = resolved();
+  const r = contrast(t[text], t[fill]);
+  assert.ok(r >= 4.5, `${text} on ${fill}: ${r.toFixed(2)}`);
+});
+
+test('selected terminal text is drawn in its own colour, whatever its ANSI slot', () => {
+  // Bright black on the selection is 1.9:1, so xterm must not keep a cell's
+  // own colour when it is selected: selectionForeground replaces it.
+  const { occultTerminalTheme: term } = loadTs('src/renderer/src/design/occult/occultTerminal.ts');
+  assert.ok(term.selectionForeground, 'selected text keeps its ANSI colour');
+  const r = contrast(term.selectionForeground, term.selectionBackground);
+  assert.ok(r >= 4.5, `selection text: ${r.toFixed(2)}`);
+});
+
+test('ANSI black is a fill, not ink, on the terminal ground', () => {
+  // Programs use black for backgrounds and padding; as text on the ground it
+  // reads at about 1.1:1 in stock Dracula too. Pinned so the choice is a
+  // decision: black must stay distinct from the ground it fills.
+  const { occultTerminalTheme: term } = loadTs('src/renderer/src/design/occult/occultTerminal.ts');
+  assert.notEqual(term.black.toUpperCase(), term.background.toUpperCase());
+  assert.ok(contrast(term.brightBlack, term.background) >= 3, 'bright black, the dim-text slot, is unreadable');
+});
+
+test('global.css carries no colour from the previous theme', () => {
+  const css = read('src/renderer/src/design/global.css');
+  const literals = [...css.matchAll(/#[0-9A-Fa-f]{3,8}\b|rgba?\([^)]*\)/g)].map((m) => m[0]);
+  assert.deepEqual(literals.filter((l) => !/^rgba?\(0,\s*0,\s*0/.test(l)), [],
+    'global.css paints a literal colour; use a token');
 });

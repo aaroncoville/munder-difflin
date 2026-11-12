@@ -22,11 +22,11 @@ html, body, #root {
 }
 
 body {
-  /* tiny diagonal cream noise — pure CSS, no images */
+  /* tiny diagonal noise in the divider ink — pure CSS, no images */
   background-image:
     repeating-linear-gradient(
       45deg,
-      rgba(232, 217, 160, 0.20) 0 1px,
+      color-mix(in srgb, var(--cth-ink-100) 35%, transparent) 0 1px,
       transparent 1px 6px
     );
 }

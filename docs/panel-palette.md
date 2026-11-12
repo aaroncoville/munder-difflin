@@ -42,7 +42,7 @@ it by a per-channel mix of two palette colours (or of the background and black),
 | `--cth-status-waiting` | `#BD93F9` | purple |
 | `--cth-status-blocked` | `#FF5555` | red |
 | `--cth-status-success` | `#50FA7B` | green |
-| `--cth-status-ghost` | `#6272A4` | comment |
+| `--cth-status-ghost` | `#717FAC` | derived: comment 10% toward foreground |
 | `--cth-status-compacting` | `#FF79C6` | pink |
 | `--cth-status-looping` | `#FFB86C` | orange |
 | `--cth-status-typing` | `#F1FA8C` | yellow |
@@ -74,6 +74,13 @@ normally uses its product name, `Munder Difflin`. If you are unsure, it is the f
 holds `updater.log` and `usage/`.
 
 The file is read **once, when the app starts**. Quit and reopen the app after editing it.
+
+The window fill and the boot splash are painted before the file is read, so they keep the default
+ground (`--cth-cream-50`, `#282A36`) for the moment between the window opening and the first render.
+If you override `--cth-cream-50`, expect that brief flash of the default ground at launch.
+
+The file must be a regular file of at most 64 KB. A link, a pipe or anything larger is ignored, with
+one warning, and the defaults apply. A UTF-8 byte-order mark at the start is accepted.
 
 ### Format
 

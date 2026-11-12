@@ -13,7 +13,8 @@
  *
  * - a value is `#RGB`, `#RRGGBB` or `#RRGGBBAA`, or `rgb(r, g, b)` /
  *   `rgba(r, g, b, a)` with integer channels 0-255 and an alpha 0-1, and
- *   nothing else: no names, no `var()`, no `url()`, no whitespace around it;
+ *   nothing else: no names, no `var()`, no `url()`, no whitespace around it,
+ *   and inside the brackets only plain spaces and tabs;
  * - ONE invalid value refuses the whole file, so a typo never yields half a
  *   palette;
  * - a name outside {@link PANEL_PALETTE_TOKENS} is ignored, whatever its value,
@@ -47,8 +48,8 @@ export type PanelPalette = Partial<Record<PanelPaletteToken, string>>;
 const TOKENS: ReadonlySet<string> = new Set(PANEL_PALETTE_TOKENS);
 
 const HEX = /^#(?:[0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$/;
-const RGB = /^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$/;
-const RGBA = /^rgba\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(0|1|0?\.\d{1,4}|1\.0{1,4})\s*\)$/;
+const RGB = /^rgb\([ \t]*(\d{1,3})[ \t]*,[ \t]*(\d{1,3})[ \t]*,[ \t]*(\d{1,3})[ \t]*\)$/;
+const RGBA = /^rgba\([ \t]*(\d{1,3})[ \t]*,[ \t]*(\d{1,3})[ \t]*,[ \t]*(\d{1,3})[ \t]*,[ \t]*(0|1|0?\.\d{1,4}|1\.0{1,4})[ \t]*\)$/;
 
 /** Whether `value` is a colour in one of the accepted forms, and only that. */
 export function isPaletteColour(value: unknown): value is string {

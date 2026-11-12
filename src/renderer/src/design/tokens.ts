@@ -41,7 +41,7 @@ export const colors = {
     working: 0xf1fa8c,
     blocked: 0xff5555,
     success: 0x50fa7b,
-    ghost: 0x6272a4
+    ghost: 0x717fac
   },
   world: {
     grassLight: 0xd4eab0,

@@ -55,7 +55,9 @@ const SOLID_ACCENT = new RegExp(
     `|on\\s*\\?\\s*'var\\(--cth-${ACCENT}\\)'` +
     ')'
 );
-const INK_TEXT = /(^|[^-\w])color\s*:\s*'var\(--cth-ink-900\)'/;
+/** Any pale ink, in any quote style: the primary, secondary and hint inks are
+ *  all near-white on this palette and all vanish on a bright accent. */
+const INK_TEXT = /(^|[^-\w])color\s*:\s*['"`]var\(--cth-ink-(?:900|700|500)\)['"`]/;
 
 /** Chip paints its "on" tone through a variable; read where that variable is set. */
 const CHIP = 'src/renderer/src/components/triggers/ui.tsx';
@@ -69,7 +71,9 @@ test('no text sits in the primary ink on a solid accent fill', () => {
     const src = strip(fs.readFileSync(path.join(ROOT, f), 'utf8'));
     for (const o of styleObjects(src)) {
       // Only the object's own keys: a nested object styles another element.
-      const own = o.body.slice(1, -1).replace(/\{[^{}]*\}/g, '{}');
+      // A template's `${...}` is not an object and must survive, or the
+      // per-agent accent fill would be invisible to the scan.
+      const own = o.body.slice(1, -1).replace(/(?<!\$)\{[^{}]*\}/g, '{}');
       if (SOLID_ACCENT.test(own) && INK_TEXT.test(own)) {
         hits.push(`${f}:${src.slice(0, o.at).split('\n').length}`);
       }
