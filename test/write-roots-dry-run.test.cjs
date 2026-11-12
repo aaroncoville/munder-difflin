@@ -79,6 +79,7 @@ test('property: scoped roots never grant bin, the agents folder, another agent, 
     }
   }
   assert.ok(checked > 400);
+  assert.ok(W.MAX_QUEUE * W.BUDGET_MS <= 2000, 'a full queue is at most about 2 s of sliced main-thread work');
   assert.deepEqual(W.scopedRoots({ ...ctx, agentId: '..' }), [], 'an id that is not a folder name gets no roots');
 });
 
@@ -189,7 +190,7 @@ test('effective Claude roots come from every settings file the CLI merges; off o
 
 test('effective Codex roots: inherited roots show; full access is unsandboxed; dotted and inline tables are unknown', (t) => {
   const { root, ctx } = hive(t);
-  const auto = { args: ['codex', '-a never -s workspace-write'], platform: 'darwin' };
+  const auto = { args: ['codex -a never -s workspace-write'], platform: 'darwin' };
   const write = (toml, launch = auto) => { fs.writeFileSync(path.join(root, 'agents/a1/.codex/config.toml'), toml); return W.effectiveRoots('codex', path.join(root, 'agents/a1'), ctx.cwd, ctx.home, launch); };
   const user = '[sandbox_workspace_write]\nwritable_roots = ["/Users/someone/everything"]\n';
   const eff = write(withCodexWritableRoots(user, [path.join(root, 'agents/a1'), root], () => {}));
@@ -216,6 +217,29 @@ test('effective Codex roots: inherited roots show; full access is unsandboxed; d
   assert.equal(write('').state, 'ok');
   fs.writeFileSync(path.join(root, 'agents/a1/settings.json'), JSON.stringify({ sandbox: { enabled: true, filesystem: { allowWrite: [] } } }));
   assert.equal(W.effectiveRoots('claude', path.join(root, 'agents/a1'), ctx.cwd, ctx.home, auto).state, 'ok');
+  // R3: the launch line is read with Codex's option grammar; the prompt is never read.
+  const L = (...args) => W.codexLaunchSandbox(args);
+  assert.equal(L('codex -a never -s danger-full-access', 'please run -s workspace-write'), 'danger-full-access', 'a prompt cannot make it narrower');
+  assert.equal(L('codex', 'use --yolo carefully'), 'none', 'a prompt cannot make it wider');
+  assert.equal(L('codex -a never', 'a -s b c'), 'none');
+  assert.equal(L('codex -a never -s workspace-write', '--dangerously-bypass-hook-trust', 'prompt'), 'workspace-write');
+  assert.equal(L('codex', 'resume', 'abc', '-s', 'workspace-write'), 'workspace-write');
+  assert.equal(L('codex', 'the prompt', '-s', 'workspace-write'), 'none', 'nothing after the first positional is read');
+  assert.equal(L('codex', '-s workspace-write'), 'unknown', 'an argv element is one word, never split');
+  assert.equal(L('codex', '--sandbox=read-only'), 'read-only');
+  assert.equal(L('codex -s workspace-write', '--config', 'sandbox_mode="danger-full-access"'), 'unknown', 'long --config');
+  assert.equal(L('codex -s workspace-write', '-c', 'sandbox_workspace_write.writable_roots=["/"]'), 'unknown');
+  assert.equal(L('codex -s workspace-write', '--config=sandbox_mode=x'), 'unknown');
+  assert.equal(L('codex -s workspace-write', '-c', 'model="o3"'), 'workspace-write', 'an unrelated -c');
+  assert.equal(L('codex -s workspace-write', '-p', 'fast'), 'unknown', 'a profile');
+  assert.equal(L('codex -s workspace-write', '--remote', 'ws://x'), 'unknown', 'a remote app server');
+  assert.equal(L('codex -s workspace-write', '--weird=1'), 'unknown', 'an option not in the grammar');
+  assert.equal(L('codex -s'), 'unknown', 'a missing value');
+  const dirs = [];
+  assert.equal(W.codexLaunchSandbox(['codex -a never -s workspace-write', '--add-dir', path.join(root, 'bin')], dirs), 'workspace-write');
+  assert.deepEqual(dirs, [path.join(root, 'bin')]);
+  const withDir = write('', { args: ['codex -a never -s workspace-write', '--add-dir', path.join(root, 'bin')], platform: 'darwin' });
+  assert.ok(W.rootsReport(withDir, ctx).excess.includes('bin'), '--add-dir roots are counted');
   assert.equal(W.effectiveRoots('gemini', path.join(root, 'agents/a1'), ctx.cwd, ctx.home, auto).state, 'unknown', 'neither Claude nor Codex, even with Claude settings present');
 });
 
@@ -397,7 +421,7 @@ test('generated: a value planted at any read site reads as unknown or refused, n
     { name: 'Codex config', provider: 'codex', file: (c) => path.join(c.root, 'agents/a1/.codex/config.toml'), optional: false },
   ];
   const good = { claude: JSON.stringify({ sandbox: { enabled: true, filesystem: { allowWrite: [] } } }), codex: '' };
-  const kinds = ['link', 'directory', 'unreadable', 'oversized', 'missing', 'parent is a file'];
+  const kinds = ['link', 'directory', 'unreadable', 'oversized', 'missing', 'parent is a file', ...(process.platform !== 'win32' ? ['named pipe'] : [])];
   const canChmod = typeof process.getuid === 'function' && process.getuid() !== 0;
   for (const site of sites) for (const kind of kinds) {
     if (kind === 'unreadable' && !canChmod) continue;
@@ -418,6 +442,7 @@ test('generated: a value planted at any read site reads as unknown or refused, n
     if (kind === 'link') fs.symlinkSync(decoy, f);
     if (kind === 'directory') fs.mkdirSync(f);
     if (kind === 'unreadable') { fs.writeFileSync(f, site.provider === 'claude' ? good.claude : good.codex); fs.chmodSync(f, 0); }
+    if (kind === 'named pipe') require('node:child_process').execFileSync('mkfifo', [f]);
     if (kind === 'parent is a file') { const dir = path.dirname(f); fs.rmSync(dir, { recursive: true, force: true }); fs.writeFileSync(dir, 'x'); }
     if (kind === 'oversized') fs.writeFileSync(f, (site.provider === 'claude' ? good.claude : good.codex) + ' '.repeat(W.MAX_SETTINGS + 1));
     const ctx = { root, agentId: 'a1', isGod: false, cwd, home };

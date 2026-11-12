@@ -3268,6 +3268,8 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     }
     await enableCodexRemoteForSpawn(opts, opts.hive.id);
   }
+  // The launch line as it is really spawned, after any remote rewrite.
+  if (opts.hive?.id) { const sr = spawnRoots.get(opts.hive.id); if (sr) sr.args = [opts.command, ...(opts.args ?? [])]; }
   const res = ptyManager.spawn(opts, owner);
   if (res.ok) analytics.track('agent_spawned', { provider });
   else analytics.track('agent_spawn_failed', { provider, reason: spawnFailReason(res.error) });

@@ -393,7 +393,8 @@ export function readSettings(file: string): Read {
   if (st.isSymbolicLink() || !st.isFile() || st.size > MAX_SETTINGS) return { kind: 'bad' };
   let fd: number | null = null;
   try {
-    fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    // Non-blocking: a file swapped for a pipe after the lstat must not hold the main process; the handle is judged below.
+    fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
     const f = fstatSync(fd);
     if (!f.isFile() || f.size > MAX_SETTINGS) return { kind: 'bad' };
     const buf = Buffer.alloc(f.size);
@@ -434,17 +435,42 @@ export function codexRoots(toml: string): { roots: string[]; state: RootsState }
   return { roots: [], state: 'ok' };
 }
 
-/** How Codex's sandbox was chosen on its command line: 'none' when no flag says. */
-export function codexLaunchSandbox(args: string[] | undefined): 'workspace-write' | 'read-only' | 'danger-full-access' | 'none' | 'unknown' {
-  const words = (args ?? []).flatMap((a) => (typeof a === 'string' ? a.split(/\s+/) : []));
+/** Codex options that take a value (the next argument, or `--name=value`). */
+const CODEX_VALUE_OPTS = new Set(['-a', '--ask-for-approval', '-s', '--sandbox', '-m', '--model', '-c', '--config', '-p', '--profile',
+  '-C', '--cd', '-i', '--image', '--add-dir', '--remote', '--enable', '--disable', '--local-provider']);
+
+/** How Codex's sandbox was chosen on the launch line the app spawned: the executable's own words
+ *  (from the command string) followed by the argv as given, each argument whole. Options are read
+ *  up to the first argument that is neither an option nor an option's value (the prompt is never
+ *  read). Anything that could change the sandbox in a way not read here is `unknown`: a `-c` on a
+ *  sandbox key, a profile, a remote app server (its own policy is in force), or an option this
+ *  grammar does not know. `--add-dir` directories are collected as roots. 'none' when no option says. */
+export function codexLaunchSandbox(args: string[] | undefined, addDirs: string[] = []): 'workspace-write' | 'read-only' | 'danger-full-access' | 'none' | 'unknown' {
+  const a = (args ?? []).filter((x): x is string => typeof x === 'string');
+  // The first element is the command string, split into its words; the rest are argv elements, whole.
+  const words = [...(a[0] ?? '').trim().split(/\s+/).filter(Boolean), ...a.slice(1)];
   let mode: string | null = null;
-  for (let i = 0; i < words.length; i++) {
+  let i = 1; // words[0] is the executable
+  if (words[i] === 'resume') i += 2; // `resume <session id>`
+  for (; i < words.length; i++) {
     const w = words[i];
-    if (w === '--dangerously-bypass-approvals-and-sandbox' || w === '--yolo') return 'danger-full-access';
-    if (w === '--full-auto') mode = 'workspace-write';
-    else if (w === '-s' || w === '--sandbox') mode = words[i + 1] ?? '';
-    else if (w.startsWith('--sandbox=')) mode = w.slice('--sandbox='.length);
-    else if (w === '-c' && /^sandbox_mode\s*=/.test(words[i + 1] ?? '')) return 'unknown';
+    if (w === '--') break;
+    if (!w.startsWith('-')) break; // the prompt, or another positional: stop reading
+    const eq = w.indexOf('=');
+    const name = w.startsWith('--') && eq !== -1 ? w.slice(0, eq) : w;
+    const value = w.startsWith('--') && eq !== -1 ? w.slice(eq + 1) : null;
+    if (name === '--dangerously-bypass-approvals-and-sandbox' || name === '--yolo') return 'danger-full-access';
+    if (name === '--full-auto') { mode = 'workspace-write'; continue; }
+    if (!CODEX_VALUE_OPTS.has(name)) {
+      if (/^--?[A-Za-z][\w-]*$/.test(name) && value === null) continue; // a plain flag that takes no value
+      return 'unknown';
+    }
+    const v = value ?? words[++i];
+    if (v === undefined) return 'unknown';
+    if (name === '-s' || name === '--sandbox') mode = v;
+    else if ((name === '-c' || name === '--config') && /^\s*"?(sandbox_mode|sandbox_workspace_write)\b/.test(v)) return 'unknown';
+    else if (name === '--add-dir') addDirs.push(v);
+    else if (name === '-p' || name === '--profile' || name === '--remote') return 'unknown';
   }
   if (mode === null) return 'none';
   return mode === 'workspace-write' || mode === 'read-only' || mode === 'danger-full-access' ? mode : 'unknown';
@@ -477,7 +503,8 @@ export function effectiveRoots(provider: string, agentDir: string, cwd: string, 
   const unknown = (source: EffectiveRoots['source']): EffectiveRoots => ({ roots: withCwd([]), state: 'unknown', source });
   if (!SANDBOXED_PLATFORMS.has(launch.platform ?? process.platform)) return unknown(provider === 'codex' ? 'codex-config' : provider === 'claude' ? 'claude-settings-files' : 'none');
   if (provider === 'codex') {
-    const flag = codexLaunchSandbox(launch.args);
+    const addDirs: string[] = [];
+    const flag = codexLaunchSandbox(launch.args, addDirs);
     if (flag === 'danger-full-access') return { roots: withCwd([]), state: 'unsandboxed', source: 'codex-config' };
     if (flag === 'unknown' || flag === 'none') return unknown('codex-config');
     const r = readSettings(join(agentDir, '.codex', 'config.toml'));
@@ -485,7 +512,7 @@ export function effectiveRoots(provider: string, agentDir: string, cwd: string, 
     const c = codexRoots(r.text);
     // The command-line mode outranks the config's; the roots still come from the config.
     if (c.state === 'unknown') return unknown('codex-config');
-    return { roots: withCwd(c.roots), state: 'ok', source: 'codex-config' };
+    return { roots: withCwd([...c.roots, ...addDirs]), state: 'ok', source: 'codex-config' };
   }
   if (provider !== 'claude') return unknown('none');
   // Highest precedence first; the generated file is passed with --settings. Directories merge across files.
@@ -538,8 +565,9 @@ export interface DryRunDeps {
   now?: () => number;
 }
 
-/** Calls waiting to be read. Past this the hook sheds the call and counts it. */
-export const MAX_QUEUE = 256;
+/** Calls waiting to be read. Past this the hook sheds the call and counts it. A full queue is at most
+ *  64 × 25 ms ≈ 1.6 s of main-thread work, in slices with hooks answered between them. */
+export const MAX_QUEUE = 64;
 const MAX_COUNTERS = 2000;
 
 type Pending = { agentId: string; event: string; tool: unknown; input: unknown };
