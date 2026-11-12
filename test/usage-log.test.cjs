@@ -193,3 +193,12 @@ test('a bare ask-submitted is refused; counts must be whole numbers', (t) => {
   assert.equal(log.record({ kind: 'ask-submitted', askKey: 'CARD-1@2026-11-12T10:00:00.000Z', surface: 'ask-me', answerLen: 4, answerShape: 'done-ack' }), true);
   assert.equal(log.record({ kind: 'ui-view-end', view: 'settings', dwellMs: 1.5 }), false);
 });
+
+test('Delete removes the day files and digests the app wrote, and nothing else', (t) => {
+  const { log, dir } = setup(t);
+  log.record({ kind: 'ui-view', view: 'settings' });
+  fs.writeFileSync(path.join(dir, 'digest-2026-W45.md'), '# d\n');
+  fs.writeFileSync(path.join(dir, 'weekly-notes.md'), 'not written by the app');
+  assert.equal(log.deleteAll(), 2);
+  assert.deepEqual(fs.readdirSync(dir), ['weekly-notes.md']);
+});

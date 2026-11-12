@@ -99,7 +99,7 @@ These events have their own daily files, so they can be switched off and deleted
 |---|---|
 | **Where** | `<userData>/usage/`, the app's own data folder (on macOS `~/Library/Application Support/<app name>/usage/`), folder `0700`, files `0600`. Never the hive: the hive is a git repository that agents can read and write, so rows kept there could be read, changed or redirected by an agent and would be committed into its history. The hive's `.gitignore` also lists `usage/` |
 | **Retention** | Files older than 90 days are removed at start and daily |
-| **Off switch and delete** | Settings → General → *Local usage log*; the switch takes effect when Settings is saved. **Delete usage log** removes every daily file in that folder |
+| **Off switch and delete** | Settings → General → *Local usage log*; the switch takes effect when Settings is saved. **Delete usage log** removes what the app wrote in that folder: the daily `YYYY-MM-DD.jsonl` files and the weekly `digest-YYYY-Www.md` files. Any other file there is left alone, since the app did not write it |
 | **Allowlist** | `src/main/usageLog.ts`. Unknown kinds are refused and unknown fields dropped. Every string must be a known enum, a known view, or an agent or card id the app holds, so typed text cannot be written even by a buggy caller |
 | **Outbound** | None. `test/usage-log-not-outbound.test.cjs` proves the analytics module drops every one of these kinds |
 
@@ -109,7 +109,7 @@ Every row carries `ts`, `v` (schema version), `session` (one id per app run), `w
 |---|---|---|
 | `ui-view` | `view`, `agentId?`, `cardId?` | A screen or panel opens: `command-center:<tab>`, `agent-detail:<sidebar tab>`, `settings`, `memory`, `task-detail`, `terminal-fullscreen`. `agentId` only when it is on the roster and `cardId` only when it is in `tasks.json`; otherwise the field is left out and the view still counts |
 | `ui-view-end` | `view`, `dwellMs` | It closes or changes. `dwellMs` counts only time the window was visible and focused |
-| `ask-shown` | `askKey` (`<cardId>@<ISO time>`, card in `tasks.json`; otherwise not written), `surface` (`ask-me`), `ageMs?` | An ask row on the Ask Me board has been on screen, with the window focused at both ends of 1 s (once per ask per window). `ageMs` is the time since it was asked |
+| `ask-shown` | `askKey` (`<cardId>@<ISO time>`, card in `tasks.json`; otherwise not written), `surface` (`ask-me`), `ageMs?` | An ask row on the Ask Me board has been on screen, with the window focused at both ends of 1 s (once per ask per window). If the window was not attended when the row scrolled in, the second starts when attention returns. `ageMs` is the time since it was asked |
 | `ask-submitted` | `askKey`, `surface` (`ask-me`), `answerLen`, `answerShape`, `msSinceShown?` | An answer is sent from the Ask Me board. The text is never copied |
 | `app-focus` | `state` (`focus` / `blur`) | A window gains or loses focus |
 
@@ -127,7 +127,7 @@ At start and once a day, while the usage log is on, the app writes the digest fo
 - dollars by conversation (turn spans joined with the ledger);
 - asks filed and answered, with answer shapes and the medians and p90s of time unseen and time thinking;
 - asks filed but never seen on the Ask Me board;
-- screens by attended time;
+- screens by attended time; a view still open when the app quit (no `ui-view-end`) is counted as open at quit with unknown dwell, not as zero;
 - hours cards spent in each state, from the gaps between a card's consecutive transition rows (a restart breaks the chain; the rows are sampled, so a status passed through between reads gets no hours of its own);
 - heavy-lock waits;
 - canary failures.

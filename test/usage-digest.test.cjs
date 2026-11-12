@@ -81,7 +81,7 @@ test('asks: unseen and thinking times, plus filed-but-never-seen and seen-but-un
 test('screens by dwell, card states, lock waits and canary failures', () => {
   const { log, ledger, usage, cards } = week();
   const s = D.summarize({ log, ledger, usage, cards, start: MON, end: MON + 7 * 86400_000 });
-  assert.deepEqual(s.views, [{ view: 'command-center:human', opens: 1, dwellMs: 3 * MIN }, { view: 'settings', opens: 0, dwellMs: MIN }]);
+  assert.deepEqual(s.views, [{ view: 'command-center:human', opens: 1, dwellMs: 3 * MIN, unclosed: 0 }, { view: 'settings', opens: 0, dwellMs: MIN, unclosed: 0 }]);
   assert.deepEqual(s.stateHours, { doing: 2, blocked: 1 });
   assert.deepEqual(s.lockWaits, { suite: { n: 1, totalMs: 4 * MIN } });
   assert.deepEqual(s.canaryFailures, { 'memory-search': { failed: 1, runs: 2, details: ['refused-422'] } });
@@ -170,4 +170,20 @@ test('conversations are grouped by card and by ref only; a conversation value is
   const s = D.summarize({ log, ledger, usage: [], cards: new Set(['CARD-1']), start: MON, end: MON + 7 * 86400_000 });
   assert.deepEqual(s.usdByConversation, {}, 'a conversation field, or a card not in tasks.json, is not a group');
   assert.doesNotMatch(D.renderDigest(s, '2026-W45'), /c0ffee|CARD-9/);
+});
+
+test('a view still open when the app quit has unknown dwell, not zero; negative durations are ignored', () => {
+  const usage = j([
+    { ts: MON + H, kind: 'ui-view', view: 'settings', session: 's1', win: 1 },
+    { ts: MON + H + MIN, kind: 'ui-view-end', view: 'settings', session: 's1', win: 1, dwellMs: MIN },
+    { ts: MON + 2 * H, kind: 'ui-view', view: 'settings', session: 's1', win: 1 },            // never ended: quit
+    { ts: MON + 3 * H, kind: 'ui-view', view: 'memory', session: 's2', win: 1 },              // never ended
+    { ts: MON + 3 * H, kind: 'ui-view-end', view: 'memory', session: 's3', win: 1, dwellMs: -5 }, // another run, bad value
+    { ts: MON + 4 * H, kind: 'ask-shown', askKey: 'CARD-1@2026-11-02T04:00:00.000Z', ageMs: -1 }
+  ]);
+  const s = D.summarize({ log: [], ledger: [], usage, cards: new Set(['CARD-1']), start: MON, end: MON + 7 * 86400_000 });
+  assert.deepEqual(s.views.find((v) => v.view === 'settings'), { view: 'settings', opens: 2, dwellMs: MIN, unclosed: 1 });
+  assert.deepEqual(s.views.find((v) => v.view === 'memory'), { view: 'memory', opens: 1, dwellMs: 0, unclosed: 1 });
+  assert.equal(s.asks.unseenMedianMs, null);
+  assert.match(D.renderDigest(s, '2026-W45'), /\| settings \| 2 \| 1 \| 1 \|/);
 });

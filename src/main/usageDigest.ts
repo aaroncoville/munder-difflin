@@ -33,6 +33,8 @@ const parse = (lines: string[]): Row[] => {
   return out;
 };
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+/** A duration: finite and not negative, else not used. */
+const dur = (v: unknown): number | null => { const n = num(v); return n !== null && n >= 0 ? n : null; };
 const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
 // The log files sit in the hive folder, which agents can write, so nothing in
 // them is printed because it looks like an id. A printed string must be a known
@@ -155,23 +157,36 @@ export function summarize(i: DigestInput) {
   for (const k of Object.keys(stateHours)) stateHours[k] = Math.round(stateHours[k] * 10) / 10;
 
   const seen = new Set<string>(); const unseen: number[] = []; const thinking: number[] = [];
-  const views = new Map<string, { view: string; opens: number; dwellMs: number }>();
+  const views = new Map<string, { view: string; opens: number; dwellMs: number; unclosed: number }>();
+  // Views opened and not yet ended, per app run and window. Whatever is left at
+  // the end was still open when the app quit or the window closed: its dwell is
+  // unknown, so it is counted apart rather than as zero.
+  const openViews = new Map<string, number>();
+  const runKey = (r: Row, v: string): string => `${typeof r.session === 'string' ? r.session : ''}\u0000${num(r.win) ?? ''}\u0000${v}`;
   for (const r of usage) {
-    if (r.kind === 'ask-shown') { const k = askKey(r.askKey); if (k) seen.add(k); const a = num(r.ageMs); if (a !== null) unseen.push(a); }
-    else if (r.kind === 'ask-submitted') { const m = num(r.msSinceShown); if (m !== null) thinking.push(m); }
+    if (r.kind === 'ask-shown') { const k = askKey(r.askKey); if (k) seen.add(k); const a = dur(r.ageMs); if (a !== null) unseen.push(a); }
+    else if (r.kind === 'ask-submitted') { const m = dur(r.msSinceShown); if (m !== null) thinking.push(m); }
     else if (r.kind === 'ui-view' || r.kind === 'ui-view-end') {
       const v = view(r.view); if (!v) continue;
-      const e = views.get(v) ?? views.set(v, { view: v, opens: 0, dwellMs: 0 }).get(v)!;
-      if (r.kind === 'ui-view') e.opens++; else e.dwellMs += num(r.dwellMs) ?? 0;
+      const e = views.get(v) ?? views.set(v, { view: v, opens: 0, dwellMs: 0, unclosed: 0 }).get(v)!;
+      const key = runKey(r, v);
+      if (r.kind === 'ui-view') { e.opens++; openViews.set(key, (openViews.get(key) ?? 0) + 1); }
+      else {
+        e.dwellMs += dur(r.dwellMs) ?? 0;
+        const n = openViews.get(key) ?? 0;
+        if (n > 1) openViews.set(key, n - 1); else openViews.delete(key);
+      }
     }
   }
+  const unclosedOf = (view: string): number =>
+    [...openViews].reduce((n, [k, c]) => (k.endsWith(`\u0000${view}`) ? n + c : n), 0);
   const canaryFailures: Record<string, { failed: number; runs: number; details: string[] }> = {};
   for (const [f, c] of Object.entries(canaries)) if (c.failed) canaryFailures[f] = { failed: c.failed, runs: c.runs, details: [...c.details].sort() };
 
   return {
     turnsByTrigger, usdByConversation, stateHours, lockWaits, canaryFailures,
     canaryFeatures: Object.keys(canaries).sort(),
-    views: [...views.values()].sort((a, b) => b.dwellMs - a.dwellMs || b.opens - a.opens),
+    views: [...views.values()].map((v) => ({ ...v, unclosed: unclosedOf(v.view) })).sort((a, b) => b.dwellMs - a.dwellMs || b.opens - a.opens),
     asks: {
       filed: filed.length, answered, shapes,
       unseenMedianMs: quantile(unseen, 0.5), unseenP90Ms: quantile(unseen, 0.9),
@@ -194,8 +209,8 @@ export function renderDigest(s: ReturnType<typeof summarize>, label: string): st
     `- Time unseen (asked to first seen): median ${mins(s.asks.unseenMedianMs)}, p90 ${mins(s.asks.unseenP90Ms)}.`,
     `- Time thinking (seen to answered): median ${mins(s.asks.thinkingMedianMs)}, p90 ${mins(s.asks.thinkingP90Ms)}.`,
     `- Filed this week and never seen on the Ask Me board: ${s.asks.neverSeen.length ? s.asks.neverSeen.map((k) => `\`${k}\``).join(', ') : 'none'}.`);
-  out.push('', '## Screens by attended time', '', '| view | opens | minutes |', '|---|---|---|');
-  for (const v of s.views) out.push(`| ${v.view} | ${v.opens} | ${Math.round(v.dwellMs / 60_000)} |`);
+  out.push('', '## Screens by attended time', '', 'Opens still open when the app quit have unknown dwell and are not in the minutes.', '', '| view | opens | minutes | open at quit |', '|---|---|---|---|');
+  for (const v of s.views) out.push(`| ${v.view} | ${v.opens} | ${Math.round(v.dwellMs / 60_000)} | ${v.unclosed} |`);
   out.push('', '## Hours cards spent in each state (closed spells)', '', '| state | hours |', '|---|---|');
   for (const [k, v] of Object.entries(s.stateHours)) out.push(`| ${k} | ${v} |`);
   out.push('', '## Heavy-lock waits', '', '| kind | waits | total minutes |', '|---|---|---|');

@@ -51,22 +51,37 @@ export function AskSeen({ askKey, askedAt }: { askKey: string; askedAt?: string 
     const el = ref.current;
     if (!el || shownAt.has(askKey) || typeof IntersectionObserver === 'undefined') return;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    const obs = new IntersectionObserver(([entry]) => {
-      if (entry?.isIntersecting && attending()) {
-        timer ??= setTimeout(() => {
-          timer = null;
-          // Still attending when the second is up, not only when the row scrolled in.
-          if (!attending()) return;
-          const now = Date.now();
-          shownAt.set(askKey, now);
-          const asked = askedAt ? Date.parse(askedAt) : NaN;
-          send({ kind: 'ask-shown', askKey, surface: 'ask-me', ...(Number.isFinite(asked) && now >= asked ? { ageMs: now - asked } : {}) });
-          obs.disconnect();
-        }, 1000);
-      } else if (timer) { clearTimeout(timer); timer = null; }
-    });
+    let onScreen = false;
+    const disarm = (): void => { if (timer) { clearTimeout(timer); timer = null; } };
+    // Start the one-second clock whenever the row is on screen and the window
+    // is attended; attention can return after the row scrolled in, so focus and
+    // visibility changes re-arm it too.
+    const arm = (): void => {
+      if (!onScreen || !attending() || shownAt.has(askKey)) { disarm(); return; }
+      timer ??= setTimeout(() => {
+        timer = null;
+        // Still attending when the second is up, not only when it started.
+        if (!onScreen || !attending() || shownAt.has(askKey)) return;
+        const now = Date.now();
+        shownAt.set(askKey, now);
+        const asked = askedAt ? Date.parse(askedAt) : NaN;
+        send({ kind: 'ask-shown', askKey, surface: 'ask-me', ...(Number.isFinite(asked) && now >= asked ? { ageMs: now - asked } : {}) });
+        stop();
+      }, 1000);
+    };
+    const obs = new IntersectionObserver(([entry]) => { onScreen = !!entry?.isIntersecting; arm(); });
+    const stop = (): void => {
+      obs.disconnect();
+      window.removeEventListener('focus', arm);
+      window.removeEventListener('blur', arm);
+      document.removeEventListener('visibilitychange', arm);
+      disarm();
+    };
+    window.addEventListener('focus', arm);
+    window.addEventListener('blur', arm);
+    document.addEventListener('visibilitychange', arm);
     obs.observe(el);
-    return () => { obs.disconnect(); if (timer) clearTimeout(timer); };
+    return stop;
   }, [askKey, askedAt]);
   return <span ref={ref} aria-hidden style={{ display: 'block', width: 0, height: 0 }} />;
 }
