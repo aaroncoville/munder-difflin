@@ -15,12 +15,31 @@
  * tasks.json), so free text (message, question, answer, typed input) cannot be
  * written even by a buggy caller.
  */
-import { appendFileSync, chmodSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
+import { appendFileSync, chmodSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export const RETENTION_DAYS = 90;
 const SCHEMA = 1;
 const DAY_FILE = /^(\d{4}-\d{2}-\d{2})\.jsonl$/;
+const DIGEST_FILE = /^digest-(\d{4})-W(\d{2})\.md$/;
+/** Written by Delete: the time of the last delete. A weekly digest is never
+ *  written for a week that started before it, so a delete stays a delete. */
+export const DELETE_MARKER = '.deleted-at';
+
+/** The time of the last Delete in a usage folder, or null when there was none. */
+export function deletedAt(dir: string): number | null {
+  try {
+    const t = Number(readFileSync(join(dir, DELETE_MARKER), 'utf8').trim());
+    return Number.isSafeInteger(t) && t > 0 ? t : null;
+  } catch { return null; }
+}
+
+/** Monday 00:00 UTC of ISO week `week` of `year`. */
+function isoWeekStart(year: number, week: number): number {
+  const jan4 = Date.UTC(year, 0, 4);
+  const week1 = jan4 - ((new Date(jan4).getUTCDay() + 6) % 7) * 86_400_000;
+  return week1 + (week - 1) * 7 * 86_400_000;
+}
 
 export const VIEWS = [
   ...['terminal', 'floor', 'tasks', 'human', 'triggers', 'trigger-history', 'memory', 'graph', 'activity', 'skills', 'workers']
@@ -138,7 +157,7 @@ export class UsageLog {
     } catch { return false; }
   }
 
-  /** Remove daily files older than RETENTION_DAYS; returns how many were removed. */
+  /** Remove daily files and digests older than RETENTION_DAYS; returns how many were removed. */
   prune(): number {
     const dir = this.dir(false);
     if (!dir) return 0;
@@ -148,18 +167,28 @@ export class UsageLog {
     try { names = readdirSync(dir); } catch { return 0; }
     for (const name of names) {
       const m = DAY_FILE.exec(name);
-      if (m && m[1] < cutoff) { try { rmSync(join(dir, name)); removed++; } catch { /* keep going */ } }
+      const d = DIGEST_FILE.exec(name);
+      // A digest goes once its whole week is older than the window.
+      const old = (m && m[1] < cutoff) || (d && new Date(isoWeekStart(Number(d[1]), Number(d[2])) + 7 * 86_400_000).toISOString().slice(0, 10) < cutoff);
+      if (old) { try { rmSync(join(dir, name)); removed++; } catch { /* keep going */ } }
     }
     return removed;
   }
 
-  /** Delete every daily usage file (the Settings button); returns how many. */
+  /**
+   * Delete every daily usage file and weekly digest (the Settings button) and
+   * record when, so no digest is rebuilt for a week that started before now.
+   * Any other file in the folder is left alone. Returns how many were removed.
+   */
   deleteAll(): number {
-    const dir = this.dir(false);
+    const dir = this.dir(true);
     if (!dir) return 0;
+    try { writeFileSync(join(dir, DELETE_MARKER), String(this.now()), { mode: 0o600 }); } catch { /* still delete */ }
     let removed = 0;
-    for (const name of readdirSync(dir)) {
-      if (DAY_FILE.test(name)) { try { rmSync(join(dir, name)); removed++; } catch { /* keep going */ } }
+    let names: string[];
+    try { names = readdirSync(dir); } catch { return 0; }
+    for (const name of names) {
+      if (DAY_FILE.test(name) || DIGEST_FILE.test(name)) { try { rmSync(join(dir, name)); removed++; } catch { /* keep going */ } }
     }
     return removed;
   }

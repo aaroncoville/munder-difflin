@@ -98,8 +98,8 @@ These events have their own daily files, so they can be switched off and deleted
 | | |
 |---|---|
 | **Where** | `<userData>/usage/`, the app's own data folder (on macOS `~/Library/Application Support/<app name>/usage/`), folder `0700`, files `0600`. Never the hive: the hive is a git repository that agents can read and write, so rows kept there could be read, changed or redirected by an agent and would be committed into its history. The hive's `.gitignore` also lists `usage/` |
-| **Retention** | Files older than 90 days are removed at start and daily |
-| **Off switch and delete** | Settings → General → *Local usage log*; the switch takes effect when Settings is saved. **Delete usage log** removes every daily file in that folder |
+| **Retention** | Day files and weekly digests older than 90 days are removed at start and daily |
+| **Off switch and delete** | Settings → General → *Local usage log*; the switch takes effect when Settings is saved. **Delete usage log** removes what the app wrote in that folder: the daily `YYYY-MM-DD.jsonl` files and the weekly `digest-YYYY-Www.md` files. Any other file there is left alone, since the app did not write it. Delete also records its time in `.deleted-at`, and no digest is ever written for a week that began before it, so a delete stays a delete |
 | **Allowlist** | `src/main/usageLog.ts`. Unknown kinds are refused and unknown fields dropped. Every string must be a known enum, a known view, or an agent or card id the app holds, so typed text cannot be written even by a buggy caller |
 | **Outbound** | None. `test/usage-log-not-outbound.test.cjs` proves the analytics module drops every one of these kinds |
 
@@ -109,7 +109,7 @@ Every row carries `ts`, `v` (schema version), `session` (one id per app run), `w
 |---|---|---|
 | `ui-view` | `view`, `agentId?`, `cardId?` | A screen or panel opens: `command-center:<tab>`, `agent-detail:<sidebar tab>`, `settings`, `memory`, `task-detail`, `terminal-fullscreen`. `agentId` only when it is on the roster and `cardId` only when it is in `tasks.json`; otherwise the field is left out and the view still counts |
 | `ui-view-end` | `view`, `dwellMs` | It closes or changes. `dwellMs` counts only time the window was visible and focused |
-| `ask-shown` | `askKey` (`<cardId>@<ISO time>`, card in `tasks.json`; otherwise not written), `surface` (`ask-me`), `ageMs?` | An ask row on the Ask Me board has been on screen, with the window focused at both ends of 1 s (once per ask per window). `ageMs` is the time since it was asked |
+| `ask-shown` | `askKey` (`<cardId>@<ISO time>`, card in `tasks.json`; otherwise not written), `surface` (`ask-me`), `ageMs?` | An ask row on the Ask Me board has been on screen, with the window focused at both ends of 1 s (once per ask per window). If the window was not attended when the row scrolled in, the second starts when attention returns. `ageMs` is the time since it was asked |
 | `ask-submitted` | `askKey`, `surface` (`ask-me`), `answerLen`, `answerShape`, `msSinceShown?` | An answer is sent from the Ask Me board. The text is never copied |
 | `app-focus` | `state` (`focus` / `blur`) | A window gains or loses focus |
 
@@ -119,3 +119,21 @@ Every row carries `ts`, `v` (schema version), `session` (one id per app run), `w
 - An ask shown with no answer was seen and left.
 
 **Not logged:** keystrokes, typed text, clipboard, window titles, screenshots, and anything outside the app.
+
+## Weekly digest (`<userData>/usage/digest-YYYY-Www.md`)
+
+At start and once a day, while the usage log is on, the app writes the digest for the last full ISO week (UTC) if it does not exist yet. It is plain markdown built by code, with no model call and no network. It covers:
+- agent turns and dollars by trigger;
+- dollars by conversation (turn spans joined with the ledger);
+- asks filed and answered, with answer shapes and the medians and p90s of time unseen and time thinking;
+- asks filed in the week and not seen on the Ask Me board by the time the digest was written (the first 50 keys, then a count);
+- screens by attended time; a view still open at the end of the week or when the app quit (no `ui-view-end`) is counted apart, with unknown dwell, not as zero;
+
+When no owner-side day file covers the week (the log was off, or deleted), the owner-side parts (screens, time unseen and thinking, never seen) say "no data" instead of reporting empty results. Filed and answered asks count by the same rule: a valid key on a card that `tasks.json` holds.
+- hours cards spent in each state, from the gaps between a card's consecutive transition rows (a restart breaks the chain; the rows are sampled, so a status passed through between reads gets no hours of its own);
+- heavy-lock waits;
+- canary failures.
+
+The hive's log and `tasks.json` are files agents can write, so the digest never prints a string because it looks like an id. It prints only known values (triggers, statuses, answer shapes, views, lock kinds, canary features, and failure codes from a fixed list, with anything else shown as `other`), card ids that are id tokens and present in the current `tasks.json` (a turn's `cardId` and ask keys, whose time must be a real ISO time), and `ref:<hex>` for a conversation logged as a keyed ref. Dollars by conversation are grouped by those two only. The digest never joins a turn to its `message` row, so it needs neither the message id nor the ref secret.
+
+It reads the hive log backwards, only as far as the week needs. The cost ledger is not in time order (an idle agent's unchanged row is re-appended with its old time), so it is read forward in full, in chunks, keeping each session's last row before the week as its baseline; this is one pass on the main process once a week and grows with the ledger. It only reads the hive (`log.jsonl`, `cost-ledger.jsonl`, `tasks.json`); the digest is written beside the owner's usage files in the app's data folder, never into the hive. The file is `0600` and is never rewritten. **Delete usage log** in Settings removes digests too. The daily research pass reads only the newest `digest-*.md` in `<userData>/usage/` (on macOS `~/Library/Application Support/<app name>/usage/`), never the raw `YYYY-MM-DD.jsonl` day files beside it, and never writes there.
