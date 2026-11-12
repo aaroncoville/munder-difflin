@@ -25,6 +25,7 @@ import {
 } from 'node:fs';
 import { join, dirname, basename, isAbsolute, relative, resolve as resolvePath } from 'node:path';
 import { homedir } from 'node:os';
+import { claudeLaunch, codexLaunchSandbox, launchExecutable, launchPlaces } from './launchLine';
 import { HookRuntimeUnavailable, hookCommandFor, overlaps, rootOverlap, stageHookRuntime, unsafePathReason, verifyHookRuntime, type StagedHookRuntime, type WriteRoot } from './hookRuntime';
 import { spawnSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
@@ -214,6 +215,11 @@ export interface Registry {
 }
 
 /** Build env + extra spawn args that make an agent process hive-aware. */
+/** A launch as the spawn will make it: argv[0] is the command string, then its arguments; env holds only the variables that move configuration. */
+export interface HookLaunch { argv: string[]; env: Record<string, string> }
+/** What ensureAgent decided for a Claude or Codex spawn, carried to the late check. */
+export interface HookVerdict { agentId: string; kind: 'claude' | 'codex'; rt: StagedHookRuntime; rootPaths: string[]; claudeUserDir?: string; dir: string; isNew: boolean }
+
 export interface SpawnInjection {
   args: string[];
   env: Record<string, string>;
@@ -530,6 +536,14 @@ export class HiveManager {
   /** Agents whose last spawn was refused because they could reach the folder: per agent, not the floor's state. */
   private hookRuntimeRefused = new Map<string, { reason: string; at: number }>();
   private warnedNoRuntime = false;
+  /** The verdict ensureAgent reached for each agent, for the late check before its terminal starts. */
+  private hookVerdicts = new Map<string, HookVerdict>();
+  /** The verdict for an agent's current spawn, removed as it is taken. */
+  takeHookVerdict(agentId: string): HookVerdict | undefined {
+    const v = this.hookVerdicts.get(agentId);
+    this.hookVerdicts.delete(agentId);
+    return v;
+  }
   /** The machine-wide Claude settings file (a field so a test can point it elsewhere). */
   private managedClaudeSettings = process.platform === 'darwin' ? '/Library/Application Support/ClaudeCode/managed-settings.json'
     : process.platform === 'win32' ? 'C:\\ProgramData\\ClaudeCode\\managed-settings.json' : '/etc/claude-code/managed-settings.json';
@@ -577,7 +591,7 @@ export class HiveManager {
   }
   /** The runtime for one agent's spawn, or null when no folder is configured (then no hook command
    *  is written, and that is logged once). Throws HookRuntimeUnavailable, naming what to change. */
-  private runtimeFor(agentId: string, roots: WriteRoot[], bare = false): StagedHookRuntime | null {
+  private runtimeFor(agentId: string, roots: WriteRoot[], bare = false, refusal: string | null = null): StagedHookRuntime | null {
     if (!this.hookRuntimeDir) {
       if (!this.warnedNoRuntime) {
         this.warnedNoRuntime = true;
@@ -587,7 +601,7 @@ export class HiveManager {
     }
     const rt = this.stagedRuntime();
     const unsafe = bare ? unsafePathReason(rt.dir, process.platform, true) : null;
-    const why = unsafe ? `${unsafe}: ${rt.dir}` : rootOverlap(rt, roots);
+    const why = refusal ?? (unsafe ? `${unsafe}: ${rt.dir}` : rootOverlap(rt, roots));
     if (why) {
       // This agent's problem, not the floor's: the folder itself is fine.
       this.hookRuntimeRefused.set(agentId, { reason: why, at: Date.now() });
@@ -628,12 +642,12 @@ export class HiveManager {
   }
   /** Write roots a Claude session merges: managed settings and its drop-in folder, the user's (in CLAUDE_CONFIG_DIR when
    *  that is set), and the project's. */
-  private claudeSettingsRoots(cwd: string): WriteRoot[] {
+  private claudeSettingsRoots(cwd: string, userDirOverride?: string): WriteRoot[] {
     const managed = this.managedClaudeSettings;
     const dropIns: string[] = [];
     const dropDir = join(dirname(managed), 'managed-settings.d');
     try { for (const n of readdirSync(dropDir).sort()) if (n.endsWith('.json')) dropIns.push(join(dropDir, n)); } catch { /* none */ }
-    const userDir = process.env.CLAUDE_CONFIG_DIR && isAbsolute(process.env.CLAUDE_CONFIG_DIR) ? process.env.CLAUDE_CONFIG_DIR : join(homedir(), '.claude');
+    const userDir = userDirOverride ?? (process.env.CLAUDE_CONFIG_DIR && isAbsolute(process.env.CLAUDE_CONFIG_DIR) ? process.env.CLAUDE_CONFIG_DIR : join(homedir(), '.claude'));
     const files = [managed, ...dropIns, join(userDir, 'settings.json'), ...(cwd ? [join(cwd, '.claude', 'settings.json'), join(cwd, '.claude', 'settings.local.json')] : [])];
     const out: WriteRoot[] = [];
     for (const f of files) {
@@ -694,12 +708,95 @@ export class HiveManager {
     return out;
   }
   /** Every root a Claude or Codex agent's sandbox may write, labelled with where it comes from. */
-  private agentRoots(meta: AgentMeta, dir: string, root: string, extra: string[] | undefined, kind: 'claude' | 'codex'): WriteRoot[] {
+  private agentRoots(meta: AgentMeta, dir: string, root: string, extra: string[] | undefined, kind: 'claude' | 'codex', claudeUserDir?: string): WriteRoot[] {
     return [
       { path: meta.cwd, from: 'its working directory' },
       ...this.sandboxWritableDirs(meta, dir, root, extra).map((p) => ({ path: p, from: 'the write roots the app gives it' })),
-      ...(kind === 'claude' ? this.claudeSettingsRoots(meta.cwd) : this.codexUserRoots(meta.cwd)),
+      ...(kind === 'claude' ? this.claudeSettingsRoots(meta.cwd, claudeUserDir) : this.codexUserRoots(meta.cwd)),
     ];
+  }
+  /** Every root a launch would give the agent, from its launch line, its final environment and its settings files; or
+   *  why the launch cannot be modelled. Reads files, writes nothing. With no launch given (a direct caller, not the
+   *  app's spawn path) only the files are read; the app always gives one, and checks the final one again before spawning. */
+  verdictRoots(meta: AgentMeta, dir: string, root: string, extra: string[] | undefined, launch?: HookLaunch): { roots: WriteRoot[]; claudeUserDir?: string } | { refuse: string } {
+    const kind = this.hookKind(meta);
+    if (!kind) return { roots: [] };
+    if (!launch) return { roots: this.agentRoots(meta, dir, root, extra, kind) };
+    const exe = launchExecutable(launch.argv);
+    if (exe !== kind) return { refuse: `its launch line does not run ${kind} itself (it starts with ${JSON.stringify((launch.argv[0] ?? '').trim().split(/\s+/)[0] ?? '')})` };
+    const places = launchPlaces(kind, launch.env, homedir());
+    if ('unknown' in places) return { refuse: `its environment moves the CLI's configuration in a way the app does not model: ${places.unknown}` };
+    const addDirs: string[] = [];
+    if (kind === 'claude') {
+      if (claudeLaunch(launch.argv, join(dir, 'settings.json'), addDirs) === 'unknown') return { refuse: 'its launch line has an option the app does not model' };
+    } else {
+      const mode = codexLaunchSandbox(launch.argv, addDirs);
+      if (mode === 'danger-full-access') return { refuse: 'its launch line turns the Codex sandbox off' };
+      if (mode === 'none') return { refuse: 'its launch line does not choose a Codex sandbox (-s)' };
+      if (mode === 'unknown') return { refuse: 'its launch line has an option the app does not model' };
+    }
+    return {
+      roots: [...this.agentRoots(meta, dir, root, extra, kind, kind === 'claude' ? places.claudeUserDir : undefined),
+        ...addDirs.map((p) => ({ path: this.settingsRoot(p, meta.cwd), from: 'its launch line (--add-dir)' }))],
+      ...(kind === 'claude' ? { claudeUserDir: places.claudeUserDir } : {}),
+    };
+  }
+  /** Decide once, before anything for this agent is created: the runtime it will use and the roots it was checked
+   *  against. Throws HookRuntimeUnavailable naming the cause. Null when the agent gets no app hook command, or no
+   *  runtime folder is set. */
+  private hookVerdict(meta: AgentMeta, dir: string, root: string, extra: string[] | undefined, launch: HookLaunch | undefined, isNew: boolean): HookVerdict | null {
+    const kind = this.hookKind(meta);
+    if (!kind) return null;
+    const r = this.verdictRoots(meta, dir, root, extra, launch);
+    const rt = this.runtimeFor(meta.id, 'refuse' in r ? [] : r.roots, kind === 'codex' && process.platform === 'win32', 'refuse' in r ? r.refuse : null);
+    if (!rt || 'refuse' in r) return null;
+    return { agentId: meta.id, kind, rt, rootPaths: r.roots.map((x) => x.path).filter((x): x is string => !!x), claudeUserDir: r.claudeUserDir, dir, isNew };
+  }
+  /** The late check, just before the terminal starts: the FINAL launch line and environment must imply nothing the
+   *  verdict did not check. Reads no settings files (the verdict is the snapshot). A refusal here rolls back a new agent's
+   *  folder and registry row and logs that it did. */
+  confirmHookLaunch(v: HookVerdict | undefined, argv: string[], env: Record<string, string>): void {
+    if (!v) return;
+    const fail = (why: string): never => { this.rollbackSpawn(v, why); throw new HookRuntimeUnavailable(why); };
+    try { verifyHookRuntime(v.rt); } catch (e) { fail((e as Error).message); }
+    if (launchExecutable(argv) !== v.kind) fail(`its final launch line does not run ${v.kind} itself`);
+    const addDirs: string[] = [];
+    if (v.kind === 'claude') {
+      const places = launchPlaces('claude', env, homedir());
+      if ('unknown' in places) fail(`its final environment cannot be modelled: ${places.unknown}`);
+      else if (places.claudeUserDir !== v.claudeUserDir) fail(`its final environment moved Claude's settings to ${places.claudeUserDir}`);
+      if (claudeLaunch(argv, join(v.dir, 'settings.json'), addDirs) === 'unknown') fail('its final launch line has an option the app does not model');
+    } else {
+      // The app's own remote rewrite: the app server runs from the same generated config the verdict checked.
+      const a = [...argv];
+      const k = a.indexOf('--remote');
+      if (k > 0 && k + 1 < a.length) a.splice(k, 2);
+      const mode = codexLaunchSandbox(a, addDirs);
+      if (mode !== 'workspace-write' && mode !== 'read-only') fail('its final launch line does not keep the Codex sandbox it was checked with');
+    }
+    const checked = new Set(v.rootPaths.map((p) => resolvePath(p)));
+    for (const d of addDirs) {
+      const p = this.settingsRoot(d, '');
+      if (!p || !checked.has(resolvePath(p))) fail(`its final launch line adds a write root that was not checked: ${d}`);
+    }
+  }
+  /** Undo what ensureAgent did for an agent it created in this spawn. An agent that already existed keeps its row. */
+  private rollbackSpawn(v: HookVerdict, why: string): void {
+    try {
+      this.hookRuntimeRefused.set(v.agentId, { reason: why, at: Date.now() });
+      if (v.isNew) {
+        const root = this.root();
+        const reg = this.readableRegistry();
+        if (root && reg && Object.hasOwn(reg.agents, v.agentId)) {
+          delete reg.agents[v.agentId];
+          this.atomicWriteJson(join(root, 'registry.json'), reg);
+        }
+        const st = lstatSync(v.dir);
+        if (st.isDirectory() && !st.isSymbolicLink()) rmSync(v.dir, { recursive: true, force: true });
+      }
+      this.appendLog({ kind: 'spawn-rolled-back', agentId: isFolderName(v.agentId) ? v.agentId : shortTarget(v.agentId), removed: v.isNew, reason: why });
+      if (v.isNew) this.commit(`hive: roll back ${v.agentId}`);
+    } catch (e) { console.error('[hive] rollback after a refused spawn failed:', e); }
   }
   /** 'claude' or 'codex' when this agent gets the app's hook command, else null. */
   private hookKind(meta: AgentMeta): 'claude' | 'codex' | null {
@@ -1018,6 +1115,8 @@ export class HiveManager {
        *  MemPalace dir, which `mempalace` mutates). Absolute paths; ignored
        *  for providers without a sandbox. */
       extraWritableDirs?: string[];
+      /** The launch the spawn will make: its command line and final environment (relocation variables only). */
+      launch?: HookLaunch;
     } = {}
   ): Promise<SpawnInjection> {
     // One read for the whole operation. registry() reads a failure as an empty roster, and this would then replace the
@@ -1035,8 +1134,8 @@ export class HiveManager {
 
     const dir = this.agentDir(meta.id);
     // Before the agent's folder or registry entry exists: a refused spawn leaves nothing behind.
-    const hookKind = this.hookKind(meta);
-    if (hookKind) this.runtimeFor(meta.id, this.agentRoots(meta, dir, root, opts.extraWritableDirs, hookKind), hookKind === 'codex' && process.platform === 'win32');
+    const verdict = this.hookVerdict(meta, dir, root, opts.extraWritableDirs, opts.launch, !Object.hasOwn(roster.agents, meta.id));
+    if (verdict) this.hookVerdicts.set(meta.id, verdict); else this.hookVerdicts.delete(meta.id);
     mkdirSync(join(dir, 'inbox', '.done'), { recursive: true });
     mkdirSync(join(dir, 'outbox', '.sent'), { recursive: true });
 
@@ -1172,7 +1271,6 @@ export class HiveManager {
         // Outside the try below, which logs and carries on: a hook runtime that cannot be staged,
         // verified or kept out of this agent's reach fails the spawn.
         if (desc.kind === 'hooks' && desc.shim === 'codex') {
-          this.runtimeFor(meta.id, this.agentRoots(meta, dir, root, opts.extraWritableDirs, 'codex'), process.platform === 'win32');
         }
         try {
           if (desc.kind === 'hooks') {
@@ -1314,7 +1412,7 @@ export class HiveManager {
     const sock = this.sockPath();
     if (sock) {
       const writable = this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs);
-      const rt = this.runtimeFor(meta.id, this.agentRoots(meta, dir, root, opts.extraWritableDirs, 'claude'));
+      const rt = verdict?.rt ?? null;
       env.HIVE_SOCK = sock;
       const settingsPath = join(dir, 'settings.json');
       this.writeJson(settingsPath, this.hookSettings(rt ? hookCommandFor(rt, true) : null, meta.cwd, opts.mcpDefaults, opts.theme, writable));

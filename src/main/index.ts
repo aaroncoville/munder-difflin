@@ -80,6 +80,8 @@ import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
 import { RefusedRosterId, RegistryUnreadable, shortTarget } from './messageTarget';
 import { HookRuntimeUnavailable } from './hookRuntime';
+import { relocationEnv } from './launchLine';
+import { buildPtyEnv } from './ptyEnv';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WakeSkipLog, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
 import { inboxDeliveredAt, inboxLine, openTurnClaimAt, splitInbox } from './inboxClaims';
@@ -2989,6 +2991,9 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
           // W3 — default-MCP consent state + the bundled skills source dir.
           mcpDefaults: readConfig().mcpDefaults,
           skillsDir: skillsResourceDir(),
+          // The launch as requested, with the environment the terminal will build, so the hook runtime
+          // decision is made once, before anything for this agent is created.
+          launch: { argv: [opts.command, ...(opts.args ?? [])], env: relocationEnv(buildPtyEnv(process.env, '', opts.env)) },
           // The shared palace is mutated by the agent's own `mempalace` calls, so
           // the OS sandbox must let it through (empty when memory is off).
           extraWritableDirs: [memory.env().MEMPALACE_PALACE_PATH].filter((p): p is string => !!p)
@@ -3253,6 +3258,11 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       });
     }
     await enableCodexRemoteForSpawn(opts, opts.hive.id);
+  }
+  // The late check on the launch exactly as it will start; a refusal here rolls back what ensureAgent created.
+  if (opts.hive?.id) {
+    try { hive.confirmHookLaunch(hive.takeHookVerdict(opts.hive.id), [opts.command, ...(opts.args ?? [])], relocationEnv(buildPtyEnv(process.env, '', opts.env))); }
+    catch (e) { if (e instanceof HookRuntimeUnavailable) return refuseSpawn(opts.id, opts.hive.id, provider, e); throw e; }
   }
   const res = ptyManager.spawn(opts, owner);
   if (res.ok) analytics.track('agent_spawned', { provider });

@@ -1,0 +1,139 @@
+/**
+ * How a provider CLI is launched, read the way the CLI reads it: the launch line with each CLI's own option grammar
+ * (up to the first positional, so a prompt is never read) and the environment variables that move where it looks
+ * for its configuration. Shared by the write-roots dry run and the hook-runtime spawn check, so both read a launch
+ * the same way. Anything not modelled is `unknown`; nothing here guesses.
+ */
+import { basename, isAbsolute, join, resolve } from 'node:path';
+
+/** Environment variables that move where a provider reads configuration or write roots. Only these are recorded from a spawn. */
+export const RELOCATING_ENV = ['HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'XDG_CONFIG_HOME'] as const;
+/** Claude's own variables that point it at other settings, config or plugins: not modelled, so unknown. */
+const CLAUDE_UNMODELLED_ENV = /^CLAUDE_CODE_[A-Z0-9_]*(SETTINGS|CONFIG|MANAGED|PLUGIN)/;
+
+/** The relocation-relevant part of a spawn's final environment: the variables above, plus any unmodelled Claude one (by name). */
+export function relocationEnv(env: Record<string, string | undefined>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env ?? {})) {
+    if (typeof v !== 'string') continue;
+    if ((RELOCATING_ENV as readonly string[]).includes(k)) out[k] = v;
+    else if (CLAUDE_UNMODELLED_ENV.test(k)) out[k] = '';
+  }
+  return out;
+}
+
+/** 'claude' / 'codex' when the launch line's executable is that CLI itself, else null (a wrapper such as env, sh -c, npx). */
+export function launchExecutable(args: string[] | undefined): 'claude' | 'codex' | null {
+  const first = Array.isArray(args) && typeof args[0] === 'string' ? args[0].trim().split(/\s+/)[0] ?? '' : '';
+  const b = basename(first);
+  return b === 'claude' || b === 'codex' ? b : null;
+}
+
+export type Places = { home: string; claudeUserDir: string; codexHome: string } | { unknown: string };
+
+/** Where this provider will read its user configuration, given the final spawn environment; or what made it unknown. */
+export function launchPlaces(provider: string, env: Record<string, string> | undefined, appHome: string): Places {
+  if (!env) return { unknown: 'no spawn environment recorded' };
+  const home = env.HOME ?? appHome;
+  if (!isAbsolute(home)) return { unknown: 'HOME is not an absolute path' };
+  if (provider === 'claude') {
+    if (env.XDG_CONFIG_HOME !== undefined) return { unknown: 'XDG_CONFIG_HOME is set' };
+    const odd = Object.keys(env).find((k) => CLAUDE_UNMODELLED_ENV.test(k));
+    if (odd) return { unknown: `${odd} is set` };
+  }
+  const cfg = env.CLAUDE_CONFIG_DIR;
+  if (cfg !== undefined && !isAbsolute(cfg)) return { unknown: 'CLAUDE_CONFIG_DIR is not an absolute path' };
+  const ch = env.CODEX_HOME;
+  if (ch !== undefined && !isAbsolute(ch)) return { unknown: 'CODEX_HOME is not an absolute path' };
+  return { home, claudeUserDir: cfg ?? join(home, '.claude'), codexHome: ch ?? join(home, '.codex') };
+}
+
+/** Codex options that take a value (the next argument, or `--name=value`). */
+const CODEX_VALUE_OPTS = new Set(['-a', '--ask-for-approval', '-s', '--sandbox', '-m', '--model', '-c', '--config', '-p', '--profile',
+  '--add-dir', '--remote', '--remote-auth-token-env', '--enable', '--disable', '--local-provider']);
+/** Codex options that take no value and do not change the sandbox or the folder it runs in. */
+const CODEX_FLAGS = new Set(['--strict-config', '--oss', '--approve-for-me', '--dangerously-bypass-hook-trust', '--search', '--no-alt-screen',
+  '--no-daemon', '-h', '--help', '-V', '--version']);
+
+/** How Codex's sandbox was chosen on the launch line the app spawned: the executable's own words
+ *  (from the command string) followed by the argv as given, each argument whole. Options are read
+ *  up to the first argument that is neither an option nor an option's value (the prompt is never
+ *  read). Anything that could change the sandbox in a way not read here is `unknown`: a `-c` on a
+ *  sandbox key, a profile, a remote app server (its own policy is in force), or an option this
+ *  grammar does not know. `--add-dir` directories are collected as roots. 'none' when no option says. */
+export function codexLaunchSandbox(args: string[] | undefined, addDirs: string[] = []): 'workspace-write' | 'read-only' | 'danger-full-access' | 'none' | 'unknown' {
+  const a = (args ?? []).filter((x): x is string => typeof x === 'string');
+  // The first element is the command string, split into its words; the rest are argv elements, whole.
+  const words = [...(a[0] ?? '').trim().split(/\s+/).filter(Boolean), ...a.slice(1)];
+  let mode: string | null = null;
+  let i = 1; // words[0] is the executable
+  if (words[i] === 'resume') i += 2; // `resume <session id>`
+  for (; i < words.length; i++) {
+    const w = words[i];
+    if (w === '--') break;
+    if (!w.startsWith('-')) break; // the prompt, or another positional: stop reading
+    const eq = w.indexOf('=');
+    const name = w.startsWith('--') && eq !== -1 ? w.slice(0, eq) : w;
+    const value = w.startsWith('--') && eq !== -1 ? w.slice(eq + 1) : null;
+    if (name === '--dangerously-bypass-approvals-and-sandbox' || name === '--yolo') return 'danger-full-access';
+    if (name === '--full-auto') { mode = 'workspace-write'; continue; }
+    if (CODEX_FLAGS.has(name) && value === null) continue;
+    // Anything else (-C/--cd and --worktree move the session's folder, -i takes several values, a new flag may change
+    // the sandbox) is not modelled.
+    if (!CODEX_VALUE_OPTS.has(name)) return 'unknown';
+    const v = value ?? words[++i];
+    if (v === undefined) return 'unknown';
+    if (name === '-s' || name === '--sandbox') mode = v;
+    else if ((name === '-c' || name === '--config') && /^\s*"?(sandbox_mode|sandbox_workspace_write)\b/.test(v)) return 'unknown';
+    else if (name === '--add-dir') addDirs.push(v);
+    else if (name === '-p' || name === '--profile' || name === '--remote') return 'unknown';
+  }
+  if (mode === null) return 'none';
+  return mode === 'workspace-write' || mode === 'read-only' || mode === 'danger-full-access' ? mode : 'unknown';
+}
+
+const CLAUDE_VALUE_OPTS = new Set(['--agent', '--agents', '--append-system-prompt', '--autocompact', '--debug-file', '--effort', '--environment',
+  '--fallback-model', '--input-format', '--json-schema', '--max-budget-usd', '--model', '-n', '--name', '--output-format', '--permission-mode',
+  '--permission-prompts', '--plugin-dir', '--plugin-url', '--remote-control-session-name-prefix', '--session-id', '--system-prompt',
+  '--system-prompt-snapshot', '--settings']);
+const CLAUDE_VARIADIC_OPTS = new Set(['--add-dir', '--allowedTools', '--allowed-tools', '--disallowedTools', '--disallowed-tools', '--betas',
+  '--file', '--mcp-config', '--tools']);
+const CLAUDE_FLAGS = new Set(['--allow-dangerously-skip-permissions', '--ax-screen-reader', '--bg', '--background', '--brief', '--chrome', '-c',
+  '--continue', '--dangerously-skip-permissions', '--desktop', '--disable-slash-commands', '--exclude-dynamic-system-prompt-sections',
+  '--fork-session', '--forward-subagent-text', '-h', '--help', '--ide', '--include-hook-events', '--include-partial-messages', '--no-chrome',
+  '--no-session-persistence', '-p', '--print', '--replay-user-messages', '--strict-mcp-config', '--verbose', '-v', '--version', '--tmux']);
+/** Claude's launch line as the app spawned it, read with the CLI's option grammar up to the first positional (the prompt
+ *  is never read): `--add-dir` directories are collected as roots; a `--settings` other than the generated file, an
+ *  option that changes where settings come from or the folder it runs in (--setting-sources, --bare, --safe-mode,
+ *  --restricted, --worktree, --debug's optional value ...), or any other option the grammar does not know, is `unknown`. */
+export function claudeLaunch(args: string[] | undefined, generatedSettings: string, addDirs: string[] = []): 'ok' | 'unknown' {
+  if (!Array.isArray(args) || args.length === 0) return 'unknown'; // no launch line recorded: nothing to read it from
+  const a = args.filter((x): x is string => typeof x === 'string');
+  const words = [...(a[0] ?? '').trim().split(/\s+/).filter(Boolean), ...a.slice(1)];
+  for (let i = 1; i < words.length; i++) {
+    const w = words[i];
+    if (w === '--') break;
+    if (!w.startsWith('-')) break;
+    const eq = w.indexOf('=');
+    const name = w.startsWith('--') && eq !== -1 ? w.slice(0, eq) : w;
+    const inline = w.startsWith('--') && eq !== -1 ? w.slice(eq + 1) : null;
+    if (CLAUDE_FLAGS.has(name)) { if (inline !== null) return 'unknown'; continue; }
+    if (name === '-r' || name === '--resume') { if (inline === null && words[i + 1] !== undefined && !words[i + 1].startsWith('-')) i++; continue; }
+    if (CLAUDE_VALUE_OPTS.has(name)) {
+      const v = inline ?? words[++i];
+      if (v === undefined) return 'unknown';
+      if (name === '--settings' && resolve(v) !== resolve(generatedSettings)) return 'unknown';
+      continue;
+    }
+    if (CLAUDE_VARIADIC_OPTS.has(name)) {
+      const vals = inline !== null ? [inline] : [];
+      while (inline === null && i + 1 < words.length && !words[i + 1].startsWith('-')) vals.push(words[++i]);
+      if (!vals.length) return 'unknown';
+      if (name === '--add-dir') addDirs.push(...vals);
+      continue;
+    }
+    return 'unknown';
+  }
+  return 'ok';
+}
+

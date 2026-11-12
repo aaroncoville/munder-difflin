@@ -445,3 +445,96 @@ test('round 3: an agent refused over an hour ago and never spawned since leaves 
   Date.now = () => realNow() + 61 * 60_000;
   try { assert.equal(hive.hookRuntimeStatus().refused, undefined); } finally { Date.now = realNow; }
 });
+
+// --- round 4: one decision from the launch itself, made before anything is created ---
+
+const claudeLaunch = (dir, extra = [], env = {}) => ({ argv: ['claude --permission-mode bypassPermissions', '--append-system-prompt', 'hi', '--settings', path.join(dir, 'settings.json'), ...extra], env });
+const codexLaunch = (extra = [], env = {}) => ({ argv: ['codex -a never -s workspace-write', '--dangerously-bypass-hook-trust', ...extra], env });
+
+test('round 4: the launch line and its environment decide; anything not modelled refuses, naming the cause', async (t) => {
+  const { base, home, rt, hive, root } = floor(t);
+  hive.setHookRuntime(rt);
+  const app = path.dirname(rt);
+  const dir = (id) => path.join(root, 'agents', id);
+  const spawn = (id, provider, launch) => hive.ensureAgent({ id, name: id, provider, cwd: home }, { launch });
+  await spawn('ok1', 'claude', claudeLaunch(dir('ok1')));
+  await spawn('ok2', 'codex', codexLaunch());
+  // The exact forms the live floor runs today (argv elements whole, as the app hands them to the PTY).
+  await spawn('live1', 'claude', { argv: ['claude --model claude-opus-5-5 --permission-mode bypassPermissions', '--append-system-prompt', 'You are "X" -- a multi word prompt --text', '--settings', path.join(dir('live1'), 'settings.json'), '--remote-control-session-name-prefix', 'X', '--resume', '4df241fc-56f4-48dc-b830-602be03f8b81'], env: { HOME: home } });
+  await spawn('live2', 'codex', { argv: ['codex --model gpt-5.6-sol -a never -s workspace-write', '--dangerously-bypass-hook-trust', '--add-dir', dir('live2'), '--add-dir', root, 'You are "Y" --channel x'], env: { HOME: home, CODEX_HOME: path.join(dir('live2'), '.codex') } });
+  await spawn('live3', 'codex', { argv: ['codex', 'resume', '01a1d072-5747-7e83-a08f-03389a2cac3f', '-a', 'never', '-s', 'workspace-write', '--dangerously-bypass-hook-trust', 'prompt'], env: { HOME: home } });
+  const cases = [
+    ['w1', 'claude', { argv: ['env X=1 claude'], env: {} }, /does not run claude itself/],
+    ['w2', 'claude', { argv: ['sh -c claude'], env: {} }, /does not run claude itself/],
+    ['w3', 'codex', { argv: ['npx codex -s workspace-write'], env: {} }, /does not run codex itself/],
+    ['f1', 'claude', claudeLaunch(dir('f1'), ['--weird']), /option the app does not model/],
+    ['f2', 'claude', claudeLaunch(dir('f2'), ['--settings', '/tmp/other.json']), /option the app does not model/],
+    ['f3', 'codex', codexLaunch(['-p', 'fast']), /option the app does not model/],
+    ['f4', 'codex', { argv: ['codex -a never'], env: {} }, /does not choose a Codex sandbox/],
+    ['f5', 'codex', { argv: ['codex --yolo'], env: {} }, /turns the Codex sandbox off/],
+    ['e1', 'claude', claudeLaunch(dir('e1'), [], { XDG_CONFIG_HOME: base }), /XDG_CONFIG_HOME/],
+    ['e2', 'claude', claudeLaunch(dir('e2'), [], { CLAUDE_CODE_MCP_SERVE_SETTINGS: '' }), /CLAUDE_CODE_MCP_SERVE_SETTINGS/],
+    ['e3', 'claude', claudeLaunch(dir('e3'), [], { CLAUDE_CONFIG_DIR: 'rel' }), /CLAUDE_CONFIG_DIR/],
+    ['a1', 'claude', claudeLaunch(dir('a1'), ['--add-dir', app]), /launch line \(--add-dir\)/],
+    ['a2', 'codex', codexLaunch(['--add-dir', app]), /launch line \(--add-dir\)/],
+  ];
+  for (const [id, provider, launch, why] of cases) {
+    assert.match(await refused(spawn(id, provider, launch)), why, id);
+    assert.equal(fs.existsSync(dir(id)), false, `${id}: nothing created`);
+    assert.equal(Object.hasOwn(hive.registry().agents, id), false, `${id}: no row`);
+  }
+  // Jannings' probe: an alternate Claude config folder granting the runtime folder is honoured, so it refuses.
+  const alt = path.join(base, 'alt-claude');
+  fs.mkdirSync(alt);
+  fs.writeFileSync(path.join(alt, 'settings.json'), JSON.stringify({ permissions: { additionalDirectories: [app] } }));
+  assert.ok((await refused(spawn('cfg', 'claude', claudeLaunch(dir('cfg'), [], { CLAUDE_CONFIG_DIR: alt })))).includes(alt));
+  // HOME in the spawn environment is where the user settings are read.
+  const otherHome = path.join(base, 'other-home');
+  fs.mkdirSync(path.join(otherHome, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(otherHome, '.claude/settings.json'), JSON.stringify({ sandbox: { filesystem: { allowWrite: ['~/x', app] } } }));
+  assert.ok((await refused(spawn('hm', 'claude', claudeLaunch(dir('hm'), [], { HOME: otherHome })))).includes(app));
+});
+
+test('round 4: decided once — a policy change after the decision starts under the snapshot; the late check refuses a launch that changed, and rolls back', async (t) => {
+  const { base, home, rt, hive, root, log } = floor(t);
+  hive.setHookRuntime(rt);
+  const app = path.dirname(rt);
+  const dir = (id) => path.join(root, 'agents', id);
+  // Policy changes between the decision and the terminal: the snapshot stands, no disk re-read.
+  await hive.ensureAgent({ id: 'n1', name: 'n1', provider: 'claude', cwd: home }, { launch: claudeLaunch(dir('n1')) });
+  fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.claude/settings.json'), JSON.stringify({ permissions: { additionalDirectories: [app] } }));
+  assert.doesNotThrow(() => hive.confirmHookLaunch(hive.takeHookVerdict('n1'), claudeLaunch(dir('n1')).argv, {}));
+  fs.rmSync(path.join(home, '.claude'), { recursive: true });
+  // A final launch that adds an unchecked root refuses and rolls a NEW agent back: folder, row, and a log row saying so.
+  await hive.ensureAgent({ id: 'n2', name: 'n2', provider: 'claude', cwd: home }, { launch: claudeLaunch(dir('n2')) });
+  assert.ok(fs.existsSync(dir('n2')) && Object.hasOwn(hive.registry().agents, 'n2'));
+  assert.throws(() => hive.confirmHookLaunch(hive.takeHookVerdict('n2'), claudeLaunch(dir('n2'), ['--add-dir', app]).argv, {}), /write root that was not checked/);
+  assert.equal(fs.existsSync(dir('n2')), false, 'folder rolled back');
+  assert.equal(Object.hasOwn(hive.registry().agents, 'n2'), false, 'row rolled back');
+  assert.ok(log().some((r) => r.kind === 'spawn-rolled-back' && r.agentId === 'n2' && r.removed === true));
+  // A final environment that moves Claude's settings refuses too; an EXISTING agent keeps its row and folder.
+  await hive.ensureAgent({ id: 'n1', name: 'n1', provider: 'claude', cwd: home }, { launch: claudeLaunch(dir('n1')) });
+  assert.throws(() => hive.confirmHookLaunch(hive.takeHookVerdict('n1'), claudeLaunch(dir('n1')).argv, { CLAUDE_CONFIG_DIR: base }), /moved Claude's settings/);
+  assert.ok(fs.existsSync(dir('n1')) && Object.hasOwn(hive.registry().agents, 'n1'), 'an existing agent is not removed');
+  // A final launch line that is a wrapper, or drops the Codex sandbox, refuses.
+  await hive.ensureAgent({ id: 'x1', name: 'x1', provider: 'codex', cwd: home }, { launch: codexLaunch() });
+  const v = hive.takeHookVerdict('x1');
+  assert.throws(() => hive.confirmHookLaunch({ ...v, isNew: false }, ['codex -a never'], {}), /does not keep the Codex sandbox/);
+  assert.throws(() => hive.confirmHookLaunch({ ...v, isNew: false }, ['sh -c codex'], {}), /does not run codex itself/);
+  // The app's own remote rewrite is not a change.
+  assert.doesNotThrow(() => hive.confirmHookLaunch({ ...v, isNew: false }, ['codex -a never -s workspace-write', '--dangerously-bypass-hook-trust', '--remote', 'unix:///x.sock'], {}));
+  // A runtime file changed after the decision fails the late check.
+  fs.appendFileSync(path.join(rt, 'cth-hook.cjs'), '\n// x');
+  assert.throws(() => hive.confirmHookLaunch({ ...v, isNew: false }, codexLaunch().argv, {}), /changed since the app wrote it/);
+  assert.equal(root.endsWith('hive'), true);
+});
+
+test('round 4: the app passes the launch to ensureAgent and runs the late check before the terminal starts', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.ts'), 'utf8');
+  assert.match(main, /launch: \{ argv: \[opts\.command, \.\.\.\(opts\.args \?\? \[\]\)\], env: relocationEnv\(buildPtyEnv\(process\.env, '', opts\.env\)\) \}/);
+  const late = main.indexOf('hive.confirmHookLaunch(hive.takeHookVerdict(opts.hive.id)');
+  const spawnAt = main.indexOf('const res = ptyManager.spawn(opts, owner);');
+  assert.ok(late > 0 && late < spawnAt, 'the late check runs before the PTY spawns');
+  assert.match(main.slice(late, spawnAt), /instanceof HookRuntimeUnavailable\) return refuseSpawn\(/);
+});

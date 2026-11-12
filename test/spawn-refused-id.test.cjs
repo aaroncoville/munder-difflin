@@ -63,6 +63,7 @@ async function setup(t, overrides = {}) {
     analytics: { track: (name, props) => events.push([name, { ...props }]) },
     worktreePaths, worktreeOrigins,
     removeWorktree: (origin, wt) => { removed.push([origin, wt]); return removal(); },
+    relocationEnv: loadTs('src/main/launchLine.ts').relocationEnv, buildPtyEnv: loadTs('src/main/ptyEnv.ts').buildPtyEnv, process,
     RefusedRosterId, RegistryUnreadable, HookRuntimeUnavailable: loadTs('src/main/hookRuntime.ts').HookRuntimeUnavailable, shortTarget: loadTs('src/main/messageTarget.ts').shortTarget
   };
   const run = vm.runInNewContext(liveProvisioning(), context);
