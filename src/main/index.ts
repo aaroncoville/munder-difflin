@@ -99,7 +99,7 @@ import { lastCatchupAt } from './codexCatchupLog';
 import { openCodexLogDb } from './codexLogDb';
 import { inboxNudgeText, isInboxNudge } from '../shared/hiveNudge';
 import { CodexThreads, newThreadWrites, typeWrites } from './codexThread';
-import { resolveGodName } from '../shared/godIdentity';
+import { godNameFromRegistry } from '../shared/godIdentity';
 import { fetchHireManifest, readHireManifestFiles } from './hire';
 import { parseHireDeepLink, type HireManifest } from '../shared/hire';
 import { ClosingTimeController } from './closingTime';
@@ -4763,7 +4763,7 @@ const completionWatcher = initCompletionWatcher({
     try {
       if (!Notification.isSupported()) return;
       const reg = hive.registry();
-      const title = resolveGodName(reg.agents[reg.godId ?? 'god']?.name);
+      const title = godNameFromRegistry(reg);
       new Notification({ title, body: evt.summary }).show();
     } catch { /* best-effort */ }
   }

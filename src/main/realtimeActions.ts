@@ -39,7 +39,7 @@ import type { HiveMessage, HiveTask, Registry } from './hive';
 import type { ScheduledMission } from './config';
 import { inferAgentProvider } from '../shared/agentProvider';
 import { clearCommandForProvider } from '../shared/providerAutomation';
-import { resolveGodName } from '../shared/godIdentity';
+import { godNameFromRegistry } from '../shared/godIdentity';
 
 export const VOICE_ACTOR = 'michael-voice';
 
@@ -286,7 +286,7 @@ function attribute(deps: RealtimeActionDeps, verb: string, target: string, extra
       : typeof extra.action === 'string' ? ` (${extra.action})`
       : '';
     const reg = deps.hiveRegistry();
-    const godName = resolveGodName(reg.agents[reg.godId ?? 'god']?.name);
+    const godName = godNameFromRegistry(reg);
     deps.hiveSend(
       {
         to: 'god',
@@ -312,7 +312,7 @@ function execPing(deps: RealtimeActionDeps, a: Record<string, unknown>): ActionR
   const r = resolveAgent(str(a.agentId) || str(a.target) || str(a.name), reg);
   if ('error' in r) return { ok: false, spoken: r.error };
   const message = str(a.message) || str(a.text) || 'Checking in.';
-  deps.hiveSend({ to: r.id, act: 'inform', subject: `Voice ping from ${resolveGodName(reg.agents[reg.godId ?? 'god']?.name)}`, body: message }, VOICE_ACTOR);
+  deps.hiveSend({ to: r.id, act: 'inform', subject: `Voice ping from ${godNameFromRegistry(reg)}`, body: message }, VOICE_ACTOR);
   attribute(deps, 'ping', r.id);
   return { ok: true, spoken: `Pinged ${r.name}.` };
 }

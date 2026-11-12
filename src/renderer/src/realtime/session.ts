@@ -28,7 +28,7 @@ import { RealtimeAgent, RealtimeSession, OpenAIRealtimeWebRTC } from '@openai/ag
 import { realtimeReadTools, realtimeSessionSummary } from './tools';
 import { realtimeActionTools } from './actions';
 import { voiceGreetings, voicePersona } from './persona';
-import { resolveGodName } from '../../../shared/godIdentity';
+import { godNameFromRegistry } from '../../../shared/godIdentity';
 import { resetRealtimeCost, recordRealtimeUsage, endRealtimeCost, isRealtimeIdle, getRealtimeCostSnapshot } from './costStore';
 
 /**
@@ -205,7 +205,7 @@ function teardownMedia(): void {
  *  default when the registry cannot be read, never to a stale hardcoded name. */
 async function voiceName(): Promise<string> {
   const reg = await window.cth.hiveRegistry().catch(() => null);
-  return resolveGodName(reg?.agents?.[reg?.godId ?? 'god']?.name);
+  return godNameFromRegistry(reg);
 }
 
 /** Make a getUserMedia failure legible. */

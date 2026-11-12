@@ -19,7 +19,7 @@ import type { AgentProvider } from '../../../shared/agentProvider';
 import { bridgeOf, providerPreset } from '../../../shared/agentProvider';
 import { isDurableRole, preferredAgentRole, roleForHiveSpawn } from '../../../shared/agentRole';
 import { inboxNudgeText } from '../../../shared/hiveNudge';
-import { resolveGodName } from '../../../shared/godIdentity';
+import { godNameFromRegistry } from '../../../shared/godIdentity';
 import { acquireTerminal, resetTerminal, isTerminalAutomationSafe } from '@/components/terminalPool';
 import { canDeliverToAgent, deliverWithAcknowledgement, checkPrecondition } from './queueDelivery';
 
@@ -396,7 +396,7 @@ export function useHive(config: HarnessConfig | null): void {
       // hardcoding DEFAULT_GOD_NAME below — otherwise a custom name reverts on
       // every respawn even though the registry still has it right.
       const reg = await window.cth.hiveRegistry().catch(() => null);
-      const godName = resolveGodName(reg?.agents?.[GOD_ID]?.name);
+      const godName = godNameFromRegistry(reg);
 
       const godProvider = config.godProvider ?? 'claude';
       const godModel = config.godModel;
