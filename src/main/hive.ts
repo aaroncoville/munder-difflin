@@ -21,7 +21,7 @@
 import {
   existsSync, mkdirSync, readFileSync, writeFileSync, renameSync,
   readdirSync, statSync, lstatSync, realpathSync, rmSync, appendFileSync,
-  symlinkSync, unlinkSync, copyFileSync, cpSync, chmodSync
+  symlinkSync, unlinkSync, copyFileSync, cpSync, chmodSync, openSync, fstatSync, closeSync, constants as fsConstants
 } from 'node:fs';
 import { join, dirname, basename, isAbsolute, relative, resolve as resolvePath } from 'node:path';
 import { homedir } from 'node:os';
@@ -49,7 +49,7 @@ import { preferredAgentRole } from '../shared/agentRole';
 import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde } from './fs';
 import { refreshMineIgnoresOnce } from './hiveMineIgnore';
-import { agentFolderId, hasExactFolder, isAppSender, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, RegistryUnreadable, rosterIdFor, shortTarget } from './messageTarget';
+import { agentFolderId, hasExactFolder, isAppSender, isFolderName, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, RegistryUnreadable, rosterIdFor, shortTarget } from './messageTarget';
 import { nodeLauncherScript } from './nodeLauncher';
 import { codexTrustEntry } from '../shared/codexTrust';
 import { withCodexWritableRoots } from '../shared/codexWritableRoots';
@@ -528,7 +528,7 @@ export class HiveManager {
   private hookRuntime: StagedHookRuntime | null = null;
   private hookRuntimeState: { configured: boolean; ok: boolean; reason?: string } = { configured: false, ok: false };
   /** Agents whose last spawn was refused because they could reach the folder: per agent, not the floor's state. */
-  private hookRuntimeRefused = new Map<string, string>();
+  private hookRuntimeRefused = new Map<string, { reason: string; at: number }>();
   private warnedNoRuntime = false;
   /** The machine-wide Claude settings file (a field so a test can point it elsewhere). */
   private managedClaudeSettings = process.platform === 'darwin' ? '/Library/Application Support/ClaudeCode/managed-settings.json'
@@ -544,7 +544,10 @@ export class HiveManager {
   /** Whether hooks load from the app's runtime folder, and why not if not; `refused` lists agents
    *  whose own write roots reach it. Absent reads as no. */
   hookRuntimeStatus(): { configured: boolean; ok: boolean; reason?: string; refused?: Record<string, string> } {
-    const refused = Object.fromEntries(this.hookRuntimeRefused);
+    // An agent refused over an hour ago that has not been spawned since is dropped: it is no longer waiting to start.
+    const cutoff = Date.now() - 60 * 60_000;
+    for (const [id, r] of this.hookRuntimeRefused) if (r.at < cutoff) this.hookRuntimeRefused.delete(id);
+    const refused = Object.fromEntries([...this.hookRuntimeRefused].map(([id, r]) => [id, r.reason]));
     return { ...this.hookRuntimeState, ...(this.hookRuntimeRefused.size ? { refused } : {}) };
   }
   /** The folder staged and verified, or a HookRuntimeUnavailable. A file found changed is reported
@@ -587,8 +590,8 @@ export class HiveManager {
     const why = unsafe ? `${unsafe}: ${rt.dir}` : rootOverlap(rt, roots);
     if (why) {
       // This agent's problem, not the floor's: the folder itself is fine.
-      this.hookRuntimeRefused.set(agentId, why);
-      try { this.appendLog({ kind: 'hook-runtime', ok: false, agentId: shortTarget(agentId), reason: why }); } catch { /* the refusal still says it */ }
+      this.hookRuntimeRefused.set(agentId, { reason: why, at: Date.now() });
+      try { this.appendLog({ kind: 'hook-runtime', ok: false, agentId: isFolderName(agentId) ? agentId : shortTarget(agentId), reason: why }); } catch { /* the refusal still says it */ }
       throw new HookRuntimeUnavailable(why);
     }
     this.hookRuntimeRefused.delete(agentId);
@@ -604,19 +607,41 @@ export class HiveManager {
     if (typeof x !== 'string' || !x) return null;
     const home = homedir();
     let v = x.replace(/^~(?=$|[\\/])/, home).replace(/^\$\{?HOME\}?(?=$|[\\/])/, home);
-    if (/[$~%`]/.test(v)) return null;
+    // A leading ~user is someone else's home and is not understood; a ~ inside a name (com~apple~CloudDocs) is just a name.
+    if (/^~/.test(v) || /[$%`]/.test(v)) return null;
     if (!isAbsolute(v)) { if (!cwd) return null; v = join(cwd, v); }
     return resolvePath(v);
   }
-  /** Write roots a Claude session merges from managed, user and project settings. */
+  /** A settings file's text: 'missing' when absent, null when it is a link, not a regular file, larger than 1 MB, or
+   *  unreadable. Opened non-blocking and judged on the handle, so a file swapped for a pipe cannot hold the main process. */
+  private readSmallFile(file: string): string | 'missing' | null {
+    let st;
+    try { st = lstatSync(file); } catch (e) { const c = (e as NodeJS.ErrnoException).code; return c === 'ENOENT' || c === 'ENOTDIR' ? 'missing' : null; }
+    if (st.isSymbolicLink() || !st.isFile() || st.size > 1024 * 1024) return null;
+    let fd: number | null = null;
+    try {
+      fd = openSync(file, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0));
+      const f = fstatSync(fd);
+      if (!f.isFile() || f.size > 1024 * 1024) return null;
+      return readFileSync(fd, 'utf8');
+    } catch { return null; } finally { if (fd !== null) closeSync(fd); }
+  }
+  /** Write roots a Claude session merges: managed settings and its drop-in folder, the user's (in CLAUDE_CONFIG_DIR when
+   *  that is set), and the project's. */
   private claudeSettingsRoots(cwd: string): WriteRoot[] {
     const managed = this.managedClaudeSettings;
-    const files = [managed, join(homedir(), '.claude', 'settings.json'), ...(cwd ? [join(cwd, '.claude', 'settings.json'), join(cwd, '.claude', 'settings.local.json')] : [])];
+    const dropIns: string[] = [];
+    const dropDir = join(dirname(managed), 'managed-settings.d');
+    try { for (const n of readdirSync(dropDir).sort()) if (n.endsWith('.json')) dropIns.push(join(dropDir, n)); } catch { /* none */ }
+    const userDir = process.env.CLAUDE_CONFIG_DIR && isAbsolute(process.env.CLAUDE_CONFIG_DIR) ? process.env.CLAUDE_CONFIG_DIR : join(homedir(), '.claude');
+    const files = [managed, ...dropIns, join(userDir, 'settings.json'), ...(cwd ? [join(cwd, '.claude', 'settings.json'), join(cwd, '.claude', 'settings.local.json')] : [])];
     const out: WriteRoot[] = [];
     for (const f of files) {
-      if (!existsSync(f)) continue;
+      const text = this.readSmallFile(f);
+      if (text === 'missing') continue;
+      if (text === null) { out.push({ path: null, from: f }); continue; }
       try {
-        const v = JSON.parse(readFileSync(f, 'utf8')) as { sandbox?: { filesystem?: { allowWrite?: unknown } }; permissions?: { additionalDirectories?: unknown } } | null;
+        const v = JSON.parse(text) as { sandbox?: { filesystem?: { allowWrite?: unknown } }; permissions?: { additionalDirectories?: unknown } } | null;
         const a = v?.sandbox?.filesystem?.allowWrite;
         const b = v?.permissions?.additionalDirectories;
         // Present but not a list is not understood; absent adds nothing.
@@ -630,18 +655,25 @@ export class HiveManager {
    *  inline table); [] when the file is absent. A link, a non-file, or an entry not fully understood
    *  is a root that could not be read. */
   private codexConfigRoots(file: string, cwd: string): WriteRoot[] {
-    let st;
-    try { st = lstatSync(file); } catch (e) { return (e as NodeJS.ErrnoException).code === 'ENOENT' || (e as NodeJS.ErrnoException).code === 'ENOTDIR' ? [] : [{ path: null, from: file }]; }
-    if (st.isSymbolicLink() || !st.isFile() || st.size > 1024 * 1024) return [{ path: null, from: file }];
-    let text: string;
-    try { text = readFileSync(file, 'utf8'); } catch { return [{ path: null, from: file }]; }
+    const raw = this.readSmallFile(file);
+    if (raw === 'missing') return [];
+    if (raw === null) return [{ path: null, from: file }];
+    // Comments do not count: drop a '#' and what follows when it is outside a string.
+    const text = raw.split('\n').map((line) => {
+      let q: string | null = null;
+      for (let i = 0; i < line.length; i++) {
+        const c = line[i];
+        if (q) { if (c === '\\' && q === '"') i++; else if (c === q) q = null; } else if (c === '"' || c === "'") q = c; else if (c === '#') return line.slice(0, i);
+      }
+      return line;
+    }).join('\n');
     const mentions = (text.match(/writable_roots/g) ?? []).length;
     const arrays = [...text.matchAll(/writable_roots"?\s*=\s*(\[[^\]]*\])/g)];
     if (arrays.length !== mentions) return [{ path: null, from: file }];
     const out: WriteRoot[] = [];
     for (const m of arrays) {
       // TOML literal strings ('...') hold no escapes; as JSON they are the same text in double quotes.
-      const json = m[1].replace(/#[^\n]*/g, '').replace(/'([^'\\"\n]*)'/g, '"$1"').replace(/,\s*\]/, ']');
+      const json = m[1].replace(/'([^'\\"\n]*)'/g, '"$1"').replace(/,\s*\]/, ']');
       let v: unknown;
       try { v = JSON.parse(json); } catch { return [{ path: null, from: file }]; }
       if (!Array.isArray(v)) return [{ path: null, from: file }];

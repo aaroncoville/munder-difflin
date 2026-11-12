@@ -382,3 +382,66 @@ test('round 2: every Codex config that can add a write root is read: user, proje
   fs.writeFileSync(path.join(work, '.claude', 'settings.json'), JSON.stringify({ sandbox: { filesystem: { allowWrite: app } } }));
   assert.match(await refused(hive.ensureAgent({ id: 'c9', name: 'C', provider: 'claude', cwd: work })), /could not be read or understood/, 'a Claude root list that is not a list');
 });
+
+test('round 3: comments and names with ~ are read as such; Claude settings get the link, size and pipe checks; CLAUDE_CONFIG_DIR and the managed drop-ins are read', async (t) => {
+  const { base, home, rt, hive, log } = floor(t);
+  hive.setHookRuntime(rt);
+  const app = path.dirname(rt);
+  const work = path.join(base, 'work');
+  fs.mkdirSync(path.join(work, '.codex'), { recursive: true });
+  fs.mkdirSync(path.join(work, '.claude'), { recursive: true });
+  // L1: a comment is not a root.
+  fs.writeFileSync(path.join(work, '.codex/config.toml'), '# writable_roots = ["/"] was here\nmodel = "x" # no writable_roots\n');
+  await hive.ensureAgent({ id: 'x1', name: 'X', provider: 'codex', cwd: work });
+  fs.writeFileSync(path.join(work, '.codex/config.toml'), `[sandbox_workspace_write]\nwritable_roots = ["/a#b", ${JSON.stringify(app)}] # trailing\n`);
+  assert.ok((await refused(hive.ensureAgent({ id: 'x2', name: 'X', provider: 'codex', cwd: work }))).includes(app), 'a # inside a string is not a comment');
+  fs.rmSync(path.join(work, '.codex/config.toml'));
+  // L2: ~ inside a name is a name; a leading ~user is not understood.
+  const settings = path.join(work, '.claude/settings.json');
+  fs.writeFileSync(settings, JSON.stringify({ permissions: { additionalDirectories: [path.join(base, 'Library/Mobile Documents/com~apple~CloudDocs')] } }));
+  await hive.ensureAgent({ id: 'c1', name: 'C', provider: 'claude', cwd: work });
+  fs.writeFileSync(settings, JSON.stringify({ permissions: { additionalDirectories: ['~someone/x'] } }));
+  assert.match(await refused(hive.ensureAgent({ id: 'c2', name: 'C', provider: 'claude', cwd: work })), /could not be read or understood/);
+  // L4: the log row's agent id is plain.
+  assert.ok(log().some((r) => r.kind === 'hook-runtime' && r.agentId === 'c2'), JSON.stringify(log().filter((r) => r.kind === 'hook-runtime')));
+  // L5: a link, an oversized file and a named pipe are not followed or read.
+  fs.rmSync(settings);
+  const benign = path.join(base, 'benign.json');
+  fs.writeFileSync(benign, '{}');
+  fs.symlinkSync(benign, settings);
+  assert.match(await refused(hive.ensureAgent({ id: 'c3', name: 'C', provider: 'claude', cwd: work })), /could not be read/, 'a link');
+  fs.rmSync(settings);
+  fs.writeFileSync(settings, '{}' + ' '.repeat(1024 * 1024 + 1));
+  assert.match(await refused(hive.ensureAgent({ id: 'c4', name: 'C', provider: 'claude', cwd: work })), /could not be read/, 'oversized');
+  fs.rmSync(settings);
+  if (POSIX) {
+    require('node:child_process').execFileSync('mkfifo', [settings]);
+    assert.match(await refused(hive.ensureAgent({ id: 'c5', name: 'C', provider: 'claude', cwd: work })), /could not be read/, 'a named pipe, without hanging');
+    fs.rmSync(settings);
+  }
+  // CLAUDE_CONFIG_DIR moves the user file.
+  const cfgDir = path.join(base, 'claude-cfg');
+  fs.mkdirSync(cfgDir);
+  fs.writeFileSync(path.join(cfgDir, 'settings.json'), JSON.stringify({ permissions: { additionalDirectories: [app] } }));
+  const prev = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = cfgDir;
+  try { assert.ok((await refused(hive.ensureAgent({ id: 'c6', name: 'C', provider: 'claude', cwd: work }))).includes(cfgDir)); }
+  finally { if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prev; }
+  // The managed drop-in folder beside the managed file.
+  const managed = path.join(base, 'managed', 'managed-settings.json');
+  fs.mkdirSync(path.join(base, 'managed', 'managed-settings.d'), { recursive: true });
+  fs.writeFileSync(path.join(base, 'managed', 'managed-settings.d', '10-x.json'), JSON.stringify({ sandbox: { filesystem: { allowWrite: [app] } } }));
+  hive.managedClaudeSettings = managed;
+  assert.ok((await refused(hive.ensureAgent({ id: 'c7', name: 'C', provider: 'claude', cwd: work }))).includes('10-x.json'));
+  assert.equal(home.length > 0, true);
+});
+
+test('round 3: an agent refused over an hour ago and never spawned since leaves the refused list', async (t) => {
+  const { rt, hive } = floor(t);
+  hive.setHookRuntime(rt);
+  await refused(hive.ensureAgent({ id: 'gone', name: 'G', provider: 'claude', cwd: path.dirname(rt) }));
+  assert.ok(hive.hookRuntimeStatus().refused.gone);
+  const realNow = Date.now;
+  Date.now = () => realNow() + 61 * 60_000;
+  try { assert.equal(hive.hookRuntimeStatus().refused, undefined); } finally { Date.now = realNow; }
+});
