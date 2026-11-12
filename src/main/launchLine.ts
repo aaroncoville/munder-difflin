@@ -152,3 +152,92 @@ export function claudeLaunch(args: string[] | undefined, generatedSettings: stri
   return 'ok';
 }
 
+/** TOML text without comments: a '#' outside a string, and what follows it on the line. */
+export function stripTomlComments(text: string): string {
+  return text.split('\n').map((line) => {
+    let q: string | null = null;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (q) { if (c === '\\' && q === '"') i++; else if (c === q) q = null; } else if (c === '"' || c === "'") q = c; else if (c === '#') return line.slice(0, i);
+    }
+    return line;
+  }).join('\n');
+}
+
+/** A plain JSON object (not null, not an array). */
+export const isPlainObject = (x: unknown): x is Record<string, unknown> => x !== null && typeof x === 'object' && !Array.isArray(x);
+
+/** A JSON value that must be an array of strings when present. */
+export const stringList = (x: unknown): x is string[] => Array.isArray(x) && x.every((y) => typeof y === 'string');
+
+export type RootsState = 'ok' | 'unsandboxed' | 'unknown';
+
+/** The keys that decide a Codex sandbox. Each occurrence must be one the decoder below consumed in its exact plain form. */
+const CODEX_POLICY_KEYS = ['writable_roots', 'sandbox_mode', 'sandbox_workspace_write', 'profile'] as const;
+
+/** Codex writable_roots and sandbox mode from a config.toml, read without a TOML parser by the conservative rule:
+ *  only a top-level `sandbox_mode = "..."`, a bare `[sandbox_workspace_write]` header and one `writable_roots = [...]`
+ *  under it are read. If, after comments are removed, any of those keys (or `profile`) appears anywhere the decoder did
+ *  not consume it (a quoted or dotted key, an inline table, a profile, a duplicate, another form), the file is unknown. */
+export function codexRoots(toml: string): { roots: string[]; state: RootsState } {
+  const unknown = { roots: [], state: 'unknown' as const };
+  const text = stripTomlComments(toml);
+  const lines = text.split('\n');
+  const consumed: Record<string, number> = { writable_roots: 0, sandbox_mode: 0, sandbox_workspace_write: 0, profile: 0 };
+  let section = '';
+  let mode: string | null = null;
+  let roots: string[] | null = null;
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    const header = /^\s*\[\s*([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\s*\]\s*$/.exec(l);
+    if (header) { section = header[1]; if (section === 'sandbox_workspace_write') consumed.sandbox_workspace_write++; continue; }
+    if (section === '') {
+      const m = /^\s*sandbox_mode\s*=\s*"([^"\\]*)"\s*$/.exec(l);
+      if (m) { mode = m[1]; consumed.sandbox_mode++; continue; }
+    }
+    if (section === 'sandbox_workspace_write') {
+      const m = /^\s*writable_roots\s*=\s*(\[.*)$/.exec(l);
+      if (m) {
+        let arr = m[1];
+        while (!/\]\s*$/.test(arr) && i + 1 < lines.length) arr += '\n' + lines[++i];
+        let v: unknown;
+        try { v = JSON.parse(arr.replace(/,\s*\]\s*$/, ']')); } catch { return unknown; }
+        if (!stringList(v) || roots !== null) return unknown;
+        roots = v;
+        consumed.writable_roots++;
+        continue;
+      }
+    }
+  }
+  for (const k of CODEX_POLICY_KEYS) if ((text.match(new RegExp(k, 'g')) ?? []).length !== consumed[k]) return unknown;
+  if (consumed.sandbox_workspace_write > 1 || consumed.sandbox_mode > 1) return unknown;
+  if (mode === 'danger-full-access') return { roots: [], state: 'unsandboxed' };
+  if (mode !== null && mode !== 'workspace-write' && mode !== 'read-only') return unknown;
+  return { roots: roots ?? [], state: 'ok' };
+}
+
+/** Writable dirs in one Claude settings file; `enabled` is its sandbox.enabled, if it says. JSON.parse, then an exact
+ *  shape check of the keys read: any other type at those keys (or at the objects holding them) is null (unknown). */
+export function claudeRoots(json: string): { roots: string[]; enabled: boolean | undefined } | null {
+  let v: unknown;
+  try { v = JSON.parse(json); } catch { return null; }
+  if (!isPlainObject(v)) return null;
+  const roots: string[] = [];
+  let enabled: boolean | undefined;
+  if (Object.hasOwn(v, 'sandbox')) {
+    const sb = v.sandbox;
+    if (!isPlainObject(sb)) return null;
+    if (Object.hasOwn(sb, 'enabled')) { if (typeof sb.enabled !== 'boolean') return null; enabled = sb.enabled; }
+    if (Object.hasOwn(sb, 'filesystem')) {
+      const fsx = sb.filesystem;
+      if (!isPlainObject(fsx)) return null;
+      if (Object.hasOwn(fsx, 'allowWrite')) { if (!stringList(fsx.allowWrite)) return null; roots.push(...fsx.allowWrite); }
+    }
+  }
+  if (Object.hasOwn(v, 'permissions')) {
+    const pm = v.permissions;
+    if (!isPlainObject(pm)) return null;
+    if (Object.hasOwn(pm, 'additionalDirectories')) { if (!stringList(pm.additionalDirectories)) return null; roots.push(...pm.additionalDirectories); }
+  }
+  return { roots, enabled };
+}

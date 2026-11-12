@@ -182,7 +182,7 @@ test('a spawn fails when the agent could write the runtime: cwd, an extra root, 
   fs.writeFileSync(path.join(home, '.codex/config.toml'), `[sandbox_workspace_write]\nwritable_roots = [${JSON.stringify(base)}]\n`);
   assert.match(await refused(hive.ensureAgent({ id: 'x1', name: 'X', provider: 'codex', cwd: home })), /may write the hook runtime/);
   fs.writeFileSync(path.join(home, '.codex/config.toml'), 'sandbox_workspace_write.writable_roots = ["/"]\n');
-  assert.match(await refused(hive.ensureAgent({ id: 'x2', name: 'X', provider: 'codex', cwd: home })), /through \/ \(/, 'a dotted key is read, and / reaches everything');
+  assert.match(await refused(hive.ensureAgent({ id: 'x2', name: 'X', provider: 'codex', cwd: home })), /could not be read or understood/, 'a dotted key is not a form the strict decoder reads, so it refuses');
   fs.writeFileSync(path.join(home, '.codex/config.toml'), 'writable_roots = $X\n');
   assert.match(await refused(hive.ensureAgent({ id: 'x3', name: 'X', provider: 'codex', cwd: home })), /could not be read/);
   fs.rmSync(path.join(home, '.codex'), { recursive: true });
@@ -345,21 +345,28 @@ test('round 2: every Codex config that can add a write root is read: user, proje
   fs.mkdirSync(work, { recursive: true });
   const above = path.join(base, 'repo', '.codex', 'config.toml');
   const here = path.join(work, '.codex', 'config.toml');
+  // Exact forms are read and the root is named; any other form is not understood and refuses, naming the file.
   const forms = [
-    [above, `[sandbox_workspace_write]\nwritable_roots = [${JSON.stringify(app)}]\n`, 'a project config above the cwd'],
-    [here, `sandbox_workspace_write.writable_roots = [${JSON.stringify(app)}]\n`, 'a dotted key in the cwd'],
-    [here, `sandbox_workspace_write = { writable_roots = [${JSON.stringify(app)}] }\n`, 'an inline table'],
-    [here, `[profiles.fast.sandbox_workspace_write]\nwritable_roots = ['${app}']\n`, 'a profile, literal string'],
-    [here, `[sandbox_workspace_write]\nwritable_roots = [\n  "/elsewhere",\n  ${JSON.stringify(app)}, # mine\n]\n`, 'a multi-line array'],
+    [above, `[sandbox_workspace_write]\nwritable_roots = [${JSON.stringify(app)}]\n`, 'a project config above the cwd', 'root'],
+    [here, `[sandbox_workspace_write]\nwritable_roots = [\n  "/elsewhere",\n  ${JSON.stringify(app)}, # mine\n]\n`, 'a multi-line array', 'root'],
+    [here, `sandbox_workspace_write.writable_roots = [${JSON.stringify(app)}]\n`, 'a dotted key in the cwd', 'form'],
+    [here, `sandbox_workspace_write = { writable_roots = [${JSON.stringify(app)}] }\n`, 'an inline table', 'form'],
+    [here, `[profiles.fast.sandbox_workspace_write]\nwritable_roots = ['${app}']\n`, 'a profile, literal string', 'form'],
+    [here, `"sandbox_mode" = "workspace-write"\n`, 'a quoted key', 'form'],
   ];
   let i = 0;
-  for (const [file, text, why] of forms) {
+  for (const [file, text, why, kind] of forms) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, text);
     const msg = await refused(hive.ensureAgent({ id: `x${i++}`, name: 'X', provider: 'codex', cwd: work }));
-    assert.ok(msg.includes(file) && msg.includes(app), `${why}: ${msg}`);
+    assert.ok(msg.includes(file) && (kind === 'root' ? msg.includes(app) : /could not be read or understood/.test(msg)), `${why}: ${msg}`);
     fs.rmSync(file);
   }
+  // A relative root in a project config is read against the spawn's cwd, not the config's folder.
+  fs.mkdirSync(path.dirname(above), { recursive: true });
+  fs.writeFileSync(above, `[sandbox_workspace_write]\nwritable_roots = [${JSON.stringify(path.relative(work, app))}]\n`);
+  assert.ok((await refused(hive.ensureAgent({ id: 'xrel', name: 'X', provider: 'codex', cwd: work }))).includes(app), 'relative to the cwd');
+  fs.rmSync(above);
   for (const [text, why] of [['writable_roots = some_var\n', 'not an array'], ['writable_roots = ["/a"\n', 'broken'], ['writable_roots = [1]\n', 'not text']]) {
     fs.writeFileSync(here, text);
     assert.match(await refused(hive.ensureAgent({ id: `x${i++}`, name: 'X', provider: 'codex', cwd: work })), /could not be read or understood/, why);
@@ -526,6 +533,9 @@ test('round 4: decided once — a policy change after the decision starts under 
   const v = hive.takeHookVerdict('x1');
   assert.throws(() => hive.confirmHookLaunch({ ...v, isNew: false }, ['codex -a never'], {}), /does not keep the Codex sandbox/);
   assert.throws(() => hive.confirmHookLaunch({ ...v, isNew: false }, ['sh -c codex'], {}), /does not run codex itself/);
+  // A relative --add-dir checked at the decision passes the late check: both read it against the spawn's cwd.
+  await hive.ensureAgent({ id: 'x2', name: 'x2', provider: 'codex', cwd: home }, { launch: codexLaunch(['--add-dir', 'sub']) });
+  assert.doesNotThrow(() => hive.confirmHookLaunch({ ...hive.takeHookVerdict('x2'), isNew: false }, codexLaunch(['--add-dir', 'sub']).argv, {}));
   // The app's own remote rewrite is not a change.
   assert.doesNotThrow(() => hive.confirmHookLaunch({ ...v, isNew: false }, ['codex -a never -s workspace-write', '--dangerously-bypass-hook-trust', '--remote', 'unix:///x.sock'], {}));
   // A runtime file changed after the decision fails the late check.

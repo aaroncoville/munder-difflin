@@ -25,7 +25,7 @@ import {
 } from 'node:fs';
 import { join, dirname, basename, isAbsolute, relative, resolve as resolvePath } from 'node:path';
 import { homedir } from 'node:os';
-import { claudeLaunch, codexLaunchSandbox, launchExecutable, launchPlaces } from './launchLine';
+import { claudeLaunch, claudeRoots, codexLaunchSandbox, codexRoots, launchExecutable, launchPlaces } from './launchLine';
 import { HookRuntimeUnavailable, hookCommandFor, overlaps, rootOverlap, stageHookRuntime, unsafePathReason, verifyHookRuntime, type StagedHookRuntime, type WriteRoot } from './hookRuntime';
 import { spawnSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
@@ -218,7 +218,7 @@ export interface Registry {
 /** A launch as the spawn will make it: argv[0] is the command string, then its arguments; env holds only the variables that move configuration. */
 export interface HookLaunch { argv: string[]; env: Record<string, string> }
 /** What ensureAgent decided for a Claude or Codex spawn, carried to the late check. */
-export interface HookVerdict { agentId: string; kind: 'claude' | 'codex'; rt: StagedHookRuntime; rootPaths: string[]; claudeUserDir?: string; dir: string; isNew: boolean }
+export interface HookVerdict { agentId: string; kind: 'claude' | 'codex'; rt: StagedHookRuntime; rootPaths: string[]; claudeUserDir?: string; dir: string; cwd: string; isNew: boolean }
 
 export interface SpawnInjection {
   args: string[];
@@ -654,14 +654,10 @@ export class HiveManager {
       const text = this.readSmallFile(f);
       if (text === 'missing') continue;
       if (text === null) { out.push({ path: null, from: f }); continue; }
-      try {
-        const v = JSON.parse(text) as { sandbox?: { filesystem?: { allowWrite?: unknown } }; permissions?: { additionalDirectories?: unknown } } | null;
-        const a = v?.sandbox?.filesystem?.allowWrite;
-        const b = v?.permissions?.additionalDirectories;
-        // Present but not a list is not understood; absent adds nothing.
-        if ((a !== undefined && !Array.isArray(a)) || (b !== undefined && !Array.isArray(b))) { out.push({ path: null, from: f }); continue; }
-        for (const x of [...(a as unknown[] ?? []), ...(b as unknown[] ?? [])]) out.push({ path: this.settingsRoot(x, cwd), from: f });
-      } catch { out.push({ path: null, from: f }); }
+      // The shared strict decoder: JSON.parse and an exact shape check of the keys read.
+      const c = claudeRoots(text);
+      if (!c) { out.push({ path: null, from: f }); continue; }
+      for (const x of c.roots) out.push({ path: this.settingsRoot(x, cwd), from: f });
     }
     return out;
   }
@@ -672,28 +668,10 @@ export class HiveManager {
     const raw = this.readSmallFile(file);
     if (raw === 'missing') return [];
     if (raw === null) return [{ path: null, from: file }];
-    // Comments do not count: drop a '#' and what follows when it is outside a string.
-    const text = raw.split('\n').map((line) => {
-      let q: string | null = null;
-      for (let i = 0; i < line.length; i++) {
-        const c = line[i];
-        if (q) { if (c === '\\' && q === '"') i++; else if (c === q) q = null; } else if (c === '"' || c === "'") q = c; else if (c === '#') return line.slice(0, i);
-      }
-      return line;
-    }).join('\n');
-    const mentions = (text.match(/writable_roots/g) ?? []).length;
-    const arrays = [...text.matchAll(/writable_roots"?\s*=\s*(\[[^\]]*\])/g)];
-    if (arrays.length !== mentions) return [{ path: null, from: file }];
-    const out: WriteRoot[] = [];
-    for (const m of arrays) {
-      // TOML literal strings ('...') hold no escapes; as JSON they are the same text in double quotes.
-      const json = m[1].replace(/'([^'\\"\n]*)'/g, '"$1"').replace(/,\s*\]/, ']');
-      let v: unknown;
-      try { v = JSON.parse(json); } catch { return [{ path: null, from: file }]; }
-      if (!Array.isArray(v)) return [{ path: null, from: file }];
-      for (const x of v) out.push({ path: this.settingsRoot(x, cwd), from: file });
-    }
-    return out;
+    // The shared strict decoder: any sandbox key not in its exact plain form is not understood.
+    const c = codexRoots(raw);
+    if (c.state === 'unknown') return [{ path: null, from: file }];
+    return c.roots.map((x) => ({ path: this.settingsRoot(x, cwd), from: file }));
   }
   /** Codex write roots from every config it merges: the user's (copied into the generated one) and a
    *  project .codex/config.toml in the working directory or any folder above it. The app passes no -c. */
@@ -701,7 +679,8 @@ export class HiveManager {
     const out = this.codexConfigRoots(join(homedir(), '.codex', 'config.toml'), '');
     if (cwd && isAbsolute(cwd)) {
       for (let d = resolvePath(cwd); ; d = dirname(d)) {
-        out.push(...this.codexConfigRoots(join(d, '.codex', 'config.toml'), d));
+        // A relative root is read against the spawned CLI's cwd, as Codex reads it.
+        out.push(...this.codexConfigRoots(join(d, '.codex', 'config.toml'), cwd));
         if (dirname(d) === d) break;
       }
     }
@@ -751,7 +730,7 @@ export class HiveManager {
     const r = this.verdictRoots(meta, dir, root, extra, launch);
     const rt = this.runtimeFor(meta.id, 'refuse' in r ? [] : r.roots, kind === 'codex' && process.platform === 'win32', 'refuse' in r ? r.refuse : null);
     if (!rt || 'refuse' in r) return null;
-    return { agentId: meta.id, kind, rt, rootPaths: r.roots.map((x) => x.path).filter((x): x is string => !!x), claudeUserDir: r.claudeUserDir, dir, isNew };
+    return { agentId: meta.id, kind, rt, rootPaths: r.roots.map((x) => x.path).filter((x): x is string => !!x), claudeUserDir: r.claudeUserDir, dir, cwd: meta.cwd, isNew };
   }
   /** The late check, just before the terminal starts: the FINAL launch line and environment must imply nothing the
    *  verdict did not check. Reads no settings files (the verdict is the snapshot). A refusal here rolls back a new agent's
@@ -777,7 +756,7 @@ export class HiveManager {
     }
     const checked = new Set(v.rootPaths.map((p) => resolvePath(p)));
     for (const d of addDirs) {
-      const p = this.settingsRoot(d, '');
+      const p = this.settingsRoot(d, v.cwd);
       if (!p || !checked.has(resolvePath(p))) fail(`its final launch line adds a write root that was not checked: ${d}`);
     }
   }
