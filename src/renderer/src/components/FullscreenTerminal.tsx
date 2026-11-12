@@ -485,7 +485,7 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
                   display: 'flex', alignItems: 'center', gap: 6,
                   padding: '4px 8px',
                   fontFamily: 'var(--cth-font-ui)', fontSize: 11,
-                  color: 'var(--cth-ink-900)',
+                  color: 'var(--cth-on-accent)',
                   background: 'var(--cth-status-working)',
                   boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)'
                 }}>

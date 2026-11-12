@@ -172,7 +172,7 @@ export function AgentCard({
             boxShadow: 'inset 0 0 0 1px var(--cth-ink-300), 1px 2px 0 rgba(26,19,32,0.18)',
             transform: 'rotate(4deg)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontFamily: 'var(--cth-font-display)', fontSize: 8, color: 'var(--cth-ink-900)',
+            fontFamily: 'var(--cth-font-display)', fontSize: 8, color: 'var(--cth-on-accent)',
             cursor: 'pointer'
           }}
         >
@@ -220,7 +220,7 @@ export function AgentCard({
                 {isGod && (
                   <span style={{
                     fontFamily: 'var(--cth-font-display)', fontSize: 7, lineHeight: '11px',
-                    background: `var(--cth-${accent})`, color: 'var(--cth-ink-900)',
+                    background: `var(--cth-${accent})`, color: 'var(--cth-on-accent)',
                     padding: '1px 4px 0', flexShrink: 0
                   }}>{t('agentCard.boss')}</span>                )}
               </span>

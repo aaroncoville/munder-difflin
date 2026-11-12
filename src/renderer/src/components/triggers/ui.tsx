@@ -61,7 +61,7 @@ export function Chip({ children, tone = 'plain' }: { children: ReactNode; tone?:
     <span style={{
       flexShrink: 0, padding: '2px 5px 1px',
       fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '12px',
-      background: bg, boxShadow: `inset 0 0 0 1px ${line}`, color: 'var(--cth-ink-900)'
+      background: bg, boxShadow: `inset 0 0 0 1px ${line}`, color: tone === 'on' ? 'var(--cth-on-accent)' : 'var(--cth-ink-900)'
     }}>{children}</span>
   );
 }
@@ -91,7 +91,7 @@ export function Toggle({ on, onClick, onLabel, offLabel }: {
         padding: '2px 8px 1px', border: 'none', cursor: 'pointer', flexShrink: 0,
         background: on ? 'var(--cth-lemon)' : 'var(--cth-cream-200)',
         boxShadow: `inset 0 0 0 1px ${on ? 'var(--cth-ink-900)' : 'var(--cth-ink-700)'}`,
-        fontFamily: 'var(--cth-font-ui)', fontSize: 12, color: 'var(--cth-ink-900)'
+        fontFamily: 'var(--cth-font-ui)', fontSize: 12, color: on ? 'var(--cth-on-accent)' : 'var(--cth-ink-900)'
       }}
     >{on ? (onLabel ?? t('common.on')) : (offLabel ?? t('common.off'))}</button>
   );
