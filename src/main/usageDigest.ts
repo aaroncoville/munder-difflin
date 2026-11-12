@@ -5,7 +5,7 @@
  * durations only, like the logs it summarizes. The daily research pass reads it
  * instead of mining the logs by hand.
  */
-import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CARD_STATUSES } from './usageEvents';
 import { VIEWS } from './usageLog';
@@ -34,19 +34,33 @@ const parse = (lines: string[]): Row[] => {
 };
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
-// The log files sit in the hive folder, which agents can write, so every string
-// the digest prints is checked again here: an id token, a known enum or a known
-// view, or it is not used.
+// The log files sit in the hive folder, which agents can write, so nothing in
+// them is printed because it looks like an id. A printed string must be a known
+// value (trigger, status, shape, view, lock kind, canary feature or code), a
+// card in the current tasks.json, a router-minted conversation, or a keyed ref.
 const ID = /^[A-Za-z0-9][\w.:-]{0,79}$/;
-const ASK_KEY = /^[A-Za-z0-9][\w.:-]{0,79}@\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+const ASK_KEY = /^(.+)@\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+const MINTED_CONVERSATION = /^conv-[0-9a-f]{6}$/;
+const REF = /^[0-9a-f]{12}$/;
 const oneOf = <T extends string>(list: readonly T[]) => (v: unknown): T | null =>
   (typeof v === 'string' && (list as readonly string[]).includes(v) ? (v as T) : null);
+/** For lookups only, never printed. */
 const id = (v: unknown): string | null => (typeof v === 'string' && ID.test(v) ? v : null);
-const askKey = (v: unknown): string | null => (typeof v === 'string' && ASK_KEY.test(v) ? v : null);
 const trigger = oneOf(['mail', 'heartbeat', 'scheduler', 'breaker', 'system', 'direct']);
 const shape = oneOf(['done-ack', 'option', 'short', 'sentence', 'long']);
 const status = oneOf(CARD_STATUSES);
 const view = oneOf(VIEWS);
+const lockKind = oneOf(['suite', 'build']);
+const canaryFeature = oneOf(['memory-search', 'memory-wakeup', 'kg-search', 'hook-socket', 'helpers-intact', 'node-on-path', 'model-matches-launch']);
+const CANARY_CODES = [
+  'off', 'not-probed-spawn', 'not-probed-remote', 'not-probed-switching', 'not-loopback', 'no-hits', 'redirect', 'error', 'closed',
+  'timeout', 'bad-reply', 'other-instance', 'wrong-pong', 'threw', 'no-root', 'not-found'
+];
+/** A canary's failure code: a known code, an HTTP refusal or an errno name; anything else is 'other'. */
+const canaryCode = (v: unknown): string | null => {
+  if (typeof v !== 'string') return null;
+  return CANARY_CODES.includes(v) || /^refused-\d{3}$/.test(v) || /^E[A-Z]{2,15}$/.test(v) ? v : 'other';
+};
 const cents = (x: number): number => Math.round(x * 100) / 100;
 function quantile(xs: number[], q: number): number | null {
   if (!xs.length) return null;
@@ -54,9 +68,21 @@ function quantile(xs: number[], q: number): number | null {
   return s[Math.min(s.length - 1, Math.floor(q * s.length))];
 }
 
-export interface DigestInput { log: string[]; ledger: string[]; usage: string[]; start: number; end: number }
+/** `cards`: the card ids in the current tasks.json, the only card ids the digest prints. */
+export interface DigestInput { log: string[]; ledger: string[]; usage: string[]; start: number; end: number; cards?: ReadonlySet<string> }
 
 export function summarize(i: DigestInput) {
+  const cards = i.cards ?? new Set<string>();
+  const askKey = (v: unknown): string | null => {
+    const m = typeof v === 'string' ? ASK_KEY.exec(v) : null;
+    return m && cards.has(m[1]) ? (v as string) : null;
+  };
+  /** A conversation as printed: a card or router-minted id, else its keyed ref. */
+  const conversation = (r: Row): string | null => {
+    const c = r.conversation;
+    if (typeof c === 'string' && (MINTED_CONVERSATION.test(c) || cards.has(c))) return c;
+    return typeof r.conversationRef === 'string' && REF.test(r.conversationRef) ? `ref:${r.conversationRef}` : null;
+  };
   const inWeek = (r: Row): boolean => { const t = num(r.ts); return t !== null && t >= i.start && t < i.end; };
   const log = parse(i.log).filter(inWeek);
   const usage = parse(i.usage).filter(inWeek);
@@ -93,16 +119,16 @@ export function summarize(i: DigestInput) {
       const usd = usdIn(agent, start, start + dur);
       const t = (turnsByTrigger[trigger(r.trigger) ?? 'other'] ??= { turns: 0, usd: 0 });
       t.turns++; t.usd += usd;
-      const conv = id(r.conversation);
+      const conv = conversation(r);
       if (conv) usdByConversation[conv] = (usdByConversation[conv] ?? 0) + usd;
     } else if (r.kind === 'heavy-lock' && r.action === 'acquire') {
       const w = num(r.waitMs);
-      if (w !== null) { const k = (lockWaits[id(r.heavyKind) ?? 'other'] ??= { n: 0, totalMs: 0 }); k.n++; k.totalMs += w; }
+      if (w !== null) { const k = (lockWaits[lockKind(r.heavyKind) ?? 'other'] ??= { n: 0, totalMs: 0 }); k.n++; k.totalMs += w; }
     } else if (r.kind === 'canary') {
-      const f = id(r.feature); if (!f) continue;
+      const f = canaryFeature(r.feature); if (!f) continue;
       const c = (canaries[f] ??= { failed: 0, runs: 0, details: new Set() });
       c.runs++;
-      if (r.ok === false) { c.failed++; const d = id(r.detail); if (d) c.details.add(d); }
+      if (r.ok === false) { c.failed++; const d = canaryCode(r.detail); if (d) c.details.add(d); }
     } else if (r.kind === 'ask-filed') {
       const k = askKey(r.askKey); if (k) filed.push(k);
     } else if (r.kind === 'ask-answered') {
@@ -199,6 +225,14 @@ function linesSince(path: string, since: number): string[] {
   } finally { closeSync(fd); }
 }
 
+/** Card ids in tasks.json; empty when it cannot be read. */
+function cardIds(path: string): Set<string> {
+  try {
+    const tasks = (JSON.parse(readFileSync(path, 'utf8')) as { tasks?: unknown }).tasks;
+    return new Set(Array.isArray(tasks) ? tasks.map((t) => (t as { id?: unknown })?.id).filter((x): x is string => typeof x === 'string') : []);
+  } catch { return new Set(); }
+}
+
 /** Write last week's digest if it is not there yet; returns its path, or null when nothing was written. */
 export function writeWeeklyDigest(root: string, now: number): string | null {
   const week = isoWeek(now - 7 * DAY);
@@ -214,7 +248,7 @@ export function writeWeeklyDigest(root: string, now: number): string | null {
   const summary = summarize({
     log: linesSince(join(root, 'log.jsonl'), week.start),
     ledger: linesSince(join(root, 'cost-ledger.jsonl'), week.start - DAY),
-    usage, start: week.start, end: week.end
+    usage, start: week.start, end: week.end, cards: cardIds(join(root, 'tasks.json'))
   });
   writeFileSync(file, renderDigest(summary, week.label), { mode: 0o600, flag: 'wx' });
   return file;

@@ -52,7 +52,7 @@ function week() {
     { ts: MON + 4 * H + 10 * MIN, kind: 'ask-shown', askKey: 'CARD-1@2026-11-02T04:00:00.000Z', ageMs: 10 * MIN },
     { ts: MON + 5 * H, kind: 'ask-submitted', askKey: 'CARD-1@2026-11-02T04:00:00.000Z', msSinceShown: 50 * MIN, answerLen: 4, answerShape: 'done-ack' }
   ]);
-  return { log, ledger, usage };
+  return { log, ledger, usage, cards: new Set(['CARD-1', 'CARD-2']) };
 }
 
 test('isoWeek names the ISO week and its Monday', () => {
@@ -61,15 +61,15 @@ test('isoWeek names the ISO week and its Monday', () => {
 });
 
 test('turns are counted by trigger with their dollars from the ledger', () => {
-  const { log, ledger, usage } = week();
-  const s = D.summarize({ log, ledger, usage, start: MON, end: MON + 7 * 86400_000 });
+  const { log, ledger, usage, cards } = week();
+  const s = D.summarize({ log, ledger, usage, cards, start: MON, end: MON + 7 * 86400_000 });
   assert.deepEqual(s.turnsByTrigger, { heartbeat: { turns: 1, usd: 0.5 }, mail: { turns: 2, usd: 6 } });
   assert.deepEqual(s.usdByConversation, { 'CARD-1': 6 });
 });
 
 test('asks: unseen and thinking times, plus filed-but-never-seen and seen-but-unanswered', () => {
-  const { log, ledger, usage } = week();
-  const s = D.summarize({ log, ledger, usage, start: MON, end: MON + 7 * 86400_000 });
+  const { log, ledger, usage, cards } = week();
+  const s = D.summarize({ log, ledger, usage, cards, start: MON, end: MON + 7 * 86400_000 });
   assert.equal(s.asks.filed, 2);
   assert.equal(s.asks.answered, 1);
   assert.equal(s.asks.unseenMedianMs, 10 * MIN);
@@ -79,8 +79,8 @@ test('asks: unseen and thinking times, plus filed-but-never-seen and seen-but-un
 });
 
 test('screens by dwell, card states, lock waits and canary failures', () => {
-  const { log, ledger, usage } = week();
-  const s = D.summarize({ log, ledger, usage, start: MON, end: MON + 7 * 86400_000 });
+  const { log, ledger, usage, cards } = week();
+  const s = D.summarize({ log, ledger, usage, cards, start: MON, end: MON + 7 * 86400_000 });
   assert.deepEqual(s.views, [{ view: 'command-center:human', opens: 1, dwellMs: 3 * MIN }, { view: 'settings', opens: 0, dwellMs: MIN }]);
   assert.deepEqual(s.stateHours, { doing: 2, blocked: 1 });
   assert.deepEqual(s.lockWaits, { suite: { n: 1, totalMs: 4 * MIN } });
@@ -88,8 +88,8 @@ test('screens by dwell, card states, lock waits and canary failures', () => {
 });
 
 test('the markdown names the week and carries no text beyond ids and numbers', () => {
-  const { log, ledger, usage } = week();
-  const md = D.renderDigest(D.summarize({ log, ledger, usage, start: MON, end: MON + 7 * 86400_000 }), '2026-W45');
+  const { log, ledger, usage, cards } = week();
+  const md = D.renderDigest(D.summarize({ log, ledger, usage, cards, start: MON, end: MON + 7 * 86400_000 }), '2026-W45');
   assert.match(md, /^# Usage digest 2026-W45/m);
   assert.match(md, /\| heartbeat \| 1 \| \$0\.50 \|/);
   assert.match(md, /CARD-2@2026-11-02T04:00:00.000Z/);
@@ -102,6 +102,7 @@ test('the weekly file is written once for the last full week, private, and not r
   const { log, ledger, usage } = week();
   fs.writeFileSync(path.join(root, 'log.jsonl'), log.join('\n') + '\n');
   fs.writeFileSync(path.join(root, 'cost-ledger.jsonl'), ledger.join('\n') + '\n');
+  fs.writeFileSync(path.join(root, 'tasks.json'), JSON.stringify({ tasks: [{ id: 'CARD-1' }, { id: 'CARD-2' }] }));
   fs.mkdirSync(path.join(root, 'usage'), { mode: 0o700 });
   fs.writeFileSync(path.join(root, 'usage', '2026-11-02.jsonl'), usage.join('\n') + '\n');
   const now = MON + 7 * 86400_000 + 2 * H; // Monday of the next week
@@ -132,4 +133,23 @@ test('prose written into any string field of the logs never reaches the digest',
   ]);
   const md = D.renderDigest(D.summarize({ log, ledger: [], usage, start: MON, end: MON + 7 * 86400_000 }), '2026-W45');
   assert.doesNotMatch(md, /secret plan/);
+});
+
+test('id-shaped prose is printed only when the app holds it; other conversations print as refs', () => {
+  const P = 'Owner-said-the-unreleased-project-is-ORCHID.Owner-said-the-unreleased-project-is';
+  const log = j([
+    { ts: MON + H, kind: 'turn', agentId: 'god', startTs: MON + H, durationMs: MIN, trigger: 'mail', conversation: P },
+    { ts: MON + H, kind: 'turn', agentId: 'god', startTs: MON + H, durationMs: MIN, trigger: 'mail', conversationRef: 'a1b2c3d4e5f6' },
+    { ts: MON + H, kind: 'turn', agentId: 'god', startTs: MON + H, durationMs: MIN, trigger: 'mail', conversationRef: P },
+    { ts: MON + 4 * H, kind: 'ask-filed', cardId: P, askKey: `${P}@2026-11-02T04:00:00.000Z` },
+    { ts: MON + 5 * H, kind: 'heavy-lock', action: 'acquire', heavyKind: P, waitMs: MIN },
+    { ts: MON + 6 * H, kind: 'canary', feature: P, ok: false, detail: 'refused-422' },
+    { ts: MON + 6 * H, kind: 'canary', feature: 'memory-search', ok: false, detail: P }
+  ]);
+  const ledger = j([{ agent_id: 'god', session_id: 's', ts: MON, usd: 0 }, { agent_id: 'god', session_id: 's', ts: MON + H + 30_000, usd: 1 }]);
+  const s = D.summarize({ log, ledger, usage: [], cards: new Set(['CARD-1']), start: MON, end: MON + 7 * 86400_000 });
+  const md = D.renderDigest(s, '2026-W45');
+  assert.doesNotMatch(md, /ORCHID/);
+  assert.match(md, /ref:a1b2c3d4e5f6/);
+  assert.deepEqual(s.canaryFailures, { 'memory-search': { failed: 1, runs: 1, details: ['other'] } });
 });
