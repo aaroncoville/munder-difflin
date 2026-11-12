@@ -37,6 +37,8 @@ function hive(t) {
 }
 
 const shell = (command, extra = {}) => ({ command, ...extra });
+/** The launch line the app gives a Claude agent: its generated settings and its prompt. */
+const claudeLine = (agentDir) => ({ args: ['claude --permission-mode bypassPermissions', '--append-system-prompt', 'you are an agent', '--settings', path.join(agentDir, 'settings.json')], platform: 'darwin' });
 
 test('scoped roots are role-aware: god keeps the hive root, an agent gets its folder, evidence and an outside worktree', (t) => {
   const { home, root, ctx, god } = hive(t);
@@ -156,16 +158,16 @@ test('effective Claude roots come from every settings file the CLI merges; off o
   const root = path.join(home, 'hive');
   const ctxOf = (id, isGod, cwd = home) => ({ root, agentId: id, isGod, cwd, home });
   const dir = path.join(root, 'agents/w1');
-  const w = W.effectiveRoots('claude', dir, home, home);
+  const w = W.effectiveRoots('claude', dir, home, home, claudeLine(dir));
   assert.equal(w.state, 'ok');
   const rw = W.rootsReport(w, ctxOf('w1', false));
   assert.deepEqual(rw.effective.sort(), ['contains hive', 'hive root', 'own folder'], JSON.stringify(rw));
   assert.deepEqual(rw.excess.sort(), ['contains hive', 'hive root']);
-  assert.deepEqual(W.rootsReport(W.effectiveRoots('claude', path.join(root, 'agents/g1'), home, home), ctxOf('g1', true)).excess, ['contains hive']);
+  assert.deepEqual(W.rootsReport(W.effectiveRoots('claude', path.join(root, 'agents/g1'), home, home, claudeLine(path.join(root, 'agents/g1'))), ctxOf('g1', true)).excess, ['contains hive']);
   fs.mkdirSync(path.join(home, '.claude'));
   fs.writeFileSync(path.join(home, '.claude/settings.json'), JSON.stringify({ permissions: { additionalDirectories: [path.join(root, 'bin')] } }));
   const outside = freshHome(t);
-  const ro = W.rootsReport(W.effectiveRoots('claude', dir, outside, home), ctxOf('w1', false, outside));
+  const ro = W.rootsReport(W.effectiveRoots('claude', dir, outside, home, claudeLine(dir)), ctxOf('w1', false, outside));
   assert.deepEqual(ro.excess.sort(), ['bin', 'hive root'], 'a user settings file adds a root');
   const generated = fs.readFileSync(path.join(dir, 'settings.json'), 'utf8');
   const shapes = [
@@ -178,13 +180,13 @@ test('effective Claude roots come from every settings file the CLI merges; off o
   ];
   for (const [why, body, state] of shapes) {
     fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify(body));
-    const eff = W.effectiveRoots('claude', dir, outside, home);
+    const eff = W.effectiveRoots('claude', dir, outside, home, claudeLine(dir));
     assert.equal(eff.state, state, why);
     assert.deepEqual(W.rootsReport(eff, ctxOf('w1', false, outside)), { effective: [state], excess: [state] }, why);
   }
   fs.writeFileSync(path.join(dir, 'settings.json'), generated);
   fs.writeFileSync(path.join(home, '.claude/settings.json'), JSON.stringify({ sandbox: { enabled: false } }));
-  assert.equal(W.effectiveRoots('claude', dir, outside, home).state, 'ok', 'the generated --settings file outranks the user file');
+  assert.equal(W.effectiveRoots('claude', dir, outside, home, claudeLine(dir)).state, 'ok', 'the generated --settings file outranks the user file');
   assert.equal(W.effectiveRoots('claude', path.join(root, 'agents/none'), outside, home).state, 'unknown', 'no generated file');
 });
 
@@ -216,7 +218,7 @@ test('effective Codex roots: inherited roots show; full access is unsandboxed; d
   assert.equal(write('', { ...auto, platform: 'win32' }).state, 'unknown', 'a platform with no sandbox');
   assert.equal(write('').state, 'ok');
   fs.writeFileSync(path.join(root, 'agents/a1/settings.json'), JSON.stringify({ sandbox: { enabled: true, filesystem: { allowWrite: [] } } }));
-  assert.equal(W.effectiveRoots('claude', path.join(root, 'agents/a1'), ctx.cwd, ctx.home, auto).state, 'ok');
+  assert.equal(W.effectiveRoots('claude', path.join(root, 'agents/a1'), ctx.cwd, ctx.home, claudeLine(path.join(root, 'agents/a1'))).state, 'ok');
   // R3: the launch line is read with Codex's option grammar; the prompt is never read.
   const L = (...args) => W.codexLaunchSandbox(args);
   assert.equal(L('codex -a never -s danger-full-access', 'please run -s workspace-write'), 'danger-full-access', 'a prompt cannot make it narrower');
@@ -285,7 +287,8 @@ test('the dry run counts every call, looks an agent up only for calls that can w
   const later = [];
   const settle = () => { while (later.length) later.shift()(); };
   const dry = new W.WriteRootsDryRun({
-    agent: (id) => { lookups++; return id === 'w1' ? { ctx: { root, agentId: 'w1', isGod: false, cwd: home, home }, provider: 'claude', agentDir: path.join(root, 'agents/w1'), launch: { platform: 'darwin' } } : null; },
+    agent: (id) => { lookups++; return id === 'w1' ? { ctx: { root, agentId: 'w1', isGod: false, cwd: home, home }, provider: 'claude', agentDir: path.join(root, 'agents/w1'), launch: claudeLine(path.join(root, 'agents/w1')) } : null; },
+    known: (id) => id === 'w1',
     record: (e) => rows.push(e),
     defer: (fn) => later.push(fn),
   });
@@ -314,7 +317,7 @@ test('the dry run counts every call, looks an agent up only for calls that can w
   assert.deepEqual(rows[0].excess.sort(), ['contains hive', 'hive root']);
   hooks.setWriteObserver(() => { throw new Error('boom'); });
   assert.deepEqual(fire(hooks), baseline, 'an observer that throws changes nothing');
-  const throwing = new W.WriteRootsDryRun({ agent: () => { throw new Error('x'); }, record: () => {}, defer: (fn) => later.push(fn) });
+  const throwing = new W.WriteRootsDryRun({ agent: () => { throw new Error('x'); }, known: () => true, record: () => {}, defer: (fn) => later.push(fn) });
   assert.doesNotThrow(() => throwing.onHook('w1', 'PreToolUse', { tool_name: 'Write', tool_input: { file_path: '/x' } }));
   assert.doesNotThrow(settle);
 });
@@ -326,7 +329,7 @@ function hookFloor(t) {
   jailHome(t, home);
   const root = path.join(home, 'hive');
   for (const d of ['agents/w1', 'agents/w2/outbox', 'bin']) fs.mkdirSync(path.join(root, d), { recursive: true });
-  const agent = (id) => (id === 'w1' ? { ctx: { root, agentId: 'w1', isGod: false, cwd: home, home }, provider: 'claude', agentDir: path.join(root, 'agents/w1'), launch: { platform: 'darwin' } } : null);
+  const agent = (id) => (id === 'w1' ? { ctx: { root, agentId: 'w1', isGod: false, cwd: home, home }, provider: 'claude', agentDir: path.join(root, 'agents/w1'), launch: claudeLine(path.join(root, 'agents/w1')) } : null);
   return { home, root, agent };
 }
 
@@ -351,6 +354,7 @@ test('the hook answer does not wait for the dry run: answer time is the same for
   const dry = new W.WriteRootsDryRun({
     // A lookup that never finishes in time would show up in the answer time if it ran on the answer path.
     agent: (id) => { slowLookups++; const end = Date.now() + 200; while (Date.now() < end) { /* spin */ } return agent(id); },
+    known: (id) => id === 'w1',
     record: () => {},
   });
   const hooks = new HS(h, () => null, () => ({ notifications: false }), control, undefined);
@@ -385,30 +389,30 @@ test('each deferred call stays inside its budget, and a call past it records one
   assert.deepEqual(slow.map((r) => r.via), ['shell-write', 'truncated'], 'past the time budget the rest is dropped');
 });
 
-test('the queue is bounded and sheds; made-up ids neither queue work for themselves nor crowd out a real agent', (t) => {
-  const { root, agent } = hookFloor(t);
+test('admission: made-up ids never take a queue slot; the queue is bounded and sheds only a spawned agent\'s calls', (t) => {
+  const { agent } = hookFloor(t);
   const later = [];
   const rows = [];
   const dry = new W.WriteRootsDryRun({ agent, known: (id) => id === 'w1', record: (e) => rows.push(e), defer: (fn) => later.push(fn) });
-  for (let i = 0; i < 10_000; i++) dry.onHook(`fake-${i}`, 'PreToolUse', { tool_name: 'Bash', tool_input: { command: 'ls' } });
+  for (let i = 0; i < 10_000; i++) dry.onHook(`fake-${i}`, 'PreToolUse', { tool_name: 'Write', tool_input: { file_path: '/x' } });
+  assert.equal(later.length, 0, 'nothing queued for unknown ids');
+  assert.equal(dry.queue.length, 0);
   for (let i = 0; i < 10; i++) dry.onHook('w1', 'PreToolUse', { tool_name: 'Read', tool_input: { file_path: '/x' } });
   assert.equal(later.length, 1, 'one scheduled drain at a time');
-  assert.ok(dry.shed.size <= 1, 'made-up ids are not tallied');
   later.shift()();
   assert.equal(later.length, 1, 'one call per turn, then the next is scheduled');
   while (later.length) later.shift()();
   dry.onHook('w1', 'Stop', {});
   while (later.length) later.shift()();
-  const observed = rows.filter((r) => r.kind === 'write-observed');
-  assert.deepEqual(observed.map((r) => `${r.tool}/${r.shape}/${r.count}`).sort(), ['other/shed/10'], 'the real agent\'s shed calls are counted; nothing for fake ids');
-  assert.equal(rows.length, observed.length);
-  for (let i = 0; i < 3000; i++) dry.onHook(`fake-${i}`, 'PreToolUse', { tool_name: 'Read', tool_input: {} });
-  while (later.length) later.shift()();
-  dry.onHook('w1', 'PreToolUse', { tool_name: 'Read', tool_input: { file_path: '/x' } });
+  assert.deepEqual(rows.filter((r) => r.kind === 'write-observed').map((r) => `${r.tool}/${r.shape}/${r.count}`), ['Read/file-path/10'], 'the real calls are all counted');
+  rows.length = 0;
+  for (let i = 0; i < W.MAX_QUEUE + 5; i++) dry.onHook('w1', 'PreToolUse', { tool_name: 'Read', tool_input: {} });
   dry.onHook('w1', 'Stop', {});
   while (later.length) later.shift()();
-  assert.ok(rows.some((r) => r.kind === 'write-observed' && r.tool === 'Read' && r.count === 1), '3,000 unknown ids do not stop a real count');
-  assert.equal(path.basename(root), 'hive');
+  dry.onHook('w1', 'Stop', {});
+  while (later.length) later.shift()();
+  assert.ok(rows.some((r) => r.shape === 'shed' && r.count === 6), JSON.stringify(rows));
+  assert.equal(dry.shed.size, 0);
 });
 
 test('generated: a value planted at any read site reads as unknown or refused, never as scoped or own', (t) => {
@@ -446,7 +450,7 @@ test('generated: a value planted at any read site reads as unknown or refused, n
     if (kind === 'parent is a file') { const dir = path.dirname(f); fs.rmSync(dir, { recursive: true, force: true }); fs.writeFileSync(dir, 'x'); }
     if (kind === 'oversized') fs.writeFileSync(f, (site.provider === 'claude' ? good.claude : good.codex) + ' '.repeat(W.MAX_SETTINGS + 1));
     const ctx = { root, agentId: 'a1', isGod: false, cwd, home };
-    const eff = W.effectiveRoots(site.provider, path.join(root, 'agents/a1'), cwd, home, { args: ['codex', '-s', 'workspace-write'], platform: 'darwin' });
+    const eff = W.effectiveRoots(site.provider, path.join(root, 'agents/a1'), cwd, home, site.provider === 'codex' ? { args: ['codex', '-s', 'workspace-write'], platform: 'darwin' } : claudeLine(path.join(root, 'agents/a1')));
     const report = W.rootsReport(eff, ctx);
     const expectOk = kind === 'missing' && site.optional;
     outcomes.push(`${site.name}/${kind}: ${eff.state}`);
@@ -488,4 +492,46 @@ test('generated: a value planted at any read site reads as unknown or refused, n
   assert.equal(W.toolClass({}), 'other');
   assert.equal(W.inputShape('x'.repeat(10)), 'other');
   assert.ok(outcomes.length >= 20, outcomes.join('\n'));
+});
+
+test('every row of READ_SITES has a case here, and each case holds', (t) => {
+  const home = freshHome(t);
+  const root = path.join(home, 'hive');
+  for (const d of ['agents/a1/.codex', 'agents/a2/outbox', 'bin', 'evidence']) fs.mkdirSync(path.join(root, d), { recursive: true });
+  const dir = path.join(root, 'agents/a1');
+  const ctx = { root, agentId: 'a1', isGod: false, cwd: '', home };
+  fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ sandbox: { enabled: true, filesystem: { allowWrite: [] } } }));
+  fs.writeFileSync(path.join(dir, '.codex/config.toml'), '');
+  const codex = (...args) => W.effectiveRoots('codex', dir, '', home, { args, platform: 'darwin' });
+  const claude = (...args) => W.effectiveRoots('claude', dir, '', home, { args, platform: 'darwin' });
+  const ok = ['claude', '--settings', path.join(dir, 'settings.json')];
+  const plant = (f, fn) => { const keep = fs.readFileSync(f); fs.rmSync(f); fn(f); try { return W.effectiveRoots(f.includes('.codex') ? 'codex' : 'claude', dir, '', home, f.includes('.codex') ? { args: ['codex -s workspace-write'], platform: 'darwin' } : { args: ok, platform: 'darwin' }).state; } finally { fs.rmSync(f, { force: true, recursive: true }); fs.writeFileSync(f, keep); } };
+  const CASES = {
+    'payload-agent-id': () => { const later = []; const d = new W.WriteRootsDryRun({ agent: () => null, known: () => false, record: () => {}, defer: (f) => later.push(f) }); d.onHook('fake', 'PreToolUse', {}); assert.equal(later.length, 0); },
+    'payload-tool-name': () => assert.equal(W.toolClass('secret_text'), 'other'),
+    'payload-tool-input': () => assert.equal(W.observeTool('Bash', { command: Array.from({ length: 200 }, (_, i) => `rm ${root}/bin/${i}`).join(';') }, ctx).at(-1).via, 'truncated'),
+    queue: () => assert.ok(W.MAX_QUEUE <= 64),
+    'own-folder': () => { fs.rmSync(path.join(root, 'agents/a9'), { force: true, recursive: true }); fs.symlinkSync(path.join(root, 'agents/a2'), path.join(root, 'agents/a9')); assert.deepEqual(W.scopedRoots({ ...ctx, agentId: 'a9' }), []); },
+    'claude-generated-settings': () => assert.equal(plant(path.join(dir, 'settings.json'), (f) => fs.mkdirSync(f)), 'unknown'),
+    'claude-project-settings': () => { const cwd = path.join(home, 'wt'); fs.mkdirSync(path.join(cwd, '.claude'), { recursive: true }); fs.mkdirSync(path.join(cwd, '.claude/settings.json')); assert.equal(W.effectiveRoots('claude', dir, cwd, home, { args: ok, platform: 'darwin' }).state, 'unknown'); fs.rmSync(cwd, { recursive: true }); },
+    'claude-user-settings': () => { fs.mkdirSync(path.join(home, '.claude/settings.json'), { recursive: true }); assert.equal(claude(...ok).state, 'unknown'); fs.rmSync(path.join(home, '.claude'), { recursive: true }); },
+    'claude-managed-settings': () => assert.equal(claude(...ok).state, 'ok', 'read without error when absent'),
+    'codex-config': () => assert.equal(plant(path.join(dir, '.codex/config.toml'), (f) => fs.symlinkSync('/etc/hosts', f)), 'unknown'),
+    'spawn-record': () => { assert.equal(W.effectiveRoots('gemini', dir, '', home, { args: ok, platform: 'darwin' }).state, 'unknown'); assert.equal(claude(...ok).state, 'ok'); assert.equal(W.effectiveRoots('claude', dir, '', home, { args: ok, platform: 'win32' }).state, 'unknown'); },
+    'codex-prompt': () => assert.equal(codex('codex -s danger-full-access', 'now -s workspace-write').state, 'unsandboxed'),
+    'codex-sandbox-flag': () => { assert.equal(codex('codex -s workspace-write').state, 'ok'); assert.equal(codex('codex').state, 'unknown'); },
+    'codex-bypass-flag': () => assert.equal(codex('codex --yolo').state, 'unsandboxed'),
+    'codex-config-flag': () => assert.equal(codex('codex -s workspace-write', '--config', 'sandbox_mode="read-only"').state, 'unknown'),
+    'codex-profile-flag': () => assert.equal(codex('codex -s workspace-write', '-p', 'x').state, 'unknown'),
+    'codex-add-dir-flag': () => assert.ok(codex('codex -s workspace-write', '--add-dir', path.join(root, 'bin')).roots.includes(path.join(root, 'bin'))),
+    'codex-remote-flag': () => assert.equal(codex('codex -s workspace-write', '--remote', 'ws://x').state, 'unknown'),
+    'codex-unknown-option': () => assert.equal(codex('codex -s workspace-write', '--weird').state, 'unknown'),
+    'claude-prompt': () => { assert.equal(claude(...ok, 'please --settings /tmp/x --add-dir /').state, 'ok', 'the prompt is not read'); assert.equal(claude(...ok, 'prompt', '--settings', '/tmp/x').state, 'ok', 'nothing after the first positional is read'); },
+    'claude-add-dir-flag': () => { const e = claude('claude', '--add-dir', path.join(root, 'bin'), path.join(root, 'research'), '--settings', path.join(dir, 'settings.json')); assert.ok(e.roots.includes(path.join(root, 'bin')) && e.roots.includes(path.join(root, 'research'))); },
+    'claude-settings-flag': () => { assert.equal(claude('claude', '--settings', '/tmp/other.json').state, 'unknown'); assert.equal(claude('claude', '--settings', '{"sandbox":{}}').state, 'unknown'); },
+    'claude-unmodelled-flag': () => { for (const f of ['--setting-sources=user', '--bare', '--safe-mode', '--restricted', '--worktree', '-w', '--debug']) assert.equal(claude(...ok, f).state, 'unknown', f); },
+    'claude-unknown-option': () => { assert.equal(claude(...ok, '--weird').state, 'unknown'); assert.equal(W.effectiveRoots('claude', dir, '', home, { platform: 'darwin' }).state, 'unknown', 'no launch line'); },
+  };
+  assert.deepEqual(Object.keys(CASES).sort(), W.READ_SITES.map((r) => r.id).sort(), 'a row with no case, or a case with no row');
+  for (const [id, fn] of Object.entries(CASES)) { try { fn(); } catch (e) { e.message = `${id}: ${e.message}`; throw e; } }
 });

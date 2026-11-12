@@ -437,7 +437,10 @@ export function codexRoots(toml: string): { roots: string[]; state: RootsState }
 
 /** Codex options that take a value (the next argument, or `--name=value`). */
 const CODEX_VALUE_OPTS = new Set(['-a', '--ask-for-approval', '-s', '--sandbox', '-m', '--model', '-c', '--config', '-p', '--profile',
-  '-C', '--cd', '-i', '--image', '--add-dir', '--remote', '--enable', '--disable', '--local-provider']);
+  '--add-dir', '--remote', '--remote-auth-token-env', '--enable', '--disable', '--local-provider']);
+/** Codex options that take no value and do not change the sandbox or the folder it runs in. */
+const CODEX_FLAGS = new Set(['--strict-config', '--oss', '--approve-for-me', '--dangerously-bypass-hook-trust', '--search', '--no-alt-screen',
+  '--no-daemon', '-h', '--help', '-V', '--version']);
 
 /** How Codex's sandbox was chosen on the launch line the app spawned: the executable's own words
  *  (from the command string) followed by the argv as given, each argument whole. Options are read
@@ -461,10 +464,10 @@ export function codexLaunchSandbox(args: string[] | undefined, addDirs: string[]
     const value = w.startsWith('--') && eq !== -1 ? w.slice(eq + 1) : null;
     if (name === '--dangerously-bypass-approvals-and-sandbox' || name === '--yolo') return 'danger-full-access';
     if (name === '--full-auto') { mode = 'workspace-write'; continue; }
-    if (!CODEX_VALUE_OPTS.has(name)) {
-      if (/^--?[A-Za-z][\w-]*$/.test(name) && value === null) continue; // a plain flag that takes no value
-      return 'unknown';
-    }
+    if (CODEX_FLAGS.has(name) && value === null) continue;
+    // Anything else (-C/--cd and --worktree move the session's folder, -i takes several values, a new flag may change
+    // the sandbox) is not modelled.
+    if (!CODEX_VALUE_OPTS.has(name)) return 'unknown';
     const v = value ?? words[++i];
     if (v === undefined) return 'unknown';
     if (name === '-s' || name === '--sandbox') mode = v;
@@ -474,6 +477,51 @@ export function codexLaunchSandbox(args: string[] | undefined, addDirs: string[]
   }
   if (mode === null) return 'none';
   return mode === 'workspace-write' || mode === 'read-only' || mode === 'danger-full-access' ? mode : 'unknown';
+}
+
+const CLAUDE_VALUE_OPTS = new Set(['--agent', '--agents', '--append-system-prompt', '--autocompact', '--debug-file', '--effort', '--environment',
+  '--fallback-model', '--input-format', '--json-schema', '--max-budget-usd', '--model', '-n', '--name', '--output-format', '--permission-mode',
+  '--permission-prompts', '--plugin-dir', '--plugin-url', '--remote-control-session-name-prefix', '--session-id', '--system-prompt',
+  '--system-prompt-snapshot', '--settings']);
+const CLAUDE_VARIADIC_OPTS = new Set(['--add-dir', '--allowedTools', '--allowed-tools', '--disallowedTools', '--disallowed-tools', '--betas',
+  '--file', '--mcp-config', '--tools']);
+const CLAUDE_FLAGS = new Set(['--allow-dangerously-skip-permissions', '--ax-screen-reader', '--bg', '--background', '--brief', '--chrome', '-c',
+  '--continue', '--dangerously-skip-permissions', '--desktop', '--disable-slash-commands', '--exclude-dynamic-system-prompt-sections',
+  '--fork-session', '--forward-subagent-text', '-h', '--help', '--ide', '--include-hook-events', '--include-partial-messages', '--no-chrome',
+  '--no-session-persistence', '-p', '--print', '--replay-user-messages', '--strict-mcp-config', '--verbose', '-v', '--version', '--tmux']);
+/** Claude's launch line as the app spawned it, read with the CLI's option grammar up to the first positional (the prompt
+ *  is never read): `--add-dir` directories are collected as roots; a `--settings` other than the generated file, an
+ *  option that changes where settings come from or the folder it runs in (--setting-sources, --bare, --safe-mode,
+ *  --restricted, --worktree, --debug's optional value ...), or any other option the grammar does not know, is `unknown`. */
+export function claudeLaunch(args: string[] | undefined, generatedSettings: string, addDirs: string[] = []): 'ok' | 'unknown' {
+  if (!Array.isArray(args) || args.length === 0) return 'unknown'; // no launch line recorded: nothing to read it from
+  const a = args.filter((x): x is string => typeof x === 'string');
+  const words = [...(a[0] ?? '').trim().split(/\s+/).filter(Boolean), ...a.slice(1)];
+  for (let i = 1; i < words.length; i++) {
+    const w = words[i];
+    if (w === '--') break;
+    if (!w.startsWith('-')) break;
+    const eq = w.indexOf('=');
+    const name = w.startsWith('--') && eq !== -1 ? w.slice(0, eq) : w;
+    const inline = w.startsWith('--') && eq !== -1 ? w.slice(eq + 1) : null;
+    if (CLAUDE_FLAGS.has(name)) { if (inline !== null) return 'unknown'; continue; }
+    if (name === '-r' || name === '--resume') { if (inline === null && words[i + 1] !== undefined && !words[i + 1].startsWith('-')) i++; continue; }
+    if (CLAUDE_VALUE_OPTS.has(name)) {
+      const v = inline ?? words[++i];
+      if (v === undefined) return 'unknown';
+      if (name === '--settings' && resolve(v) !== resolve(generatedSettings)) return 'unknown';
+      continue;
+    }
+    if (CLAUDE_VARIADIC_OPTS.has(name)) {
+      const vals = inline !== null ? [inline] : [];
+      while (inline === null && i + 1 < words.length && !words[i + 1].startsWith('-')) vals.push(words[++i]);
+      if (!vals.length) return 'unknown';
+      if (name === '--add-dir') addDirs.push(...vals);
+      continue;
+    }
+    return 'unknown';
+  }
+  return 'ok';
 }
 
 /** Writable dirs in one Claude settings file; `enabled` is its sandbox.enabled, if it says. */
@@ -517,6 +565,8 @@ export function effectiveRoots(provider: string, agentDir: string, cwd: string, 
   if (provider !== 'claude') return unknown('none');
   // Highest precedence first; the generated file is passed with --settings. Directories merge across files.
   const generated = join(agentDir, 'settings.json');
+  const launchDirs: string[] = [];
+  if (claudeLaunch(launch.args, generated, launchDirs) === 'unknown') return unknown('claude-settings-files');
   const files = [MANAGED, generated, ...(abscwd ? [join(abscwd, '.claude', 'settings.local.json'), join(abscwd, '.claude', 'settings.json')] : []), join(home, '.claude', 'settings.json')];
   const roots: string[] = [];
   let enabled: boolean | undefined;
@@ -529,7 +579,7 @@ export function effectiveRoots(provider: string, agentDir: string, cwd: string, 
     roots.push(...c.roots);
     if (enabled === undefined && c.enabled !== undefined) enabled = c.enabled;
   }
-  return { roots: withCwd(roots), state: enabled === true ? 'ok' : 'unsandboxed', source: 'claude-settings-files' };
+  return { roots: withCwd([...roots, ...launchDirs]), state: enabled === true ? 'ok' : 'unsandboxed', source: 'claude-settings-files' };
 }
 
 /** The classes of the effective roots, and of those the scoped roots would not grant. */
@@ -558,8 +608,8 @@ export interface DryRunDeps {
   /** The agent's roots context from what the app spawned, or null for an id it did not spawn. */
   agent(agentId: string): DryRunAgent | null;
   record(event: Record<string, unknown>): void;
-  /** Cheap, in-memory: whether the app spawned this id. Used on the answer path only to count shed calls. */
-  known?(agentId: string): boolean;
+  /** Cheap, in-memory (a Map.has on the spawn record): whether the app spawned this id. Checked before a call is queued. */
+  known(agentId: string): boolean;
   /** Runs work after the hook's answer; defaults to setImmediate. */
   defer?: (fn: () => void) => void;
   now?: () => number;
@@ -588,11 +638,9 @@ export class WriteRootsDryRun {
     try {
       if (typeof agentId !== 'string' || !agentId) return;
       if (event !== 'PreToolUse' && event !== 'Stop' && event !== 'SessionEnd' && event !== 'SessionStart') return;
-      if (this.queue.length >= MAX_QUEUE) {
-        // Only an id the app spawned is tallied, so made-up ids cannot crowd out a real one.
-        if (this.d.known?.(agentId) === true) this.shed.set(agentId, (this.shed.get(agentId) ?? 0) + 1);
-        return;
-      }
+      // Admission: an id the app did not spawn never takes a queue slot, so made-up ids cannot crowd out a real call.
+      if (this.d.known(agentId) !== true) return;
+      if (this.queue.length >= MAX_QUEUE) { this.shed.set(agentId, (this.shed.get(agentId) ?? 0) + 1); return; }
       this.queue.push({ agentId, event, tool: p?.tool_name, input: p?.tool_input });
       this.schedule();
     } catch { /* a dry run must never disturb the hook it rides on */ }
@@ -644,3 +692,32 @@ export class WriteRootsDryRun {
     if (shed) { this.shed.delete(agentId); this.d.record({ kind: 'write-observed', agentId, tool: 'other', shape: 'shed', count: shed }); }
   }
 }
+
+/** Every input the dry run reads, who can write it today, and what a planted value does. The test suite runs one case
+ *  per row and fails when a row has none; the PR's table is this list. */
+export const READ_SITES = [
+  { id: 'payload-agent-id', read: 'hook payload agent_id', writer: 'any process that reaches the hook socket', planted: 'an id the app did not spawn, thousands of them', outcome: 'never queued (checked against the spawn record before admission); nothing allocated or recorded' },
+  { id: 'payload-tool-name', read: 'hook payload tool_name', writer: 'same', planted: 'free text, non-string', outcome: 'logged as a fixed name or other' },
+  { id: 'payload-tool-input', read: 'hook payload tool_input', writer: 'same', planted: 'huge command, thousands or deep missing paths, wrong types', outcome: 'answer not delayed; at most 64 paths, 25 ms, 64 KB per call, then one truncated row; wrong types record nothing' },
+  { id: 'queue', read: 'the deferred queue', writer: 'spawned agents, by calling tools', planted: 'a flood of calls', outcome: 'at most 64 waiting; more are shed and counted per spawned agent' },
+  { id: 'own-folder', read: '<hive>/agents/<id>', writer: 'every agent', planted: 'a link, a file, missing, an id that is not a plain name', outcome: 'no roots; every observation and the report unknown' },
+  { id: 'claude-generated-settings', read: 'agents/<id>/settings.json', writer: 'the agent itself', planted: 'link, folder, unreadable, oversized, named pipe, parent is a file, missing', outcome: 'unknown' },
+  { id: 'claude-project-settings', read: '<cwd>/.claude/settings(.local).json', writer: 'agents working in that cwd', planted: 'same kinds', outcome: 'unknown; missing is skipped' },
+  { id: 'claude-user-settings', read: '~/.claude/settings.json', writer: 'an unsandboxed command', planted: 'same kinds', outcome: 'unknown; missing is skipped' },
+  { id: 'claude-managed-settings', read: 'managed-settings.json', writer: 'root only (not plantable by an agent)', planted: '—', outcome: 'read like the others' },
+  { id: 'codex-config', read: 'agents/<id>/.codex/config.toml', writer: 'the agent (read-only under Codex\'s own sandbox)', planted: 'same kinds; a profile or unknown sandbox_mode; dotted or inline roots', outcome: 'unknown (full access: unsandboxed)' },
+  { id: 'spawn-record', read: 'cwd, provider, role, launch line', writer: 'held in main\'s memory from the spawn', planted: 'not writable from the hive', outcome: 'a relative cwd is none; a provider other than Claude or Codex, or a platform without a sandbox, is unknown' },
+  { id: 'codex-prompt', read: 'Codex launch line: the prompt', writer: 'the spawn request', planted: 'flags inside the prompt text', outcome: 'never read: options stop at the first positional' },
+  { id: 'codex-sandbox-flag', read: 'Codex -s/--sandbox, --full-auto', writer: 'the spawn request', planted: 'any mode', outcome: 'workspace-write/read-only ok; danger-full-access unsandboxed; anything else or none unknown' },
+  { id: 'codex-bypass-flag', read: 'Codex --dangerously-bypass-approvals-and-sandbox, --yolo', writer: 'the spawn request', planted: 'the flag', outcome: 'unsandboxed' },
+  { id: 'codex-config-flag', read: 'Codex -c/--config on sandbox_mode or sandbox_workspace_write', writer: 'the spawn request', planted: 'any value', outcome: 'unknown' },
+  { id: 'codex-profile-flag', read: 'Codex -p/--profile', writer: 'the spawn request', planted: 'any profile', outcome: 'unknown' },
+  { id: 'codex-add-dir-flag', read: 'Codex --add-dir', writer: 'the spawn request (the app passes its own roots)', planted: 'any directory', outcome: 'counted as a root' },
+  { id: 'codex-remote-flag', read: 'Codex --remote', writer: 'the remote rewrite', planted: 'any server', outcome: 'unknown (the server\'s policy is in force)' },
+  { id: 'codex-unknown-option', read: 'any other Codex option', writer: 'the spawn request', planted: 'an option not in the grammar, a missing value', outcome: 'unknown' },
+  { id: 'claude-prompt', read: 'Claude launch line: the prompt', writer: 'the spawn request', planted: 'flags inside the prompt text', outcome: 'never read' },
+  { id: 'claude-add-dir-flag', read: 'Claude --add-dir (variadic)', writer: 'the spawn request', planted: 'any directories', outcome: 'counted as roots' },
+  { id: 'claude-settings-flag', read: 'Claude --settings', writer: 'the app (its generated file)', planted: 'another file or inline JSON', outcome: 'unknown' },
+  { id: 'claude-unmodelled-flag', read: 'Claude --setting-sources, --bare, --safe-mode, --restricted, --worktree, ...', writer: 'the spawn request', planted: 'any', outcome: 'unknown' },
+  { id: 'claude-unknown-option', read: 'any other Claude option, or no launch line', writer: 'the spawn request', planted: 'an option not in the grammar', outcome: 'unknown' },
+] as const;
