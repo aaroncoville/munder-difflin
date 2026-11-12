@@ -1,7 +1,7 @@
 'use strict';
 // Scoped write roots, in dry run: what each role would be given, how a path is named in the
 // log (a class, never the path), what a tool call would have had refused, the roots a session
-// was really given read back from its generated settings, and the usage-log allowlist.
+// was really given read back from its settings files, and the usage-log allowlist.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -22,117 +22,199 @@ function freshHome(t) {
   return home;
 }
 
+function jailHome(t, home) {
+  const real = process.env.HOME;
+  process.env.HOME = home;
+  t.after(() => { if (real === undefined) delete process.env.HOME; else process.env.HOME = real; });
+}
+
 function hive(t) {
-  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'md-roots-')));
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const home = freshHome(t);
   const root = path.join(home, 'hive');
-  for (const d of ['agents/a1/work/repo', 'agents/a2/outbox', 'evidence', 'bin', 'research']) fs.mkdirSync(path.join(root, d), { recursive: true });
-  const ctx = { root, agentId: 'a1', isGod: false, cwd: path.join(root, 'agents/a1/work/repo') };
+  for (const d of ['agents/a1/work/repo', 'agents/a1/.codex', 'agents/a2/outbox', 'evidence', 'bin', 'research']) fs.mkdirSync(path.join(root, d), { recursive: true });
+  const ctx = { root, agentId: 'a1', isGod: false, cwd: path.join(root, 'agents/a1/work/repo'), home };
   return { home, root, ctx, god: { ...ctx, agentId: 'g', isGod: true, cwd: root } };
 }
 
-test('scoped roots are role-aware: god keeps the hive root, an agent gets its folder, evidence and its worktree', (t) => {
-  const { root, ctx, god } = hive(t);
-  assert.deepEqual(W.scopedRoots(ctx), [path.join(root, 'agents/a1'), path.join(root, 'evidence'), ctx.cwd]);
+const shell = (command, extra = {}) => ({ command, ...extra });
+
+test('scoped roots are role-aware: god keeps the hive root, an agent gets its folder, evidence and an outside worktree', (t) => {
+  const { home, root, ctx, god } = hive(t);
+  assert.deepEqual(W.scopedRoots(ctx), [path.join(root, 'agents/a1'), path.join(root, 'evidence')], 'a worktree inside the own folder adds nothing');
+  const outside = path.join(home, 'wt');
+  fs.mkdirSync(outside);
+  assert.deepEqual(W.scopedRoots({ ...ctx, cwd: outside }), [path.join(root, 'agents/a1'), path.join(root, 'evidence'), outside]);
   assert.deepEqual(W.scopedRoots(god), [root]);
-  assert.deepEqual(W.scopedRoots({ ...ctx, cwd: path.dirname(root) }), [path.join(root, 'agents/a1'), path.join(root, 'evidence')], 'a cwd holding the hive is not a root');
-  assert.equal(W.wouldRefuse(path.join(root, 'tasks.json'), { ...ctx, cwd: path.dirname(root) }), true);
+});
+
+test('property: scoped roots never grant bin, the agents folder, another agent, or anything above the hive', (t) => {
+  const { home, root, ctx } = hive(t);
+  fs.symlinkSync(path.join(root, 'bin'), path.join(home, 'link-to-bin'));
+  fs.symlinkSync(path.join(root, 'agents/a2'), path.join(root, 'agents/a1/link-to-a2'));
+  const upper = (p) => p.replace(/\/hive\//, '/HIVE/').replace(/\/bin(\/|$)/, '/BIN$1');
+  const cwds = [
+    root, path.join(root, 'bin'), path.join(root, 'agents'), path.join(root, 'agents/a2'), path.join(root, 'research'),
+    path.join(home, 'link-to-bin'), path.join(root, 'agents/a1/link-to-a2'), home, path.dirname(home), '/',
+    path.join(root, 'agents/a1'), path.join(root, 'agents/a1/work/repo'), path.join(home, 'elsewhere'), '',
+  ];
+  const caseInsensitive = fs.existsSync(upper(path.join(root, 'bin')));
+  if (caseInsensitive) cwds.push(upper(path.join(root, 'bin')), upper(path.join(root, 'agents/a2')));
+  const ids = ['a1', 'a2', '..', '.', 'a1/../a2', '../..', '', 'agents', 'a1\u0000'];
+  const forbidden = [path.join(root, 'bin/cth-hook.cjs'), path.join(root, 'agents/a2/outbox/m.json'), path.join(root, 'tasks.json'), path.join(root, 'registry.json')];
+  const rootReal = fs.realpathSync(root);
+  let checked = 0;
+  for (const cwd of cwds) for (const agentId of ids) {
+    const c = { ...ctx, cwd, agentId };
+    for (const r of W.scopedRoots(c)) {
+      const inHive = r.startsWith(rootReal + path.sep);
+      assert.ok(!inHive || r === path.join(rootReal, 'agents', agentId) || r === path.join(rootReal, 'evidence'), `cwd=${cwd} id=${agentId} granted ${r}`);
+      assert.ok(r !== rootReal && !rootReal.startsWith(r.endsWith(path.sep) ? r : r + path.sep), `cwd=${cwd} id=${agentId} granted the hive or above: ${r}`);
+    }
+    for (const f of forbidden) {
+      const own = agentId === 'a2' && f.includes('/agents/a2/');
+      if (!own) assert.equal(W.wouldRefuse(f, c), true, `cwd=${cwd} id=${agentId} would allow ${f}`);
+      if (caseInsensitive && !own) assert.equal(W.wouldRefuse(upper(f), c), true, `case variant of ${f} slipped through`);
+      checked++;
+    }
+  }
+  assert.ok(checked > 400);
+  assert.deepEqual(W.scopedRoots({ ...ctx, agentId: '..' }), [], 'an id that is not a folder name gets no roots');
 });
 
 test('a path is logged as its class, relative to the agent', (t) => {
   const { home, root, ctx } = hive(t);
   const cases = [
     ['agents/a1/memory.md', 'own folder'], ['agents/a1/settings.json', 'own settings'], ['agents/a1/.codex/config.toml', 'own settings'],
-    ['agents/a1/work/repo/src/x.ts', 'worktree'], ['agents/a2/outbox/m.json', 'other agent folder'], ['agents', 'agents folder'],
+    ['agents/a1/work/repo/src/x.ts', 'worktree'], ['agents/a1/work', 'own folder'], ['agents/a2/outbox/m.json', 'other agent folder'], ['agents', 'agents folder'],
     ['tasks.json', 'tasks.json'], ['board.md', 'board.md'], ['bin/cth-hook.cjs', 'bin'], ['research/r.md', 'research'],
     ['evidence/x/y.md', 'evidence'], ['secret-name.txt', 'hive root (other)'], ['', 'hive root'],
   ];
   for (const [rel, cls] of cases) assert.equal(W.pathClass(path.join(root, rel), ctx), cls, rel);
   assert.equal(W.pathClass(path.join(home, 'elsewhere'), ctx), 'outside hive');
   assert.equal(W.pathClass(home, ctx), 'contains hive');
-  assert.equal(W.pathClass(path.join(root, 'agents/a1/work'), ctx), 'own folder', 'beside the worktree, not in it');
   assert.equal(W.pathClass('src/x.ts', ctx), 'worktree', 'a relative path is read against the cwd');
   assert.equal(W.pathClass(42, ctx), 'unknown');
-  // A link into another agent's folder is classed by where it lands.
   fs.symlinkSync(path.join(root, 'agents/a2'), path.join(root, 'agents/a1/peek'));
   assert.equal(W.pathClass(path.join(root, 'agents/a1/peek/outbox/m.json'), ctx), 'other agent folder');
+  assert.equal(W.pathClass(path.join(root, 'agents/a1/x'), { ...ctx, agentId: '..' }), 'other agent folder', 'a bad id owns nothing');
+  if (fs.existsSync(path.join(root, 'BIN'))) {
+    assert.equal(W.pathClass(path.join(root.replace(/\/hive$/, '/HIVE'), 'BIN/cth-hook.cjs'), ctx), 'bin', 'a case variant is classed by the disk');
+  }
 });
 
-test('wouldRefuse: only hive paths outside the role\'s roots', (t) => {
-  const { home, root, ctx, god } = hive(t);
-  assert.equal(W.wouldRefuse(path.join(root, 'tasks.json'), ctx), true);
-  assert.equal(W.wouldRefuse(path.join(root, 'agents/a2/outbox/m.json'), ctx), true);
-  assert.equal(W.wouldRefuse(path.join(root, 'agents/a1/outbox/m.json'), ctx), false);
-  assert.equal(W.wouldRefuse(path.join(root, 'evidence/r.md'), ctx), false);
-  assert.equal(W.wouldRefuse(path.join(root, 'tasks.json'), god), false);
-  assert.equal(W.wouldRefuse(path.join(home, 'elsewhere'), ctx), false, 'outside the hive the roots do not change');
-  assert.equal(W.wouldRefuse(path.join(root, 'agents/a1x/m.json'), ctx), true, 'a sibling whose name starts the same is not inside');
+test('shell: the program a command runs is not a write; redirects and known writers are; other named paths count apart', (t) => {
+  const { home, root, ctx } = hive(t);
+  const obs = (cmd, extra) => W.observeTool('Bash', shell(cmd, extra), ctx);
+  assert.deepEqual(obs(`"${root}/bin/hive-node" "${root}/bin/hive-memory" search x`), [{ via: 'shell-named', pathClass: 'bin', refused: true }], 'only the argument, never the program');
+  assert.deepEqual(obs(`${root}/bin/hive-node x.cjs`), []);
+  assert.deepEqual(obs('python3 x.py > $HIVE_ROOT/tasks.json'), [{ via: 'shell-write', pathClass: 'tasks.json', refused: true }]);
+  assert.deepEqual(obs(`echo x 2>>${root}/log.jsonl`), [{ via: 'shell-write', pathClass: 'log.jsonl', refused: true }]);
+  assert.deepEqual(obs(`cp "${root}/research/a.md" "${root}/bin/cth-hook.cjs"`), [{ via: 'shell-named', pathClass: 'research', refused: true }, { via: 'shell-write', pathClass: 'bin', refused: true }]);
+  assert.deepEqual(obs(`cd x && sed -i '' s/a/b/ ${root}/board.md`), [{ via: 'shell-write', pathClass: 'board.md', refused: true }]);
+  assert.deepEqual(obs(`sudo rm -rf ${root}/agents/a2/outbox`), [{ via: 'shell-write', pathClass: 'other agent folder', refused: true }]);
+  assert.deepEqual(obs(`cat ${root}/tasks.json | tee ${root}/registry.json`), [{ via: 'shell-named', pathClass: 'tasks.json', refused: true }, { via: 'shell-write', pathClass: 'registry.json', refused: true }]);
+  assert.deepEqual(obs(`dd if=/dev/zero of=${root}/bin/x`), [{ via: 'shell-write', pathClass: 'bin', refused: true }]);
+  assert.deepEqual(obs('echo hi > ${AGENT_DIR}/outbox/m.json'), []);
+  const rel = path.relative(home, root);
+  assert.deepEqual(obs(`touch ~/${rel}/tasks.json`), [{ via: 'shell-write', pathClass: 'tasks.json', refused: true }], '~ is the home');
+  assert.deepEqual(obs(`touch "$HOME/${rel}/bin/x"`), [{ via: 'shell-write', pathClass: 'bin', refused: true }], '$HOME is the home');
+  assert.deepEqual(obs('curl https://x', { dangerouslyDisableSandbox: true }), [{ via: 'shell-unsandboxed', pathClass: 'unknown', refused: true }]);
+  assert.deepEqual(W.observeTool('Bash', { cmd: ['bash', '-lc', `echo > ${root}/tasks.json`] }, ctx), [{ via: 'shell-named', pathClass: 'tasks.json', refused: true }], 'an argv array is read; its script text is one argument');
+  assert.deepEqual(W.observeTool('exec_command', { cmd: ['rm', `${root}/bin/x`] }, ctx), [{ via: 'shell-write', pathClass: 'bin', refused: true }]);
+  assert.deepEqual(W.observeTool('Bash', { cmd: [1, 2] }, ctx), []);
 });
 
-test('a tool call yields what scoped roots would refuse, by how it was seen', (t) => {
+test('edit, MCP and patch tools; writes to the own settings are recorded though allowed', (t) => {
   const { root, ctx } = hive(t);
-  assert.deepEqual(W.observeTool('Write', { file_path: path.join(root, 'agents/a2/outbox/m.json') }, ctx), [{ via: 'edit', pathClass: 'other agent folder' }]);
+  assert.deepEqual(W.observeTool('Write', { file_path: path.join(root, 'agents/a2/outbox/m.json') }, ctx), [{ via: 'edit', pathClass: 'other agent folder', refused: true }]);
   assert.deepEqual(W.observeTool('Edit', { file_path: path.join(root, 'agents/a1/memory.md') }, ctx), []);
-  assert.deepEqual(W.observeTool('NotebookEdit', { notebook_path: path.join(root, 'research/n.ipynb') }, ctx), [{ via: 'edit', pathClass: 'research' }]);
-  assert.deepEqual(W.observeTool('Bash', { command: 'python3 x.py > $HIVE_ROOT/tasks.json' }, ctx), [{ via: 'shell-named', pathClass: 'tasks.json' }]);
-  assert.deepEqual(W.observeTool('Bash', { command: `cp a "${root}/bin/cth-hook.cjs"` }, ctx), [{ via: 'shell-named', pathClass: 'bin' }]);
-  assert.deepEqual(W.observeTool('Bash', { command: 'echo hi > ${AGENT_DIR}/outbox/m.json' }, ctx), []);
-  assert.deepEqual(W.observeTool('Bash', { command: 'curl https://x', dangerouslyDisableSandbox: true }, ctx), [{ via: 'shell-unsandboxed', pathClass: 'unknown' }]);
-  const patch = '*** Begin Patch\n*** Update File: ../../../../bin/x.cjs\n@@\n-a\n+b\n*** Add File: src/new.ts\n+x\n*** End Patch';
-  assert.deepEqual(W.observeTool('apply_patch', { input: patch }, ctx), [{ via: 'patch', pathClass: 'bin' }]);
-  assert.deepEqual(W.observeTool('Bash', { cmd: `ls ${root}/agents/a2` }, ctx), [{ via: 'shell-named', pathClass: 'other agent folder' }], 'Codex sends cmd');
+  assert.deepEqual(W.observeTool('Edit', { file_path: path.join(root, 'agents/a1/settings.json') }, ctx), [{ via: 'edit', pathClass: 'own settings', refused: false }]);
+  assert.deepEqual(W.observeTool('NotebookEdit', { notebook_path: path.join(root, 'research/n.ipynb') }, ctx), [{ via: 'edit', pathClass: 'research', refused: true }]);
+  assert.deepEqual(W.observeTool('mcp__filesystem__write_file', { path: path.join(root, 'tasks.json') }, ctx), [{ via: 'edit', pathClass: 'tasks.json', refused: true }]);
+  assert.deepEqual(W.observeTool('mcp__filesystem__read_file', { path: path.join(root, 'tasks.json') }, ctx), []);
+  const patch = '*** Begin Patch\n*** Update File: ../../../../bin/x.cjs\n@@\n-a\n+b\n*** Add File: src/new.ts\n+x\n*** Update File: ../../.codex/config.toml\n*** End Patch';
+  assert.deepEqual(W.observeTool('apply_patch', { input: patch }, ctx), [{ via: 'patch', pathClass: 'bin', refused: true }, { via: 'patch', pathClass: 'own settings', refused: false }]);
+  assert.deepEqual(W.observeTool('Bash', shell(`echo x > ${root}/agents/a1/settings.json`), ctx), [{ via: 'shell-write', pathClass: 'own settings', refused: false }]);
   assert.deepEqual(W.observeTool('Read', null, ctx), []);
 });
 
-test('effective roots are read back from the Claude settings the app really generated', async (t) => {
+test('effective Claude roots come from every settings file the CLI merges; off or absent is unsandboxed, unreadable is unknown', async (t) => {
   const home = freshHome(t);
+  jailHome(t, home);
   const h = new HiveManager(() => home);
   await h.ensureAgent({ id: 'g1', name: 'G', provider: 'claude', cwd: home, isGod: true });
   await h.ensureAgent({ id: 'w1', name: 'W', provider: 'claude', cwd: home });
   const root = path.join(home, 'hive');
-  const ctxOf = (id, isGod) => ({ root, agentId: id, isGod, cwd: home });
-  const w = W.effectiveRoots('claude', path.join(root, 'agents/w1'), home);
-  assert.equal(w.readable, true);
+  const ctxOf = (id, isGod, cwd = home) => ({ root, agentId: id, isGod, cwd, home });
+  const dir = path.join(root, 'agents/w1');
+  const w = W.effectiveRoots('claude', dir, home, home);
+  assert.equal(w.state, 'ok');
   const rw = W.rootsReport(w, ctxOf('w1', false));
   assert.deepEqual(rw.effective.sort(), ['contains hive', 'hive root', 'own folder'], JSON.stringify(rw));
-  assert.deepEqual(rw.excess.sort(), ['contains hive', 'hive root'], 'today a worker is given the whole hive, and a cwd holding it grants it again');
-  const rg = W.rootsReport(W.effectiveRoots('claude', path.join(root, 'agents/g1'), home), ctxOf('g1', true));
-  assert.deepEqual(rg.excess, ['contains hive'], 'god keeps the hive root, but not a cwd above it');
+  assert.deepEqual(rw.excess.sort(), ['contains hive', 'hive root']);
+  assert.deepEqual(W.rootsReport(W.effectiveRoots('claude', path.join(root, 'agents/g1'), home, home), ctxOf('g1', true)).excess, ['contains hive']);
+  fs.mkdirSync(path.join(home, '.claude'));
+  fs.writeFileSync(path.join(home, '.claude/settings.json'), JSON.stringify({ permissions: { additionalDirectories: [path.join(root, 'bin')] } }));
   const outside = freshHome(t);
-  const ro = W.rootsReport(W.effectiveRoots('claude', path.join(root, 'agents/w1'), outside), { ...ctxOf('w1', false), cwd: outside });
-  assert.deepEqual(ro.excess, ['hive root'], 'a worktree outside the hive is in scope');
+  const ro = W.rootsReport(W.effectiveRoots('claude', dir, outside, home), ctxOf('w1', false, outside));
+  assert.deepEqual(ro.excess.sort(), ['bin', 'hive root'], 'a user settings file adds a root');
+  const generated = fs.readFileSync(path.join(dir, 'settings.json'), 'utf8');
+  const shapes = [
+    ['no sandbox key', { permissions: { additionalDirectories: [] } }, 'unsandboxed'],
+    ['enabled false', { sandbox: { enabled: false, filesystem: { allowWrite: [] } } }, 'unsandboxed'],
+    ['enabled absent', { sandbox: { filesystem: { allowWrite: [] } } }, 'unsandboxed'],
+    ['JSON null', null, 'unknown'],
+    ['enabled a string', { sandbox: { enabled: 'yes' } }, 'unknown'],
+    ['allowWrite not a list', { sandbox: { enabled: true, filesystem: { allowWrite: '/' } } }, 'unknown'],
+  ];
+  for (const [why, body, state] of shapes) {
+    fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify(body));
+    const eff = W.effectiveRoots('claude', dir, outside, home);
+    assert.equal(eff.state, state, why);
+    assert.deepEqual(W.rootsReport(eff, ctxOf('w1', false, outside)), { effective: [state], excess: [state] }, why);
+  }
+  fs.writeFileSync(path.join(dir, 'settings.json'), generated);
+  fs.writeFileSync(path.join(home, '.claude/settings.json'), JSON.stringify({ sandbox: { enabled: false } }));
+  assert.equal(W.effectiveRoots('claude', dir, outside, home).state, 'ok', 'the generated --settings file outranks the user file');
+  assert.equal(W.effectiveRoots('claude', path.join(root, 'agents/none'), outside, home).state, 'unknown', 'no generated file');
 });
 
-test('effective Codex roots include the ones inherited from user config, and unreadable settings read as unknown', (t) => {
+test('effective Codex roots: inherited roots show; full access is unsandboxed; dotted and inline tables are unknown', (t) => {
   const { root, ctx } = hive(t);
+  const write = (toml) => { fs.writeFileSync(path.join(root, 'agents/a1/.codex/config.toml'), toml); return W.effectiveRoots('codex', path.join(root, 'agents/a1'), ctx.cwd, ctx.home); };
   const user = '[sandbox_workspace_write]\nwritable_roots = ["/Users/someone/everything"]\n';
-  const toml = withCodexWritableRoots(user, [path.join(root, 'agents/a1'), root], () => {});
-  fs.mkdirSync(path.join(root, 'agents/a1/.codex'), { recursive: true });
-  fs.writeFileSync(path.join(root, 'agents/a1/.codex/config.toml'), toml);
-  const eff = W.effectiveRoots('codex', path.join(root, 'agents/a1'), ctx.cwd);
-  assert.ok(eff.roots.includes('/Users/someone/everything'), JSON.stringify(eff));
+  const eff = write(withCodexWritableRoots(user, [path.join(root, 'agents/a1'), root], () => {}));
+  assert.ok(eff.roots.includes('/Users/someone/everything'));
   assert.deepEqual(W.rootsReport(eff, ctx).excess.sort(), ['hive root', 'outside hive']);
-  assert.deepEqual(W.codexRoots('[sandbox_workspace_write]\nwritable_roots = [\n  "/a",\n  "/b",\n]\n'), ['/a', '/b']);
-  assert.equal(W.codexRoots('[sandbox_workspace_write]\nwritable_roots = [1]\n'), null);
-  fs.writeFileSync(path.join(root, 'agents/a1/settings.json'), '{"sandbox":{"filesystem":{"allowWrite":"/"}}}');
-  const bad = W.effectiveRoots('claude', path.join(root, 'agents/a1'), ctx.cwd);
-  assert.equal(bad.readable, false);
-  assert.deepEqual(W.rootsReport(bad, ctx).excess, ['unknown'], 'absent or unreadable never reads as scoped');
-  assert.equal(W.effectiveRoots('claude', path.join(root, 'agents/none'), ctx.cwd).readable, false);
+  assert.equal(write('sandbox_mode = "danger-full-access"\n').state, 'unsandboxed');
+  assert.equal(write('sandbox_workspace_write.writable_roots = ["/"]\n').state, 'unknown');
+  assert.equal(write('sandbox_workspace_write = { writable_roots = ["/"] }\n').state, 'unknown');
+  assert.equal(write('[sandbox_workspace_write]\nwritable_roots = [1]\n').state, 'unknown');
+  assert.deepEqual(W.codexRoots('[sandbox_workspace_write]\nwritable_roots = [\n  "/a",\n  "/b",\n]\n'), { roots: ['/a', '/b'], state: 'ok' });
+  fs.rmSync(path.join(root, 'agents/a1/.codex/config.toml'));
+  assert.equal(W.effectiveRoots('codex', path.join(root, 'agents/a1'), ctx.cwd).state, 'unknown');
 });
 
-test('the usage log takes the dry-run events with classes only, never a path', (t) => {
+test('the usage log takes the dry-run events with fixed lists only: no path, no free-text tool or provider', (t) => {
   const known = { isAgent: (id) => id === 'a1', isCard: () => false };
-  const ok = { kind: 'write-would-refuse', agentId: 'a1', tool: 'Bash', via: 'shell-named', pathClass: 'tasks.json' };
+  const ok = { kind: 'write-would-refuse', agentId: 'a1', tool: 'Bash', via: 'shell-write', pathClass: 'tasks.json' };
   assert.deepEqual(sanitize(ok, known), ok);
   assert.equal(sanitize({ ...ok, pathClass: '/Users/x/hive/tasks.json' }, known), null);
   assert.equal(sanitize({ ...ok, via: 'other' }, known), null);
   assert.equal(sanitize({ ...ok, agentId: 'stranger' }, known), null);
-  const roots = { kind: 'write-roots', agentId: 'a1', provider: 'codex', role: 'agent', effective: ['hive root', 'own folder'], excess: ['hive root'] };
+  assert.equal(sanitize({ ...ok, tool: 'the_secret_is_hunter2.and.more' }, known), null, 'a tool outside the list');
+  assert.equal(W.toolClass('the_secret_is_hunter2'), 'other');
+  assert.equal(W.toolClass('mcp__fs__write_file'), 'mcp');
+  assert.equal(W.toolClass('apply_patch'), 'apply_patch');
+  const roots = { kind: 'write-roots', agentId: 'a1', provider: 'codex', role: 'agent', source: 'codex-config', effective: ['hive root', 'own folder'], excess: ['hive root'] };
   assert.deepEqual(sanitize(roots, known), roots);
+  assert.equal(sanitize({ ...roots, provider: 'my-secret-provider' }, known), null);
+  assert.equal(W.providerClass('my-secret-provider'), 'other');
   assert.equal(sanitize({ ...roots, excess: ['/etc'] }, known), null);
   assert.equal(sanitize({ ...roots, excess: 'hive root' }, known), null);
   assert.equal(sanitize({ ...roots, path: '/x' }, known).path, undefined, 'an extra field is dropped');
+  assert.equal(sanitize({ kind: 'write-observed', agentId: 'a1', tool: 'Bash', shape: 'cmd-array', count: 3 }, known).count, 3);
+  assert.equal(sanitize({ kind: 'write-observed', agentId: 'a1', tool: 'Bash', shape: 'weird', count: 3 }, known), null);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-usage-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const log = new UsageLog({ dir: () => dir, enabled: () => true, isAgent: (id) => id === 'a1' });
@@ -140,29 +222,43 @@ test('the usage log takes the dry-run events with classes only, never a path', (
   assert.match(fs.readFileSync(path.join(dir, fs.readdirSync(dir)[0]), 'utf8'), /"pathClass":"tasks.json"/);
 });
 
-test('the hook server hands every hook to the dry run, which never changes the answer', async (t) => {
+test('the dry run counts every call, looks an agent up only for calls that can write, and never changes the hook answer', async (t) => {
   const home = freshHome(t);
+  jailHome(t, home);
   const h = new HiveManager(() => home);
   await h.ensureAgent({ id: 'w1', name: 'W', provider: 'claude', cwd: home });
   const root = path.join(home, 'hive');
   const control = { takeSteer: () => null, shouldHalt: () => false, toolDecision: () => ({ deny: false }) };
-  const fire = (hooks) => hooks.handle({ agent_id: 'w1', hook_event_name: 'PreToolUse', session_id: 's', tool_name: 'Write', tool_input: { file_path: path.join(root, 'tasks.json') } });
-  const bare = new HookServer(h, () => null, () => ({ notifications: false }), control, undefined);
-  const baseline = fire(bare);
+  const pre = (tool_name, tool_input) => ({ agent_id: 'w1', hook_event_name: 'PreToolUse', session_id: 's', tool_name, tool_input });
+  const fire = (hooks) => hooks.handle(pre('Write', { file_path: path.join(root, 'tasks.json') }));
+  const baseline = fire(new HookServer(h, () => null, () => ({ notifications: false }), control, undefined));
   const rows = [];
+  let lookups = 0;
   const dry = new W.WriteRootsDryRun({
-    agent: (id) => (id === 'w1' ? { ctx: { root, agentId: 'w1', isGod: false, cwd: home }, provider: 'claude', agentDir: path.join(root, 'agents/w1') } : null),
+    agent: (id) => { lookups++; return id === 'w1' ? { ctx: { root, agentId: 'w1', isGod: false, cwd: home, home }, provider: 'claude', agentDir: path.join(root, 'agents/w1') } : null; },
     record: (e) => rows.push(e),
   });
   const hooks = new HookServer(h, () => null, () => ({ notifications: false }), control, undefined);
   hooks.setWriteObserver((a, e, p) => dry.onHook(a, e, p));
   assert.deepEqual(fire(hooks), baseline);
   assert.deepEqual(rows, [{ kind: 'write-would-refuse', agentId: 'w1', tool: 'Write', via: 'edit', pathClass: 'tasks.json' }]);
+  lookups = 0;
+  hooks.handle(pre('Read', { file_path: path.join(root, 'tasks.json') }));
+  hooks.handle(pre('Grep', { pattern: 'x' }));
+  assert.equal(lookups, 0, 'a call that cannot write needs no registry read');
+  hooks.handle(pre('mcp__secret_tool', {}));
+  hooks.handle({ agent_id: 'w1', hook_event_name: 'Stop', session_id: 's' });
+  const observed = rows.filter((r) => r.kind === 'write-observed').map((r) => `${r.tool}/${r.shape}/${r.count}`).sort();
+  assert.deepEqual(observed, ['Grep/other/1', 'Read/file-path/1', 'Write/file-path/1', 'mcp/other/1']);
+  rows.length = 0;
+  hooks.handle({ agent_id: 'w1', hook_event_name: 'Stop', session_id: 's' });
+  assert.deepEqual(rows, [], 'counts are flushed once');
   hooks.handle({ agent_id: 'w1', hook_event_name: 'SessionStart', session_id: 's' });
-  assert.equal(rows[1].kind, 'write-roots');
-  assert.deepEqual(rows[1].excess.sort(), ['contains hive', 'hive root']);
+  assert.equal(rows[0].kind, 'write-roots');
+  assert.equal(rows[0].provider, 'claude');
+  assert.deepEqual(rows[0].excess.sort(), ['contains hive', 'hive root']);
   hooks.setWriteObserver(() => { throw new Error('boom'); });
   assert.deepEqual(fire(hooks), baseline, 'an observer that throws changes nothing');
   const throwing = new W.WriteRootsDryRun({ agent: () => { throw new Error('x'); }, record: () => {} });
-  assert.doesNotThrow(() => throwing.onHook('w1', 'PreToolUse', {}));
+  assert.doesNotThrow(() => throwing.onHook('w1', 'PreToolUse', { tool_name: 'Write', tool_input: { file_path: '/x' } }));
 });

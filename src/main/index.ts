@@ -79,7 +79,7 @@ import * as integrations from './integrations';
 import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
-import { RefusedRosterId, RegistryUnreadable, isRosterId, shortTarget } from './messageTarget';
+import { RefusedRosterId, RegistryUnreadable, shortTarget } from './messageTarget';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WakeSkipLog, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
 import { inboxDeliveredAt, inboxLine, openTurnClaimAt, splitInbox } from './inboxClaims';
@@ -396,15 +396,17 @@ const heavyLock = new HeavyJobLock({
 hookServer.setHeavyLock(heavyLock);
 // Dry run of per-agent write roots: the real sandbox settings are unchanged; writes the scoped
 // roots would refuse are recorded in the usage log as path classes (see writeRoots.ts).
+// What the app itself spawned each agent with, kept in memory: registry.json is in the hive,
+// which agents can write, so a cwd or role read from it could be planted.
+const spawnRoots = new Map<string, { cwd: string; provider: string; isGod: boolean }>();
 const writeRootsDryRun = new WriteRootsDryRun({
   agent: (agentId) => {
     const root = hive.root();
-    const reg = hive.registry();
-    const meta = Object.hasOwn(reg.agents, agentId) ? reg.agents[agentId] : null;
-    if (!root || !meta || !isRosterId(reg.agents, agentId) || typeof meta.cwd !== 'string') return null;
+    const spawned = spawnRoots.get(agentId);
+    if (!root || !spawned) return null;
     return {
-      ctx: { root, agentId, isGod: reg.godId === agentId || meta.isGod === true, cwd: meta.cwd },
-      provider: typeof meta.provider === 'string' ? meta.provider : 'claude',
+      ctx: { root, agentId, isGod: spawned.isGod, cwd: spawned.cwd },
+      provider: spawned.provider,
       agentDir: join(root, 'agents', agentId)
     };
   },
@@ -3164,6 +3166,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // live terminal means active — ensureAgent above already cleared `archived`.
   if (opts.hive?.id) {
     ptyToAgent.set(opts.id, opts.hive.id);
+    spawnRoots.set(opts.hive.id, { cwd: opts.cwd, provider, isGod: opts.hive.isGod === true });
     // Where this worker's Codex rollouts will be written, now that any resume
     // has settled its CODEX_HOME.
     codexHomes.recordSpawn(opts.hive.id, opts.env?.CODEX_HOME, codexResumedSession);

@@ -17,7 +17,7 @@
  */
 import { appendFileSync, chmodSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { PATH_CLASSES } from './writeRoots';
+import { LOG_TOOLS, PATH_CLASSES, PROVIDERS, SHAPES, VIAS } from './writeRoots';
 
 export const RETENTION_DAYS = 90;
 const SCHEMA = 1;
@@ -72,17 +72,21 @@ const EVENTS: Record<string, Record<string, FieldType>> = {
   },
   'app-focus': { state: { oneOf: ['focus', 'blur'] } },
   // The scoped-write-roots dry run (writeRoots.ts): path classes only, never a path.
-  'write-roots': { agentId: 'agent', provider: 'id', role: { oneOf: ['god', 'agent'] }, effective: 'classes', excess: 'classes' },
-  'write-would-refuse': {
-    agentId: 'agent', tool: 'id', via: { oneOf: ['edit', 'patch', 'shell-named', 'shell-unsandboxed'] },
-    pathClass: { oneOf: PATH_CLASSES }
-  }
+  'write-roots': {
+    agentId: 'agent', provider: { oneOf: PROVIDERS }, role: { oneOf: ['god', 'agent'] },
+    source: { oneOf: ['claude-settings-files', 'codex-config'] }, effective: 'classes', excess: 'classes'
+  },
+  'write-would-refuse': { agentId: 'agent', tool: { oneOf: LOG_TOOLS }, via: { oneOf: VIAS }, pathClass: { oneOf: PATH_CLASSES } },
+  'write-own-settings': { agentId: 'agent', tool: { oneOf: LOG_TOOLS }, via: { oneOf: VIAS } },
+  'write-observed': { agentId: 'agent', tool: { oneOf: LOG_TOOLS }, shape: { oneOf: SHAPES }, count: 'count' }
 };
 /** Fields a kind cannot be written without. */
 const REQUIRED: Record<string, string[]> = {
   'ui-view': ['view'], 'ui-view-end': ['view', 'dwellMs'], 'ask-shown': ['askKey', 'surface'],
   'ask-submitted': ['askKey', 'surface', 'answerLen', 'answerShape'], 'app-focus': ['state'],
-  'write-roots': ['agentId', 'role', 'effective', 'excess'], 'write-would-refuse': ['agentId', 'tool', 'via', 'pathClass']
+  'write-roots': ['agentId', 'provider', 'role', 'source', 'effective', 'excess'],
+  'write-would-refuse': ['agentId', 'tool', 'via', 'pathClass'], 'write-own-settings': ['agentId', 'tool', 'via'],
+  'write-observed': ['agentId', 'tool', 'shape', 'count']
 };
 
 function valid(type: FieldType, v: unknown, known: KnownIds): boolean {
