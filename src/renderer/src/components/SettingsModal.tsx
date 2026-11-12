@@ -1499,8 +1499,8 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                                   display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                                   width: 16, height: 16, padding: 0, cursor: 'pointer',
                                   border: 'none', borderRadius: '50%',
-                                  background: showSlackHelp ? 'var(--cth-ink-700)' : 'var(--cth-ink-300)',
-                                  color: showSlackHelp ? 'var(--cth-paper-100)' : 'var(--cth-ink-900)',
+                                  background: showSlackHelp ? 'var(--cth-ink-700)' : 'var(--cth-ink-500)',
+                                  color: 'var(--cth-paper-100)',
                                   fontFamily: 'var(--cth-font-display)', fontSize: 10, lineHeight: '16px'
                                 }}
                               >i</button>
@@ -1673,8 +1673,8 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                                   display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                                   width: 16, height: 16, padding: 0, cursor: 'pointer',
                                   border: 'none', borderRadius: '50%',
-                                  background: showWebhookHelp ? 'var(--cth-ink-700)' : 'var(--cth-ink-300)',
-                                  color: showWebhookHelp ? 'var(--cth-paper-100)' : 'var(--cth-ink-900)',
+                                  background: showWebhookHelp ? 'var(--cth-ink-700)' : 'var(--cth-ink-500)',
+                                  color: 'var(--cth-paper-100)',
                                   fontFamily: 'var(--cth-font-display)', fontSize: 10, lineHeight: '16px'
                                 }}
                               >i</button>

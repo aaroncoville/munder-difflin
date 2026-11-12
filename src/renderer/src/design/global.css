@@ -40,6 +40,10 @@ button, input, textarea, select {
 /* Belt + suspenders for the caret: follow the ink, never the UA scheme. */
 input, textarea { caret-color: var(--cth-ink-900); }
 
+/* A field's hint takes the hint ink. Left to the browser it is a fixed mid
+   grey, which reads at 2.7:1 on the input surface. */
+input::placeholder, textarea::placeholder { color: var(--cth-ink-500); opacity: 1; }
+
 /* The MOUSE text-select pointer (the I-beam) is a different beast from the
    caret: it comes from the OS cursor scheme, which `color-scheme` can't touch.
    On Windows several schemes (and HiDPI variants) draw it white with a hairline

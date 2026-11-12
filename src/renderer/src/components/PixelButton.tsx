@@ -71,7 +71,9 @@ export function PixelButton({
       case 'destructive':
         return {
           fill:    disabled ? 'var(--cth-cream-300)' : (hover ? 'var(--cth-coral-light)' : 'var(--cth-coral)'),
-          text:    disabled ? disabledText : 'var(--cth-ink-900)',
+          // The bright fill takes the on-accent ink; the deep hover tint takes
+          // the primary ink.
+          text:    disabled ? disabledText : (hover ? 'var(--cth-ink-900)' : 'var(--cth-on-accent)'),
           border:  'var(--cth-ink-500)',
           shadow:  'var(--cth-ink-300)'
         };
