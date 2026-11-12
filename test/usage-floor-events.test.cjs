@@ -5,10 +5,14 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 
 const U = loadTs('src/main/usageEvents.ts');
 const { HeavyJobLock } = loadTs('src/main/heavyJob.ts');
+const { HiveManager } = loadTs('src/main/hive.ts');
 
 // ── turns ────────────────────────────────────────────────────────────────────
 
@@ -133,4 +137,24 @@ test('a queued agent\'s acquire logs how long it waited', () => {
   const acq = logs.filter((r) => r.action === 'acquire');
   assert.equal(acq[0].waitMs, undefined, 'no wait for a free slot');
   assert.equal(acq[1].waitMs, 65_000);
+});
+
+// ── delivered, not intended ──────────────────────────────────────────────────
+
+test('the delivery listener hears only recipients that took delivery', async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-landed-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const hive = new HiveManager(() => home);
+  hive.setGitCommitsDisabled?.(true);
+  await hive.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: home, isGod: true });
+  await hive.ensureAgent({ id: 'worker-1', name: 'Helper', provider: 'claude', cwd: home });
+  await hive.ensureAgent({ id: 'worker-2', name: 'Gone', provider: 'claude', cwd: home });
+  // On the roster, but its inbox is gone: the message is dropped and bounced.
+  fs.rmSync(path.join(home, 'hive', 'agents', 'worker-2', 'inbox'), { recursive: true, force: true });
+  const heard = [];
+  hive.setDeliveryListener((msg, landed) => heard.push([msg.id, [...landed]]));
+  hive.send({ id: 'to-gone', to: 'worker-2', act: 'inform', subject: 's', body: 'b' }, 'worker-1');
+  hive.send({ id: 'to-worker', to: 'worker-1', act: 'inform', subject: 's', body: 'b' }, 'god-1');
+  assert.deepEqual(heard.find(([id]) => id === 'to-gone'), ['to-gone', []]);
+  assert.deepEqual(heard.find(([id]) => id === 'to-worker'), ['to-worker', ['worker-1']]);
 });
