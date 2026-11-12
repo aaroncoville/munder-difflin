@@ -364,7 +364,7 @@
   },
   "commandCenter": {
     "title": "命令中心",
-    "runsTheFloor": "{{name}} 掌管楼层",
+    "runsTheFloor": "{{name}} 带领团队",
     "deliveryPaused": "已暂停",
     "deliveryAuto": "自动",
     "deliveryPausedTitle": "队列消息正为楼上的每个智能体保留。不会丢失任何内容；重新开启后即会送达。",
@@ -564,7 +564,7 @@
   "onboarding": {
     "titles": {
       "persona": "欢迎来到 MUNDER DIFFLIN",
-      "welcome": "认识你的楼层",
+      "welcome": "认识你的团队",
       "home": "第 1 步，共 4 步 · HARNESS 主目录",
       "homePlain": "第 1 步，共 4 步 · 为应用找一个家",
       "orchestrator": "第 2 步，共 4 步 · 你的克隆引擎",
@@ -585,18 +585,18 @@
       "nonTechnicalDesc": "我从事市场、销售、运营或刚入门。请用通俗语言解释。"
     },
     "welcome": {
-      "headline": "你的克隆以及它经营的楼层",
+      "headline": "你的克隆以及它带领的团队",
       "descPlain": "你的克隆带领着一支小小的 AI 员工团队，你可以在一个屏幕上看到一切。里面有什么：",
       "desc": "你的克隆协调着一窝 AI 编程智能体——持久、可观察、全本地。里面有什么：",
       "features": {
         "engines": {
-          "label": "十一大引擎，一个楼层",
+          "label": "十一大引擎，一个团队",
           "desc": "Claude Code、Codex、Grok、Kimi、Antigravity、Qwen、OpenCode、Crush、pi、Copilot 与 Cursor —— 在同一楼层并肩工作的实时智能体。",
           "descPlain": "十一个 AI 助手 —— Claude、Codex、Cursor、Gemini、Grok 等 —— 在同一个共享楼层上并肩工作。"
         },
         "clone": {
           "label": "{{godName}} 就是你的克隆",
-          "desc": "你的克隆经营着整个楼层——分流请求、分配任务，只把真正需要你的事升级给你。",
+          "desc": "你的克隆带领着整个团队——分流请求、分配任务，只把真正需要你的事升级给你。",
           "descPlain": "你的克隆 {{godName}} 接收你的请求，把工作交给合适的智能体，只在关键时刻打扰你。"
         },
         "memory": {
@@ -639,9 +639,9 @@
       "note": "把它想成「市政厅」。harness 把智能体状态固定在那里，这样重启后会话可以重新接续。"
     },
     "orchestrator": {
-      "descPlain": "{{godName}} 就是你的克隆——他读取你的请求，拆成任务，分给合适的智能体。他是楼层的老板；而你仍然是他的老板。选择用什么 AI 引擎驱动他。",
+      "descPlain": "{{godName}} 就是你的克隆——他读取你的请求，拆成任务，分给合适的智能体。他是团队的老板；而你仍然是他的老板。选择用什么 AI 引擎驱动他。",
       "desc": "{{godName}} 就是你的克隆——你刚认识的那层楼的老板。他分流你的请求、分配任务、管理团队，同时把真正需要你的情况升级上来。选择驱动他的引擎和模型；给他一个更长上下文、更强能力的模型。",
-      "cliAgentPlain": "一个<strong>CLI 智能体</strong>是运行在你电脑上的 AI 编程助手 —— 常见的有 Claude Code（Anthropic）、Codex（OpenAI）和 Antigravity（Google Gemini）。<strong>你的克隆体</strong>是常驻运行、打理整个楼层的那一个。我们推荐使用 Opus 4.8（1M）的 Claude Code。其他引擎之后可以随时添加或切换。",
+      "cliAgentPlain": "一个<strong>CLI 智能体</strong>是运行在你电脑上的 AI 编程助手 —— 常见的有 Claude Code（Anthropic）、Codex（OpenAI）和 Antigravity（Google Gemini）。<strong>你的克隆体</strong>是常驻运行、带领整个团队的那一个。我们推荐使用 Opus 4.8（1M）的 Claude Code。其他引擎之后可以随时添加或切换。",
       "cliAgent": "每个选项都是一个<strong>CLI 引擎</strong>（Claude Code、Codex、Antigravity/Gemini，或本地代理如 Qwen）。标记为 INSTALLED 的引擎已在本机就绪；INSTALLS ON FIRST RUN 表示应用会在 {{godName}} 首次启动时进行安装。<strong>你的克隆体</strong>（{{godName}}）是统筹整个 hive 的引擎。推荐：Claude Code · Opus 4.8 · 1M。其他提供方之后可按智能体逐一接入。",
       "recommended": "推荐",
       "workersOnly": "仅限雇员",

@@ -71,6 +71,14 @@ test('no locale offers a character or a cast', () => {
   assert.deepEqual(hits, []);
 });
 
+test('Arabic never calls the floor a floor surface', () => {
+  // أرضية is flooring, the surface underfoot: "your clone runs the flooring".
+  // The floor is a team where it is run and a workspace where it is a place.
+  const hits = strings(JSON.parse(read(`${LOCALES}/ar.json`)))
+    .filter(([, text]) => /أرضي/.test(text)).map(([key]) => key);
+  assert.deepEqual(hits, []);
+});
+
 test('the spawn guide does not offer a cast member or an office floor', () => {
   const hive = read('src/main/hive.ts');
   const start = hive.indexOf('You can start an ephemeral worker yourself.');
