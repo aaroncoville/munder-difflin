@@ -2,27 +2,33 @@
  * The merge-request pipeline's per-card transition log (spec 12.3 and 11).
  *
  * One file per card, one JSON object per line, opened for append and flushed per
- * line. The copy in the app's own data directory is the only source of truth:
- * agents cannot write there. A mirror under hive/pipeline/ is output for people and
- * agents to read. It is never read back for a decision, only compared, and since
- * agents can write under hive/, every write to it refuses to follow a link.
+ * line. Everything this store writes lives under its `authRoot`, in the app's own
+ * data directory, which agents can read but not write. The log there is the only
+ * source of truth. An export copy of each card's log is kept beside it, at
+ * `<authRoot>/_export/<card>/log.jsonl`, for people and `hive-mr verify-log` to
+ * read. It is never read back for a decision, only compared. (`_export` cannot be
+ * a card id: card ids start with a letter or a digit.)
+ *
+ * Nothing is written under the hive folder. Agents can write there, and Node has
+ * no `openat`: a write by path into a folder an agent can write can be redirected
+ * by swapping a folder on the way for a link between any check and the open. No
+ * number of checks closes that, so the store does not write there at all.
  *
  * What the chain proves. Each line carries `prev`, the sha256 of the line before it
  * exactly as written, so a line edited or removed in the middle breaks the chain
  * where it happened. The chain alone cannot see the newest lines removed or edited,
  * or a whole file rewritten by someone who knows the algorithm, so a head anchor
- * (`head.json`: the last line's seq and hash) is kept beside the log in app data
- * and checked on every open and before every append. The mirror has no anchor:
- * `hive-mr verify-log` on it proves the chain is whole, and the conductor's
- * comparison with the authoritative copy proves the rest.
+ * (`head.json`: the last line's seq and hash) is kept beside the log and checked on
+ * every open and before every append.
  *
- * A crash can leave a torn last line, or a line whose anchor update did not land.
- * Neither is tampering: a torn tail is dropped and the repair logged when the anchor
- * points at the line before it; a complete line one past the anchor is kept.
+ * A crash can leave a torn last line, or a complete line whose anchor update did
+ * not land. Neither is tampering: a torn tail is dropped and the repair logged when
+ * the anchor points at the line before it; a complete line exactly one past the
+ * anchor is kept.
  */
 import { randomBytes } from 'node:crypto';
 import {
-  closeSync, constants, existsSync, fstatSync, fsyncSync, ftruncateSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeSync,
+  appendFileSync, closeSync, constants, existsSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeSync,
 } from 'node:fs';
 import { join } from 'node:path';
 
@@ -58,36 +64,42 @@ export class LogTamperError extends Error {
   }
 }
 
-/** `behind`: the mirror is a whole-line prefix of the log (a crash between the two writes). */
+/** `behind`: the export copy is a whole-line prefix of the log (a crash between the two writes). */
 export type MirrorStatus = 'same' | 'behind' | 'missing' | 'differs';
 
 interface Anchor { seq: number; hash: string }
 
 const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 
+/** The folder under the store's root that holds the export copies. Not a valid card id. */
+const EXPORT_DIR = '_export';
+
 export class CardLog {
   readonly card: string;
   private readonly authDir: string;
   private readonly authFile: string;
   private readonly anchorFile: string;
-  private readonly mirrorRoot: string;
+  private readonly exportDir: string;
+  private readonly exportFile: string;
   private readonly now: () => Date;
   private seq = 0;
   private last = core.GENESIS;
 
-  constructor(opts: { authRoot: string; mirrorRoot: string; card: string; now?: () => Date }) {
+  /** [authRoot] must be in the app's data directory: the store writes nowhere else. */
+  constructor(opts: { authRoot: string; card: string; now?: () => Date }) {
     if (!core.CARD_RE.test(opts.card)) throw new Error(`not a card id: ${JSON.stringify(opts.card).slice(0, 80)}`);
     this.card = opts.card;
     this.authDir = join(opts.authRoot, opts.card);
     this.authFile = join(this.authDir, 'log.jsonl');
     this.anchorFile = join(this.authDir, 'head.json');
-    this.mirrorRoot = opts.mirrorRoot;
+    this.exportDir = join(opts.authRoot, EXPORT_DIR, opts.card);
+    this.exportFile = join(this.exportDir, 'log.jsonl');
     this.now = opts.now ?? (() => new Date());
     mkdirSync(this.authDir, { recursive: true });
     this.open();
   }
 
-  /** Appends one line to the authoritative log, flushed to disk, moves the anchor, then mirrors it. */
+  /** Appends one line to the authoritative log, flushed to disk, moves the anchor, then copies it to the export. */
   append(entry: LogEntry): LogLine {
     const anchor = this.readAnchor();
     const expected = this.seq === 0 ? null : { seq: this.seq, hash: this.last };
@@ -117,21 +129,13 @@ export class CardLog {
     return text === '' ? [] : text.slice(0, -1).split('\n').map((l) => JSON.parse(l) as LogLine);
   }
 
-  /** How the mirror compares with the authoritative log. A link or non-file anywhere in its path reads `differs`. */
+  /** How the export copy compares with the authoritative log. */
   mirrorStatus(): MirrorStatus {
-    const dir = this.mirrorDir(false);
-    if (dir === 'missing') return 'missing';
-    if (dir === null) return 'differs';
-    const file = join(dir, 'log.jsonl');
-    let st;
-    try { st = lstatSync(file); } catch { return 'missing'; }
-    if (!st.isFile()) return 'differs';
     let mirror: string;
     try {
-      const fd = openSync(file, constants.O_RDONLY | NOFOLLOW);
-      try { mirror = readFileSync(fd, 'utf8'); } finally { closeSync(fd); }
-    } catch {
-      return 'differs';
+      mirror = readFileSync(this.exportFile, 'utf8');
+    } catch (e) {
+      return (e as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : 'differs';
     }
     const auth = this.authText();
     if (mirror === auth) return 'same';
@@ -139,16 +143,10 @@ export class CardLog {
     return 'differs';
   }
 
-  /**
-   * Rewrites the mirror from the authoritative log: written whole to a fresh,
-   * randomly named file opened exclusively without following links, then renamed
-   * over the mirror (which replaces a planted link rather than writing through it).
-   * Does nothing when a folder on the way is not a real folder.
-   */
+  /** Rewrites the export copy from the authoritative log: written whole to a temp file, then renamed over it. */
   restoreMirror(): void {
-    const dir = this.mirrorDir(true);
-    if (typeof dir !== 'string') return;
-    const tmp = join(dir, `.log.jsonl.${randomBytes(8).toString('hex')}.tmp`);
+    mkdirSync(this.exportDir, { recursive: true });
+    const tmp = join(this.exportDir, `.log.jsonl.${randomBytes(8).toString('hex')}.tmp`);
     const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW, 0o644);
     try {
       writeSync(fd, this.authText());
@@ -156,8 +154,7 @@ export class CardLog {
     } finally {
       closeSync(fd);
     }
-    if (this.mirrorDir(false) !== dir) { rmSync(tmp, { force: true }); return; }
-    renameSync(tmp, join(dir, 'log.jsonl'));
+    renameSync(tmp, this.exportFile);
   }
 
   // — the authoritative copy —
@@ -230,40 +227,13 @@ export class CardLog {
     return existsSync(this.authFile) ? readFileSync(this.authFile, 'utf8') : '';
   }
 
-  // — the mirror —
+  // — the export copy —
 
-  /**
-   * The card's mirror folder, only if the mirror root and the card folder are real
-   * folders (not links). With [create], missing ones are made, one level at a time.
-   * 'missing' when they do not exist and were not to be made; null when unsafe.
-   */
-  private mirrorDir(create: boolean): string | null | 'missing' {
-    const cardDir = join(this.mirrorRoot, this.card);
-    for (const [dir, parentOk] of [[this.mirrorRoot, true], [cardDir, false]] as const) {
-      let st;
-      try { st = lstatSync(dir); } catch {
-        if (!create) return 'missing';
-        try { mkdirSync(dir, { recursive: parentOk }); st = lstatSync(dir); } catch { return null; }
-      }
-      if (st.isSymbolicLink() || !st.isDirectory()) return null;
-    }
-    return cardDir;
-  }
-
-  /** Appends to the mirror without following a link; a planted link or non-file is left alone. */
+  /** Appends to the export copy. A failure is left for the next check to report and a restore to repair. */
   private mirrorAppend(text: string): void {
-    const dir = this.mirrorDir(true);
-    if (typeof dir !== 'string') return;
-    let fd: number;
     try {
-      fd = openSync(join(dir, 'log.jsonl'), constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | NOFOLLOW, 0o644);
-    } catch {
-      return; // a link (ELOOP) or anything else: the mirror check reports it and a restore replaces it
-    }
-    try {
-      if (fstatSync(fd).isFile()) writeSync(fd, text);
-    } catch { /* the next mirror check restores it */ } finally {
-      closeSync(fd);
-    }
+      mkdirSync(this.exportDir, { recursive: true });
+      appendFileSync(this.exportFile, text, { mode: 0o644 });
+    } catch { /* reported by mirrorStatus */ }
   }
 }

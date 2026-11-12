@@ -1,9 +1,9 @@
 'use strict';
 // The pipeline's per-card transition log (spec 12.3 and 11). The authoritative copy
-// lives in the app's own data directory, where agents cannot write; a mirror under
-// hive/pipeline/ is there to read. Each line carries the hash of the line before,
-// so an edited or removed line is found by a script. The mirror is compared with
-// the authoritative copy, never trusted over it.
+// lives in the app's own data directory, where agents cannot write; an export copy
+// beside it is there to read. Each line carries the hash of the line before, so an
+// edited or removed line is found by a script. The export is compared with the
+// authoritative copy, never trusted over it. Nothing is written under the hive.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -17,12 +17,12 @@ const { CardLog, LogTamperError } = loadTs('src/main/pipeline/store.ts');
 
 function roots() {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'mr-store-'));
-  return { authRoot: path.join(base, 'app', 'pipeline'), mirrorRoot: path.join(base, 'hive', 'pipeline') };
+  return { base, authRoot: path.join(base, 'app', 'pipeline'), hiveRoot: path.join(base, 'hive') };
 }
 const clock = () => { let t = Date.parse('2026-11-12T04:44:02.000Z'); return () => new Date((t += 1000)); };
-const open = (r, card = 'WF-FB-VEHICLES') => new CardLog({ ...r, card, now: clock() });
+const open = (r, card = 'WF-FB-VEHICLES') => new CardLog({ authRoot: r.authRoot, card, now: clock() });
 const authText = (r, card = 'WF-FB-VEHICLES') => fs.readFileSync(path.join(r.authRoot, card, 'log.jsonl'), 'utf8');
-const mirrorFile = (r, card = 'WF-FB-VEHICLES') => path.join(r.mirrorRoot, card, 'log.jsonl');
+const mirrorFile = (r, card = 'WF-FB-VEHICLES') => path.join(r.authRoot, '_export', card, 'log.jsonl');
 
 test('each appended line is numbered, timed, chained to the one before, and mirrored', () => {
   const r = roots();
@@ -209,53 +209,52 @@ test('a mirror that is merely behind reads "behind", not "differs", and is broug
   assert.equal(log.mirrorStatus(), 'same');
 });
 
-function planted() {
-  const r = roots();
-  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'mr-outside-'));
-  const victim = path.join(outside, 'victim.txt');
-  fs.writeFileSync(victim, 'precious\n');
-  return { r, outside, victim };
+// --- Nothing under the hive: the export lives in app data ---
+
+/** Every path under [dir], with what it is, a link's target and a file's bytes. */
+function snapshot(dir) {
+  const out = {};
+  const walk = (d) => {
+    for (const name of fs.readdirSync(d)) {
+      const p = path.join(d, name);
+      const st = fs.lstatSync(p);
+      if (st.isSymbolicLink()) out[p] = `link -> ${fs.readlinkSync(p)}`;
+      else if (st.isDirectory()) { out[p] = 'dir'; walk(p); }
+      else out[p] = fs.readFileSync(p, 'utf8');
+    }
+  };
+  walk(dir);
+  return out;
 }
 
-test('a mirror log planted as a link is never written through: the outside file is untouched', () => {
-  const { r, victim } = planted();
-  fs.mkdirSync(path.join(r.mirrorRoot, 'WF-FB-VEHICLES'), { recursive: true });
-  fs.symlinkSync(victim, mirrorFile(r));
-  const log = open(r);
-  log.append({ type: 'fact' });
-  assert.equal(fs.readFileSync(victim, 'utf8'), 'precious\n');
+test('no pipeline write lands under the hive, even when the old mirror path is offered and full of planted links', () => {
+  const r = roots();
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'mr-outside-'));
+  fs.writeFileSync(path.join(outside, 'log.jsonl'), 'SAFE\n');
+  // What an agent could plant where the mirror used to be written.
+  const hivePipeline = path.join(r.hiveRoot, 'pipeline');
+  fs.mkdirSync(hivePipeline, { recursive: true });
+  fs.symlinkSync(outside, path.join(hivePipeline, 'WF-FB-VEHICLES'));
+  fs.symlinkSync(outside, path.join(hivePipeline, 'A-1'));
+  const hiveBefore = snapshot(r.hiveRoot);
+  const outsideBefore = snapshot(outside);
+
+  // A caller still passing the old option gets nothing written there.
+  const log = new CardLog({ authRoot: r.authRoot, mirrorRoot: hivePipeline, card: 'WF-FB-VEHICLES', now: clock() });
+  log.append({ type: 'transition', to: 'review' });
+  log.append({ type: 'fact', n: 2 });
+  fs.writeFileSync(mirrorFile(r), 'edited\n');
   assert.equal(log.mirrorStatus(), 'differs');
   log.restoreMirror();
-  assert.equal(fs.readFileSync(victim, 'utf8'), 'precious\n');
-  assert.equal(fs.lstatSync(mirrorFile(r)).isSymbolicLink(), false);
   assert.equal(log.mirrorStatus(), 'same');
-});
+  fs.appendFileSync(path.join(r.authRoot, 'WF-FB-VEHICLES', 'log.jsonl'), '{"torn');
+  open(r).append({ type: 'fact', n: 4 });
+  open(r, 'A-1').append({ type: 'fact' });
 
-test('a restore through a planted temp-file link writes nothing outside', () => {
-  const { r, victim } = planted();
-  const log = open(r);
-  log.append({ type: 'fact' });
-  fs.symlinkSync(victim, `${mirrorFile(r)}.tmp`);
-  log.restoreMirror();
-  assert.equal(fs.readFileSync(victim, 'utf8'), 'precious\n');
-  assert.equal(log.mirrorStatus(), 'same');
-});
-
-test('a mirror card folder, or the mirror root itself, planted as a link is not written into', () => {
-  for (const which of ['card', 'root']) {
-    const { r, outside } = planted();
-    if (which === 'card') {
-      fs.mkdirSync(r.mirrorRoot, { recursive: true });
-      fs.symlinkSync(outside, path.join(r.mirrorRoot, 'WF-FB-VEHICLES'));
-    } else {
-      fs.mkdirSync(path.dirname(r.mirrorRoot), { recursive: true });
-      fs.symlinkSync(outside, r.mirrorRoot);
-    }
-    const log = open(r);
-    log.append({ type: 'fact' });
-    log.restoreMirror();
-    assert.deepEqual(fs.readdirSync(outside).sort(), ['victim.txt'], which);
-    assert.equal(fs.readFileSync(path.join(outside, 'victim.txt'), 'utf8'), 'precious\n', which);
-    assert.equal(log.mirrorStatus(), 'differs', which);
+  assert.deepEqual(snapshot(r.hiveRoot), hiveBefore);
+  assert.deepEqual(snapshot(outside), outsideBefore);
+  // Everything the store made is under its app-data root.
+  for (const p of Object.keys(snapshot(r.base))) {
+    assert.ok(p.startsWith(r.hiveRoot) || p === path.dirname(r.authRoot) || p.startsWith(r.authRoot), p);
   }
 });
