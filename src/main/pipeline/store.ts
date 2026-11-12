@@ -20,7 +20,17 @@
  * or a whole file rewritten by someone who knows the algorithm, so a head anchor
  * (`head.json`: the last line's seq and hash) is kept beside the log and checked on
  * every open and before every append. A new log gets a genesis anchor (seq 0) on
- * disk before its first line, so a missing anchor always means tampering.
+ * disk before its first line, so a missing anchor beside a non-empty log means
+ * tampering. Two cases it cannot see, both needing write access to the app's data
+ * directory: the log and its anchor both removed (the card reopens as new and
+ * empty), and the log cut back to its first line with a genesis anchor written in
+ * place of the real one (the line is adopted as a first-append crash). The
+ * conductor's own record of the card's transitions is what can catch those.
+ *
+ * Durable means synced in its folder too: a new file or a rename is synced in the
+ * folder that holds it, and a new folder in its parent, up to the first folder
+ * that already existed. A folder sync that fails is an error, except where the
+ * platform cannot sync folders at all.
  *
  * A crash can leave a torn last line, or a complete line whose anchor update did
  * not land. Neither is tampering: a torn tail is dropped and the repair logged when
@@ -34,7 +44,7 @@ import { randomBytes } from 'node:crypto';
 import {
   appendFileSync, closeSync, constants, existsSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const core = require('./mr-core.cjs') as {
@@ -81,11 +91,34 @@ const EXPORT_DIR = '_export';
 const headOf = (count: number, last: string): Anchor => (count === 0 ? { seq: 0, hash: core.GENESIS } : { seq: count, hash: last });
 const sameAnchor = (a: Anchor | null | undefined, b: Anchor | null | undefined): boolean => !!a && !!b && a.seq === b.seq && a.hash === b.hash;
 
-/** Makes a new or renamed entry in [dir] durable. Best effort where a folder cannot be opened (Windows). */
+/**
+ * What a platform answers when it cannot open or sync a folder at all (Windows opens
+ * no folder; some file systems refuse fsync on one). Anything else, EIO or ENOSPC
+ * among them, means the entry may not be on disk, and is thrown.
+ */
+const FOLDER_SYNC_UNSUPPORTED = new Set(['EINVAL', 'ENOTSUP', 'EOPNOTSUPP', 'EISDIR']);
+
+const unsupported = (e: unknown): boolean => FOLDER_SYNC_UNSUPPORTED.has((e as NodeJS.ErrnoException).code ?? '');
+
+/** Makes a new or renamed entry in [dir] durable. */
 function fsyncDir(dir: string): void {
   let fd: number;
-  try { fd = openSync(dir, constants.O_RDONLY); } catch { return; }
-  try { fsyncSync(fd); } catch { /* not supported for folders here */ } finally { closeSync(fd); }
+  try { fd = openSync(dir, constants.O_RDONLY); } catch (e) { if (unsupported(e)) return; throw e; }
+  try {
+    fsyncSync(fd);
+  } catch (e) {
+    if (!unsupported(e)) throw e;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Makes [dir] and any missing folders above it, each synced in its parent, top down. */
+function mkdirDurable(dir: string): void {
+  const missing: string[] = [];
+  for (let d = dir; !existsSync(d) && dirname(d) !== d; d = dirname(d)) missing.unshift(d);
+  mkdirSync(dir, { recursive: true });
+  for (const d of missing) fsyncDir(dirname(d));
 }
 
 export class CardLog {
@@ -109,7 +142,7 @@ export class CardLog {
     this.exportDir = join(opts.authRoot, EXPORT_DIR, opts.card);
     this.exportFile = join(this.exportDir, 'log.jsonl');
     this.now = opts.now ?? (() => new Date());
-    mkdirSync(this.authDir, { recursive: true });
+    mkdirDurable(this.authDir);
     this.open();
   }
 

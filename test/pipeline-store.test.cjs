@@ -337,3 +337,61 @@ test('an append that fails after its line is on disk means reopen and look, not 
   assert.equal(again.append({ type: 'fact', n: 3 }).seq, 3);
   assert.deepEqual(fs.readdirSync(path.join(r.authRoot, 'WF-FB-VEHICLES')).sort(), ['head.json', 'log.jsonl']);
 });
+
+/** Replaces fsyncSync for folders only; [how] decides per call. Returns the folder inodes synced. */
+function onFolderSync(how, body) {
+  const real = fs.fsyncSync;
+  const synced = [];
+  fs.fsyncSync = (fd) => {
+    if (fs.fstatSync(fd).isDirectory()) { synced.push(fs.fstatSync(fd).ino); how(); }
+    return real(fd);
+  };
+  try { body(); } finally { fs.fsyncSync = real; }
+  return synced;
+}
+const failWith = (code) => () => { throw Object.assign(new Error(`${code}: injected`), { code }); };
+
+test('a new card folder, and every folder made on the way to it, is synced in its parent', () => {
+  const r = roots();
+  const synced = onFolderSync(() => {}, () => open(r));
+  const app = path.dirname(r.authRoot);
+  for (const [name, dir] of [['base (holds app)', r.base], ['app (holds pipeline)', app], ['authRoot (holds the card)', r.authRoot]]) {
+    assert.ok(synced.includes(fs.statSync(dir).ino), name);
+  }
+  const second = onFolderSync(() => {}, () => open(r, 'WF-OTHER'));
+  assert.ok(second.includes(fs.statSync(r.authRoot).ino), 'a second card in an existing root syncs the root');
+  assert.ok(!second.includes(fs.statSync(app).ino), 'folders that already existed are not walked');
+});
+
+test('a folder sync that fails with a real error fails the open or the append, not swallowed', () => {
+  for (const code of ['EIO', 'ENOSPC', 'EACCES']) {
+    const r = roots();
+    assert.throws(() => onFolderSync(failWith(code), () => open(r)), new RegExp(code), `open, ${code}`);
+    const r2 = roots();
+    const log = open(r2);
+    assert.throws(() => onFolderSync(failWith(code), () => log.append({ type: 'fact' })), new RegExp(code), `append, ${code}`);
+  }
+});
+
+test('a platform that cannot sync folders at all is tolerated, by its named error codes only', () => {
+  for (const code of ['EINVAL', 'ENOTSUP', 'EISDIR']) {
+    const r = roots();
+    onFolderSync(failWith(code), () => {
+      const log = open(r);
+      assert.equal(log.append({ type: 'fact' }).seq, 1, code);
+    });
+  }
+});
+
+test('a folder that cannot be opened for its sync fails the open, unless the platform opens no folder', () => {
+  const real = fs.openSync;
+  const withOpen = (code, body) => {
+    fs.openSync = (p, ...rest) => {
+      if (fs.existsSync(p) && fs.statSync(p).isDirectory()) throw Object.assign(new Error(`${code}: injected`), { code });
+      return real(p, ...rest);
+    };
+    try { body(); } finally { fs.openSync = real; }
+  };
+  withOpen('EACCES', () => assert.throws(() => open(roots()), /EACCES/));
+  withOpen('EISDIR', () => assert.equal(open(roots()).append({ type: 'fact' }).seq, 1));
+});
