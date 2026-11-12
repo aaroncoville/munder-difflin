@@ -474,10 +474,10 @@ test('round 4: the launch line and its environment decide; anything not modelled
     ['w1', 'claude', { argv: ['env X=1 claude'], env: {} }, /does not run claude itself/],
     ['w2', 'claude', { argv: ['sh -c claude'], env: {} }, /does not run claude itself/],
     ['w3', 'codex', { argv: ['npx codex -s workspace-write'], env: {} }, /does not run codex itself/],
-    ['f1', 'claude', claudeLaunch(dir('f1'), ['--weird']), /option the app does not model/],
+    ['f1', 'claude', claudeLaunch(dir('f1'), ['--weird']), /option the app does not model: option --weird/],
     ['f2', 'claude', claudeLaunch(dir('f2'), ['--settings', '/tmp/other.json']), /option the app does not model/],
-    ['f3', 'codex', codexLaunch(['-p', 'fast']), /option the app does not model/],
-    ['f4', 'codex', { argv: ['codex -a never'], env: {} }, /does not choose a Codex sandbox/],
+    ['f3', 'codex', codexLaunch(['-p', 'fast']), /option the app does not model: option -p/],
+    ['f4', 'codex', { argv: ['codex -a never'], env: {} }, /chooses no Codex sandbox and no config does: turn auto mode on in Settings, or set sandbox_mode in /],
     ['f5', 'codex', { argv: ['codex --yolo'], env: {} }, /turns the Codex sandbox off/],
     ['e1', 'claude', claudeLaunch(dir('e1'), [], { XDG_CONFIG_HOME: base }), /XDG_CONFIG_HOME/],
     ['e2', 'claude', claudeLaunch(dir('e2'), [], { CLAUDE_CODE_MCP_SERVE_SETTINGS: '' }), /CLAUDE_CODE_MCP_SERVE_SETTINGS/],
@@ -551,4 +551,84 @@ test('round 4: the app passes the launch to ensureAgent and runs the late check 
   const spawnAt = main.indexOf('const res = ptyManager.spawn(opts, owner);');
   assert.ok(late > 0 && late < spawnAt, 'the late check runs before the PTY spawns');
   assert.match(main.slice(late, spawnAt), /instanceof HookRuntimeUnavailable\) return refuseSpawn\(/);
+});
+
+test('round 5: auto mode off — no -s takes the sandbox from Codex config; none, unknown or full access refuses saying what to change', async (t) => {
+  const { base, home, rt, hive, root } = floor(t);
+  hive.setHookRuntime(rt);
+  const userCfg = path.join(home, '.codex', 'config.toml');
+  fs.mkdirSync(path.dirname(userCfg), { recursive: true });
+  const work = path.join(base, 'w');
+  fs.mkdirSync(path.join(work, '.codex'), { recursive: true });
+  // The app-built forms with auto mode off: bare 'codex', and 'codex --model x'.
+  const forms = [{ argv: ['codex'], env: {} }, { argv: ['codex --model gpt-x'], env: {} }];
+  let n = 0;
+  const spawn = (launch, cwd = home) => hive.ensureAgent({ id: `ao${n++}`, name: 'a', provider: 'codex', cwd }, { launch });
+  for (const f of forms) {
+    fs.rmSync(userCfg, { force: true });
+    assert.match(await refused(spawn(f)), /turn auto mode on in Settings, or set sandbox_mode in .*config\.toml/, 'no mode anywhere');
+    fs.writeFileSync(userCfg, 'sandbox_mode = "workspace-write"\n');
+    await spawn(f);
+    fs.writeFileSync(userCfg, 'sandbox_mode = "read-only"\n');
+    await spawn(f);
+    fs.writeFileSync(userCfg, 'sandbox_mode = "danger-full-access"\n');
+    assert.match(await refused(spawn(f)), /sets sandbox_mode = "danger-full-access"/);
+    fs.writeFileSync(userCfg, "sandbox_mode = 'workspace-write'\n");
+    assert.match(await refused(spawn(f)), /could not be understood \(sandbox_mode on line 1\)/);
+  }
+  // The nearest project config wins over the user's.
+  fs.writeFileSync(userCfg, 'sandbox_mode = "workspace-write"\n');
+  fs.writeFileSync(path.join(work, '.codex', 'config.toml'), 'sandbox_mode = "danger-full-access"\n');
+  assert.match(await refused(spawn({ argv: ['codex'], env: {} }, work)), /danger-full-access/);
+  fs.rmSync(path.join(work, '.codex', 'config.toml'));
+  // The late check accepts a final line with no -s only when the decision took the sandbox from config.
+  await hive.ensureAgent({ id: 'ok', name: 'ok', provider: 'codex', cwd: home }, { launch: { argv: ['codex'], env: {} } });
+  const v = hive.takeHookVerdict('ok');
+  assert.equal(v.codexFromConfig, true);
+  assert.doesNotThrow(() => hive.confirmHookLaunch({ ...v, isNew: false }, ['codex', '--dangerously-bypass-hook-trust'], {}));
+  await hive.ensureAgent({ id: 'ok2', name: 'ok2', provider: 'codex', cwd: home }, { launch: { argv: ['codex -s workspace-write'], env: {} } });
+  assert.throws(() => hive.confirmHookLaunch({ ...hive.takeHookVerdict('ok2'), isNew: false }, ['codex'], {}), /does not keep the Codex sandbox/);
+  assert.equal(root.endsWith('hive'), true);
+});
+
+test('round 5: the TOML rule looks only at keys and table headers, never inside strings; refusals name the word and line', async (t) => {
+  const { base, home, rt, hive } = floor(t);
+  hive.setHookRuntime(rt);
+  const L = loadTs('src/main/launchLine.ts');
+  const q3 = '"'.repeat(3);
+  const fine = [
+    '[projects."/Users/me/profile"]\ntrust_level = "trusted"\n',
+    '[profiles.x]\nmodel = "y"\n',
+    '[mcp_servers.profiler]\ncommand = "p"\n',
+    'notes = "set sandbox_mode = danger later"\n',
+    'x = "writable_roots"\n',
+    '[[hooks.Stop]]\ncommand = "a"\n[[hooks.Stop.hooks]]\ntype = "command"\n',
+    `doc = ${q3}\nsandbox_mode = "danger-full-access"\n${q3}\n`,
+    'm = { name = "sandbox_mode" }\n',
+  ];
+  for (const t2 of fine) assert.equal(L.codexRoots(t2).state, 'ok', JSON.stringify(t2));
+  const bad = [
+    ['[profiles.x]\nsandbox_mode = "danger-full-access"\n', 'sandbox_mode on line 2'],
+    ['[[sandbox_workspace_write]]\nx = 1\n', 'sandbox_workspace_write on line 1'],
+    ['["sandbox_workspace_write"]\nwritable_roots = ["/"]\n', 'sandbox_workspace_write on line 1'],
+    ['m = { sandbox_mode = "x" }\n', 'sandbox_mode on line 1'],
+    ['m = { "writable_roots" = ["/"] }\n', 'writable_roots on line 1'],
+    ['profile = "fast"\n', 'profile on line 1'],
+    ['[a]\n[profiles.x.sandbox_workspace_write]\nwritable_roots = ["/"]\n', 'sandbox_workspace_write on line 2'],
+  ];
+  for (const [t2, why] of bad) { const r = L.codexRoots(t2); assert.equal(r.state, 'unknown', JSON.stringify(t2)); assert.equal(r.why, why, JSON.stringify(t2)); }
+  // The refusal carries it.
+  const cfg = path.join(home, '.codex', 'config.toml');
+  fs.mkdirSync(path.dirname(cfg), { recursive: true });
+  fs.writeFileSync(cfg, '[a]\nb = 1\nprofile = "x"\n');
+  assert.match(await refused(hive.ensureAgent({ id: 'p1', name: 'p', provider: 'codex', cwd: home }, { launch: { argv: ['codex -s workspace-write'], env: {} } })), /profile on line 3/);
+});
+
+test('round 5: the refused list keeps at most the 32 most recent agents', async (t) => {
+  const { rt, hive } = floor(t);
+  hive.setHookRuntime(rt);
+  for (let i = 0; i < 40; i++) await refused(hive.ensureAgent({ id: `r${i}`, name: 'r', provider: 'claude', cwd: path.dirname(rt) }));
+  const ids = Object.keys(hive.hookRuntimeStatus().refused);
+  assert.equal(ids.length, 32);
+  assert.ok(ids.includes('r39') && !ids.includes('r0'));
 });

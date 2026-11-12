@@ -218,7 +218,7 @@ export interface Registry {
 /** A launch as the spawn will make it: argv[0] is the command string, then its arguments; env holds only the variables that move configuration. */
 export interface HookLaunch { argv: string[]; env: Record<string, string> }
 /** What ensureAgent decided for a Claude or Codex spawn, carried to the late check. */
-export interface HookVerdict { agentId: string; kind: 'claude' | 'codex'; rt: StagedHookRuntime; rootPaths: string[]; claudeUserDir?: string; dir: string; cwd: string; isNew: boolean }
+export interface HookVerdict { agentId: string; kind: 'claude' | 'codex'; rt: StagedHookRuntime; rootPaths: string[]; claudeUserDir?: string; codexFromConfig?: boolean; dir: string; cwd: string; isNew: boolean }
 
 export interface SpawnInjection {
   args: string[];
@@ -561,6 +561,8 @@ export class HiveManager {
     // An agent refused over an hour ago that has not been spawned since is dropped: it is no longer waiting to start.
     const cutoff = Date.now() - 60 * 60_000;
     for (const [id, r] of this.hookRuntimeRefused) if (r.at < cutoff) this.hookRuntimeRefused.delete(id);
+    // And never more than the 32 most recent: an agent that never spawns again cannot keep the list growing.
+    while (this.hookRuntimeRefused.size > 32) this.hookRuntimeRefused.delete(this.hookRuntimeRefused.keys().next().value as string);
     const refused = Object.fromEntries([...this.hookRuntimeRefused].map(([id, r]) => [id, r.reason]));
     return { ...this.hookRuntimeState, ...(this.hookRuntimeRefused.size ? { refused } : {}) };
   }
@@ -670,7 +672,7 @@ export class HiveManager {
     if (raw === null) return [{ path: null, from: file }];
     // The shared strict decoder: any sandbox key not in its exact plain form is not understood.
     const c = codexRoots(raw);
-    if (c.state === 'unknown') return [{ path: null, from: file }];
+    if (c.state === 'unknown') return [{ path: null, from: `${file} (${c.why ?? 'unknown form'})` }];
     return c.roots.map((x) => ({ path: this.settingsRoot(x, cwd), from: file }));
   }
   /** Codex write roots from every config it merges: the user's (copied into the generated one) and a
@@ -694,10 +696,34 @@ export class HiveManager {
       ...(kind === 'claude' ? this.claudeSettingsRoots(meta.cwd, claudeUserDir) : this.codexUserRoots(meta.cwd)),
     ];
   }
+  /** The sandbox Codex's own config chooses for a session started in `cwd` with no -s: the user's config, then project
+   *  configs from the top folder down to the cwd (the nearest wins). A file it cannot read, a mode it does not know,
+   *  full access, or no mode anywhere refuses, saying what the user can change. */
+  private codexConfigMode(cwd: string): { mode: 'workspace-write' | 'read-only'; file: string } | { refuse: string } {
+    const user = join(homedir(), '.codex', 'config.toml');
+    const files = [user];
+    if (cwd && isAbsolute(cwd)) {
+      const chain: string[] = [];
+      for (let d = resolvePath(cwd); ; d = dirname(d)) { chain.unshift(join(d, '.codex', 'config.toml')); if (dirname(d) === d) break; }
+      files.push(...chain.filter((f) => f !== user));
+    }
+    let chosen: { mode: string; file: string } | null = null;
+    for (const f of files) {
+      const raw = this.readSmallFile(f);
+      if (raw === 'missing') continue;
+      if (raw === null) return { refuse: `its Codex config ${f} could not be read` };
+      const c = codexRoots(raw);
+      if (c.state === 'unknown') return { refuse: `its Codex config ${f} could not be understood (${c.why ?? 'unknown form'})` };
+      if (c.mode) chosen = { mode: c.mode, file: f };
+    }
+    if (!chosen) return { refuse: `its launch line chooses no Codex sandbox and no config does: turn auto mode on in Settings, or set sandbox_mode in ${user}` };
+    if (chosen.mode === 'danger-full-access') return { refuse: `its Codex config ${chosen.file} sets sandbox_mode = "danger-full-access"` };
+    return { mode: chosen.mode as 'workspace-write' | 'read-only', file: chosen.file };
+  }
   /** Every root a launch would give the agent, from its launch line, its final environment and its settings files; or
    *  why the launch cannot be modelled. Reads files, writes nothing. With no launch given (a direct caller, not the
    *  app's spawn path) only the files are read; the app always gives one, and checks the final one again before spawning. */
-  verdictRoots(meta: AgentMeta, dir: string, root: string, extra: string[] | undefined, launch?: HookLaunch): { roots: WriteRoot[]; claudeUserDir?: string } | { refuse: string } {
+  verdictRoots(meta: AgentMeta, dir: string, root: string, extra: string[] | undefined, launch?: HookLaunch): { roots: WriteRoot[]; claudeUserDir?: string; codexFromConfig?: boolean } | { refuse: string } {
     const kind = this.hookKind(meta);
     if (!kind) return { roots: [] };
     if (!launch) return { roots: this.agentRoots(meta, dir, root, extra, kind) };
@@ -706,19 +732,28 @@ export class HiveManager {
     const places = launchPlaces(kind, launch.env, homedir());
     if ('unknown' in places) return { refuse: `its environment moves the CLI's configuration in a way the app does not model: ${places.unknown}` };
     const addDirs: string[] = [];
+    let codexFromConfig = false;
     if (kind === 'claude') {
-      if (claudeLaunch(launch.argv, join(dir, 'settings.json'), addDirs) === 'unknown') return { refuse: 'its launch line has an option the app does not model' };
+      const why: string[] = [];
+      if (claudeLaunch(launch.argv, join(dir, 'settings.json'), addDirs, why) === 'unknown') return { refuse: `its launch line has an option the app does not model: ${why.join(', ')}` };
     } else {
-      const mode = codexLaunchSandbox(launch.argv, addDirs);
+      const why: string[] = [];
+      const mode = codexLaunchSandbox(launch.argv, addDirs, why);
       if (mode === 'danger-full-access') return { refuse: 'its launch line turns the Codex sandbox off' };
-      if (mode === 'none') return { refuse: 'its launch line does not choose a Codex sandbox (-s)' };
-      if (mode === 'unknown') return { refuse: 'its launch line has an option the app does not model' };
+      if (mode === 'unknown') return { refuse: `its launch line has an option the app does not model: ${why.join(', ')}` };
+      if (mode === 'none') {
+        // No -s (auto mode off): the sandbox is the one its config chooses. Codex's built-in default is not guessed.
+        const chosen = this.codexConfigMode(meta.cwd);
+        if ('refuse' in chosen) return chosen;
+        codexFromConfig = true;
+      }
     }
     return {
       roots: [...this.agentRoots(meta, dir, root, extra, kind, kind === 'claude' ? places.claudeUserDir : undefined),
         ...addDirs.map((p) => ({ path: this.settingsRoot(p, meta.cwd), from: 'its launch line (--add-dir)' })),
         ...places.tmpDirs.map((p) => ({ path: p, from: 'its temp folder (TMPDIR), which its sandbox lets it write' }))],
       ...(kind === 'claude' ? { claudeUserDir: places.claudeUserDir } : {}),
+      ...(codexFromConfig ? { codexFromConfig } : {}),
     };
   }
   /** Decide once, before anything for this agent is created: the runtime it will use and the roots it was checked
@@ -730,7 +765,7 @@ export class HiveManager {
     const r = this.verdictRoots(meta, dir, root, extra, launch);
     const rt = this.runtimeFor(meta.id, 'refuse' in r ? [] : r.roots, kind === 'codex' && process.platform === 'win32', 'refuse' in r ? r.refuse : null);
     if (!rt || 'refuse' in r) return null;
-    return { agentId: meta.id, kind, rt, rootPaths: r.roots.map((x) => x.path).filter((x): x is string => !!x), claudeUserDir: r.claudeUserDir, dir, cwd: meta.cwd, isNew };
+    return { agentId: meta.id, kind, rt, rootPaths: r.roots.map((x) => x.path).filter((x): x is string => !!x), claudeUserDir: r.claudeUserDir, codexFromConfig: r.codexFromConfig, dir, cwd: meta.cwd, isNew };
   }
   /** The late check, just before the terminal starts: the FINAL launch line and environment must imply nothing the
    *  verdict did not check. Reads no settings files (the verdict is the snapshot). A refusal here rolls back a new agent's
@@ -745,14 +780,16 @@ export class HiveManager {
       const places = launchPlaces('claude', env, homedir());
       if ('unknown' in places) fail(`its final environment cannot be modelled: ${places.unknown}`);
       else if (places.claudeUserDir !== v.claudeUserDir) fail(`its final environment moved Claude's settings to ${places.claudeUserDir}`);
-      if (claudeLaunch(argv, join(v.dir, 'settings.json'), addDirs) === 'unknown') fail('its final launch line has an option the app does not model');
+      const why: string[] = [];
+      if (claudeLaunch(argv, join(v.dir, 'settings.json'), addDirs, why) === 'unknown') fail(`its final launch line has an option the app does not model: ${why.join(', ')}`);
     } else {
       // The app's own remote rewrite: the app server runs from the same generated config the verdict checked.
       const a = [...argv];
       const k = a.indexOf('--remote');
       if (k > 0 && k + 1 < a.length) a.splice(k, 2);
       const mode = codexLaunchSandbox(a, addDirs);
-      if (mode !== 'workspace-write' && mode !== 'read-only') fail('its final launch line does not keep the Codex sandbox it was checked with');
+      const kept = mode === 'workspace-write' || mode === 'read-only' || (mode === 'none' && v.codexFromConfig === true);
+      if (!kept) fail('its final launch line does not keep the Codex sandbox it was checked with');
     }
     const checked = new Set(v.rootPaths.map((p) => resolvePath(p)));
     for (const d of addDirs) {
