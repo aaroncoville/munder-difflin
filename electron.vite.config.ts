@@ -30,7 +30,10 @@ function copyMainSidecars() {
     // Knowledge Graph core: required by knowledge.ts at runtime (pure-JS, no
     // native deps), so it must be emitted next to the main bundle like the
     // Slack sidecar above.
-    ['src/main/kg-core.cjs', 'out/main/kg-core.cjs']
+    ['src/main/kg-core.cjs', 'out/main/kg-core.cjs'],
+    // The merge-request pipeline's message rules and log chain, shared with the
+    // agent-side hive-mr CLI. Required by pipeline/schema.ts and store.ts.
+    ['src/main/pipeline/mr-core.cjs', 'out/main/mr-core.cjs']
   ];
   return {
     name: 'copy-main-cjs-sidecars',
