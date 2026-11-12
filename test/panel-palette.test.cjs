@@ -247,3 +247,205 @@ test('the UA draws its controls for a dark ground', () => {
   // The caret follows the ink rather than the UA scheme either way.
   assert.match(css, /input, textarea\s*{\s*caret-color:\s*var\(--cth-ink-900\);\s*}/);
 });
+
+// ─── the local override: <userData>/panel-palette.json ───────────────────────
+
+const os = require('node:os');
+
+const SHARED = 'src/shared/panelPalette.ts';
+const MAIN = 'src/main/panelPalette.ts';
+const RENDERER = 'src/renderer/src/design/panelPalette.ts';
+
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'md-panel-palette-'));
+test.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+let fileSeq = 0;
+/** A palette file holding exactly `body`, at a fresh path. */
+function paletteFile(body) {
+  const file = path.join(tmp, `p${++fileSeq}`, 'panel-palette.json');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, typeof body === 'string' ? body : JSON.stringify(body));
+  return file;
+}
+/** Read a palette file, capturing every warning instead of printing it. */
+function readWith(file) {
+  const { readPanelPalette } = loadTs(MAIN);
+  const warnings = [];
+  const palette = readPanelPalette(file, { warn: (...a) => warnings.push(a.join(' ')) });
+  return { palette, warnings };
+}
+
+test('the overridable tokens are exactly the panel palette', () => {
+  const { PANEL_PALETTE_TOKENS, PANEL_PALETTE_FILE } = loadTs(SHARED);
+  assert.deepEqual([...PANEL_PALETTE_TOKENS].sort(), Object.keys(EXPECTED).sort());
+  assert.equal(PANEL_PALETTE_FILE, 'panel-palette.json');
+});
+
+test('a valid file applies, in every accepted colour form', () => {
+  const body = {
+    '--cth-cream-50': '#123',
+    '--cth-ink-900': '#AbCdEf',
+    '--cth-gilt': '#11223380',
+    '--cth-coral': 'rgb(255, 0, 12)',
+    '--cth-coral-light': 'rgba(1,2,3,0.5)',
+    '--cth-mint': 'rgba(0, 0, 0, 1)'
+  };
+  const { palette, warnings } = readWith(paletteFile(body));
+  assert.deepEqual(palette, body);
+  assert.deepEqual(warnings, []);
+});
+
+test('an unknown token name is ignored, and the rest still applies', () => {
+  // `--cth-space-4` is a real token but not a colour one, and the unprefixed
+  // name is not the accepted form. Written as text: an object literal would
+  // treat `__proto__` as the prototype, where JSON.parse makes it a key.
+  const { palette, warnings } = readWith(paletteFile(`{
+    "--cth-cream-50": "#282A36",
+    "--cth-space-4": "#000000",
+    "cth-ink-900": "#FFFFFF",
+    "--cth-nonsense": "#FFFFFF",
+    "__proto__": "#FFFFFF"
+  }`));
+  assert.deepEqual(palette, { '--cth-cream-50': '#282A36' });
+  assert.equal(Object.getPrototypeOf(palette), Object.prototype);
+  assert.deepEqual(warnings, []);
+});
+
+test('one invalid value refuses the whole file, with one warning', () => {
+  for (const bad of [
+    'red; background:url(x)', 'var(--x)', '#12345', 12, { a: '#fff' }, ['#fff'], null, true,
+    'red', 'url(x)', 'expression(alert(1))', '#fff;', '#fff}', ' #fff', '#ffff ',
+    'rgb(256, 0, 0)', 'rgb(1, 2)', 'rgba(1, 2, 3)', 'rgb(1, 2, 3, 0.5)', 'rgba(1, 2, 3, 2)',
+    'rgb(1, 2, 3) url(x)', 'rgb(1,2,3);x', '#GGGGGG', ''
+  ]) {
+    const { palette, warnings } = readWith(paletteFile({
+      '--cth-cream-50': '#282A36',
+      '--cth-ink-900': bad
+    }));
+    assert.deepEqual(palette, {}, `accepted a file holding ${JSON.stringify(bad)}`);
+    assert.equal(warnings.length, 1, `${JSON.stringify(bad)}: ${warnings.length} warnings`);
+  }
+});
+
+test('a file that is not a flat object refuses, with one warning', () => {
+  for (const body of ['[]', 'null', '"#fff"', '42', 'true']) {
+    const { palette, warnings } = readWith(paletteFile(body));
+    assert.deepEqual(palette, {}, body);
+    assert.equal(warnings.length, 1, body);
+  }
+});
+
+test('bad JSON, a missing file and a directory each give the defaults, never a throw', () => {
+  const bad = readWith(paletteFile('{"--cth-cream-50": "#282A36",'));
+  assert.deepEqual(bad.palette, {});
+  assert.equal(bad.warnings.length, 1);
+
+  const missing = readWith(path.join(tmp, 'nowhere', 'panel-palette.json'));
+  assert.deepEqual(missing.palette, {});
+  assert.deepEqual(missing.warnings, [], 'no file is the normal case, not a warning');
+
+  const dir = path.join(tmp, 'dir-case', 'panel-palette.json');
+  fs.mkdirSync(dir, { recursive: true });
+  const isDir = readWith(dir);
+  assert.deepEqual(isDir.palette, {});
+  assert.equal(isDir.warnings.length, 1);
+});
+
+test('the file is read once, however often the palette is asked for', () => {
+  const { panelPaletteSource } = loadTs(MAIN);
+  let reads = 0;
+  const file = paletteFile({ '--cth-cream-50': '#000000' });
+  const get = panelPaletteSource(() => file, {
+    read: (p) => { reads++; return fs.readFileSync(p, 'utf8'); },
+    warn: () => {}
+  });
+  assert.equal(reads, 0, 'read before anyone asked');
+  const first = get();
+  fs.writeFileSync(file, JSON.stringify({ '--cth-cream-50': '#FFFFFF' }));
+  assert.deepEqual(get(), first);
+  get();
+  assert.equal(reads, 1);
+  assert.deepEqual(first, { '--cth-cream-50': '#000000' });
+});
+
+/** Source with comments removed — naming an API must not read as calling it. */
+const code = (p) => readRaw(p).replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+
+test('main only ever parses the file as JSON', () => {
+  const src = code(MAIN);
+  assert.match(src, /JSON\.parse\(/);
+  for (const banned of [/\brequire\s*\(/, /\beval\s*\(/, /\bnew\s+Function\b/, /\bimport\s*\(/,
+    /child_process/, /\bvm\b/]) {
+    assert.doesNotMatch(src, banned, `${MAIN} uses ${banned}`);
+  }
+});
+
+test('main serves the palette from <userData>, through the read-once source', () => {
+  const src = code('src/main/index.ts');
+  const source = src.match(/const (\w+) = panelPaletteSource\(\s*\(\) => join\(app\.getPath\('userData'\), PANEL_PALETTE_FILE\)\s*\)/);
+  assert.ok(source, 'main does not build the palette source over <userData>/panel-palette.json');
+  assert.match(src, new RegExp(
+    `ipcMain\\.on\\('panel-palette:readSync', \\(evt\\) => \\{ evt\\.returnValue = ${source[1]}\\(\\); \\}\\)`));
+  const preload = code('src/preload/index.ts');
+  assert.match(preload, /panelPaletteSync:[\s\S]{0,200}ipcRenderer\.sendSync\('panel-palette:readSync'\)/);
+});
+
+// ─── the renderer ────────────────────────────────────────────────────────────
+
+/** A fresh renderer palette module over a fake <html>. */
+function freshRenderer() {
+  const set = [];
+  const root = { style: { setProperty: (n, v) => set.push([n, v]) } };
+  global.document = { documentElement: root };
+  return { mod: loadTs.fresh(RENDERER), set };
+}
+
+test('the renderer applies a palette as inline properties on <html>', () => {
+  const { mod, set } = freshRenderer();
+  mod.applyPanelPalette({ '--cth-cream-50': '#101010', '--cth-ink-900': 'rgb(1, 2, 3)' });
+  assert.deepEqual(set, [['--cth-cream-50', '#101010'], ['--cth-ink-900', 'rgb(1, 2, 3)']]);
+});
+
+test('the renderer checks again what it is handed, and applies nothing it doubts', () => {
+  // The preload bridge is the boundary main trusts least to stay narrow, so
+  // the value is validated on both sides of it.
+  const { mod, set } = freshRenderer();
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    mod.applyPanelPalette({ '--cth-cream-50': '#101010', '--cth-ink-900': 'red;}body{x:url(y)' });
+    mod.applyPanelPalette(undefined);
+    mod.applyPanelPalette('nonsense');
+  } finally { console.warn = warn; }
+  assert.deepEqual(set, []);
+});
+
+test('the terminal and editor grounds follow the override', () => {
+  const { mod } = freshRenderer();
+  const { occultTerminalTheme, occultMonacoTheme } =
+    loadTs('src/renderer/src/design/occult/occultTerminal.ts');
+  // Nothing applied: the defaults, untouched.
+  assert.deepEqual(mod.paletteTerminalTheme(occultTerminalTheme), occultTerminalTheme);
+  mod.applyPanelPalette({ '--cth-cream-300': '#101010', '--cth-ink-900': '#EEEEEE' });
+  const term = mod.paletteTerminalTheme(occultTerminalTheme);
+  assert.equal(term.background, '#101010');
+  assert.equal(term.cursorAccent, '#101010');
+  assert.equal(term.foreground, '#EEEEEE');
+  assert.equal(term.red, occultTerminalTheme.red, 'the ANSI slots are not overridable');
+  const editor = mod.paletteMonacoTheme(occultMonacoTheme);
+  assert.equal(editor.colors['editor.background'], '#101010');
+  assert.equal(editor.colors['editor.foreground'], '#EEEEEE');
+  assert.equal(editor.rules.find((r) => r.token === '').foreground, 'EEEEEE');
+  assert.equal(editor.rules.find((r) => r.token === '').background, '101010');
+  assert.equal(occultMonacoTheme.colors['editor.background'], '#1A1B23', 'the default theme was mutated');
+});
+
+test('the renderer applies the palette before the first render', () => {
+  const src = code('src/renderer/src/main.tsx');
+  const applied = src.search(/applyPanelPalette\(window\.cth\?\.panelPaletteSync\?\.\(\)\)/);
+  assert.ok(applied >= 0, 'main.tsx never applies the palette');
+  assert.ok(applied < src.search(/createRoot\(/), 'the palette is applied after the first render');
+  // The live terminal and editor read the palette when they are built, not
+  // when their module loads: module load runs before main.tsx's body does.
+  assert.match(code('src/renderer/src/components/PtyTerminalView.tsx'), /paletteTerminalTheme\(occultTerminalTheme\)/);
+  assert.match(code('src/renderer/src/ide/monaco.ts'), /defineTheme\(OCCULT_MONACO_THEME, paletteMonacoTheme\(occultMonacoTheme\)\)/);
+});

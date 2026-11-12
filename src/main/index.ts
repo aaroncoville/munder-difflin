@@ -24,6 +24,8 @@ import {
 import { listDir, readFileText, readFileBinary, writeFileText, statAbs, expandTilde } from './fs';
 import { normalizeWeekly, weeklyDelayMs } from '../shared/weeklySchedule';
 import { APP_GROUND } from '../shared/appGround';
+import { PANEL_PALETTE_FILE } from '../shared/panelPalette';
+import { panelPaletteSource } from './panelPalette';
 import {
   getBranch, getStatus, getLog, getBranches, getAheadBehind, isRepo, getDiff, mainRepoRoot,
   addWorktree, removeWorktree, worktreeHasUnintegratedWork, worktreeIsGcSafe,
@@ -3704,6 +3706,11 @@ ipcMain.handle('git:checkout', async (_evt, cwd: unknown, ref: unknown, detach: 
 // (`roster` itself is constructed earlier so HookServer can read standing goals.)
 ipcMain.on('roster:readSync', (evt) => { evt.returnValue = roster.read(); });
 ipcMain.on('config:homeSync', (evt) => { evt.returnValue = readConfig().harnessHome ?? null; });
+// A user's own panel colours, applied before the renderer's first paint — so
+// it is synchronous for the same reason as the roster read above. Read once
+// per launch; see src/shared/panelPalette.ts for what the file may hold.
+const panelPalette = panelPaletteSource(() => join(app.getPath('userData'), PANEL_PALETTE_FILE));
+ipcMain.on('panel-palette:readSync', (evt) => { evt.returnValue = panelPalette(); });
 ipcMain.handle('roster:read', () => roster.read());
 ipcMain.handle('roster:write', (_evt, snap: unknown) => roster.write(snap));
 
