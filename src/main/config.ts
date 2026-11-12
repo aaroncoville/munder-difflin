@@ -218,6 +218,9 @@ export interface HarnessConfig {
   heavyJobsAtOnce?: number | 'off';
   /** How many of those may be test suites at once (default 1), so two suites never load the machine together. */
   suiteJobsAtOnce?: number | 'off';
+  /** The merge-request pipeline's operator settings, read through pipeline/config.ts's
+   *  pipelineSettings(). Absent or anything but `enabled: true` leaves the pipeline inert. */
+  mrPipeline?: unknown;
   /** The command we run when spawning a new agent. */
   defaultCommand: string;
   /** Default model for newly spawned agents (e.g. 'claude-sonnet-4-6[1m]'); unset = CLI default. */
