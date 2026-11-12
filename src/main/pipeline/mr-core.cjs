@@ -275,8 +275,113 @@ function verifyLogText(text, opts = {}) {
   return { ok: true, count: lines.length, last: prev };
 }
 
+// — strict JSON —
+//
+// JSON.parse keeps the last copy of a name given twice, and another reader may keep
+// the first, so one text can mean two things. Text from outside the app (an agent's
+// message, a forge or deploy answer) goes through this parser instead: a name given
+// twice in one object is refused (names compared after unescaping), as is anything
+// JSON.parse would reject, deeper than MAX_DEPTH or longer than MAX_TEXT. It returns
+// a refusal and never throws. A "__proto__" name is an own property, as JSON.parse
+// makes it, never a prototype.
+
+const MAX_DEPTH = 64;
+const MAX_TEXT = 4 * 1024 * 1024;
+
+class JsonRefusal extends Error {}
+
+function parseJson(text) {
+  if (typeof text !== 'string') return { ok: false, reason: 'not text' };
+  if (text.length > MAX_TEXT) return { ok: false, reason: `longer than ${MAX_TEXT} characters` };
+  let i = 0;
+  const fail = (why) => { throw new JsonRefusal(`${why} at offset ${i}`); };
+  const ws = () => { while (i < text.length && ' \t\n\r'.includes(text[i])) i++; };
+  const str = () => {
+    if (text[i] !== '"') fail('expected a string');
+    i++;
+    let out = '';
+    for (;;) {
+      if (i >= text.length) fail('unterminated string');
+      const c = text[i];
+      if (c === '"') { i++; return out; }
+      if (c < ' ') fail('a control character in a string');
+      if (c !== '\\') { out += c; i++; continue; }
+      const e = text[i + 1];
+      const simple = { '"': '"', '\\': '\\', '/': '/', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' };
+      if (e === 'u') {
+        const hex = text.slice(i + 2, i + 6);
+        if (!/^[0-9a-fA-F]{4}$/.test(hex)) fail('a bad \\u escape');
+        out += String.fromCharCode(parseInt(hex, 16));
+        i += 6;
+      } else if (e !== undefined && Object.hasOwn(simple, e)) {
+        out += simple[e];
+        i += 2;
+      } else {
+        fail('a bad escape');
+      }
+    }
+  };
+  const value = (depth) => {
+    if (depth > MAX_DEPTH) fail(`nested deeper than ${MAX_DEPTH}`);
+    ws();
+    const c = text[i];
+    if (c === '{') {
+      i++;
+      const obj = {};
+      const seen = new Set();
+      ws();
+      if (text[i] === '}') { i++; return obj; }
+      for (;;) {
+        ws();
+        const k = str();
+        if (seen.has(k)) fail(`the name ${JSON.stringify(k).slice(0, 40)} given twice`);
+        seen.add(k);
+        ws();
+        if (text[i] !== ':') fail('expected ":"');
+        i++;
+        Object.defineProperty(obj, k, { value: value(depth + 1), enumerable: true, writable: true, configurable: true });
+        ws();
+        if (text[i] === ',') { i++; continue; }
+        if (text[i] === '}') { i++; return obj; }
+        fail('expected "," or "}"');
+      }
+    }
+    if (c === '[') {
+      i++;
+      const arr = [];
+      ws();
+      if (text[i] === ']') { i++; return arr; }
+      for (;;) {
+        arr.push(value(depth + 1));
+        ws();
+        if (text[i] === ',') { i++; continue; }
+        if (text[i] === ']') { i++; return arr; }
+        fail('expected "," or "]"');
+      }
+    }
+    if (c === '"') return str();
+    for (const [word, v] of [['true', true], ['false', false], ['null', null]]) {
+      if (text.startsWith(word, i)) { i += word.length; return v; }
+    }
+    const m = /^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?/.exec(text.slice(i, i + 400));
+    if (!m) fail('expected a value');
+    i += m[0].length;
+    return Number(m[0]);
+  };
+  try {
+    const v = value(0);
+    ws();
+    if (i !== text.length) fail('text after the value');
+    return { ok: true, value: v };
+  } catch (e) {
+    if (e instanceof JsonRefusal) return { ok: false, reason: e.message };
+    return { ok: false, reason: 'not JSON' };
+  }
+}
+
 module.exports = {
   SHA_RE, CARD_RE, NAME_RE, SUBMIT_KINDS, VERDICTS, SEVERITIES, FINDING_CLASSES, ABSTAIN_REASONS, COMMANDS,
   validateSubmit, validateVerdict, validateCommand, validatePayload,
   GENESIS, hashLine, verifyLogText,
+  parseJson,
 };
