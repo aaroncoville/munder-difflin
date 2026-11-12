@@ -198,6 +198,8 @@ function verify(root, ctx, sc, say, dropped, error) {
   if (!reopened) return;
   const text = read(logFile(root));
   if (!core.verifyLogText(text, { card: CARD }).ok) say('the chain does not verify');
+  // No invalid UTF-8 written into, or left in, a committed line.
+  try { new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(logFile(root))); } catch { if (fs.existsSync(logFile(root))) say('the log holds bytes that are not valid UTF-8'); }
   if (text !== '' && !text.endsWith('\n')) say('a torn tail is left');
   lines.forEach((l, i) => { if (l.seq !== i + 1) say(`seq ${l.seq} at line ${i + 1}`); });
   const ns = lines.filter((l) => l.n !== undefined && l.n !== 'after').map((l) => l.n);

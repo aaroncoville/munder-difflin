@@ -562,3 +562,47 @@ test('a re-entered repair tells two torn tails apart by their bytes, even when b
   fs.appendFileSync(file, later);
   assert.equal(open(r).lines().at(-1).dropped_bytes, 12, 'both tails counted');
 });
+
+// Bytes that decode to the same text as a committed line, but are not its bytes.
+const SWAPS = [
+  ['an invalid byte for a real U+FFFD', '�', Buffer.from([0xff])],
+  ['an overlong encoding', '��', Buffer.from([0xc1, 0xa1])],
+  ['an encoded lone surrogate', '���', Buffer.from([0xed, 0xa0, 0x80])],
+];
+
+test('a committed line whose bytes were swapped for others that decode the same will not open', () => {
+  for (const [name, text, bad] of SWAPS) {
+    const r = roots();
+    const log = open(r);
+    log.append({ type: 'fact', note: `before ${text} after` });
+    log.append({ type: 'fact', n: 2 });
+    const file = path.join(r.authRoot, 'WF-FB-VEHICLES', 'log.jsonl');
+    const buf = fs.readFileSync(file);
+    const good = Buffer.from(text);
+    const at = buf.indexOf(good);
+    assert.ok(at > 0, name);
+    const swapped = Buffer.concat([buf.subarray(0, at), bad, buf.subarray(at + good.length)]);
+    assert.equal(swapped.toString('utf8'), buf.toString('utf8'), `${name}: decodes the same`);
+    fs.writeFileSync(file, swapped);
+    assert.throws(() => open(r), LogTamperError, name);
+    assert.throws(() => log.lines(), LogTamperError, `${name}: read through a writer already open`);
+  }
+});
+
+test('an anchor or repair marker with an invalid byte in it is tampering', () => {
+  const r = roots();
+  const log = open(r);
+  log.append({ type: 'fact', n: 1 });
+  const anchorFile = path.join(r.authRoot, 'WF-FB-VEHICLES', 'head.json');
+  const anchor = JSON.parse(fs.readFileSync(anchorFile, 'utf8'));
+  fs.writeFileSync(anchorFile, Buffer.concat([Buffer.from(JSON.stringify({ ...anchor, x: '' }).slice(0, -2)), Buffer.from([0xff]), Buffer.from('"}')]));
+  assert.throws(() => open(r), LogTamperError, 'anchor');
+
+  const t = roots();
+  const log2 = open(t);
+  log2.append({ type: 'fact', n: 1 });
+  const size = fs.statSync(path.join(t.authRoot, 'WF-FB-VEHICLES', 'log.jsonl')).size;
+  const marker = JSON.stringify({ seq: 1, keep_bytes: size, size: size + 5, tail: 'a'.repeat(64), dropped_bytes: 5, x: '' });
+  fs.writeFileSync(path.join(t.authRoot, 'WF-FB-VEHICLES', 'repair.json'), Buffer.concat([Buffer.from(marker.slice(0, -2)), Buffer.from([0xff]), Buffer.from('"}')]));
+  assert.throws(() => open(t), LogTamperError, 'marker');
+});

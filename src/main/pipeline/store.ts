@@ -164,13 +164,32 @@ function writeAll(fd: number, data: string | Buffer): void {
 const NL = 0x0a;
 
 /**
+ * Decodes UTF-8 strictly. A lenient decoder turns any invalid sequence into U+FFFD,
+ * so different bytes (an invalid byte, an overlong form, an encoded surrogate, or a
+ * real U+FFFD) could decode to the same text and pass a chain hashed over text. Here
+ * an invalid sequence is an error. A byte-order mark is kept, not stripped.
+ */
+const STRICT = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+
+/** Thrown by [utf8] when bytes are not valid UTF-8; the store reports it as tampering. */
+class NotUtf8 extends Error {}
+
+function utf8(buf: Buffer): string {
+  try {
+    return STRICT.decode(buf);
+  } catch {
+    throw new NotUtf8('not valid UTF-8');
+  }
+}
+
+/**
  * The complete lines of [buf], split on the newline byte and each decoded on its own.
  * Sizes, offsets and comparisons are done on bytes; text is only ever a whole line.
  */
 function linesOf(buf: Buffer): string[] {
   const out: string[] = [];
   for (let start = 0, nl = buf.indexOf(NL); nl !== -1; start = nl + 1, nl = buf.indexOf(NL, start)) {
-    out.push(buf.subarray(start, nl).toString('utf8'));
+    out.push(utf8(buf.subarray(start, nl)));
   }
   return out;
 }
@@ -308,7 +327,7 @@ export class CardLog {
     if (buf.length > 0 && buf[buf.length - 1] !== NL) {
       const cut = buf.lastIndexOf(NL) + 1;
       const prefix = buf.subarray(0, cut);
-      const checked = core.verifyLogText(prefix.toString('utf8'), { card: this.card });
+      const checked = core.verifyLogText(this.decode(prefix, 'the log'), { card: this.card });
       if (!checked.ok || !sameAnchor(headOf(checked.count, checked.last), anchor)) {
         throw new LogTamperError(this.card, linesOf(prefix).length + 1, 'the last line is incomplete and the head anchor does not point at the line before it');
       }
@@ -369,7 +388,7 @@ export class CardLog {
     const raw = readIfThere(this.markerFile);
     if (raw === null) return null;
     try {
-      const m = JSON.parse(raw.toString('utf8')) as RepairMarker;
+      const m = JSON.parse(utf8(raw)) as RepairMarker;
       const ints = [m.seq, m.keep_bytes, m.size, m.dropped_bytes].every((x) => Number.isInteger(x) && x >= 0);
       if (ints && m.dropped_bytes > 0 && m.size > m.keep_bytes && typeof m.tail === 'string' && /^[0-9a-f]{64}$/.test(m.tail)) {
         return { seq: m.seq, keep_bytes: m.keep_bytes, size: m.size, tail: m.tail, dropped_bytes: m.dropped_bytes };
@@ -380,7 +399,7 @@ export class CardLog {
 
   /** Throws unless [text] verifies and ends at the anchor. With [fixAnchor], a complete line one past the anchor is kept. */
   private check(buf: Buffer, fixAnchor = false): void {
-    const checked = core.verifyLogText(buf.toString('utf8'), { card: this.card });
+    const checked = core.verifyLogText(this.decode(buf, 'the log'), { card: this.card });
     if (!checked.ok) throw new LogTamperError(this.card, checked.line, checked.reason);
     const anchor = this.readAnchor();
     const head = headOf(checked.count, checked.last);
@@ -396,7 +415,7 @@ export class CardLog {
   }
 
   private adopt(buf: Buffer): void {
-    const checked = core.verifyLogText(buf.toString('utf8'), { card: this.card });
+    const checked = core.verifyLogText(this.decode(buf, 'the log'), { card: this.card });
     if (!checked.ok) throw new LogTamperError(this.card, checked.line, checked.reason);
     this.seq = checked.count;
     this.last = headOf(checked.count, checked.last).hash;
@@ -406,7 +425,7 @@ export class CardLog {
     const raw = readIfThere(this.anchorFile);
     if (raw === null) return null;
     try {
-      const a = JSON.parse(raw.toString('utf8')) as Anchor;
+      const a = JSON.parse(utf8(raw)) as Anchor;
       if (a.seq === 0 && a.hash === core.GENESIS) return { seq: 0, hash: core.GENESIS };
       if (Number.isInteger(a.seq) && a.seq > 0 && typeof a.hash === 'string') return { seq: a.seq, hash: a.hash };
     } catch { /* fall through */ }
@@ -429,6 +448,16 @@ export class CardLog {
       throw e;
     }
     fsyncDir(this.authDir);
+  }
+
+  /** [buf] decoded strictly; bytes that are not valid UTF-8 are tampering with [what]. */
+  private decode(buf: Buffer, what: string): string {
+    try {
+      return utf8(buf);
+    } catch (e) {
+      if (e instanceof NotUtf8) throw new LogTamperError(this.card, 0, `${what} is not valid UTF-8`);
+      throw e;
+    }
   }
 
   private authBytes(): Buffer {
