@@ -258,3 +258,60 @@ test('no pipeline write lands under the hive, even when the old mirror path is o
     assert.ok(p.startsWith(r.hiveRoot) || p === path.dirname(r.authRoot) || p.startsWith(r.authRoot), p);
   }
 });
+
+// --- The genesis anchor and the first append ---
+
+test('a new card\'s log gets a genesis anchor on disk before its first line', () => {
+  const r = roots();
+  open(r);
+  assert.deepEqual(JSON.parse(fs.readFileSync(anchorFile(r), 'utf8')), { seq: 0, hash: core.GENESIS });
+});
+
+test('a crash on the very first append, after the line and before its anchor, reopens cleanly: the line is kept', () => {
+  const r = roots();
+  const log = open(r);
+  const genesis = fs.readFileSync(anchorFile(r), 'utf8');
+  log.append({ type: 'fact', n: 1 });
+  fs.writeFileSync(anchorFile(r), genesis);
+  const again = open(r);
+  assert.deepEqual(again.lines().map((l) => l.n), [1]);
+  assert.equal(again.append({ type: 'fact', n: 2 }).seq, 2);
+});
+
+test('two lines past the genesis anchor, or a first line torn, are told apart from that crash', () => {
+  const r = roots();
+  const log = open(r);
+  const genesis = fs.readFileSync(anchorFile(r), 'utf8');
+  log.append({ type: 'fact', n: 1 });
+  log.append({ type: 'fact', n: 2 });
+  fs.writeFileSync(anchorFile(r), genesis);
+  assert.throws(() => open(r), LogTamperError);
+
+  const t = roots();
+  open(t);
+  fs.writeFileSync(path.join(t.authRoot, 'WF-FB-VEHICLES', 'log.jsonl'), '{"torn');
+  assert.deepEqual(open(t).lines().map((l) => l.fact), ['log-repaired']);
+});
+
+test('the new log, the genesis anchor and every anchor move are synced in their folder too', () => {
+  const r = roots();
+  const dir = path.join(r.authRoot, 'WF-FB-VEHICLES');
+  const synced = [];
+  const real = fs.fsyncSync;
+  fs.fsyncSync = (fd) => {
+    const st = fs.fstatSync(fd);
+    if (st.isDirectory()) synced.push(st.ino);
+    return real(fd);
+  };
+  try {
+    const log = open(r);
+    const ino = fs.statSync(dir).ino;
+    assert.equal(synced.filter((i) => i === ino).length, 1, 'genesis anchor');
+    log.append({ type: 'fact' });
+    assert.equal(synced.filter((i) => i === ino).length, 3, 'new log file and the anchor move');
+    log.append({ type: 'fact' });
+    assert.equal(synced.filter((i) => i === ino).length, 4, 'the anchor move');
+  } finally {
+    fs.fsyncSync = real;
+  }
+});

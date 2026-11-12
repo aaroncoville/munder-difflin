@@ -19,16 +19,20 @@
  * where it happened. The chain alone cannot see the newest lines removed or edited,
  * or a whole file rewritten by someone who knows the algorithm, so a head anchor
  * (`head.json`: the last line's seq and hash) is kept beside the log and checked on
- * every open and before every append.
+ * every open and before every append. A new log gets a genesis anchor (seq 0) on
+ * disk before its first line, so a missing anchor always means tampering.
  *
  * A crash can leave a torn last line, or a complete line whose anchor update did
  * not land. Neither is tampering: a torn tail is dropped and the repair logged when
  * the anchor points at the line before it; a complete line exactly one past the
- * anchor is kept.
+ * anchor is kept, the first line included. That also means a single well-formed
+ * line added while the app is closed is adopted, which needs write access to the
+ * app's data directory, where the anchor could be rewritten as well; a transition
+ * line is a record, not evidence on its own.
  */
 import { randomBytes } from 'node:crypto';
 import {
-  appendFileSync, closeSync, constants, existsSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeSync,
+  appendFileSync, closeSync, constants, existsSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readFileSync, renameSync, writeSync,
 } from 'node:fs';
 import { join } from 'node:path';
 
@@ -74,6 +78,16 @@ const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 /** The folder under the store's root that holds the export copies. Not a valid card id. */
 const EXPORT_DIR = '_export';
 
+const headOf = (count: number, last: string): Anchor => (count === 0 ? { seq: 0, hash: core.GENESIS } : { seq: count, hash: last });
+const sameAnchor = (a: Anchor | null | undefined, b: Anchor | null | undefined): boolean => !!a && !!b && a.seq === b.seq && a.hash === b.hash;
+
+/** Makes a new or renamed entry in [dir] durable. Best effort where a folder cannot be opened (Windows). */
+function fsyncDir(dir: string): void {
+  let fd: number;
+  try { fd = openSync(dir, constants.O_RDONLY); } catch { return; }
+  try { fsyncSync(fd); } catch { /* not supported for folders here */ } finally { closeSync(fd); }
+}
+
 export class CardLog {
   readonly card: string;
   private readonly authDir: string;
@@ -101,13 +115,12 @@ export class CardLog {
 
   /** Appends one line to the authoritative log, flushed to disk, moves the anchor, then copies it to the export. */
   append(entry: LogEntry): LogLine {
-    const anchor = this.readAnchor();
-    const expected = this.seq === 0 ? null : { seq: this.seq, hash: this.last };
-    if (JSON.stringify(anchor) !== JSON.stringify(expected)) {
+    if (!sameAnchor(this.readAnchor(), headOf(this.seq, this.last))) {
       throw new LogTamperError(this.card, this.seq + 1, 'the log moved under this writer (another writer, or an edit)');
     }
     const line: LogLine = { ...entry, v: 1, seq: this.seq + 1, at: this.now().toISOString(), card: this.card, prev: this.last };
     const text = JSON.stringify(line);
+    const created = !existsSync(this.authFile);
     const fd = openSync(this.authFile, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT, 0o600);
     try {
       writeSync(fd, `${text}\n`);
@@ -115,6 +128,7 @@ export class CardLog {
     } finally {
       closeSync(fd);
     }
+    if (created) fsyncDir(this.authDir);
     this.seq = line.seq;
     this.last = core.hashLine(text);
     this.writeAnchor({ seq: this.seq, hash: this.last });
@@ -162,14 +176,18 @@ export class CardLog {
   /** Reads the log on opening: checks it against the anchor, and repairs what a crash leaves. */
   private open(): void {
     let text = this.authText();
-    const anchor = this.readAnchor();
+    let anchor = this.readAnchor();
+    if (text === '' && anchor === null) {
+      // A new card: the genesis anchor is on disk before any line can be.
+      this.writeAnchor(headOf(0, core.GENESIS));
+      anchor = this.readAnchor();
+    }
     // A torn last line: everything before it verifies and the anchor points at the line before it.
     if (text !== '' && !text.endsWith('\n')) {
       const cut = text.lastIndexOf('\n') + 1;
       const prefix = text.slice(0, cut);
       const checked = core.verifyLogText(prefix, { card: this.card });
-      const at = checked.ok ? (checked.count === 0 ? null : { seq: checked.count, hash: checked.last }) : undefined;
-      if (!checked.ok || JSON.stringify(at) !== JSON.stringify(anchor)) {
+      if (!checked.ok || !sameAnchor(headOf(checked.count, checked.last), anchor)) {
         throw new LogTamperError(this.card, prefix.split('\n').length, 'the last line is incomplete and the head anchor does not point at the line before it');
       }
       const dropped = text.length - cut;
@@ -189,11 +207,12 @@ export class CardLog {
     const checked = core.verifyLogText(text, { card: this.card });
     if (!checked.ok) throw new LogTamperError(this.card, checked.line, checked.reason);
     const anchor = this.readAnchor();
-    const head = checked.count === 0 ? null : { seq: checked.count, hash: checked.last };
-    if (JSON.stringify(head) === JSON.stringify(anchor)) return;
-    if (fixAnchor && head && anchor && head.seq === anchor.seq + 1) {
+    const head = headOf(checked.count, checked.last);
+    if (sameAnchor(head, anchor)) return;
+    if (fixAnchor && anchor && head.seq === anchor.seq + 1) {
       const lines = text.slice(0, -1).split('\n');
-      if (core.hashLine(lines[lines.length - 2]) === anchor.hash) { this.writeAnchor(head); return; }
+      const before = lines.length >= 2 ? core.hashLine(lines[lines.length - 2]) : core.GENESIS;
+      if (before === anchor.hash) { this.writeAnchor(head); return; }
     }
     throw new LogTamperError(this.card, checked.count, anchor === null
       ? 'the head anchor is missing'
@@ -204,13 +223,14 @@ export class CardLog {
     const checked = core.verifyLogText(text, { card: this.card });
     if (!checked.ok) throw new LogTamperError(this.card, checked.line, checked.reason);
     this.seq = checked.count;
-    this.last = checked.count === 0 ? core.GENESIS : checked.last;
+    this.last = headOf(checked.count, checked.last).hash;
   }
 
   private readAnchor(): Anchor | null {
     if (!existsSync(this.anchorFile)) return null;
     try {
       const a = JSON.parse(readFileSync(this.anchorFile, 'utf8')) as Anchor;
+      if (a.seq === 0 && a.hash === core.GENESIS) return { seq: 0, hash: core.GENESIS };
       if (Number.isInteger(a.seq) && a.seq > 0 && typeof a.hash === 'string') return { seq: a.seq, hash: a.hash };
     } catch { /* fall through */ }
     throw new LogTamperError(this.card, 0, 'the head anchor is not readable');
@@ -221,6 +241,7 @@ export class CardLog {
     const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW, 0o600);
     try { writeSync(fd, JSON.stringify(a)); fsyncSync(fd); } finally { closeSync(fd); }
     renameSync(tmp, this.anchorFile);
+    fsyncDir(this.authDir);
   }
 
   private authText(): string {
