@@ -53,7 +53,7 @@ export const PATH_CLASSES = [
   'own folder', 'own settings', 'evidence', 'worktree', 'other agent folder', 'agents folder',
   'tasks.json', 'board.md', 'registry.json', 'PROTOCOL.md', 'log.jsonl', 'config', 'bin', 'research',
   'spawn-requests', 'tools', 'skills', 'specs', 'templates', 'hires', 'asks', 'archive', 'backups',
-  'assets', '.git', 'hive root', 'hive root (other)', 'contains hive', 'outside hive', 'unsandboxed', 'unknown',
+  'assets', '.git', 'hive root', 'hive root (other)', 'contains hive', 'outside hive', 'temp', 'unsandboxed', 'unknown',
 ] as const;
 export type PathClass = (typeof PATH_CLASSES)[number];
 
@@ -381,7 +381,7 @@ export function observeTool(tool: string, input: unknown, ctx: RootsContext, bud
 
 // --- effective roots ---
 
-export interface EffectiveRoots { roots: string[]; state: RootsState; source: 'claude-settings-files' | 'codex-config' | 'none' }
+export interface EffectiveRoots { roots: string[]; state: RootsState; source: 'claude-settings-files' | 'codex-config' | 'none'; /** The roots that are the CLI's temp folder (TMPDIR), classed apart. */ temp?: string[] }
 /** What the app launched the session with, as it holds it: how the CLI's sandbox was chosen on its command line. */
 export interface LaunchFacts { args?: string[]; platform?: string; /** The spawn's final environment, relocation variables only (relocationEnv). */ env?: Record<string, string> }
 
@@ -441,7 +441,7 @@ export function effectiveRoots(provider: string, agentDir: string, cwd: string, 
     const addDirs: string[] = [];
     const flag = codexLaunchSandbox(launch.args, addDirs);
     if (flag === 'danger-full-access') return { roots: withCwd([]), state: 'unsandboxed', source: 'codex-config' };
-    if (flag === 'unknown' || flag === 'none') return unknown('codex-config');
+    if (flag === 'unknown') return unknown('codex-config');
     const r = readSettings(join(places.codexHome, 'config.toml'));
     if (r.kind !== 'text') return unknown('codex-config');
     const c = codexRoots(r.text);
@@ -449,6 +449,8 @@ export function effectiveRoots(provider: string, agentDir: string, cwd: string, 
     if (c.state === 'unknown') return unknown('codex-config');
     // Codex also merges a project .codex/config.toml in the working directory or any folder above it.
     const projectRoots: string[] = [];
+    // With no -s on the line (auto mode off), the mode is the config's: the nearest project config's, else its own.
+    let nearestMode: string | null | undefined;
     if (abscwd) {
       for (let d = resolve(abscwd); ; d = dirname(d)) {
         const pr = readSettings(join(d, '.codex', 'config.toml'));
@@ -457,12 +459,18 @@ export function effectiveRoots(provider: string, agentDir: string, cwd: string, 
           const pc = codexRoots(pr.text);
           if (pc.state === 'unknown') return unknown('codex-config'); // a mode there is outranked by the command line's
           projectRoots.push(...pc.roots);
+          if (nearestMode === undefined && pc.mode) nearestMode = pc.mode;
         }
         if (dirname(d) === d) break;
       }
     }
+    if (flag === 'none') {
+      const mode = nearestMode ?? c.mode ?? null;
+      if (mode === 'danger-full-access') return { roots: withCwd([]), state: 'unsandboxed', source: 'codex-config' };
+      if (mode !== 'workspace-write' && mode !== 'read-only') return unknown('codex-config'); // Codex's built-in default is not guessed
+    }
     const codexRootsOut = withCwd([...c.roots, ...projectRoots, ...addDirs, ...places.tmpDirs]);
-    return unanchored ? unknown('codex-config') : { roots: codexRootsOut, state: 'ok', source: 'codex-config' };
+    return unanchored ? unknown('codex-config') : { roots: codexRootsOut, state: 'ok', source: 'codex-config', temp: places.tmpDirs };
   }
   // Highest precedence first; the generated file is passed with --settings. Directories merge across files.
   const generated = join(agentDir, 'settings.json');
@@ -482,7 +490,7 @@ export function effectiveRoots(provider: string, agentDir: string, cwd: string, 
   }
   const claudeRootsOut = withCwd([...roots, ...launchDirs, ...places.tmpDirs]);
   if (unanchored) return unknown('claude-settings-files');
-  return { roots: claudeRootsOut, state: enabled === true ? 'ok' : 'unsandboxed', source: 'claude-settings-files' };
+  return { roots: claudeRootsOut, state: enabled === true ? 'ok' : 'unsandboxed', source: 'claude-settings-files', temp: places.tmpDirs };
 }
 
 /** The classes of the effective roots, and of those the scoped roots would not grant. */
@@ -495,7 +503,11 @@ export function rootsReport(eff: EffectiveRoots, ctx: RootsContext): { effective
     const excess = new Set<PathClass>();
     for (const r of eff.roots) {
       const abs = canonical(r);
-      const cls = pathClass(abs, ctx);
+      // A temp folder outside the hive (macOS sets one for every session) is classed 'temp', so it is not read as a
+      // real outside-hive grant; one inside the hive keeps its hive class.
+      const isTemp = (eff.temp ?? []).some((t) => canonical(t) === abs);
+      const base = pathClass(abs, ctx);
+      const cls: PathClass = isTemp && (base === 'outside hive' || base === 'worktree') ? 'temp' : base;
       effective.add(cls);
       // A root that CONTAINS a scoped root grants more than it; one inside a scoped root grants nothing extra.
       if (!scoped.some((s) => within(abs, s))) excess.add(cls);
@@ -622,7 +634,7 @@ export const READ_SITES = [
   { id: 'codex-config', read: 'agents/<id>/.codex/config.toml', writer: 'the agent (read-only under Codex\'s own sandbox)', planted: 'same kinds; a profile or unknown sandbox_mode; dotted or inline roots', outcome: 'unknown (full access: unsandboxed)' },
   { id: 'spawn-record', read: 'cwd, provider, role, launch line', writer: 'held in main\'s memory from the spawn', planted: 'not writable from the hive', outcome: 'a relative cwd is none; a provider other than Claude or Codex, or a platform without a sandbox, is unknown' },
   { id: 'codex-prompt', read: 'Codex launch line: the prompt', writer: 'the spawn request', planted: 'flags inside the prompt text', outcome: 'never read: options stop at the first positional' },
-  { id: 'codex-sandbox-flag', read: 'Codex -s/--sandbox, --full-auto', writer: 'the spawn request', planted: 'any mode', outcome: 'workspace-write/read-only ok; danger-full-access unsandboxed; anything else or none unknown' },
+  { id: 'codex-sandbox-flag', read: 'Codex -s/--sandbox, --full-auto; with none (auto mode off), the configs\' sandbox_mode', writer: 'the spawn request', planted: 'any mode', outcome: 'workspace-write/read-only ok; danger-full-access unsandboxed; no -s reads the nearest config\'s sandbox_mode the same way, and no mode anywhere is unknown (Codex\'s default is not guessed)' },
   { id: 'codex-bypass-flag', read: 'Codex --dangerously-bypass-approvals-and-sandbox, --yolo', writer: 'the spawn request', planted: 'the flag', outcome: 'unsandboxed' },
   { id: 'codex-config-flag', read: 'Codex -c/--config on sandbox_mode, sandbox_workspace_write or profile', writer: 'the spawn request', planted: 'any value', outcome: 'unknown' },
   { id: 'codex-profile-flag', read: 'Codex -p/--profile', writer: 'the spawn request', planted: 'any profile', outcome: 'unknown' },
@@ -636,7 +648,7 @@ export const READ_SITES = [
   { id: 'option-after-positional', read: 'arguments after the prompt (either CLI)', writer: 'the spawn request', planted: 'codex "prompt" --yolo; claude ... "prompt" --settings x', outcome: 'unknown: both CLIs read options there' },
   { id: 'codex-project-config', read: '.codex/config.toml in the cwd and every folder above', writer: 'agents working in that cwd', planted: 'writable_roots into the hive; an unreadable or unparsed file', outcome: 'its roots count; not understood = unknown' },
   { id: 'claude-plugin-dir', read: 'Claude --plugin-dir, --plugin-url', writer: 'the spawn request', planted: 'any plugin (can carry hooks and settings)', outcome: 'unknown' },
-  { id: 'env-tmpdir', read: 'TMPDIR (both), CLAUDE_CODE_TMPDIR (Claude)', writer: 'the operator\'s environment, or a per-agent override', planted: 'a temp folder inside the hive', outcome: 'counted as a root (the sandbox lets the CLI write its temp folder); relative = unknown' },
+  { id: 'env-tmpdir', read: 'TMPDIR (both), CLAUDE_CODE_TMPDIR (Claude)', writer: 'the operator\'s environment, or a per-agent override', planted: 'a temp folder inside the hive', outcome: 'counted as a root (the sandbox lets the CLI write its temp folder), classed \'temp\' when outside the hive and by its hive class when inside; relative = unknown' },
   { id: 'launch-executable-name', read: 'the executable\'s name', writer: 'the spawn request', planted: 'another program installed under the name claude or codex', outcome: 'taken to be the CLI: judged by name, the path is not resolved (stated limit)' },
   { id: 'relative-roots', read: 'a relative or ~ root in settings, config or --add-dir', writer: 'whoever wrote that source', planted: 'a relative path, ~/x, a $VAR', outcome: 'resolved the way the spawned CLI resolves it: against the spawn\'s cwd and home, never the app\'s; no cwd or a variable = unknown' },
   { id: 'strict-decoders', read: 'the JSON and TOML decoders', writer: 'whoever wrote the file', planted: 'quoted, dotted or inline keys, profiles, duplicates, wrong types, nesting, key order', outcome: 'JSON: exact shape check of the keys read, any other type = unknown; TOML: no parser, so any sandbox key not consumed in its exact plain form = unknown' },

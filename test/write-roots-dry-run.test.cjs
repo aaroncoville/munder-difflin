@@ -203,7 +203,7 @@ test('effective Codex roots: inherited roots show; full access is unsandboxed; d
   assert.equal(write('sandbox_workspace_write.writable_roots = ["/"]\n').state, 'unknown');
   assert.equal(write('sandbox_workspace_write = { writable_roots = ["/"] }\n').state, 'unknown');
   assert.equal(write('[sandbox_workspace_write]\nwritable_roots = [1]\n').state, 'unknown');
-  assert.deepEqual(W.codexRoots('[sandbox_workspace_write]\nwritable_roots = [\n  "/a",\n  "/b",\n]\n'), { roots: ['/a', '/b'], state: 'ok' });
+  assert.deepEqual(W.codexRoots('[sandbox_workspace_write]\nwritable_roots = [\n  "/a",\n  "/b",\n]\n'), { roots: ['/a', '/b'], state: 'ok', mode: null });
   fs.rmSync(path.join(root, 'agents/a1/.codex/config.toml'));
   assert.equal(W.effectiveRoots('codex', path.join(root, 'agents/a1'), ctx.cwd, ctx.home, auto).state, 'unknown');
   // Forms that must never read as scoped.
@@ -532,7 +532,14 @@ test('every row of READ_SITES has a case here, and each case holds', (t) => {
     'codex-config': () => assert.equal(plant(path.join(dir, '.codex/config.toml'), (f) => fs.symlinkSync('/etc/hosts', f)), 'unknown'),
     'spawn-record': () => { assert.equal(W.effectiveRoots('gemini', dir, '', home, { args: ok, platform: 'darwin', env: {} }).state, 'unknown'); assert.equal(claude(...ok).state, 'ok'); assert.equal(W.effectiveRoots('claude', dir, '', home, { args: ok, platform: 'win32', env: {} }).state, 'unknown'); },
     'codex-prompt': () => assert.equal(codex('codex -s danger-full-access', 'now -s workspace-write').state, 'unsandboxed'),
-    'codex-sandbox-flag': () => { assert.equal(codex('codex -s workspace-write').state, 'ok'); assert.equal(codex('codex').state, 'unknown'); },
+    'codex-sandbox-flag': () => {
+      assert.equal(codex('codex -s workspace-write').state, 'ok');
+      assert.equal(codex('codex').state, 'unknown', 'no -s and no mode in config: Codex\'s default is not guessed');
+      const cfg = path.join(dir, '.codex/config.toml');
+      fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\n'); assert.equal(codex('codex').state, 'ok', 'auto mode off: the config chooses');
+      fs.writeFileSync(cfg, 'sandbox_mode = "danger-full-access"\n'); assert.equal(codex('codex --model x').state, 'unsandboxed');
+      fs.writeFileSync(cfg, '');
+    },
     'codex-bypass-flag': () => assert.equal(codex('codex --yolo').state, 'unsandboxed'),
     'codex-config-flag': () => assert.equal(codex('codex -s workspace-write', '--config', 'sandbox_mode="read-only"').state, 'unknown'),
     'codex-profile-flag': () => assert.equal(codex('codex -s workspace-write', '-p', 'x').state, 'unknown'),
@@ -546,7 +553,10 @@ test('every row of READ_SITES has a case here, and each case holds', (t) => {
     'option-after-positional': () => { assert.equal(codex('codex -s workspace-write', 'prompt', '--yolo').state, 'unknown'); assert.equal(claude(...ok, 'prompt', '--add-dir', '/').state, 'unknown'); },
     'codex-project-config': () => { const wt = path.join(home, 'proj', 'sub'); fs.mkdirSync(path.join(home, 'proj', '.codex'), { recursive: true }); fs.mkdirSync(wt, { recursive: true }); fs.writeFileSync(path.join(home, 'proj', '.codex', 'config.toml'), `[sandbox_workspace_write]\nwritable_roots = [${JSON.stringify(path.join(root, 'bin'))}]\n`); const e = W.effectiveRoots('codex', dir, wt, home, { args: ['codex -s workspace-write'], platform: 'darwin', env: cx }); assert.ok(e.roots.includes(path.join(root, 'bin')), 'a project config above the cwd'); fs.writeFileSync(path.join(home, 'proj', '.codex', 'config.toml'), 'sandbox_workspace_write = { x'); assert.equal(W.effectiveRoots('codex', dir, wt, home, { args: ['codex -s workspace-write'], platform: 'darwin', env: cx }).state, 'unknown'); fs.rmSync(path.join(home, 'proj', '.codex', 'config.toml')); fs.mkdirSync(path.join(home, 'proj', '.codex', 'config.toml')); assert.equal(W.effectiveRoots('codex', dir, wt, home, { args: ['codex -s workspace-write'], platform: 'darwin', env: cx }).state, 'unknown', 'a folder where the file should be'); fs.rmSync(path.join(home, 'proj'), { recursive: true }); },
     'claude-plugin-dir': () => { assert.equal(claude(...ok, '--plugin-dir', '/p').state, 'unknown'); assert.equal(claude(...ok, '--plugin-url', 'https://x').state, 'unknown'); assert.equal(codex('codex -s workspace-write', '-c', 'profile="x"').state, 'unknown', '-c profile'); },
-    'env-tmpdir': () => { const e = W.effectiveRoots('claude', dir, '', home, { args: ok, platform: 'darwin', env: { TMPDIR: path.join(root, 'bin') } }); assert.ok(W.rootsReport(e, ctx).excess.includes('bin')); assert.ok(W.effectiveRoots('codex', dir, '', home, { args: ['codex -s workspace-write'], platform: 'darwin', env: { ...cx, TMPDIR: path.join(root, 'research') } }).roots.includes(path.join(root, 'research'))); assert.ok(W.effectiveRoots('claude', dir, '', home, { args: ok, platform: 'darwin', env: { CLAUDE_CODE_TMPDIR: path.join(root, 'bin') } }).roots.includes(path.join(root, 'bin'))); assert.equal(W.effectiveRoots('claude', dir, '', home, { args: ok, platform: 'darwin', env: { TMPDIR: 'rel' } }).state, 'unknown'); },
+    'env-tmpdir': () => { const e = W.effectiveRoots('claude', dir, '', home, { args: ok, platform: 'darwin', env: { TMPDIR: path.join(root, 'bin') } }); assert.ok(W.rootsReport(e, ctx).excess.includes('bin'), 'inside the hive it keeps its hive class');
+      const macTmp = path.join(home, 'var-folders-T'); fs.mkdirSync(macTmp, { recursive: true });
+      const r = W.rootsReport(W.effectiveRoots('claude', dir, '', home, { args: ok, platform: 'darwin', env: { TMPDIR: macTmp } }), ctx);
+      assert.ok(r.effective.includes('temp') && r.excess.includes('temp') && !r.excess.includes('outside hive'), 'outside the hive it is temp, not an outside-hive grant: ' + JSON.stringify(r)); assert.ok(W.effectiveRoots('codex', dir, '', home, { args: ['codex -s workspace-write'], platform: 'darwin', env: { ...cx, TMPDIR: path.join(root, 'research') } }).roots.includes(path.join(root, 'research'))); assert.ok(W.effectiveRoots('claude', dir, '', home, { args: ok, platform: 'darwin', env: { CLAUDE_CODE_TMPDIR: path.join(root, 'bin') } }).roots.includes(path.join(root, 'bin'))); assert.equal(W.effectiveRoots('claude', dir, '', home, { args: ok, platform: 'darwin', env: { TMPDIR: 'rel' } }).state, 'unknown'); },
     'launch-executable-name': () => { const L = loadTs('src/main/launchLine.ts'); assert.equal(L.launchExecutable(['/opt/anything/bin/claude --x']), 'claude', 'judged by name'); assert.equal(L.launchExecutable(['claude-wrapper']), null); },
     'relative-roots': () => { const wt = path.join(home, 'wt2'); fs.mkdirSync(path.join(wt, '.claude'), { recursive: true }); fs.writeFileSync(path.join(wt, '.claude/settings.json'), JSON.stringify({ permissions: { additionalDirectories: ['../hive/bin'] } })); const e = W.effectiveRoots('claude', dir, wt, home, { args: ok, platform: 'darwin', env: {} }); assert.ok(e.roots.includes(path.join(wt, '../hive/bin')), 'against the spawn cwd'); fs.writeFileSync(path.join(wt, '.claude/settings.json'), JSON.stringify({ permissions: { additionalDirectories: ['$X/y'] } })); assert.equal(W.effectiveRoots('claude', dir, wt, home, { args: ok, platform: 'darwin', env: {} }).state, 'unknown'); fs.writeFileSync(path.join(home, '.claude-rel.json'), '{}'); assert.equal(W.effectiveRoots('codex', dir, '', home, { args: ['codex -s workspace-write', '--add-dir', 'rel'], platform: 'darwin', env: cx }).state, 'unknown', 'relative with no cwd'); fs.rmSync(wt, { recursive: true }); },
     'strict-decoders': () => { assert.equal(W.codexRoots('"sandbox_mode" = "workspace-write"\n').state, 'unknown'); assert.equal(W.claudeRoots(JSON.stringify({ sandbox: { enabled: true, filesystem: 'x' } })), null); },
@@ -569,16 +579,19 @@ test('property: the decoders never read ok unless the file is in the exact form 
     '', 'model = "x"\n', `[sandbox_workspace_write]\nwritable_roots = ["${P}"]\n`, `sandbox_mode = "workspace-write"\n[sandbox_workspace_write]\nwritable_roots = [\n  "${P}",\n]\n`,
     `# writable_roots = ["/"]\n[sandbox_workspace_write]\nwritable_roots = ["${P}"] # trailing\n`, `[other]\nx = 1\n[sandbox_workspace_write]\nwritable_roots = []\n`,
   ];
+  // Round 5: the words count only as TOML names (keys and table headers), never inside strings. These used to refuse.
+  okToml.push('x = "writable_roots"\n', '[projects."/Users/me/profile"]\ntrust_level = "trusted"\n', '[profiles.x]\nmodel = "y"\n', '[mcp_servers.profiler]\ncommand = "p"\n', 'notes = "sandbox_mode = danger"\n', '[[hooks.Stop]]\ncommand = "a"\n', 'm = { name = "sandbox_mode" }\n', `doc = ${'"'.repeat(3)}\nsandbox_mode = "x"\n${'"'.repeat(3)}\n`);
   for (const t of okToml) assert.equal(W.codexRoots(t).state, 'ok', JSON.stringify(t));
   const notOk = [
     `"sandbox_workspace_write".writable_roots = ["/"]\n`, `sandbox_workspace_write.writable_roots = ["/"]\n`, `sandbox_workspace_write = { writable_roots = ["/"] }\n`,
     `["sandbox_workspace_write"]\nwritable_roots = ["/"]\n`, `[ sandbox_workspace_write ]\n"writable_roots" = ["/"]\n`, `[sandbox_workspace_write]\nwritable_roots = ['/']\n`,
     `[sandbox_workspace_write]\nwritable_roots = ["/a"]\nwritable_roots = ["/b"]\n`, `[sandbox_workspace_write]\nwritable_roots = ["/a"]\n[sandbox_workspace_write]\nwritable_roots = ["/b"]\n`,
-    `[sandbox_workspace_write.extra]\nwritable_roots = ["/"]\n`, `[profiles.x.sandbox_workspace_write]\nwritable_roots = ["/"]\n`, `profile = "x"\n`, `[profiles.x]\nmodel = "y"\n`,
+    `[sandbox_workspace_write.extra]\nwritable_roots = ["/"]\n`, `[profiles.x.sandbox_workspace_write]\nwritable_roots = ["/"]\n`, `profile = "x"\n`,
     `[x]\nsandbox_mode = "workspace-write"\n`, `"sandbox_mode" = "workspace-write"\n`, `sandbox_mode = 'workspace-write'\n`, `sandbox_mode = "workspace-write"\nsandbox_mode = "read-only"\n`,
     `sandbox_mode = "nope"\n`, `[sandbox_workspace_write]\nwritable_roots = [1]\n`, `[sandbox_workspace_write]\nwritable_roots = "/"\n`, `[sandbox_workspace_write]\nwritable_roots = ["/" \n`,
-    `[sandbox_workspace_write]\nwritable_roots.x = ["/"]\n`, `x = "writable_roots"\n`,
+    `[sandbox_workspace_write]\nwritable_roots.x = ["/"]\n`,
   ];
+  notOk.push('[profiles.x]\nsandbox_mode = "danger-full-access"\n', '[[sandbox_workspace_write]]\nx = 1\n', 'm = { sandbox_mode = "x" }\n', 'm = { "writable_roots" = ["/"] }\n');
   for (const t of notOk) assert.notEqual(W.codexRoots(t).state, 'ok', JSON.stringify(t));
   assert.equal(W.codexRoots('sandbox_mode = "danger-full-access"\n').state, 'unsandboxed');
   const okJson = [{}, { sandbox: { enabled: true } }, { sandbox: { enabled: false, filesystem: { allowWrite: [P] } } }, { permissions: { additionalDirectories: [P] } }, { permissions: {}, sandbox: {}, other: [1] }];

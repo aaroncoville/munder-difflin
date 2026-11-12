@@ -70,7 +70,7 @@ const CODEX_FLAGS = new Set(['--strict-config', '--oss', '--approve-for-me', '--
  *  read). Anything that could change the sandbox in a way not read here is `unknown`: a `-c` on a
  *  sandbox key, a profile, a remote app server (its own policy is in force), or an option this
  *  grammar does not know. `--add-dir` directories are collected as roots. 'none' when no option says. */
-export function codexLaunchSandbox(args: string[] | undefined, addDirs: string[] = []): 'workspace-write' | 'read-only' | 'danger-full-access' | 'none' | 'unknown' {
+export function codexLaunchSandbox(args: string[] | undefined, addDirs: string[] = [], why: string[] = []): 'workspace-write' | 'read-only' | 'danger-full-access' | 'none' | 'unknown' {
   const a = (args ?? []).filter((x): x is string => typeof x === 'string');
   // The first element is the command string, split into its words; the rest are argv elements, whole.
   const words = [...(a[0] ?? '').trim().split(/\s+/).filter(Boolean), ...a.slice(1)];
@@ -81,7 +81,7 @@ export function codexLaunchSandbox(args: string[] | undefined, addDirs: string[]
     const w = words[i];
     if (w === '--' || !w.startsWith('-')) {
       // The prompt (or '--'): Codex still reads options after it, so anything further is not modelled.
-      if (i + 1 < words.length) return 'unknown';
+      if (i + 1 < words.length) { why.push(`${JSON.stringify(words[i + 1])} after the prompt`); return 'unknown'; }
       break;
     }
     const eq = w.indexOf('=');
@@ -92,16 +92,18 @@ export function codexLaunchSandbox(args: string[] | undefined, addDirs: string[]
     if (CODEX_FLAGS.has(name) && value === null) continue;
     // Anything else (-C/--cd and --worktree move the session's folder, -i takes several values, a new flag may change
     // the sandbox) is not modelled.
-    if (!CODEX_VALUE_OPTS.has(name)) return 'unknown';
+    if (!CODEX_VALUE_OPTS.has(name)) { why.push(`option ${name}`); return 'unknown'; }
     const v = value ?? words[++i];
-    if (v === undefined) return 'unknown';
+    if (v === undefined) { why.push(`option ${name} without a value`); return 'unknown'; }
     if (name === '-s' || name === '--sandbox') mode = v;
-    else if ((name === '-c' || name === '--config') && /^\s*"?(sandbox_mode|sandbox_workspace_write|profile)\b/.test(v)) return 'unknown';
+    else if ((name === '-c' || name === '--config') && /^\s*"?(sandbox_mode|sandbox_workspace_write|profile)\b/.test(v)) { why.push(`${name} ${v}`); return 'unknown'; }
     else if (name === '--add-dir') addDirs.push(v);
-    else if (name === '-p' || name === '--profile' || name === '--remote') return 'unknown';
+    else if (name === '-p' || name === '--profile' || name === '--remote') { why.push(`option ${name}`); return 'unknown'; }
   }
   if (mode === null) return 'none';
-  return mode === 'workspace-write' || mode === 'read-only' || mode === 'danger-full-access' ? mode : 'unknown';
+  if (mode === 'workspace-write' || mode === 'read-only' || mode === 'danger-full-access') return mode;
+  why.push(`sandbox ${JSON.stringify(mode)}`);
+  return 'unknown';
 }
 
 const CLAUDE_VALUE_OPTS = new Set(['--agent', '--agents', '--append-system-prompt', '--autocompact', '--debug-file', '--effort', '--environment',
@@ -118,35 +120,36 @@ const CLAUDE_FLAGS = new Set(['--allow-dangerously-skip-permissions', '--ax-scre
  *  is never read): `--add-dir` directories are collected as roots; a `--settings` other than the generated file, an
  *  option that changes where settings come from or the folder it runs in (--setting-sources, --bare, --safe-mode,
  *  --restricted, --worktree, --debug's optional value ...), or any other option the grammar does not know, is `unknown`. */
-export function claudeLaunch(args: string[] | undefined, generatedSettings: string, addDirs: string[] = []): 'ok' | 'unknown' {
-  if (!Array.isArray(args) || args.length === 0) return 'unknown'; // no launch line recorded: nothing to read it from
+export function claudeLaunch(args: string[] | undefined, generatedSettings: string, addDirs: string[] = [], why: string[] = []): 'ok' | 'unknown' {
+  if (!Array.isArray(args) || args.length === 0) { why.push('no launch line'); return 'unknown'; } // nothing to read it from
   const a = args.filter((x): x is string => typeof x === 'string');
   const words = [...(a[0] ?? '').trim().split(/\s+/).filter(Boolean), ...a.slice(1)];
   for (let i = 1; i < words.length; i++) {
     const w = words[i];
     if (w === '--' || !w.startsWith('-')) {
       // The prompt (or '--'): Claude still reads options after it, so anything further is not modelled.
-      if (i + 1 < words.length) return 'unknown';
+      if (i + 1 < words.length) { why.push(`${JSON.stringify(words[i + 1])} after the prompt`); return 'unknown'; }
       break;
     }
     const eq = w.indexOf('=');
     const name = w.startsWith('--') && eq !== -1 ? w.slice(0, eq) : w;
     const inline = w.startsWith('--') && eq !== -1 ? w.slice(eq + 1) : null;
-    if (CLAUDE_FLAGS.has(name)) { if (inline !== null) return 'unknown'; continue; }
+    if (CLAUDE_FLAGS.has(name)) { if (inline !== null) { why.push(`option ${name} with a value`); return 'unknown'; } continue; }
     if (name === '-r' || name === '--resume') { if (inline === null && words[i + 1] !== undefined && !words[i + 1].startsWith('-')) i++; continue; }
     if (CLAUDE_VALUE_OPTS.has(name)) {
       const v = inline ?? words[++i];
-      if (v === undefined) return 'unknown';
-      if (name === '--settings' && resolve(v) !== resolve(generatedSettings)) return 'unknown';
+      if (v === undefined) { why.push(`option ${name} without a value`); return 'unknown'; }
+      if (name === '--settings' && resolve(v) !== resolve(generatedSettings)) { why.push(`--settings ${v.length > 80 ? 'with inline JSON' : v}`); return 'unknown'; }
       continue;
     }
     if (CLAUDE_VARIADIC_OPTS.has(name)) {
       const vals = inline !== null ? [inline] : [];
       while (inline === null && i + 1 < words.length && !words[i + 1].startsWith('-')) vals.push(words[++i]);
-      if (!vals.length) return 'unknown';
+      if (!vals.length) { why.push(`option ${name} without a value`); return 'unknown'; }
       if (name === '--add-dir') addDirs.push(...vals);
       continue;
     }
+    why.push(`option ${name}`);
     return 'unknown';
   }
   return 'ok';
@@ -175,45 +178,98 @@ export type RootsState = 'ok' | 'unsandboxed' | 'unknown';
 /** The keys that decide a Codex sandbox. Each occurrence must be one the decoder below consumed in its exact plain form. */
 const CODEX_POLICY_KEYS = ['writable_roots', 'sandbox_mode', 'sandbox_workspace_write', 'profile'] as const;
 
+/** A TOML key path (`a.b`, `"a".'b'`) as its segments, or null when the text is not one. Quoted segments are marked, so a
+ *  quoted policy key is never mistaken for the bare form the decoder consumes. */
+function keySegments(text: string): Array<{ name: string; quoted: boolean }> | null {
+  const out: Array<{ name: string; quoted: boolean }> = [];
+  const re = /\s*(?:([A-Za-z0-9_-]+)|"((?:[^"\\]|\\.)*)"|'([^']*)')\s*(\.|$)/y;
+  let i = 0;
+  while (i < text.length) {
+    re.lastIndex = i;
+    const m = re.exec(text);
+    if (!m) return null;
+    out.push(m[1] !== undefined ? { name: m[1], quoted: false } : { name: m[2] ?? m[3] ?? '', quoted: true });
+    i = re.lastIndex;
+    if (m[4] === '') break;
+  }
+  return out.length ? out : null;
+}
+
+const isPolicy = (n: string): boolean => (CODEX_POLICY_KEYS as readonly string[]).includes(n);
+
 /** Codex writable_roots and sandbox mode from a config.toml, read without a TOML parser by the conservative rule:
  *  only a top-level `sandbox_mode = "..."`, a bare `[sandbox_workspace_write]` header and one `writable_roots = [...]`
- *  under it are read. If, after comments are removed, any of those keys (or `profile`) appears anywhere the decoder did
- *  not consume it (a quoted or dotted key, an inline table, a profile, a duplicate, another form), the file is unknown. */
-export function codexRoots(toml: string): { roots: string[]; state: RootsState } {
-  const unknown = { roots: [], state: 'unknown' as const };
-  const text = stripTomlComments(toml);
-  const lines = text.split('\n');
-  const consumed: Record<string, number> = { writable_roots: 0, sandbox_mode: 0, sandbox_workspace_write: 0, profile: 0 };
-  let section = '';
+ *  under it are read. The policy words (writable_roots, sandbox_mode, sandbox_workspace_write, profile) are looked for
+ *  only where TOML puts names: in a key (bare, quoted or dotted, inline tables included) or a table header (`[x]`,
+ *  `[[x]]`, `["x"]`), never inside a string value. Any such name the decoder did not consume in its exact form makes the
+ *  file unknown, and `why` names the word and the line. A table such as [profiles.x] holding none of them is fine. */
+export function codexRoots(toml: string): { roots: string[]; state: RootsState; mode?: string | null; why?: string } {
+  const unknown = (word: string, line: number): { roots: string[]; state: 'unknown'; why: string } => ({ roots: [], state: 'unknown', why: `${word} on line ${line + 1}` });
+  const lines = stripTomlComments(toml).split('\n');
+  let section: Array<{ name: string; quoted: boolean }> = [];
   let mode: string | null = null;
+  let modeSeen = false;
+  let headerSeen = false;
   let roots: string[] | null = null;
+  let multi: string | null = null; // inside a multi-line string, closed by this delimiter
+  const TRIPLE = ['"'.repeat(3), "'".repeat(3)];
   for (let i = 0; i < lines.length; i++) {
     const l = lines[i];
-    const header = /^\s*\[\s*([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\s*\]\s*$/.exec(l);
-    if (header) { section = header[1]; if (section === 'sandbox_workspace_write') consumed.sandbox_workspace_write++; continue; }
-    if (section === '') {
-      const m = /^\s*sandbox_mode\s*=\s*"([^"\\]*)"\s*$/.exec(l);
-      if (m) { mode = m[1]; consumed.sandbox_mode++; continue; }
+    if (multi) { if (l.includes(multi)) multi = null; continue; }
+    const header = /^\s*(\[\[?)(.*?)(\]\]?)\s*$/.exec(l);
+    if (header && header[1].length === header[3].length) {
+      const segs = keySegments(header[2]);
+      if (!segs) return unknown('a table header', i);
+      const word = segs.map((x) => x.name).find(isPolicy);
+      if (word) {
+        if (header[1] !== '[' || segs.length !== 1 || segs[0].quoted || segs[0].name !== 'sandbox_workspace_write' || headerSeen) return unknown(word, i);
+        headerSeen = true;
+      }
+      section = segs;
+      continue;
     }
-    if (section === 'sandbox_workspace_write') {
-      const m = /^\s*writable_roots\s*=\s*(\[.*)$/.exec(l);
-      if (m) {
-        let arr = m[1];
-        while (!/\]\s*$/.test(arr) && i + 1 < lines.length) arr += '\n' + lines[++i];
-        let v: unknown;
-        try { v = JSON.parse(arr.replace(/,\s*\]\s*$/, ']')); } catch { return unknown; }
-        if (!stringList(v) || roots !== null) return unknown;
-        roots = v;
-        consumed.writable_roots++;
+    const kv = /^\s*((?:[A-Za-z0-9_-]+|"(?:[^"\\]|\\.)*"|'[^']*')(?:\s*\.\s*(?:[A-Za-z0-9_-]+|"(?:[^"\\]|\\.)*"|'[^']*'))*)\s*=\s*(.*)$/.exec(l);
+    if (!kv) continue; // a blank line, or the inside of a multi-line array
+    const segs = keySegments(kv[1]);
+    if (!segs) return unknown('a key', i);
+    const value = kv[2];
+    const word = segs.map((x) => x.name).find(isPolicy);
+    const inSection = (n: string): boolean => section.length === 1 && !section[0].quoted && section[0].name === n;
+    if (word) {
+      const bare = segs.length === 1 && !segs[0].quoted;
+      if (bare && word === 'sandbox_mode' && section.length === 0 && !modeSeen) {
+        const m = /^"([^"\\]*)"\s*$/.exec(value);
+        if (!m) return unknown(word, i);
+        mode = m[1];
+        modeSeen = true;
         continue;
       }
+      if (bare && word === 'writable_roots' && inSection('sandbox_workspace_write') && roots === null) {
+        let arr = value;
+        while (!/\]\s*$/.test(arr) && i + 1 < lines.length) arr += '\n' + lines[++i];
+        let v: unknown;
+        try { v = JSON.parse(arr.replace(/,\s*\]\s*$/, ']')); } catch { return unknown(word, i); }
+        if (!stringList(v)) return unknown(word, i);
+        roots = v;
+        continue;
+      }
+      return unknown(word, i);
     }
+    // An inline table in the value holds keys too; strings inside it are not keys unless followed by '='.
+    if (value.includes('{')) {
+      for (const m of value.matchAll(/(?:^|[{,]\s*)((?:[A-Za-z0-9_-]+|"(?:[^"\\]|\\.)*"|'[^']*')(?:\s*\.\s*(?:[A-Za-z0-9_-]+|"(?:[^"\\]|\\.)*"|'[^']*'))*)\s*=/g)) {
+        const inner = keySegments(m[1]);
+        const w = inner?.map((x) => x.name).find(isPolicy);
+        if (w) return unknown(w, i);
+      }
+    }
+    const v = value.trim();
+    const open = TRIPLE.find((d) => v.startsWith(d));
+    if (open && !v.slice(3).includes(open)) multi = open;
   }
-  for (const k of CODEX_POLICY_KEYS) if ((text.match(new RegExp(k, 'g')) ?? []).length !== consumed[k]) return unknown;
-  if (consumed.sandbox_workspace_write > 1 || consumed.sandbox_mode > 1) return unknown;
-  if (mode === 'danger-full-access') return { roots: [], state: 'unsandboxed' };
-  if (mode !== null && mode !== 'workspace-write' && mode !== 'read-only') return unknown;
-  return { roots: roots ?? [], state: 'ok' };
+  if (mode === 'danger-full-access') return { roots: [], state: 'unsandboxed', mode };
+  if (mode !== null && mode !== 'workspace-write' && mode !== 'read-only') return { roots: [], state: 'unknown', mode, why: `sandbox_mode = "${mode}"` };
+  return { roots: roots ?? [], state: 'ok', mode };
 }
 
 /** Writable dirs in one Claude settings file; `enabled` is its sandbox.enabled, if it says. JSON.parse, then an exact
