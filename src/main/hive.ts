@@ -37,6 +37,7 @@ import { RecentSends } from './outboxResend';
 import { setAsideUnlessFolder } from './sentFolder';
 import { COMMAND_GROUPS } from '../shared/claudeCommands';
 import { codexShortHomeRoot } from '../shared/codexRemote';
+import { PrivateDirRefused, privateDirsReach, registerPrivateDir } from './privateDirs';
 import { CodexHomeRefused, codexHomesReach, codexSeatHome, existingCodexHomes, migrateSeatHome } from './codexSeatHome';
 import {
   argsWithSandboxStance,
@@ -541,6 +542,8 @@ export class HiveManager {
    *  spawn fails visibly whenever the folder cannot be staged, verified, or kept out of
    *  the agent's reach. */
   private hookRuntimeDir: string | null = null;
+  /** Removes the hook runtime folder's registration as one of the app's private folders. */
+  private unregisterHookRuntimeDir: (() => void) | null = null;
   private hookRuntime: StagedHookRuntime | null = null;
   private hookRuntimeState: { configured: boolean; ok: boolean; reason?: string } = { configured: false, ok: false };
   /** Agents whose last spawn was refused because they could reach the folder: per agent, not the floor's state. */
@@ -571,7 +574,10 @@ export class HiveManager {
     this.hookRuntime = null;
     this.hookRuntimeState = { configured: !!dir, ok: false };
     this.hookRuntimeRefused.clear();
+    this.unregisterHookRuntimeDir?.();
+    this.unregisterHookRuntimeDir = null;
     if (!dir) return;
+    this.unregisterHookRuntimeDir = registerPrivateDir(dir, 'the hook runtime folder');
     try { this.stagedRuntime(); } catch { /* recorded; every spawn retries and fails visibly */ }
   }
   /** Whether hooks load from the app's runtime folder, and why not if not; `refused` lists agents
@@ -809,7 +815,12 @@ export class HiveManager {
     }
     const r = this.verdictRoots(meta, dir, root, extra, launch);
     const rt = this.runtimeFor(meta.id, 'refuse' in r ? [] : r.roots, kind === 'codex' && process.platform === 'win32', 'refuse' in r ? r.refuse : null);
-    if (!('refuse' in r)) this.refuseCodexHomesReach(r.roots);
+    if (!('refuse' in r)) {
+      this.refuseCodexHomesReach(r.roots);
+      // Nor any folder the app keeps for itself (privateDirs.ts): its data folder, the helper sessions' settings.
+      const why = privateDirsReach(r.roots);
+      if (why) throw new PrivateDirRefused(why);
+    }
     if (!rt || 'refuse' in r) return null;
     return { agentId: meta.id, kind, rt, rootPaths: r.roots.map((x) => x.path).filter((x): x is string => !!x), claudeUserDir: r.claudeUserDir, codexFromConfig: r.codexFromConfig, dir, cwd: meta.cwd, isNew };
   }
