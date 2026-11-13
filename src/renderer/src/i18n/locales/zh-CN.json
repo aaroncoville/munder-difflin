@@ -164,8 +164,7 @@
     "whatsNewTitle": "显示上次告知你的更新的发布说明",
     "starOnGitHub": "在 GitHub 上标星",
     "reportProblem": "反馈问题",
-    "fullChangelog": "完整更新日志 →",
-    "joinDiscord": "加入 Discord"
+    "fullChangelog": "完整更新日志 →"
   },
   "settings": {
     "title": "设置",

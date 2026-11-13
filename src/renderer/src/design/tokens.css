@@ -143,7 +143,7 @@
   --cth-ease-glide: cubic-bezier(0.4, 0.0, 0.2, 1);
 
   /* The release drop's window chrome, which is the LANDING SITE's palette
-     (docs/DESIGN.md), not this app's. It lives here rather than as literals in
+     (its design document left with that site), not this app's. It lives here rather than as literals in
      ReleaseDrop.tsx so a theme can re-dress the window, but the values are the
      site's and light and dark both resolve to exactly them — the sandboxed
      frame inside the window hardcodes the same hexes (shared/releaseDrop.ts)

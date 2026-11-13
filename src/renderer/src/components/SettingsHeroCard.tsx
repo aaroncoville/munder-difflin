@@ -6,16 +6,12 @@
  * belong to any individual setting below (re-read the release notes, star, back
  * the project).
  *
- * Its contents come from docs/hero.json IN THIS REPO, fetched at runtime and
- * cached — so plan copy, a sponsor, or a one-line notice can change without
- * shipping a build. That payload is DATA, never markup: every field below is a
- * React text node, so it is escaped, and shared/heroPayload.ts validates types,
- * caps lengths and requires https before any of it reaches here.
- *
- * It renders instantly from the app's built-in defaults and upgrades in place
- * when the fetch lands, so the dialog never waits on the network and reads the
- * same offline. A sponsor slot with nothing in it renders NOTHING rather than a
- * "your logo here" placeholder.
+ * Its contents are the payload compiled into the app (DEFAULT_HERO), served
+ * over IPC; nothing is fetched from the network. That payload is DATA, never
+ * markup: every field below is a React text node, so it is escaped, and
+ * shared/heroPayload.ts validates types, caps lengths and requires https.
+ * A sponsor slot with nothing in it renders NOTHING rather than a "your logo
+ * here" placeholder.
  *
  * It borrows the release drop's idiom (ink borders). Plan label and blurb come
  * from hero.json.
@@ -31,7 +27,6 @@ import { DEFAULT_HERO, type HeroPayload } from '@shared/heroPayload';
 import { manualDownloadUrl, pendingVersion, reduceStatus, type UpdateStatus } from '@shared/updateState';
 
 const GITHUB_REPO_URL = PRODUCT_REPO_URL;
-const DISCORD_URL = 'https://discord.gg/SEDzP5ZPk5';
 
 export function SettingsHeroCard() {
   const { t } = useTranslation();
@@ -167,11 +162,6 @@ export function SettingsHeroCard() {
           <PixelButton variant="secondary" size="sm" onClick={() => void window.cth.openExternal(GITHUB_REPO_URL)}>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
               ⭐ {t('settingsHero.starOnGitHub')}
-            </span>
-          </PixelButton>
-          <PixelButton variant="secondary" size="sm" onClick={() => void window.cth.openExternal(DISCORD_URL)}>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-              💬 {t('settingsHero.joinDiscord')}
             </span>
           </PixelButton>
           <PixelButton

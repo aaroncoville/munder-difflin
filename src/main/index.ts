@@ -127,8 +127,7 @@ import { buildMissingCliScript, chooseInstallRung } from './cliInstall';
 import { detectNodeVersion, nodeIsUsable, resolveNodeInstaller } from './nodeInstall';
 import { toolCatalog, type ToolStatus } from '../shared/toolCatalog';
 import { listLocalSkills, loadCatalog, installSkill, uninstallSkill, type LocalSkill } from './skills';
-import { loadHero } from './hero';
-import { loadModelCatalog } from './modelCatalog';
+import { DEFAULT_HERO } from '../shared/heroPayload';
 import {
   withCodexRemoteArgs
 } from '../shared/codexRemote';
@@ -2540,7 +2539,7 @@ function createWindow(opts: { floor?: boolean } = {}): BrowserWindow {
     ...(geom && geom.x !== undefined && geom.y !== undefined ? { x: geom.x, y: geom.y } : {}),
     minWidth: MIN_WIN.width,
     minHeight: MIN_WIN.height,
-    title: isFloor ? 'Sixth History — Floor' : 'Sixth History',
+    title: isFloor ? `${PRODUCT_NAME} — Floor` : PRODUCT_NAME,
     backgroundColor: APP_GROUND,
     titleBarStyle: 'hiddenInset',
     show: false,
@@ -3890,19 +3889,15 @@ ipcMain.handle('hive:patchAgentRole', (_evt, id: unknown, role: unknown) => {
   return hive.patchAgentRole(id, role);
 });
 
-// ─── IPC: Settings hero payload (remote data, cached) ───────────────────────
-/** Plan copy and sponsor, fetched from the repo so they can change without a
- *  release. Validated in shared/heroPayload before it reaches the renderer. */
-ipcMain.handle('hero:payload', async (_evt, force: unknown) =>
-  loadHero(join(app.getPath('userData'), 'hero.json'), { force: force === true }));
-
-// ─── IPC: model catalog (remote data, cached) ───────────────────────────────
-/** The agent model presets, fetched from docs/model-catalog.json on main so a
- *  new model reaches installed copies without a release. Validated in
- *  shared/modelCatalogPayload; a null catalog means "keep the baked one". */
-const MODEL_CATALOG_CACHE = () => join(app.getPath('userData'), 'model-catalog.json');
-ipcMain.handle('models:catalog', async (_evt, force: unknown) =>
-  loadModelCatalog(MODEL_CATALOG_CACHE(), { force: force === true }));
+// ─── IPC: Settings hero payload and model catalog (built in) ────────────────
+/** Both used to be fetched from the original project's repository, which let
+ *  that project put text and a live link into this app's Settings and change the
+ *  model presets of every installed copy. This build fetches neither: the hero
+ *  card shows the payload compiled into the app, and a null catalog tells the
+ *  renderer to keep the one it shipped with. The channels stay so the renderer
+ *  contract does not change. */
+ipcMain.handle('hero:payload', () => ({ hero: DEFAULT_HERO, fetchedAt: 0, stale: false }));
+ipcMain.handle('models:catalog', () => ({ catalog: null, fetchedAt: 0, stale: false }));
 
 // ─── IPC: skills (installed locally, and the browsable catalog) ─────────────
 /** Skills the CLIs on this machine can already use. Scans the registered repos
@@ -6046,12 +6041,6 @@ app.whenReady().then(() => {
     appVersion: app.getVersion(),
     enabled: readConfig().telemetryEnabled !== false
   });
-
-  // Warm the model catalog cache before any picker opens. The renderer reads
-  // the same cache over IPC on load; doing the network hop here means the file
-  // is already fresh on disk by the time a modal is opened, and a failure is
-  // silent by construction (the baked catalog is the floor).
-  void loadModelCatalog(MODEL_CATALOG_CACHE()).catch(() => { /* never fatal */ });
 
   // A cold-start deep link (Windows/Linux) rides in on OUR argv.
   const startupHireLink = process.argv.find((a) => a.startsWith('munderdifflin://'));
