@@ -81,6 +81,9 @@ import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, IN
 import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
 import { RefusedRosterId, RegistryUnreadable, shortTarget } from './messageTarget';
+import { HookRuntimeUnavailable } from './hookRuntime';
+import { relocationEnv } from './launchLine';
+import { buildPtyEnv } from './ptyEnv';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WakeSkipLog, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
 import { inboxDeliveredAt, inboxLine, openTurnClaimAt, splitInbox } from './inboxClaims';
@@ -275,6 +278,14 @@ const hive = new HiveManager(
 hive.setProxyBridgeScript(bundledResourcePath('hive-proxy.cjs', {
   isPackaged: app.isPackaged, resourcesPath: process.resourcesPath, appPath: app.getAppPath()
 }));
+// Claude and Codex hooks run outside the agent's sandbox, so their command runs a shim and a
+// node launcher the app stages into a private folder of its own (hookRuntime.ts), never from
+// the hive folder or a source checkout an agent may write. On Windows the Codex command cannot
+// carry quotes, so the folder must have no space: Local AppData usually has none, where the
+// roaming app-data folder of this app does.
+hive.setHookRuntime(process.platform === 'win32'
+  ? join(process.env.LOCALAPPDATA || app.getPath('userData'), 'munder-difflin-hooks')
+  : join(app.getPath('userData'), 'hook-runtime'));
 // #7C — operator control state (pause/gate/steer/halt), read by the HookServer
 // when deciding hook returns.
 const control = new ControlRegistry();
@@ -2780,7 +2791,7 @@ function spawnFailReason(error?: string): SpawnFailReason {
 /** A refused id must not start as a process with no prompt, environment, hooks or
  *  roster entry. Its worktree goes too, since no process will ever tear it down. One
  *  that cannot be removed is logged and stays tracked, because it is still on disk. */
-async function refuseSpawn(ptyId: string, agentId: string, provider: string, refusal: RefusedRosterId | RegistryUnreadable): Promise<{ ok: false; error: string }> {
+async function refuseSpawn(ptyId: string, agentId: string, provider: string, refusal: RefusedRosterId | RegistryUnreadable | HookRuntimeUnavailable): Promise<{ ok: false; error: string }> {
   hive.appendLog({ kind: 'spawn-refused', agentId: shortTarget(agentId), reason: refusal.message });
   analytics.track('agent_spawn_failed', { provider, reason: 'spawn_error' });
   const wtPath = worktreePaths.get(ptyId);
@@ -2964,7 +2975,16 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // seedDelivery:'type-into-tui') rather than passed on argv. Surfaced in the spawn
   // result so the renderer types it through the per-pty write-chain. (ondev-b)
   let seedPrompt: string | undefined;
+  // A hooked Codex seat's launch always names its sandbox: every builder's line (the GUI's, a worker's, a stored command)
+  // passes here, and with none stated gets the configs' own mode, or workspace-write when none is set.
+  if (opts.hive && provider === 'codex' && hive.enabled()) opts.args = hive.withCodexSandboxStance(opts.args ?? [], opts.cwd);
   if (opts.hive && hive.enabled()) {
+    // Memory and knowledge settings are best-effort and not hook provisioning: read them outside the try below, so a
+    // failure here never refuses the spawn and never reads as a hook provisioning error.
+    let memEnv: Record<string, string> = {};
+    let kgEnv: Record<string, string> = {};
+    try { memEnv = memory.env(); } catch (e) { console.error('[hive] memory env failed:', e); }
+    try { kgEnv = knowledge.env(); } catch (e) { console.error('[hive] knowledge env failed:', e); }
     try {
       const inj = await hive.ensureAgent(
         { ...opts.hive, cwd: opts.cwd, provider },
@@ -2975,16 +2995,20 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
           // to spell it `$KG_CLI`, which is POSIX-only: under cmd.exe/PowerShell it
           // expands to nothing, so every knowledge-graph instruction was dead on a
           // Windows floor. Empty when the KG is off (the line isn't emitted then).
-          kgCliPath: knowledge.env().KG_CLI,
+          kgCliPath: kgEnv.KG_CLI,
           // The app's one theme paints every terminal on a dark ground, so the
           // agent's own TUI is told to match it.
           theme: 'dark',
           // W3 — default-MCP consent state + the bundled skills source dir.
           mcpDefaults: readConfig().mcpDefaults,
           skillsDir: skillsResourceDir(),
+          // The launch as requested, with the environment the terminal will build, so the hook runtime
+          // decision is made once, before anything for this agent is created.
+          launch: { argv: [opts.command, ...(opts.args ?? [])], env: relocationEnv(buildPtyEnv(process.env, '', opts.env)) },
+          spawnId: opts.id,
           // The shared palace is mutated by the agent's own `mempalace` calls, so
           // the OS sandbox must let it through (empty when memory is off).
-          extraWritableDirs: [memory.env().MEMPALACE_PALACE_PATH].filter((p): p is string => !!p)
+          extraWritableDirs: [memEnv.MEMPALACE_PALACE_PATH].filter((p): p is string => !!p)
         }
       );
       opts.args = [...(opts.args ?? []), ...inj.args];
@@ -2995,10 +3019,13 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       if (inj.degraded) breakerToast('Agent running degraded', inj.degraded);
       // Point the agent's mempalace CLI at the shared palace + the `kg` CLI at the
       // enterprise knowledge store (both no-ops / empty when their flags are off).
-      opts.env = { ...(opts.env ?? {}), ...inj.env, ...memory.env(), ...knowledge.env() };
+      opts.env = { ...(opts.env ?? {}), ...inj.env, ...memEnv, ...kgEnv };
+      // Only now, with the injection applied, can the hook runtime decision be confirmed.
+      hive.markHookProvisioned(opts.id);
     } catch (e) {
-      if (e instanceof RefusedRosterId || e instanceof RegistryUnreadable) return refuseSpawn(opts.id, opts.hive.id, provider, e);
-      // Hive provisioning is best-effort; never block a spawn on it.
+      if (e instanceof RefusedRosterId || e instanceof RegistryUnreadable || e instanceof HookRuntimeUnavailable) return refuseSpawn(opts.id, opts.hive.id, provider, e);
+      // Hive provisioning is otherwise best-effort, but not for a hooked provider: the late check refuses, naming this.
+      hive.hookProvisioningFailed(opts.id, e);
       console.error('[hive] ensureAgent failed:', e);
     }
   }
@@ -3246,6 +3273,11 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       });
     }
     await enableCodexRemoteForSpawn(opts, opts.hive.id);
+  }
+  // The late check on the launch exactly as it will start; a refusal here rolls back what ensureAgent created.
+  if (opts.hive?.id) {
+    try { hive.confirmSpawn(opts.id, { id: opts.hive.id, provider }, [opts.command, ...(opts.args ?? [])], relocationEnv(buildPtyEnv(process.env, '', opts.env))); }
+    catch (e) { if (e instanceof HookRuntimeUnavailable) return refuseSpawn(opts.id, opts.hive.id, provider, e); throw e; }
   }
   const res = ptyManager.spawn(opts, owner);
   if (res.ok) analytics.track('agent_spawned', { provider });

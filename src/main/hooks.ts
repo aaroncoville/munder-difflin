@@ -83,6 +83,8 @@ export interface HookSocketHealth {
   /** Listeners this process had to abandon because a stranger took the path
    *  (see detach()) — a non-zero count is worth a look. */
   orphans: number;
+  /** Where Claude and Codex hooks load from: ok only when the app's runtime folder is staged and verified. */
+  runtime?: { configured: boolean; ok: boolean; reason?: string };
 }
 
 /** Back-off between automatic re-bind attempts after a failure. Once spent, the
@@ -174,6 +176,11 @@ export class HookServer {
   }
 
   /** The hook socket's live state — the beat writes it into fleet.json. */
+  /** The runtime status, or nothing: health must never throw. */
+  private runtimeHealth(): { runtime?: { configured: boolean; ok: boolean; reason?: string } } {
+    try { return typeof this.hive.hookRuntimeStatus === 'function' ? { runtime: this.hive.hookRuntimeStatus() } : {}; } catch { return {}; }
+  }
+
   health(): HookSocketHealth {
     const listening = !!this.server?.listening && this.bound !== null;
     return {
@@ -183,7 +190,9 @@ export class HookServer {
       since: listening && this.bound ? this.bound.since : null,
       lastError: this.lastError,
       attempts: this.bindAttempts,
-      orphans: this.orphans.length
+      orphans: this.orphans.length,
+      // Whether Claude and Codex hooks load from the app's own runtime folder; absent reads as no.
+      ...this.runtimeHealth()
     };
   }
 

@@ -53,7 +53,7 @@ test('an explicit --permission-mode in the request always wins over auto-mode', 
   assert.deepEqual(l.args, ['--permission-mode', 'plan']);
 });
 
-test('auto-mode OFF appends nothing', () => {
+test('auto-mode OFF appends nothing (the spawn core names a Codex seat\'s sandbox from its config)', () => {
   assert.deepEqual(launch({ requestCommand: 'claude', autoMode: false }).args, []);
   assert.deepEqual(launch({ requestCommand: 'codex', autoMode: false }).args, []);
 });

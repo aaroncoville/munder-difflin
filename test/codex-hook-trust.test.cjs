@@ -13,6 +13,9 @@ async function fixture(t) {
   process.env.HOME = root;
   t.after(() => { process.env.HOME = oldHome; fs.rmSync(root, { recursive: true, force: true }); });
   const hive = new HiveManager(() => root);
+  const runtime = fs.realpathSync(fs.mkdtempSync('/tmp/mdcr-'));
+  t.after(() => fs.rmSync(runtime, { recursive: true, force: true }));
+  hive.setHookRuntime(runtime);
   const injection = await hive.ensureAgent({ id: 'hook-trust', name: 'Hook trust', provider: 'codex', cwd: root });
   const home = fs.realpathSync(injection.env.CODEX_HOME);
   const config = fs.readFileSync(path.join(home, 'config.toml'), 'utf8');

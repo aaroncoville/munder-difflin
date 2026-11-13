@@ -21,10 +21,12 @@
 import {
   existsSync, mkdirSync, readFileSync, writeFileSync, renameSync,
   readdirSync, statSync, lstatSync, realpathSync, rmSync, appendFileSync,
-  symlinkSync, unlinkSync, copyFileSync, cpSync, chmodSync
+  symlinkSync, unlinkSync, copyFileSync, cpSync, chmodSync, openSync, fstatSync, closeSync, constants as fsConstants
 } from 'node:fs';
-import { join, dirname, basename, isAbsolute, relative } from 'node:path';
+import { join, dirname, basename, isAbsolute, relative, resolve as resolvePath } from 'node:path';
 import { homedir } from 'node:os';
+import { claudeLaunch, claudeRoots, codexLaunchSandbox, codexRoots, launchExecutable, launchPlaces } from './launchLine';
+import { HookRuntimeUnavailable, hookCommandFor, overlaps, rootOverlap, stageHookRuntime, unsafePathReason, verifyHookRuntime, type StagedHookRuntime, type WriteRoot } from './hookRuntime';
 import { spawnSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
 import type { AgentUsageSample } from './usage';
@@ -35,6 +37,7 @@ import { setAsideUnlessFolder } from './sentFolder';
 import { COMMAND_GROUPS } from '../shared/claudeCommands';
 import { ensureCodexShortHome } from '../shared/codexRemote';
 import {
+  argsWithSandboxStance,
   isClaudeProvider,
   isHiveAwareProvider,
   canReceiveInbox,
@@ -48,7 +51,7 @@ import { preferredAgentRole } from '../shared/agentRole';
 import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde } from './fs';
 import { refreshMineIgnoresOnce } from './hiveMineIgnore';
-import { agentFolderId, hasExactFolder, isAppSender, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, RegistryUnreadable, rosterIdFor, shortTarget } from './messageTarget';
+import { agentFolderId, hasExactFolder, isAppSender, isFolderName, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, RegistryUnreadable, rosterIdFor, shortTarget } from './messageTarget';
 import { nodeLauncherScript } from './nodeLauncher';
 import { codexTrustEntry } from '../shared/codexTrust';
 import { withCodexWritableRoots } from '../shared/codexWritableRoots';
@@ -213,6 +216,11 @@ export interface Registry {
 }
 
 /** Build env + extra spawn args that make an agent process hive-aware. */
+/** A launch as the spawn will make it: argv[0] is the command string, then its arguments; env holds only the variables that move configuration. */
+export interface HookLaunch { argv: string[]; env: Record<string, string> }
+/** What ensureAgent decided for a Claude or Codex spawn, carried to the late check. */
+export interface HookVerdict { agentId: string; kind: 'claude' | 'codex'; rt: StagedHookRuntime; rootPaths: string[]; claudeUserDir?: string; codexFromConfig?: boolean; dir: string; cwd: string; isNew: boolean; /** True when the agent's folder did not exist before this spawn. */ dirCreated?: boolean; /** The spawn this decision is for. */ spawnId?: string; /** Set only once every provisioning step the decision depends on has succeeded. */ provisioned?: boolean; /** Why provisioning did not complete. */ failure?: string }
+
 export interface SpawnInjection {
   args: string[];
   env: Record<string, string>;
@@ -514,6 +522,359 @@ export class HiveManager {
   private shimPath(): string | null {
     const root = this.root();
     return root ? join(root, 'bin', 'cth-hook.cjs') : null;
+  }
+
+  /** Where Claude and Codex hook commands load from: a private folder of the app's own
+   *  (see hookRuntime.ts), holding the hook shim and the node launcher, written from the
+   *  text this app holds. Hooks run outside the agent's sandbox, so they never load from
+   *  the hive folder, which every agent can write. With no folder set (a HiveManager used
+   *  as a library) no hook command is written at all; with one set, a Claude or Codex
+   *  spawn fails visibly whenever the folder cannot be staged, verified, or kept out of
+   *  the agent's reach. */
+  private hookRuntimeDir: string | null = null;
+  private hookRuntime: StagedHookRuntime | null = null;
+  private hookRuntimeState: { configured: boolean; ok: boolean; reason?: string } = { configured: false, ok: false };
+  /** Agents whose last spawn was refused because they could reach the folder: per agent, not the floor's state. */
+  private hookRuntimeRefused = new Map<string, { reason: string; at: number }>();
+  private warnedNoRuntime = false;
+  /** The verdict ensureAgent reached for each agent, for the late check before its terminal starts. */
+  private hookVerdicts = new Map<string, HookVerdict>();
+  /** The spawn that last passed the late check, per agent. */
+  private confirmedSpawn = new Map<string, string>();
+  /** The verdict for an agent's current spawn, removed as it is taken. */
+  takeHookVerdict(agentId: string): HookVerdict | undefined {
+    const v = this.hookVerdicts.get(agentId);
+    this.hookVerdicts.delete(agentId);
+    return v;
+  }
+  /** The machine-wide Claude settings file (a field so a test can point it elsewhere). */
+  private managedClaudeSettings = process.platform === 'darwin' ? '/Library/Application Support/ClaudeCode/managed-settings.json'
+    : process.platform === 'win32' ? 'C:\\ProgramData\\ClaudeCode\\managed-settings.json' : '/etc/claude-code/managed-settings.json';
+  setHookRuntime(dir: string | null): void {
+    this.hookRuntimeDir = dir;
+    this.hookRuntime = null;
+    this.hookRuntimeState = { configured: !!dir, ok: false };
+    this.hookRuntimeRefused.clear();
+    if (!dir) return;
+    try { this.stagedRuntime(); } catch { /* recorded; every spawn retries and fails visibly */ }
+  }
+  /** Whether hooks load from the app's runtime folder, and why not if not; `refused` lists agents
+   *  whose own write roots reach it. Absent reads as no. */
+  hookRuntimeStatus(): { configured: boolean; ok: boolean; reason?: string; refused?: Record<string, string> } {
+    // An agent refused over an hour ago that has not been spawned since is dropped: it is no longer waiting to start.
+    const cutoff = Date.now() - 60 * 60_000;
+    for (const [id, r] of this.hookRuntimeRefused) if (r.at < cutoff) this.hookRuntimeRefused.delete(id);
+    // And never more than the 32 most recent: an agent that never spawns again cannot keep the list growing.
+    while (this.hookRuntimeRefused.size > 32) this.hookRuntimeRefused.delete(this.hookRuntimeRefused.keys().next().value as string);
+    const refused = Object.fromEntries([...this.hookRuntimeRefused].map(([id, r]) => [id, r.reason]));
+    return { ...this.hookRuntimeState, ...(this.hookRuntimeRefused.size ? { refused } : {}) };
+  }
+  /** The folder staged and verified, or a HookRuntimeUnavailable. A file found changed is reported
+   *  as changed before it is staged afresh from the app's own text. */
+  private stagedRuntime(): StagedHookRuntime {
+    const dir = this.hookRuntimeDir as string;
+    try {
+      const root = this.root();
+      if (this.hookRuntime) verifyHookRuntime(this.hookRuntime);
+      else {
+        this.hookRuntime = stageHookRuntime({
+          dir, hiveRoot: root, platform: process.platform,
+          launcher: { name: process.platform === 'win32' ? 'hive-node.cmd' : 'hive-node', content: this.nodeLauncherContent(), mode: 0o700 },
+          shim: { name: 'cth-hook.cjs', content: HOOK_SHIM, mode: 0o600 },
+        });
+      }
+      if (!root || overlaps(dir, root)) throw new HookRuntimeUnavailable(`its folder ${dir} overlaps the hive folder, or the hive folder is not known`);
+      if (!this.hookRuntimeState.ok) this.noteRuntime(true);
+      return this.hookRuntime;
+    } catch (e) {
+      const err = e instanceof HookRuntimeUnavailable ? e : new HookRuntimeUnavailable(String((e as Error)?.message ?? e));
+      // Not re-trusted: the next spawn stages it afresh from the app's own text, after this row.
+      this.hookRuntime = null;
+      this.noteRuntime(false, err.message);
+      throw err;
+    }
+  }
+  /** The runtime for one agent's spawn, or null when no folder is configured (then no hook command
+   *  is written, and that is logged once). Throws HookRuntimeUnavailable, naming what to change. */
+  private runtimeFor(agentId: string, roots: WriteRoot[], bare = false, refusal: string | null = null): StagedHookRuntime | null {
+    if (!this.hookRuntimeDir) {
+      if (!this.warnedNoRuntime) {
+        this.warnedNoRuntime = true;
+        try { this.appendLog({ kind: 'hook-runtime', ok: false, reason: 'no hook runtime folder is set, so sessions start without hooks' }); } catch { /* best effort */ }
+      }
+      return null;
+    }
+    const rt = this.stagedRuntime();
+    const unsafe = bare ? unsafePathReason(rt.dir, process.platform, true) : null;
+    const why = refusal ?? (unsafe ? `${unsafe}: ${rt.dir}` : rootOverlap(rt, roots));
+    if (why) {
+      // This agent's problem, not the floor's: the folder itself is fine.
+      this.hookRuntimeRefused.set(agentId, { reason: why, at: Date.now() });
+      try { this.appendLog({ kind: 'hook-runtime', ok: false, agentId: isFolderName(agentId) ? agentId : shortTarget(agentId), reason: why }); } catch { /* the refusal still says it */ }
+      throw new HookRuntimeUnavailable(why);
+    }
+    this.hookRuntimeRefused.delete(agentId);
+    return rt;
+  }
+  private noteRuntime(ok: boolean, reason?: string): void {
+    this.hookRuntimeState = { configured: true, ok, ...(reason ? { reason } : {}) };
+    try { this.appendLog({ kind: 'hook-runtime', ok, ...(reason ? { reason } : {}) }); } catch { /* the state above still says it */ }
+  }
+  /** A root as written in a settings file: ~ and $HOME expanded, relative ones against the cwd; any other
+   *  variable or form is not understood (null). */
+  private settingsRoot(x: unknown, cwd: string): string | null {
+    if (typeof x !== 'string' || !x) return null;
+    const home = homedir();
+    let v = x.replace(/^~(?=$|[\\/])/, home).replace(/^\$\{?HOME\}?(?=$|[\\/])/, home);
+    // A leading ~user is someone else's home and is not understood; a ~ inside a name (com~apple~CloudDocs) is just a name.
+    if (/^~/.test(v) || /[$%`]/.test(v)) return null;
+    if (!isAbsolute(v)) { if (!cwd) return null; v = join(cwd, v); }
+    return resolvePath(v);
+  }
+  /** A settings file's text: 'missing' when absent, null when it is a link, not a regular file, larger than 1 MB, or
+   *  unreadable. Opened non-blocking and judged on the handle, so a file swapped for a pipe cannot hold the main process. */
+  private readSmallFile(file: string): string | 'missing' | null {
+    let st;
+    try { st = lstatSync(file); } catch (e) { const c = (e as NodeJS.ErrnoException).code; return c === 'ENOENT' || c === 'ENOTDIR' ? 'missing' : null; }
+    if (st.isSymbolicLink() || !st.isFile() || st.size > 1024 * 1024) return null;
+    let fd: number | null = null;
+    try {
+      fd = openSync(file, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0));
+      const f = fstatSync(fd);
+      if (!f.isFile() || f.size > 1024 * 1024) return null;
+      return readFileSync(fd, 'utf8');
+    } catch { return null; } finally { if (fd !== null) closeSync(fd); }
+  }
+  /** Write roots a Claude session merges: managed settings and its drop-in folder, the user's (in CLAUDE_CONFIG_DIR when
+   *  that is set), and the project's. */
+  private claudeSettingsRoots(cwd: string, userDirOverride?: string): WriteRoot[] {
+    const managed = this.managedClaudeSettings;
+    const dropIns: string[] = [];
+    const dropDir = join(dirname(managed), 'managed-settings.d');
+    try { for (const n of readdirSync(dropDir).sort()) if (n.endsWith('.json')) dropIns.push(join(dropDir, n)); } catch { /* none */ }
+    const userDir = userDirOverride ?? (process.env.CLAUDE_CONFIG_DIR && isAbsolute(process.env.CLAUDE_CONFIG_DIR) ? process.env.CLAUDE_CONFIG_DIR : join(homedir(), '.claude'));
+    const files = [managed, ...dropIns, join(userDir, 'settings.json'), ...(cwd ? [join(cwd, '.claude', 'settings.json'), join(cwd, '.claude', 'settings.local.json')] : [])];
+    const out: WriteRoot[] = [];
+    for (const f of files) {
+      const text = this.readSmallFile(f);
+      if (text === 'missing') continue;
+      if (text === null) { out.push({ path: null, from: f }); continue; }
+      // The shared strict decoder: JSON.parse and an exact shape check of the keys read.
+      const c = claudeRoots(text);
+      if (!c) { out.push({ path: null, from: f }); continue; }
+      for (const x of c.roots) out.push({ path: this.settingsRoot(x, cwd), from: f });
+    }
+    return out;
+  }
+  /** Every writable_roots entry in one Codex config file, in any table (a profile, a dotted key, an
+   *  inline table); [] when the file is absent. A link, a non-file, or an entry not fully understood
+   *  is a root that could not be read. */
+  private codexConfigRoots(file: string, cwd: string): WriteRoot[] {
+    const raw = this.readSmallFile(file);
+    if (raw === 'missing') return [];
+    if (raw === null) return [{ path: null, from: file }];
+    // The shared strict decoder (a versioned allowlist): the owner's own config may carry [hooks], a project config may not.
+    const c = codexRoots(raw, resolvePath(file) === join(homedir(), '.codex', 'config.toml') ? 'user' : 'project');
+    if (c.state === 'unknown') return [{ path: null, from: `${file} (${c.why ?? 'unknown form'})` }];
+    return c.roots.map((x) => ({ path: this.settingsRoot(x, cwd), from: file }));
+  }
+  /** Codex write roots from every config it merges: the user's (copied into the generated one) and a
+   *  project .codex/config.toml in the working directory or any folder above it. The app passes no -c. */
+  private codexUserRoots(cwd = ''): WriteRoot[] {
+    const out = this.codexConfigRoots(join(homedir(), '.codex', 'config.toml'), '');
+    if (cwd && isAbsolute(cwd)) {
+      for (let d = resolvePath(cwd); ; d = dirname(d)) {
+        // A relative root is read against the spawned CLI's cwd, as Codex reads it.
+        out.push(...this.codexConfigRoots(join(d, '.codex', 'config.toml'), cwd));
+        if (dirname(d) === d) break;
+      }
+    }
+    return out;
+  }
+  /** Every root a Claude or Codex agent's sandbox may write, labelled with where it comes from. */
+  private agentRoots(meta: AgentMeta, dir: string, root: string, extra: string[] | undefined, kind: 'claude' | 'codex', claudeUserDir?: string): WriteRoot[] {
+    return [
+      { path: meta.cwd, from: 'its working directory' },
+      ...this.sandboxWritableDirs(meta, dir, root, extra).map((p) => ({ path: p, from: 'the write roots the app gives it' })),
+      ...(kind === 'claude' ? this.claudeSettingsRoots(meta.cwd, claudeUserDir) : this.codexUserRoots(meta.cwd)),
+    ];
+  }
+  /** A Codex launch line that states no sandbox (auto mode off), with the one the app names for it: the configs' own mode
+   *  (the nearest project config, else the user's) when that is workspace-write or read-only, so a seat the owner narrowed
+   *  stays narrowed; workspace-write when no config sets one. When the configs choose full access or cannot be read or
+   *  understood, the line is left as it is and the spawn check refuses it, saying why. Every builder's line passes here. */
+  withCodexSandboxStance(args: string[], cwd: string): string[] {
+    const m = this.codexConfigMode(cwd);
+    if ('mode' in m) return argsWithSandboxStance(args, 'codex', m.mode);
+    return m.none ? argsWithSandboxStance(args, 'codex', 'workspace-write') : args;
+  }
+  /** The sandbox Codex's own config chooses for a session started in `cwd` with no -s: the user's config, then project
+   *  configs from the top folder down to the cwd (the nearest wins). A file it cannot read, a mode it does not know,
+   *  full access, or no mode anywhere refuses, saying what the user can change. */
+  private codexConfigMode(cwd: string): { mode: 'workspace-write' | 'read-only'; file: string } | { refuse: string; none?: true } {
+    const user = join(homedir(), '.codex', 'config.toml');
+    const files = [user];
+    if (cwd && isAbsolute(cwd)) {
+      const chain: string[] = [];
+      for (let d = resolvePath(cwd); ; d = dirname(d)) { chain.unshift(join(d, '.codex', 'config.toml')); if (dirname(d) === d) break; }
+      files.push(...chain.filter((f) => f !== user));
+    }
+    let chosen: { mode: string; file: string } | null = null;
+    for (const f of files) {
+      const raw = this.readSmallFile(f);
+      if (raw === 'missing') continue;
+      if (raw === null) return { refuse: `its Codex config ${f} could not be read` };
+      const c = codexRoots(raw, f === user ? 'user' : 'project');
+      if (c.state === 'unknown') return { refuse: `its Codex config ${f} could not be understood (${c.why ?? 'unknown form'})` };
+      if (c.mode) chosen = { mode: c.mode, file: f };
+    }
+    if (!chosen) return { refuse: `its launch line chooses no Codex sandbox and no config does: add -s workspace-write to its command, or set sandbox_mode in ${user}`, none: true };
+    if (chosen.mode === 'danger-full-access') return { refuse: `its Codex config ${chosen.file} sets sandbox_mode = "danger-full-access"` };
+    return { mode: chosen.mode as 'workspace-write' | 'read-only', file: chosen.file };
+  }
+  /** Every root a launch would give the agent, from its launch line, its final environment and its settings files; or
+   *  why the launch cannot be modelled. Reads files, writes nothing. With no launch given (a direct caller, not the
+   *  app's spawn path) only the files are read; the app always gives one, and checks the final one again before spawning. */
+  verdictRoots(meta: AgentMeta, dir: string, root: string, extra: string[] | undefined, launch?: HookLaunch): { roots: WriteRoot[]; claudeUserDir?: string; codexFromConfig?: boolean } | { refuse: string } {
+    const kind = this.hookKind(meta);
+    if (!kind) return { roots: [] };
+    if (!launch) return { roots: this.agentRoots(meta, dir, root, extra, kind) };
+    const exe = launchExecutable(launch.argv);
+    if (exe !== kind) return { refuse: `its launch line does not run ${kind} itself (it starts with ${JSON.stringify((launch.argv[0] ?? '').trim().split(/\s+/)[0] ?? '')})` };
+    const places = launchPlaces(kind, launch.env, homedir());
+    if ('unknown' in places) return { refuse: `its environment moves the CLI's configuration in a way the app does not model: ${places.unknown}` };
+    const addDirs: string[] = [];
+    let codexFromConfig = false;
+    if (kind === 'claude') {
+      const why: string[] = [];
+      if (claudeLaunch(launch.argv, join(dir, 'settings.json'), addDirs, why) === 'unknown') return { refuse: `its launch line has an option the app does not model: ${why.join(', ')}` };
+    } else {
+      const why: string[] = [];
+      const mode = codexLaunchSandbox(launch.argv, addDirs, why);
+      if (mode === 'danger-full-access') return { refuse: 'its launch line turns the Codex sandbox off' };
+      if (mode === 'unknown') return { refuse: `its launch line has an option the app does not model: ${why.join(', ')}` };
+      if (mode === 'none') {
+        // No -s (auto mode off): the sandbox is the one its config chooses. Codex's built-in default is not guessed.
+        const chosen = this.codexConfigMode(meta.cwd);
+        if ('refuse' in chosen) return chosen;
+        codexFromConfig = true;
+      }
+    }
+    return {
+      roots: [...this.agentRoots(meta, dir, root, extra, kind, kind === 'claude' ? places.claudeUserDir : undefined),
+        ...addDirs.map((p) => ({ path: this.settingsRoot(p, meta.cwd), from: 'its launch line (--add-dir)' })),
+        ...places.tmpDirs.map((p) => ({ path: p, from: 'its temp folder (TMPDIR), which its sandbox lets it write' }))],
+      ...(kind === 'claude' ? { claudeUserDir: places.claudeUserDir } : {}),
+      ...(codexFromConfig ? { codexFromConfig } : {}),
+    };
+  }
+  /** Decide once, before anything for this agent is created: the runtime it will use and the roots it was checked
+   *  against. Throws HookRuntimeUnavailable naming the cause. Null when the agent gets no app hook command, or no
+   *  runtime folder is set. */
+  private hookVerdict(meta: AgentMeta, dir: string, root: string, extra: string[] | undefined, launch: HookLaunch | undefined, isNew: boolean): HookVerdict | null {
+    const kind = this.hookKind(meta);
+    if (!kind) return null;
+    const r = this.verdictRoots(meta, dir, root, extra, launch);
+    const rt = this.runtimeFor(meta.id, 'refuse' in r ? [] : r.roots, kind === 'codex' && process.platform === 'win32', 'refuse' in r ? r.refuse : null);
+    if (!rt || 'refuse' in r) return null;
+    return { agentId: meta.id, kind, rt, rootPaths: r.roots.map((x) => x.path).filter((x): x is string => !!x), claudeUserDir: r.claudeUserDir, codexFromConfig: r.codexFromConfig, dir, cwd: meta.cwd, isNew };
+  }
+  /** Called once the spawn's injection has been applied: only then can its decision be confirmed. */
+  markHookProvisioned(spawnId: string): void {
+    const v = this.hookVerdicts.get(spawnId);
+    if (v && !v.failure) v.provisioned = true;
+  }
+  /** Called when provisioning threw after the decision: the late check will refuse, naming this. */
+  hookProvisioningFailed(spawnId: string, e: unknown): void {
+    const v = this.hookVerdicts.get(spawnId);
+    if (v) { v.provisioned = false; v.failure = String((e as Error)?.message ?? e).slice(0, 300); }
+  }
+  /** The late check for one spawn, by its id: the decision ensureAgent made for exactly this spawn must exist and be for
+   *  this agent. A Claude or Codex spawn with no decision (while a runtime folder is set), or another agent's, refuses. */
+  confirmSpawn(spawnId: string, meta: Pick<AgentMeta, 'id' | 'provider'>, argv: string[], env: Record<string, string>): void {
+    const v = this.takeHookVerdict(spawnId);
+    if (!v) {
+      if (this.hookRuntimeDir && this.hookKind(meta as AgentMeta)) throw new HookRuntimeUnavailable('no hook runtime decision was made for this spawn');
+      return;
+    }
+    if (v.agentId !== meta.id) throw new HookRuntimeUnavailable('the hook runtime decision on record is for another agent');
+    if (v.provisioned !== true) {
+      const why = `the agent's hook provisioning did not complete${v.failure ? ` (${v.failure})` : ''}`;
+      this.rollbackSpawn(v, why);
+      throw new HookRuntimeUnavailable(why);
+    }
+    this.confirmHookLaunch(v, argv, env);
+    this.confirmedSpawn.set(v.agentId, v.spawnId ?? spawnId);
+  }
+  /** The late check, just before the terminal starts: the FINAL launch line and environment must imply nothing the
+   *  verdict did not check. Reads no settings files (the verdict is the snapshot). A refusal here rolls back a new agent's
+   *  folder and registry row and logs that it did. */
+  confirmHookLaunch(v: HookVerdict | undefined, argv: string[], env: Record<string, string>): void {
+    if (!v) return;
+    const fail = (why: string): never => { this.rollbackSpawn(v, why); throw new HookRuntimeUnavailable(why); };
+    try { verifyHookRuntime(v.rt); } catch (e) { fail((e as Error).message); }
+    if (launchExecutable(argv) !== v.kind) fail(`its final launch line does not run ${v.kind} itself`);
+    const addDirs: string[] = [];
+    if (v.kind === 'claude') {
+      const places = launchPlaces('claude', env, homedir());
+      if ('unknown' in places) fail(`its final environment cannot be modelled: ${places.unknown}`);
+      else if (places.claudeUserDir !== v.claudeUserDir) fail(`its final environment moved Claude's settings to ${places.claudeUserDir}`);
+      const why: string[] = [];
+      if (claudeLaunch(argv, join(v.dir, 'settings.json'), addDirs, why) === 'unknown') fail(`its final launch line has an option the app does not model: ${why.join(', ')}`);
+    } else {
+      // The app's own remote rewrite: the app server runs from the same generated config the verdict checked.
+      const a = [...argv];
+      const k = a.indexOf('--remote');
+      if (k > 0 && k + 1 < a.length) a.splice(k, 2);
+      const mode = codexLaunchSandbox(a, addDirs);
+      const kept = mode === 'workspace-write' || mode === 'read-only' || (mode === 'none' && v.codexFromConfig === true);
+      if (!kept) fail('its final launch line does not keep the Codex sandbox it was checked with');
+    }
+    const checked = new Set(v.rootPaths.map((p) => resolvePath(p)));
+    for (const d of addDirs) {
+      const p = this.settingsRoot(d, v.cwd);
+      if (!p || !checked.has(resolvePath(p))) fail(`its final launch line adds a write root that was not checked: ${d}`);
+    }
+  }
+  /** Undo what ensureAgent did for this spawn: only the registry row this call added. Main never deletes under the hive
+   *  root or an agent folder, so no folder is removed, ever; one this call created is left in place and named in the log. */
+  private rollbackSpawn(v: HookVerdict, why: string): void {
+    try {
+      this.hookRuntimeRefused.set(v.agentId, { reason: why, at: Date.now() });
+      let rowRemoved = false;
+      let rowKept: string | undefined;
+      if (v.isNew) {
+        const root = this.root();
+        const reg = this.readableRegistry();
+        const row = reg && Object.hasOwn(reg.agents, v.agentId) ? (reg.agents[v.agentId] as RegistryAgent & { spawnId?: string }) : undefined;
+        // Compare and remove: only a row this spawn still owns, and only if no later spawn of the agent has started.
+        const later = this.confirmedSpawn.get(v.agentId);
+        if (!row) rowKept = 'no row';
+        else if (!v.spawnId || row.spawnId !== v.spawnId) rowKept = 'a later spawn owns the row';
+        else if (later && later !== v.spawnId) rowKept = 'a later spawn has started';
+        else if (root && reg) {
+          delete reg.agents[v.agentId];
+          this.atomicWriteJson(join(root, 'registry.json'), reg);
+          rowRemoved = true;
+        }
+      }
+      this.appendLog({
+        kind: 'spawn-rolled-back', agentId: isFolderName(v.agentId) ? v.agentId : shortTarget(v.agentId), rowRemoved, ...(rowKept ? { rowKept } : {}),
+        ...(v.dirCreated ? { folderLeft: v.dir } : {}), reason: why
+      });
+      if (rowRemoved) this.commit(`hive: roll back ${v.agentId}`);
+    } catch (e) { console.error('[hive] rollback after a refused spawn failed:', e); }
+  }
+  /** 'claude' or 'codex' when this agent gets the app's hook command, else null. */
+  private hookKind(meta: AgentMeta): 'claude' | 'codex' | null {
+    if (isClaudeProvider(meta.provider ?? 'claude')) return 'claude';
+    const desc = bridgeOf(meta.provider);
+    return desc && desc.kind === 'hooks' && desc.shim === 'codex' ? 'codex' : null;
+  }
+
+  /** The hook command from a verified runtime: quoted for POSIX JSON/TOML, bare where quotes do not survive. */
+  private hookCommand(quoted: boolean): string | null {
+    return this.hookRuntime ? hookCommandFor(this.hookRuntime, quoted) : null;
   }
   /** The proxy-bridge sidecar (qwen): resources/hive-proxy.cjs, shipped with the
    *  app. Set by the main process to the app's own resource path. Never a path
@@ -821,6 +1182,10 @@ export class HiveManager {
        *  MemPalace dir, which `mempalace` mutates). Absolute paths; ignored
        *  for providers without a sandbox. */
       extraWritableDirs?: string[];
+      /** The launch the spawn will make: its command line and final environment (relocation variables only). */
+      launch?: HookLaunch;
+      /** This spawn's own id (the terminal's), under which the decision is kept for the late check. */
+      spawnId?: string;
     } = {}
   ): Promise<SpawnInjection> {
     // One read for the whole operation. registry() reads a failure as an empty roster, and this would then replace the
@@ -837,6 +1202,12 @@ export class HiveManager {
     const asRead = JSON.stringify(roster);
 
     const dir = this.agentDir(meta.id);
+    // Before the agent's folder or registry entry exists: a refused spawn leaves nothing behind.
+    const verdict = this.hookVerdict(meta, dir, root, opts.extraWritableDirs, opts.launch, !Object.hasOwn(roster.agents, meta.id));
+    if (verdict) { verdict.dirCreated = !existsSync(dir); verdict.spawnId = opts.spawnId; verdict.provisioned = false; }
+    // Keyed by this spawn, so two overlapping spawns of one agent never share a decision.
+    const verdictKey = opts.spawnId ?? meta.id;
+    if (verdict) this.hookVerdicts.set(verdictKey, verdict); else this.hookVerdicts.delete(verdictKey);
     mkdirSync(join(dir, 'inbox', '.done'), { recursive: true });
     mkdirSync(join(dir, 'outbox', '.sent'), { recursive: true });
 
@@ -879,6 +1250,8 @@ export class HiveManager {
     reg.agents[meta.id] = {
       ...prev,
       ...meta,
+      // Which spawn wrote this row, so a late refusal of an older spawn never removes a newer one's row.
+      ...(opts.spawnId ? { spawnId: opts.spawnId } : {}),
       capabilities: meta.capabilities ?? prev?.capabilities ?? [],
       role,
       status: 'idle',
@@ -969,6 +1342,10 @@ export class HiveManager {
       const sock = this.sockPath();
       if (desc && sock) {
         env.HIVE_SOCK = sock;
+        // Outside the try below, which logs and carries on: a hook runtime that cannot be staged,
+        // verified or kept out of this agent's reach fails the spawn.
+        if (desc.kind === 'hooks' && desc.shim === 'codex') {
+        }
         try {
           if (desc.kind === 'hooks') {
             if (desc.shim === 'agy') this.installAgyHooks();
@@ -1067,7 +1444,7 @@ export class HiveManager {
               this.emit?.('hive:degraded', { agentId: meta.id, name: meta.name, reason: 'proxy-bind', message: degraded });
             }
           }
-        } catch (e) { console.error(`[hive] install ${desc.kind} bridge failed:`, e); }
+        } catch (e) { if (e instanceof HookRuntimeUnavailable) throw e; console.error(`[hive] install ${desc.kind} bridge failed:`, e); }
       }
       // Inject the protocol text whichever way the CLI accepts it.
       // type-into-tui (Crush): the bare TUI reads a positional as a Cobra subcommand
@@ -1107,11 +1484,12 @@ export class HiveManager {
     // Phase 1 — autonomy: attach lifecycle hooks via --settings (no edits to the
     // user's repo) so the agent reports activity and drains its inbox on Stop.
     const sock = this.sockPath();
-    const shim = this.shimPath();
-    if (sock && shim) {
+    if (sock) {
+      const writable = this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs);
+      const rt = verdict?.rt ?? null;
       env.HIVE_SOCK = sock;
       const settingsPath = join(dir, 'settings.json');
-      this.writeJson(settingsPath, this.hookSettings(shim, meta.cwd, opts.mcpDefaults, opts.theme, this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs)));
+      this.writeJson(settingsPath, this.hookSettings(rt ? hookCommandFor(rt, true) : null, meta.cwd, opts.mcpDefaults, opts.theme, writable));
       args.push('--settings', settingsPath);
     }
     return { args, env };
@@ -1372,10 +1750,10 @@ export class HiveManager {
     return Array.from(new Set(out));
   }
 
-  private hookSettings(shim: string, cwd: string, cfg: McpDefaultsMap, theme?: 'light' | 'dark', writableDirs: string[] = []): unknown {
-    // Bundled node, NOT bare `node` — see nodeLauncherPath(). Claude runs each of
-    // these through `sh -c` with a stripped PATH, where `node` is often absent.
-    const cmd = this.nodeRun(shim);
+  private hookSettings(cmd: string | null, cwd: string, cfg: McpDefaultsMap, theme?: 'light' | 'dark', writableDirs: string[] = []): unknown {
+    // `cmd` runs the shim under the bundled node, NOT bare `node` — see
+    // nodeLauncherPath(). Claude runs each of these through `sh -c` with a
+    // stripped PATH, where `node` is often absent.
     const entry = (matcher?: string) => ({
       ...(matcher ? { matcher } : {}),
       hooks: [{ type: 'command', command: cmd }]
@@ -1404,7 +1782,7 @@ export class HiveManager {
       // the only clean programmatic source for the session's REAL context
       // window. The shim prints a compact in-terminal gauge and forwards the
       // payload to the harness (agent-card context gauge, exact limit).
-      statusLine: { type: 'command', command: `${cmd} --status`, padding: 0 },
+      ...(cmd ? { statusLine: { type: 'command', command: `${cmd} --status`, padding: 0 } } : {}),
       // Native OS sandbox for Bash subprocesses (macOS Seatbelt / Linux bubblewrap).
       // Auto mode spawns with `--permission-mode bypassPermissions`, which only
       // silences PROMPTS; the sandbox is a separate, opt-in layer that was never
@@ -1421,20 +1799,22 @@ export class HiveManager {
             permissions: { additionalDirectories: writableDirs }
           }
         : {}),
-      hooks: {
-        Stop: [entry()],
-        SubagentStop: [entry()],
-        PreToolUse: [entry('*')],
-        PostToolUse: [entry('*')],
-        PostToolUseFailure: [entry('*')],
-        UserPromptSubmit: [entry()],
-        Notification: [entry()],
-        SessionStart: [entry()],
-        // #5C: surface mid-`/compact` so an agent boxing up its context reads as
-        // 'compacting' on the floor instead of looking frozen.
-        PreCompact: [entry()],
-        PostCompact: [entry()]
-      }
+      ...(cmd ? {
+        hooks: {
+          Stop: [entry()],
+          SubagentStop: [entry()],
+          PreToolUse: [entry('*')],
+          PostToolUse: [entry('*')],
+          PostToolUseFailure: [entry('*')],
+          UserPromptSubmit: [entry()],
+          Notification: [entry()],
+          SessionStart: [entry()],
+          // #5C: surface mid-`/compact` so an agent boxing up its context reads as
+          // 'compacting' on the floor instead of looking frozen.
+          PreCompact: [entry()],
+          PostCompact: [entry()]
+        }
+      } : {})
     };
   }
 
@@ -2738,18 +3118,15 @@ export class HiveManager {
       // freeze. Verify any change with codex's own resolver, no model spend:
       // `codex app-server` → initialize → `hooks/list` reports the normalized
       // timeoutSec per event.
-      const shim = this.shimPath();
+      // Preserve the existing Windows .cmd shape: nested command quotes pass
+      // through a different shell stack there (#350). The reported Codex bug
+      // is POSIX, where ordinary shell quoting is both necessary and verified.
+      const command = this.hookCommand(process.platform !== 'win32');
       let config = existsSync(join(userHome, 'config.toml'))
         ? readFileSync(join(userHome, 'config.toml'), 'utf8') : '';
-      if (shim) {
+      if (command) {
         const events = ['PreToolUse', 'PostToolUse', 'Stop', 'SubagentStop',
           'SessionStart', 'UserPromptSubmit', 'PreCompact', 'PostCompact'];
-        // Preserve the existing Windows .cmd shape: nested command quotes pass
-        // through a different shell stack there (#350). The reported Codex bug
-        // is POSIX, where ordinary shell quoting is both necessary and verified.
-        const command = process.platform === 'win32'
-          ? this.nodeRunUnquoted(shim)
-          : this.nodeRun(shim);
         config += '\n# --- munder-hive lifecycle hooks (auto-generated; do not edit) ---\n';
         for (const ev of events) {
           config += `\n[[hooks.${ev}]]\n[[hooks.${ev}.hooks]]\ntype = "command"\ncommand = ${JSON.stringify(command)}\ntimeout = 30\n`;
@@ -2778,7 +3155,11 @@ export class HiveManager {
       // below Codex's standard scan roots. External usage tools can then discover
       // the sessions without understanding the hive's private directory layout.
       this.exposeCodexDataDirs(home, userHome, agentId);
-    } catch (e) { console.error('[hive] installCodexHooks failed:', e); }
+    } catch (e) {
+      // With a hook runtime set, a Codex seat without its generated hook config would start unhooked: not best-effort.
+      if (this.hookRuntimeDir) throw new HookRuntimeUnavailable(`the Codex hook config could not be written (${(e as Error)?.message ?? e})`);
+      console.error('[hive] installCodexHooks failed:', e);
+    }
     return home;
   }
 

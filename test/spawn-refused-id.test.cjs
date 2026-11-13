@@ -56,14 +56,15 @@ async function setup(t, overrides = {}) {
   let removal = async () => ({ ok: true });
   const context = {
     console: { error: (...a) => errors.push(a.join(' ')), warn() {}, log() {} },
-    hive: { enabled: () => true, ensureAgent: (...a) => real.ensureAgent(...a), appendLog: (row) => real.appendLog(row), ...overrides },
+    hive: { enabled: () => true, ensureAgent: (...a) => real.ensureAgent(...a), appendLog: (row) => real.appendLog(row), markHookProvisioned: (id) => real.markHookProvisioned(id), hookProvisioningFailed: (id, e) => real.hookProvisioningFailed(id, e), ...overrides },
     memory: { active: () => false, env: () => ({}) },
     knowledge: { active: () => false, env: () => ({}) },
     readConfig: () => ({}), skillsResourceDir: () => '', breakerToast() {},
     analytics: { track: (name, props) => events.push([name, { ...props }]) },
     worktreePaths, worktreeOrigins,
     removeWorktree: (origin, wt) => { removed.push([origin, wt]); return removal(); },
-    RefusedRosterId, RegistryUnreadable, shortTarget: loadTs('src/main/messageTarget.ts').shortTarget
+    relocationEnv: loadTs('src/main/launchLine.ts').relocationEnv, buildPtyEnv: loadTs('src/main/ptyEnv.ts').buildPtyEnv, process,
+    RefusedRosterId, RegistryUnreadable, HookRuntimeUnavailable: loadTs('src/main/hookRuntime.ts').HookRuntimeUnavailable, shortTarget: loadTs('src/main/messageTarget.ts').shortTarget
   };
   const run = vm.runInNewContext(liveProvisioning(), context);
   const spawn = (id) => run({ id: `pty-${id}`, cwd: home, hive: { id, name: 'x' } }, 'claude');
