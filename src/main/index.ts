@@ -50,6 +50,7 @@ import { MemoryManager } from './memory';
 import { testHindsightConnection } from './hindsightAdapter';
 import { KnowledgeManager } from './knowledge';
 import { MemoryReflector, type ReflectSettings } from './reflect';
+import { setHelperSettingsDir } from './hiddenClaude';
 import { PersistStore } from './db';
 import { readAgentUsage, readContextTokens, seedSessionTranscript, resolveSessionCwd } from './transcript';
 import { listIssues, listCIRuns } from './github';
@@ -289,6 +290,9 @@ hive.setProxyBridgeScript(bundledResourcePath('hive-proxy.cjs', {
 hive.setHookRuntime(process.platform === 'win32'
   ? join(process.env.LOCALAPPDATA || app.getPath('userData'), 'munder-difflin-hooks')
   : join(app.getPath('userData'), 'hook-runtime'));
+// The app's own helper Claude sessions (hiddenClaude.ts) take their --settings file from a private folder of the app's,
+// checked like the hook runtime's, never from the temp folder an agent's sandbox can write.
+setHelperSettingsDir(join(app.getPath('userData'), 'helper-sessions'), () => hive.root(), (event) => { try { hive.appendLog(event); } catch { /* best effort */ } });
 // #7C — operator control state (pause/gate/steer/halt), read by the HookServer
 // when deciding hook returns.
 const control = new ControlRegistry();

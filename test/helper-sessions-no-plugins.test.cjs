@@ -26,6 +26,17 @@ function ownerDir(t) {
   return d;
 }
 
+/** An app-private folder for helper settings, outside a fake hive folder, configured on the loaded module. */
+function privateDir(t, mod) {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'helper-userdata-')));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const hive = path.join(base, 'hive');
+  fs.mkdirSync(hive);
+  const dir = path.join(base, 'userData', 'helper-sessions');
+  mod.setHelperSettingsDir(dir, () => hive);
+  return { base, hive, dir };
+}
+
 /** Stub node-pty so a spawn records its args and the --settings file's contents, then fails (no real CLI runs). */
 function capturePty(t) {
   const spawns = [];
@@ -54,8 +65,9 @@ const ALL_OFF = {
 test('a helper session loads no plugin and no MCP server by default', async (t) => {
   ownerDir(t);
   const spawns = capturePty(t);
-  const { runHiddenClaude } = loadTs('src/main/hiddenClaude.ts');
-  const r = await runHiddenClaude('hi', { model: 'claude-haiku-5-5', cwd: os.tmpdir() });
+  const hc = loadTs('src/main/hiddenClaude.ts');
+  privateDir(t, hc);
+  const r = await hc.runHiddenClaude('hi', { model: 'claude-haiku-5-5', cwd: os.tmpdir() });
   assert.equal(r.ok, false);
   assert.equal(spawns.length, 1);
   const { args, settings, settingsPath } = spawns[0];
@@ -68,8 +80,9 @@ test('a helper session loads no plugin and no MCP server by default', async (t) 
 test('a call site that needs a plugin or an MCP server names it, and gets only that', async (t) => {
   ownerDir(t);
   const spawns = capturePty(t);
-  const { runHiddenClaude } = loadTs('src/main/hiddenClaude.ts');
-  await runHiddenClaude('hi', { model: 'm', cwd: os.tmpdir(), plugins: ['GitHub'], mcpConfigs: ['/x/mcp.json'] });
+  const hc = loadTs('src/main/hiddenClaude.ts');
+  privateDir(t, hc);
+  await hc.runHiddenClaude('hi', { model: 'm', cwd: os.tmpdir(), plugins: ['GitHub'], mcpConfigs: ['/x/mcp.json'] });
   const { args, settings } = spawns[0];
   assert.deepEqual(settings.enabledPlugins, { ...ALL_OFF, 'github@claude-plugins-official': true });
   assert.ok(args.includes('--strict-mcp-config'));
@@ -80,6 +93,7 @@ test('call site reflect.ts (memory condense): its helper loads no plugin and no 
   ownerDir(t);
   const spawns = capturePty(t);
   const { MemoryReflector } = loadTs('src/main/reflect.ts');
+  const { dir: helperDir } = privateDir(t, loadTs('src/main/hiddenClaude.ts'));
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'helper-reflect-'));
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
   const dir = path.join(home, 'hive', 'agents', 'a1');
@@ -95,5 +109,109 @@ test('call site reflect.ts (memory condense): its helper loads no plugin and no 
     assert.ok(s.args.includes('--strict-mcp-config'));
     assert.ok(!s.args.includes('--mcp-config'));
     assert.deepEqual(s.settings, { enabledPlugins: ALL_OFF });
+    assert.equal(path.dirname(path.dirname(s.settingsPath)), helperDir);
   }
+});
+
+// Review of #102, H1: the settings file was written under tmpdir(), which Codex seats can write, so a seat could swap
+// in a `hooks` entry that runs as the owner. It now lives in the app's private folder, checked like hook-runtime.
+test('the helper settings file is in the app-private folder, owner-only, never the temp folder, and removed after', async (t) => {
+  ownerDir(t);
+  const spawns = capturePty(t);
+  const hc = loadTs('src/main/hiddenClaude.ts');
+  const { dir } = privateDir(t, hc);
+  await hc.runHiddenClaude('hi', { model: 'm', cwd: os.tmpdir() });
+  const { settingsPath } = spawns[0];
+  const folder = path.dirname(settingsPath);
+  assert.equal(path.dirname(folder), dir, 'a per-call folder inside the configured private folder');
+  assert.match(path.basename(folder), /^helper-/, 'a name-neutral, unique prefix');
+  assert.notEqual(path.dirname(folder), fs.realpathSync(os.tmpdir()), 'not directly in the temp folder');
+  assert.equal(fs.statSync(dir).mode & 0o777, 0o700);
+  assert.ok(!fs.existsSync(folder), 'removed when the session ends');
+  assert.deepEqual(fs.readdirSync(dir), []);
+});
+
+test('no helper runs when the private folder is unset, a link, or inside the hive', async (t) => {
+  ownerDir(t);
+  const spawns = capturePty(t);
+  const hc = loadTs('src/main/hiddenClaude.ts');
+  const { base, hive, dir } = privateDir(t, hc);
+
+  hc.setHelperSettingsDir(null, () => hive);
+  let r = await hc.runHiddenClaude('hi', { model: 'm', cwd: os.tmpdir() });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /no private folder/);
+
+  const elsewhere = path.join(base, 'elsewhere');
+  fs.mkdirSync(elsewhere, { mode: 0o700 });
+  fs.rmSync(dir, { recursive: true, force: true }); // setting the folder made it (the startup sweep checks it)
+  fs.symlinkSync(elsewhere, dir);
+  hc.setHelperSettingsDir(dir, () => hive);
+  r = await hc.runHiddenClaude('hi', { model: 'm', cwd: os.tmpdir() });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /link/);
+  assert.deepEqual(fs.readdirSync(elsewhere), [], 'nothing written through the link');
+
+  hc.setHelperSettingsDir(path.join(hive, 'helper-sessions'), () => hive);
+  r = await hc.runHiddenClaude('hi', { model: 'm', cwd: os.tmpdir() });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /overlaps the hive/);
+  assert.ok(!fs.existsSync(path.join(hive, 'helper-sessions')));
+
+  assert.equal(spawns.length, 0, 'the CLI was never started');
+});
+
+// Review of #102, MED: once the per-call folder exists, every failure removes it; a removal that fails is logged once
+// with its path; leftovers of a crashed run are swept when the folder is set.
+test('a settings write that fails after the folder exists leaves nothing behind, and no helper starts', async (t) => {
+  ownerDir(t);
+  const spawns = capturePty(t);
+  const hc = loadTs('src/main/hiddenClaude.ts');
+  const { dir } = privateDir(t, hc);
+  const realFs = require('node:fs');
+  const open = realFs.openSync;
+  t.after(() => { realFs.openSync = open; });
+  realFs.openSync = (p, ...rest) => {
+    if (String(p).includes('settings.json')) throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+    return open(p, ...rest);
+  };
+  const r = await hc.runHiddenClaude('hi', { model: 'm', cwd: os.tmpdir() });
+  realFs.openSync = open;
+  assert.equal(r.ok, false);
+  assert.match(r.error, /helper settings: .*ENOSPC/);
+  assert.equal(spawns.length, 0);
+  assert.deepEqual(fs.readdirSync(dir), [], 'the per-call folder was removed');
+});
+
+test('a per-call folder that cannot be removed is logged once with its path; the result is still returned', async (t) => {
+  ownerDir(t);
+  const spawns = capturePty(t);
+  const hc = loadTs('src/main/hiddenClaude.ts');
+  const { hive, dir } = privateDir(t, hc);
+  const logs = [];
+  hc.setHelperSettingsDir(dir, () => hive, (e) => logs.push(e));
+  const realFs = require('node:fs');
+  const rm = realFs.rmSync;
+  t.after(() => { realFs.rmSync = rm; });
+  realFs.rmSync = (p, ...rest) => {
+    if (path.basename(String(p)).startsWith('helper-')) throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+    return rm(p, ...rest);
+  };
+  const r = await hc.runHiddenClaude('hi', { model: 'm', cwd: os.tmpdir() });
+  realFs.rmSync = rm;
+  assert.equal(r.ok, false);
+  assert.match(r.error, /stubbed spawn/, 'the helper result, not the cleanup failure');
+  const folder = path.dirname(spawns[0].settingsPath);
+  assert.deepEqual(logs, [{ kind: 'helper-settings-left', path: folder, why: 'EACCES: permission denied' }]);
+});
+
+test('setting the folder sweeps per-call folders a crashed run left, and nothing else', (t) => {
+  const hc = loadTs('src/main/hiddenClaude.ts');
+  const { hive, dir } = privateDir(t, hc);
+  fs.mkdirSync(path.join(dir, 'helper-aB3xY9'));
+  fs.writeFileSync(path.join(dir, 'helper-aB3xY9', 'settings.json'), '{}');
+  fs.mkdirSync(path.join(dir, 'keep-me'));
+  fs.writeFileSync(path.join(dir, 'helper-notes.txt'), 'x');
+  hc.setHelperSettingsDir(dir, () => hive);
+  assert.deepEqual(fs.readdirSync(dir).sort(), ['helper-notes.txt', 'keep-me']);
 });
