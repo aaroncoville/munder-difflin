@@ -27,11 +27,20 @@ function home(t) {
   return dir;
 }
 
+/** Whether `pid` is still running. A zombie (killed, not yet reaped by whoever inherited it) runs nothing. */
+function running(pid) {
+  try { process.kill(pid, 0); } catch { return false; }
+  const state = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim();
+  return state !== '' && !state.startsWith('Z');
+}
+
 function killFakeGits(dir) {
-  const pids = path.join(dir, 'git-pids');
-  if (!fs.existsSync(pids)) return;
-  for (const line of fs.readFileSync(pids, 'utf8').split('\n').filter(Boolean)) {
-    try { process.kill(Number(line.split(' ')[0]), 'SIGKILL'); } catch { /* already gone */ }
+  for (const name of ['git-pids', 'child-pids']) {
+    const pids = path.join(dir, name);
+    if (!fs.existsSync(pids)) continue;
+    for (const line of fs.readFileSync(pids, 'utf8').split('\n').filter(Boolean)) {
+      try { process.kill(Number(line.split(' ')[0]), 'SIGKILL'); } catch { /* already gone */ }
+    }
   }
 }
 
@@ -45,10 +54,13 @@ function fakeGit(t, dir) {
     '#!/bin/sh',
     `echo "$$ $*" >> '${pids}'`,
     'case " $* " in *" ${FAKE_GIT_HANG:-<none>} "*) trap "" TERM; while :; do sleep 0.05; done ;; esac',
+    // As `git commit` does when it runs gc or maintenance: start a child that inherits its output, then wait for it, or
+    // exit and leave it running.
+    `case "\${FAKE_GIT_CHILD:-}" in wait) sleep 30 & echo $! >> '${path.join(dir, 'child-pids')}'; wait; exit 0 ;; leave) sleep 30 & echo $! >> '${path.join(dir, 'child-pids')}'; exit 0 ;; esac`,
     `exec '${REAL_GIT}' "$@"`,
     ''
   ].join('\n'), { mode: 0o755 });
-  const saved = { PATH: process.env.PATH, FAKE_GIT_HANG: process.env.FAKE_GIT_HANG };
+  const saved = { PATH: process.env.PATH, FAKE_GIT_HANG: process.env.FAKE_GIT_HANG, FAKE_GIT_CHILD: process.env.FAKE_GIT_CHILD };
   process.env.PATH = `${bin}${path.delimiter}${process.env.PATH}`;
   t.after(() => {
     for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
@@ -59,8 +71,14 @@ function fakeGit(t, dir) {
   }
   return {
     hang(command) { process.env.FAKE_GIT_HANG = command; },
+    child(mode) { process.env.FAKE_GIT_CHILD = mode; },
+    childrenAlive() {
+      const file = path.join(dir, 'child-pids');
+      if (!fs.existsSync(file)) return [];
+      return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map(Number).filter(running);
+    },
     started,
-    alive() { return started().filter((pid) => { try { process.kill(pid, 0); return true; } catch { return false; } }); }
+    alive() { return started().filter(running); }
   };
 }
 
@@ -172,4 +190,49 @@ test('quitting with no commit running returns at once', async (t) => {
   const started = Date.now();
   await hive.stopCommits(5000, 5000);
   assert.ok(Date.now() - started < 200);
+});
+
+test('a timed-out git waiting on a child that holds its output is stopped with that child', async (t) => {
+  const dir = home(t);
+  const shim = fakeGit(t, dir);
+  shim.child('wait');
+
+  const started = Date.now();
+  const result = await within(runGit(['commit'], dir, 300, 300), 5000);
+
+  assert.notEqual(result, 'timeout', 'the runner waited for the child holding its output');
+  assert.equal(result.ok, false);
+  assert.ok(Date.now() - started < 3000, `resolved after ${Date.now() - started} ms`);
+  assert.deepEqual(shim.alive(), []);
+  assert.deepEqual(shim.childrenAlive(), [], 'the child outlived the git that started it');
+});
+
+test('a git that exits and leaves a child behind is not waited on, and the child is stopped', async (t) => {
+  const dir = home(t);
+  const shim = fakeGit(t, dir);
+  shim.child('leave');
+
+  const started = Date.now();
+  const result = await within(runGit(['commit'], dir), 5000);
+
+  assert.notEqual(result, 'timeout', 'the runner waited for a child of a git that had exited');
+  assert.ok(Date.now() - started < 3000, `resolved after ${Date.now() - started} ms`);
+  assert.deepEqual(shim.childrenAlive(), [], 'the child outlived the git that started it');
+});
+
+test('quitting while git waits on a child stops both, within the quit grace', async (t) => {
+  const dir = home(t);
+  const shim = fakeGit(t, dir);
+  shim.child('wait');
+  const queue = new hiveCommit.CommitQueue((root) => runGit(['commit'], root), { warn: () => {} });
+
+  queue.request(dir, 'in flight');
+  await waitUntil(() => shim.childrenAlive().length > 0);
+  const started = Date.now();
+  const closed = await within(queue.close(200, () => hiveCommit.stopRunningGits(300)), 5000);
+
+  assert.notEqual(closed, 'timeout', 'quit waited on the child holding git output');
+  assert.ok(Date.now() - started < 3000, `quit took ${Date.now() - started} ms`);
+  assert.deepEqual(shim.alive(), []);
+  assert.deepEqual(shim.childrenAlive(), []);
 });

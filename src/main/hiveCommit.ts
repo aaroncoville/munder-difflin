@@ -33,15 +33,46 @@ export const HIVE_GIT_KILL_GRACE_MS = 5_000;
  */
 export const HIVE_STALE_LOCK_MS = HIVE_GIT_TIMEOUT_MS + HIVE_GIT_KILL_GRACE_MS + 30_000;
 
+/** How long git's output has to finish arriving once git itself has exited. */
+export const HIVE_GIT_OUTPUT_WAIT_MS = 500;
+
+/** Each hive git runs as the leader of its own process group, so a signal reaches whatever it started as well. */
+const GROUPS = process.platform !== 'win32';
+
 interface LiveGit { child: ChildProcess; exited: Promise<void> }
 
 /** Every hive git running in this process, so quitting can stop them. */
 const liveGits = new Set<LiveGit>();
 
-/** SIGTERM, then SIGKILL if it has not exited within `graceMs`. Resolves once it has exited. */
+function signalGit(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (GROUPS && child.pid) {
+    try { process.kill(-child.pid, signal); return; } catch { /* the group has already gone */ }
+  }
+  try { child.kill(signal); } catch { /* already gone */ }
+}
+
+/** Whether anything in the group git leads is still running, after git itself may have exited. */
+function groupAlive(child: ChildProcess): boolean {
+  if (!GROUPS || !child.pid) return false;
+  try { process.kill(-child.pid, 0); return true; } catch { return false; }
+}
+
+const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** SIGTERM to the group, then SIGKILL if it is not gone within `graceMs`. Resolves once it has gone. */
+async function stopGroup(child: ChildProcess, graceMs: number): Promise<void> {
+  signalGit(child, 'SIGTERM');
+  const kill = setTimeout(() => signalGit(child, 'SIGKILL'), graceMs);
+  // SIGKILL cannot be ignored; the extra second only bounds the wait for the kernel to remove what it killed.
+  const end = Date.now() + graceMs + 1_000;
+  while (groupAlive(child) && Date.now() < end) await delay(20);
+  clearTimeout(kill);
+}
+
+/** Stop git and everything it started, and wait until git has exited and its group has gone. */
 function stopGit(git: LiveGit, graceMs: number): Promise<void> {
-  git.child.kill('SIGTERM');
-  const kill = setTimeout(() => git.child.kill('SIGKILL'), graceMs);
+  signalGit(git.child, 'SIGTERM');
+  const kill = setTimeout(() => signalGit(git.child, 'SIGKILL'), graceMs);
   return git.exited.finally(() => clearTimeout(kill));
 }
 
@@ -51,14 +82,18 @@ export function stopRunningGits(graceMs = HIVE_GIT_KILL_GRACE_MS): Promise<void>
 }
 
 /**
- * Run one hive git command. It resolves only once git has exited, also when the command times out: git is told to stop,
- * killed if it has not exited `killGraceMs` later, and waited for, so the next command never starts while it is still
- * writing.
+ * Run one hive git command. It resolves only once git has exited and nothing it started is left running, also when
+ * the command times out: git's process group is told to stop, killed if it has not gone `killGraceMs` later, and
+ * waited for, so the next command never starts while an earlier one is still writing.
+ *
+ * Exit, not the output closing, is what counts as finished. A child git starts shares git's output, so the output can
+ * stay open long after git exits (or, while git waits for that child, after git has been told to stop). Once git has
+ * exited its output gets a short wait to arrive, and anything still running in its group is stopped.
  */
 export function runGit(args: string[], cwd: string, timeoutMs = HIVE_GIT_TIMEOUT_MS, killGraceMs = HIVE_GIT_KILL_GRACE_MS): Promise<GitResult> {
   let child: ChildProcess;
   try {
-    child = spawn('git', [...HIVE_GIT_CONFIG, ...args], { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    child = spawn('git', [...HIVE_GIT_CONFIG, ...args], { cwd, stdio: ['ignore', 'pipe', 'pipe'], detached: GROUPS });
   } catch (e) {
     return Promise.resolve({ ok: false, out: '', err: e instanceof Error ? e.message : String(e) });
   }
@@ -68,10 +103,18 @@ export function runGit(args: string[], cwd: string, timeoutMs = HIVE_GIT_TIMEOUT
   let code: number | null = null;
   child.stdout?.setEncoding('utf8').on('data', (d: string) => { out += d; });
   child.stderr?.setEncoding('utf8').on('data', (d: string) => { err += d; });
-  const exited = new Promise<void>((resolve) => {
+  const closed = new Promise<void>((resolve) => child.on('close', () => resolve()));
+  const gone = new Promise<void>((resolve) => {
     child.on('error', (e) => { failure ||= e.message; resolve(); });
-    child.on('close', (c) => { code = c; resolve(); });
+    child.on('exit', (c) => { code = c; resolve(); });
   });
+  const exited = (async (): Promise<void> => {
+    await gone;
+    await Promise.race([closed, delay(HIVE_GIT_OUTPUT_WAIT_MS)]);
+    if (groupAlive(child)) await stopGroup(child, killGraceMs);
+    child.stdout?.destroy();
+    child.stderr?.destroy();
+  })();
   const live: LiveGit = { child, exited };
   liveGits.add(live);
   const timer = setTimeout(() => {
