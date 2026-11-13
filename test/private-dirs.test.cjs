@@ -117,3 +117,17 @@ test('a root that could not be read is refused by the private-folder check on it
     assert.ok(why && why.includes('/w/.codex/config.toml'), String(why));
   } finally { off(); }
 });
+
+test('an agent rooted at the Hindsight ledger folder is refused, naming it, before anything is created', async (t) => {
+  const f = floor(t);
+  // Outside the data folder here, so only the ledger's own registration can refuse it (in the app it sits inside).
+  const ledger = path.join(f.base, 'elsewhere', 'hindsight-ledger');
+  fs.mkdirSync(ledger, { recursive: true, mode: 0o700 });
+  // What the app does at start: the memory manager is handed the ledger folder, and registers it.
+  const { MemoryManager } = loadTs('src/main/memory.ts');
+  new MemoryManager(() => null, () => ({ backend: 'mempalace' }), () => ({}), ledger);
+  for (const provider of ['claude', 'codex']) {
+    await refusedBeforeAnything(f, `ledger-cwd-${provider}`, provider, { cwd: ledger }, ledger);
+  }
+  assert.ok(needRegistry().privateDirs().some((d) => d.path === ledger && /ledger/i.test(d.label)), 'registered under its own name');
+});

@@ -3,6 +3,7 @@ import { existsSync, statSync, readdirSync, readFileSync, writeFileSync } from '
 import { join } from 'node:path';
 import { MemPalaceAdapter } from './memPalaceAdapter';
 import { HindsightAdapter } from './hindsightAdapter';
+import { registerPrivateDir } from './privateDirs';
 import type { BackendId, MemoryBackend, MemorySettings } from './memoryBackend';
 import { MINE_INTERVAL_MS } from './memoryBackend';
 export type { MemorySettings } from './memoryBackend';
@@ -48,6 +49,8 @@ export class MemoryManager {
     /** A folder of the app's own (never the hive) for the Hindsight retain ledger. */
     private hindsightLedgerDir: string | null = null
   ) {
+    // The ledger records what Hindsight already holds; a forged one would resend or skip memories. No agent may reach it.
+    if (hindsightLedgerDir) registerPrivateDir(hindsightLedgerDir, 'the Hindsight ledger folder');
     this.backend = this.makeBackend(this.getSettings().backend);
     this.backendKey = this.settingsKey();
   }
