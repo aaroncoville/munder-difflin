@@ -19,7 +19,8 @@ const sourceAssert = require('./source-assert.cjs');
 
 test('the restart handler waits for an outcome instead of assuming one', () => {
   const src = sourceAssert.activeSource('src/main/updater.ts');
-  const body = sourceAssert.boundedSlice(src, "ipcMain.handle('update:restartAndInstall'", '\n  });');
+  // The handler is wrapped in the update-feed gate, so its body closes with `}));`.
+  const body = sourceAssert.boundedSlice(src, "ipcMain.handle('update:restartAndInstall'", '\n  }));');
   assert.ok(body.includes('await cancelled'),
     'the handler must await the cancellation signal — returning straight after '
     + 'quitAndInstall() is what told the renderer a refused quit had succeeded');

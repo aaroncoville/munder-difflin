@@ -5,7 +5,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path';
 import { readConfig } from './config';
 import { DEFAULT_DROP_HTML } from '../shared/releaseDrop';
-import { UPDATE_FEED_ENABLED } from '../shared/updateFeed';
+import { UPDATE_FEED_ENABLED, whenFeedOn } from '../shared/updateFeed';
 import { PRODUCT_NAME } from '../shared/productName';
 import { reduceStatus, clampPercent, isNewer, installerUrl, shouldShowReleaseDrop, type UpdateStatus } from '../shared/updateState';
 
@@ -47,7 +47,6 @@ import { reduceStatus, clampPercent, isNewer, installerUrl, shouldShowReleaseDro
  */
 
 const REPO = 'chaitanyagiri/munder-difflin';
-const UPDATES_OFF = 'updates are turned off in this build';
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6h
 const FALLBACK_CACHE_MS = 60 * 60 * 1000;     // 1h between releases/latest polls
 
@@ -370,7 +369,9 @@ export function initAutoUpdater(getWebContents: () => WebContents | null): void 
   sendTo = getWebContents;
 
   // IPC surface is registered unconditionally so the renderer can always call it.
-  ipcMain.handle('update:restartAndInstall', async () => {
+  // Every handler that acts on the feed or opens the releases page goes through
+  // whenFeedOn, which refuses while this build has no feed of its own.
+  ipcMain.handle('update:restartAndInstall', whenFeedOn(async () => {
     // Re-entry guard: a restart is already in flight. Firing quitAndInstall a
     // second time hits a native command Squirrel has already disabled and it
     // throws "The command is disabled and cannot be executed", the recurring
@@ -394,17 +395,15 @@ export function initAutoUpdater(getWebContents: () => WebContents | null): void 
       emit({ state: 'error', message: error });
       return { ok: false, error };
     }
-  });
-  ipcMain.handle('update:checkNow', async () => {
-    if (!UPDATE_FEED_ENABLED) return { ok: false, error: UPDATES_OFF };
+  }));
+  ipcMain.handle('update:checkNow', whenFeedOn(async () => {
     if (!app.isPackaged) return { ok: false, error: 'dev build — updates are only checked in packaged apps' };
     return runCheck();
-  });
-  ipcMain.handle('update:download', async () => {
-    if (!UPDATE_FEED_ENABLED) return { ok: false, error: UPDATES_OFF };
+  }));
+  ipcMain.handle('update:download', whenFeedOn(async () => {
     if (!app.isPackaged) return { ok: false, error: 'dev build — updates are only downloaded in packaged apps' };
     return runDownload();
-  });
+  }));
   /** Re-serve the last known status to a freshly loaded window. */
   ipcMain.handle('update:current', () => lastStatus ?? { state: 'idle' });
   /**
@@ -493,7 +492,7 @@ export function initAutoUpdater(getWebContents: () => WebContents | null): void 
       logLine(`post-update check failed: ${errText(e)}`);
     }
   }
-  ipcMain.handle('update:openRelease', (_evt, url: unknown) => {
+  ipcMain.handle('update:openRelease', whenFeedOn((_evt: unknown, url: unknown) => {
     const href = typeof url === 'string' ? url : `https://github.com/${REPO}/releases/latest`;
     // Only ever open the project's releases page — this is not a generic opener.
     if (!href.startsWith(`https://github.com/${REPO}/`)) return { ok: false };
@@ -507,7 +506,7 @@ export function initAutoUpdater(getWebContents: () => WebContents | null): void 
     if (asset) logLine(`manual download opened: ${asset[1]}`);
     void shell.openExternal(href);
     return { ok: true };
-  });
+  }));
 
   if (!app.isPackaged || !UPDATE_FEED_ENABLED) return;
   if (started) return;

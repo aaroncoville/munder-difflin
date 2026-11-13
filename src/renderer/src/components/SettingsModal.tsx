@@ -1007,9 +1007,13 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                           on the latest?" is the question people open Settings to
                           answer, and the toolbar chip says nothing at all when
                           the answer is yes. */}
-                      <UpdatesSection />
+                      {UPDATE_FEED_ENABLED && (
+                        <>
+                          <UpdatesSection />
 
-                      <div style={{ height: 1, background: 'var(--cth-ink-300)' }} />
+                          <div style={{ height: 1, background: 'var(--cth-ink-300)' }} />
+                        </>
+                      )}
 
                       {/* Home folder */}
                       <div>

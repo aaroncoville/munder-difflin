@@ -9,3 +9,23 @@
  * do nothing.
  */
 export const UPDATE_FEED_ENABLED = false;
+
+/** What every gated update action answers while the feed is off. */
+export const UPDATES_OFF = 'updates are turned off in this build';
+
+export interface UpdatesOff { ok: false; error: string }
+
+/**
+ * Wrap an update action so it refuses while the feed is off. Main wraps its IPC
+ * handlers with it and the preload wraps the calls it exposes, so neither side
+ * can reach the feed or the releases page on its own. Always resolves, so a
+ * caller that awaits or chains `.then` behaves the same either way.
+ */
+export function feedGate(enabled: boolean) {
+  return <A extends unknown[], R>(action: (...args: A) => R) =>
+    async (...args: A): Promise<Awaited<R> | UpdatesOff> =>
+      enabled ? await action(...args) : { ok: false, error: UPDATES_OFF };
+}
+
+/** The gate for this build. */
+export const whenFeedOn = feedGate(UPDATE_FEED_ENABLED);
