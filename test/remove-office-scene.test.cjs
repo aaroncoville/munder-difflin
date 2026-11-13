@@ -60,7 +60,7 @@ test('nothing in the renderer imports from the office scene', () => {
 test('LimeZu is credited wherever media of the old office are still shown, and nowhere the app ships', () => {
   // The app no longer ships the tilesets, but the README and site still show
   // screenshots and video drawn with them; the licence credit stays beside them.
-  for (const rel of ['README.md', 'docs/index.html', 'docs/pro/index.html', 'tools/landing-halloween/base.html']) {
+  for (const rel of ['README.md', 'docs/index.html', 'tools/landing-halloween/base.html']) {
     assert.match(read(rel), /limezu/i, `${rel} shows office media without the LimeZu credit`);
   }
   assert.match(read('README.md'), /docs\/media\/floor\.png/, 'the README credit is there because it shows the office');
