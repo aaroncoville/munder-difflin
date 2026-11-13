@@ -6151,8 +6151,13 @@ app.on('will-quit', (e) => {
   analyticsFlushed = true;
   e.preventDefault();
   const finish = (): void => app.exit(0);
-  Promise.race([
-    analytics.endSession(),
-    new Promise<void>((r) => setTimeout(r, 1200))
+  // No hive git may outlive the app: one still holding the index lock at the next launch would leave two writers.
+  // stopCommits bounds itself (a short grace, then the git is stopped and waited for).
+  Promise.all([
+    Promise.race([
+      analytics.endSession(),
+      new Promise<void>((r) => setTimeout(r, 1200))
+    ]),
+    hive.stopCommits().catch((e) => console.error('[quit] stopCommits:', e))
   ]).then(finish, finish);
 });

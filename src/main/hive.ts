@@ -54,7 +54,7 @@ import { preferredAgentRole } from '../shared/agentRole';
 import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde } from './fs';
 import { refreshMineIgnoresOnce } from './hiveMineIgnore';
-import { AGENT_ALLOWLIST_IGNORE_LINES, CommitQueue, HIVE_GIT_CONFIG, runGit, untrackIgnored, type GitResult } from './hiveCommit';
+import { AGENT_ALLOWLIST_IGNORE_LINES, CommitQueue, HIVE_GIT_CONFIG, HIVE_STALE_LOCK_MS, runGit, stopRunningGits, untrackIgnored, type GitResult } from './hiveCommit';
 import { agentFolderId, hasExactFolder, isAppSender, isFolderName, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, RegistryUnreadable, rosterIdFor, shortTarget } from './messageTarget';
 import { nodeLauncherScript } from './nodeLauncher';
 import { codexTrustEntry } from '../shared/codexTrust';
@@ -3841,7 +3841,7 @@ export class HiveManager {
   /** Commit all hive changes, in the background: returns at once, and requests made while a commit runs share one
    *  follow-up commit. See CommitQueue. */
   commit(message: string): void {
-    if (this._gitCommitsDisabled) return;
+    if (this._gitCommitsDisabled || this.commitsStopped) return;
     const root = this.root();
     if (!root || !existsSync(join(root, '.git'))) return;
     this.commits.request(root, message);
@@ -3852,24 +3852,41 @@ export class HiveManager {
     return this.commits.idle();
   }
 
+  /** Set once the app is quitting: no new commit, and no further git step in one already running. */
+  private commitsStopped = false;
+
+  /**
+   * For quitting, so no hive git outlives the app. A git left running after quit could still hold the index lock when
+   * the app starts again. Requests stop being taken, a commit still running gets `graceMs` to finish, and then its git
+   * is stopped (SIGTERM, SIGKILL `killGraceMs` later) and waited for. Uncommitted changes stay on disk for the next run.
+   */
+  stopCommits(graceMs = 1_500, killGraceMs = 2_000): Promise<void> {
+    this.commitsStopped = true;
+    return this.commits.close(graceMs, () => stopRunningGits(killGraceMs));
+  }
+
   private async commitNow(root: string, message: string): Promise<GitResult> {
     // Checked again here: commits may have been turned off since this one was requested.
     if (this._gitCommitsDisabled || !existsSync(join(root, '.git'))) return { ok: true, out: '', err: '' };
+    // Once quitting has begun, no further git starts: the one already running is all there is to stop.
+    const git = (args: string[], cwd: string): Promise<GitResult> =>
+      (this.commitsStopped ? Promise.resolve({ ok: false, out: '', err: 'the app is quitting' }) : runGit(args, cwd));
     if (!this.untrackedRoots.has(root)) {
       this.untrackedRoots.add(root);
-      const dropped = await untrackIgnored(root, runGit);
+      const dropped = await untrackIgnored(root, git);
       if (dropped > 0) console.warn(`[hive] stopped tracking ${dropped} ignored path(s) in the hive repo; the files stay on disk`);
     }
     this.clearStaleLock(root);
-    const add = await runGit(['add', '-A'], root);
+    const add = await git(['add', '-A'], root);
     if (!add.ok) return add;
-    const commit = await runGit(['commit', '-q', '-m', message], root);
+    const commit = await git(['commit', '-q', '-m', message], root);
     if (commit.ok || /nothing to commit/i.test(commit.out + commit.err)) return { ok: true, out: commit.out, err: commit.err };
     return commit;
   }
 
+  /** Remove a lock left by a git that can no longer be running. See HIVE_STALE_LOCK_MS. */
   private clearStaleLock(root: string): void {
-    const STALE_THRESHOLD_MS = 10_000;
+    const STALE_THRESHOLD_MS = HIVE_STALE_LOCK_MS;
     try {
       for (const lock of ['index.lock', 'HEAD.lock']) {
         const path = join(root, '.git', lock);

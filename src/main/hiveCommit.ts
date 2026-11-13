@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 
 export interface GitResult { ok: boolean; out: string; err: string }
 export type GitRunner = (args: string[], cwd: string) => Promise<GitResult>;
@@ -20,32 +20,69 @@ export const HIVE_GIT_CONFIG = ['-c', 'commit.gpgsign=false', '-c', 'gc.autoDeta
  *  has to catch a command that will never finish. SIGTERM lets git remove its own lock files on the way out. */
 export const HIVE_GIT_TIMEOUT_MS = 120_000;
 
-export function runGit(args: string[], cwd: string, timeoutMs = HIVE_GIT_TIMEOUT_MS): Promise<GitResult> {
-  return new Promise((resolve) => {
-    let out = '';
-    let err = '';
-    let settled = false;
-    const finish = (ok: boolean, extra = ''): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve({ ok, out, err: extra ? `${err}${err && !err.endsWith('\n') ? '\n' : ''}${extra}` : err });
-    };
-    let child: ReturnType<typeof spawn>;
-    try {
-      child = spawn('git', [...HIVE_GIT_CONFIG, ...args], { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
-    } catch (e) {
-      resolve({ ok: false, out: '', err: e instanceof Error ? e.message : String(e) });
-      return;
-    }
-    const timer = setTimeout(() => {
-      child.kill('SIGTERM');
-      finish(false, `git ${args[0]} did not finish within ${timeoutMs} ms`);
-    }, timeoutMs);
-    child.stdout?.setEncoding('utf8').on('data', (d: string) => { out += d; });
-    child.stderr?.setEncoding('utf8').on('data', (d: string) => { err += d; });
-    child.on('error', (e) => finish(false, e.message));
-    child.on('close', (code) => finish(code === 0));
+/** How long a git told to stop with SIGTERM has to exit before it is killed. */
+export const HIVE_GIT_KILL_GRACE_MS = 5_000;
+
+/**
+ * An index.lock older than this is left by a git that is no longer running, and is removed.
+ *
+ * A lock younger than the longest a hive git can live (its time limit plus the grace before it is killed) may belong
+ * to a git that is still running, possibly one a previous run of the app started just before it quit. Removing that
+ * lock would put two writers on the index, which can leave it unreadable. The margin covers a slow exit and clock
+ * granularity.
+ */
+export const HIVE_STALE_LOCK_MS = HIVE_GIT_TIMEOUT_MS + HIVE_GIT_KILL_GRACE_MS + 30_000;
+
+interface LiveGit { child: ChildProcess; exited: Promise<void> }
+
+/** Every hive git running in this process, so quitting can stop them. */
+const liveGits = new Set<LiveGit>();
+
+/** SIGTERM, then SIGKILL if it has not exited within `graceMs`. Resolves once it has exited. */
+function stopGit(git: LiveGit, graceMs: number): Promise<void> {
+  git.child.kill('SIGTERM');
+  const kill = setTimeout(() => git.child.kill('SIGKILL'), graceMs);
+  return git.exited.finally(() => clearTimeout(kill));
+}
+
+/** Stop every hive git still running and wait for each to exit. */
+export function stopRunningGits(graceMs = HIVE_GIT_KILL_GRACE_MS): Promise<void> {
+  return Promise.all([...liveGits].map((g) => stopGit(g, graceMs))).then(() => undefined);
+}
+
+/**
+ * Run one hive git command. It resolves only once git has exited, also when the command times out: git is told to stop,
+ * killed if it has not exited `killGraceMs` later, and waited for, so the next command never starts while it is still
+ * writing.
+ */
+export function runGit(args: string[], cwd: string, timeoutMs = HIVE_GIT_TIMEOUT_MS, killGraceMs = HIVE_GIT_KILL_GRACE_MS): Promise<GitResult> {
+  let child: ChildProcess;
+  try {
+    child = spawn('git', [...HIVE_GIT_CONFIG, ...args], { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (e) {
+    return Promise.resolve({ ok: false, out: '', err: e instanceof Error ? e.message : String(e) });
+  }
+  let out = '';
+  let err = '';
+  let failure = '';
+  let code: number | null = null;
+  child.stdout?.setEncoding('utf8').on('data', (d: string) => { out += d; });
+  child.stderr?.setEncoding('utf8').on('data', (d: string) => { err += d; });
+  const exited = new Promise<void>((resolve) => {
+    child.on('error', (e) => { failure ||= e.message; resolve(); });
+    child.on('close', (c) => { code = c; resolve(); });
+  });
+  const live: LiveGit = { child, exited };
+  liveGits.add(live);
+  const timer = setTimeout(() => {
+    failure ||= `git ${args[0]} did not finish within ${timeoutMs} ms`;
+    void stopGit(live, killGraceMs);
+  }, timeoutMs);
+  return exited.then(() => {
+    clearTimeout(timer);
+    liveGits.delete(live);
+    const extra = failure ? `${err && !err.endsWith('\n') ? '\n' : ''}${failure}` : '';
+    return { ok: !failure && code === 0, out, err: err + extra };
   });
 }
 
@@ -112,6 +149,7 @@ export class CommitQueue {
   private running: Promise<void> | null = null;
   private readonly pending = new Map<string, string[]>();
   private failures = 0;
+  private closed = false;
   private readonly failingAfter: number;
   private readonly warn: (line: string) => void;
 
@@ -124,6 +162,7 @@ export class CommitQueue {
   }
 
   request(root: string, message: string): void {
+    if (this.closed) return;
     const messages = this.pending.get(root);
     if (messages) messages.push(message);
     else this.pending.set(root, [message]);
@@ -133,6 +172,22 @@ export class CommitQueue {
       draining.add(running);
       void running.finally(() => draining.delete(running));
     }
+  }
+
+  /**
+   * For quitting: take no more requests and drop the waiting ones (their changes stay on disk for the next run). A
+   * commit still running gets `graceMs` to finish; then `stop` ends it, and this resolves once it has.
+   */
+  async close(graceMs: number, stop: () => Promise<void>): Promise<void> {
+    this.closed = true;
+    this.pending.clear();
+    const running = this.running;
+    if (!running) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finished = await Promise.race([running.then(() => true), new Promise<boolean>((r) => { timer = setTimeout(() => r(false), graceMs); })]);
+    clearTimeout(timer);
+    if (!finished) await stop();
+    await this.idle();
   }
 
   /** Resolves once no commit is running or waiting. */
