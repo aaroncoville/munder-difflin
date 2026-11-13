@@ -138,6 +138,39 @@ export function runGit(args: string[], cwd: string, timeoutMs = HIVE_GIT_TIMEOUT
 }
 
 /**
+ * The hive repository's own maintenance, which commits no longer start (see HIVE_GIT_CONFIG).
+ *
+ * Each step is its own git command and its own queued step, so a commit never waits behind more than one of them:
+ * - `loose-objects` packs loose objects in batches of at most `HIVE_MAINTENANCE_LOOSE_BATCH`. This is the one that
+ *   matters: every commit adds loose objects, and nothing packs them now. The batch keeps a first run over a large
+ *   backlog incremental: each day packs another batch.
+ * - `prune-packed` then deletes the loose copies of what is now packed. The task does that itself only at the start of
+ *   its next run, so without this a day's batch would stay on disk twice until the next day.
+ * - `commit-graph` writes the commit graph incrementally, which keeps history walks fast as commits pile up.
+ * - `pack-refs` folds loose refs into packed-refs. Cheap.
+ * Not `gc`: it repacks every object into one pack in a single step, minutes on a repository of several gigabytes, and
+ * git advises against running it alongside `loose-objects`. Not `incremental-repack`: by default it also repacks
+ * everything into one pack.
+ *
+ * These tasks never take index.lock or HEAD.lock, the locks clearStaleLock may remove, so a step that runs longer than
+ * a commit can does not change when a lock counts as stale.
+ */
+export const HIVE_MAINTENANCE_TASKS = ['loose-objects', 'prune-packed', 'commit-graph', 'pack-refs'] as const;
+export const HIVE_MAINTENANCE_LOOSE_BATCH = 50_000;
+/** A maintenance step gets far longer than a commit: it runs alone, while nothing else is happening. */
+export const HIVE_MAINTENANCE_TIMEOUT_MS = 30 * 60_000;
+/** Maintenance waits until the queue has been idle this long, and runs at most once per HIVE_MAINTENANCE_EVERY_MS. */
+export const HIVE_MAINTENANCE_IDLE_MS = 10 * 60_000;
+export const HIVE_MAINTENANCE_EVERY_MS = 24 * 60 * 60_000;
+
+/** The git command for one maintenance task. */
+export function maintenanceArgs(task: (typeof HIVE_MAINTENANCE_TASKS)[number]): string[] {
+  if (task === 'prune-packed') return ['prune-packed', '-q'];
+  const batch = task === 'loose-objects' ? ['-c', `maintenance.loose-objects.batchSize=${HIVE_MAINTENANCE_LOOSE_BATCH}`] : [];
+  return [...batch, 'maintenance', 'run', `--task=${task}`];
+}
+
+/**
  * What the hive repository records inside each agent's folder: these files and nothing else.
  *
  * An agent's folder is also its working directory, so it fills with whatever the agent makes there: provider homes,
@@ -182,7 +215,12 @@ export interface CommitQueueOptions {
   /** Told once when a run of failures reaches `failingAfter`, and once when commits recover from it. */
   onFailing?: (failures: number, error: string) => void;
   onRecovered?: (failures: number) => void;
+  /** Told each time the queue has run everything it had and goes idle. */
+  onIdle?: () => void;
 }
+
+/** A unit of work that is not a commit (a maintenance step): it runs alone, like a commit, after the commits waiting. */
+interface QueuedStep { run: () => Promise<void> }
 
 /**
  * Runs hive commits one at a time, off the caller's thread.
@@ -199,6 +237,7 @@ export interface CommitQueueOptions {
 export class CommitQueue {
   private running: Promise<void> | null = null;
   private readonly pending = new Map<string, string[]>();
+  private readonly steps: QueuedStep[] = [];
   private failures = 0;
   private closed = false;
   private readonly failingAfter: number;
@@ -217,12 +256,28 @@ export class CommitQueue {
     const messages = this.pending.get(root);
     if (messages) messages.push(message);
     else this.pending.set(root, [message]);
-    if (!this.running) {
-      const running = this.drain();
-      this.running = running;
-      draining.add(running);
-      void running.finally(() => draining.delete(running));
-    }
+    this.start();
+  }
+
+  /** Queue work that is not a commit. It runs alone, after every commit already waiting, and commits requested while
+   *  it waits go before it. Close drops it like a waiting commit. */
+  requestStep(run: () => Promise<void>): void {
+    if (this.closed) return;
+    this.steps.push({ run });
+    this.start();
+  }
+
+  /** Whether anything is running or waiting. */
+  busy(): boolean {
+    return this.running !== null;
+  }
+
+  private start(): void {
+    if (this.running) return;
+    const running = this.drain();
+    this.running = running;
+    draining.add(running);
+    void running.finally(() => draining.delete(running));
   }
 
   /**
@@ -232,6 +287,7 @@ export class CommitQueue {
   async close(graceMs: number, stop: () => Promise<void>): Promise<void> {
     this.closed = true;
     this.pending.clear();
+    this.steps.length = 0;
     const running = this.running;
     if (!running) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -257,19 +313,27 @@ export class CommitQueue {
 
   private async drain(): Promise<void> {
     try {
-      for (let next = this.takeNext(); next; next = this.takeNext()) {
-        const [root, messages] = next;
-        let result: GitResult;
-        try {
-          result = await this.job(root, combineMessages(messages));
-        } catch (e) {
-          result = { ok: false, out: '', err: e instanceof Error ? e.message : String(e) };
+      for (;;) {
+        const next = this.takeNext();
+        if (next) {
+          const [root, messages] = next;
+          let result: GitResult;
+          try {
+            result = await this.job(root, combineMessages(messages));
+          } catch (e) {
+            result = { ok: false, out: '', err: e instanceof Error ? e.message : String(e) };
+          }
+          this.record(result);
+          continue;
         }
-        this.record(result);
+        const step = this.steps.shift();
+        if (!step) break;
+        try { await step.run(); } catch (e) { this.warn(`[hive] ${e instanceof Error ? e.message : String(e)}`); }
       }
     } finally {
       this.running = null;
     }
+    if (!this.closed) this.opts.onIdle?.();
   }
 
   private takeNext(): [string, string[]] | undefined {
