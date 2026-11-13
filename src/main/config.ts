@@ -346,6 +346,9 @@ export interface HarnessConfig {
    *  seen and answered), written to <userData>/usage (the app's data folder, not the hive) and never sent anywhere. Default
    *  ON; Settings has the switch and a delete button. See docs/usage-log.md. */
   usageLog?: boolean;
+  /** Claude plugins a hive agent's session keeps (names, without the marketplace); every other plugin the owner has is
+   *  off for agents. Unset = the default list in agentPlugins.ts. (Mirrored in preload + renderer config.) */
+  agentPlugins?: string[];
   /** Per-CLI-provider local/self-hosted base URL (Ollama/LM Studio/vLLM, …) for the
    *  OpenCode/Crush/pi/qwen engines; applied at spawn (config-injection or proxy
    *  upstream). API KEYS are NOT stored here — they live write-only in the secret

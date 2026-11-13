@@ -968,3 +968,20 @@ test('tables that name a program Codex runs outside its sandbox: allowed in the 
     assert.match(await refused(spawn(proj)), /in a project config \(Codex runs the program it names outside its sandbox\) is not on the list this app version understands/, tb);
   }
 });
+
+test('a Claude seat whose generated settings carry enabledPlugins passes the spawn check and the late check', async (t) => {
+  const { home, rt, hive } = floor(t);
+  hive.setHookRuntime(rt);
+  // The owner's own settings enable plugins, as on the floor; the generated settings name every one of them.
+  const userDir = path.join(home, '.claude');
+  fs.mkdirSync(userDir, { recursive: true });
+  fs.writeFileSync(path.join(userDir, 'settings.json'), JSON.stringify({ enabledPlugins: { 'superpowers@claude-plugins-official': true, 'terraform@claude-plugins-official': true } }));
+  const id = 'pl1';
+  const dir = path.join(home, 'hive', 'agents', id);
+  const argv = ['claude', '--settings', path.join(dir, 'settings.json')];
+  const inj = await hive.ensureAgent({ id, name: 'p', provider: 'claude', cwd: home }, { launch: { argv, env: {} }, spawnId: 's-pl1' });
+  const settings = JSON.parse(fs.readFileSync(inj.args[inj.args.indexOf('--settings') + 1], 'utf8'));
+  assert.deepEqual(settings.enabledPlugins, { 'superpowers@claude-plugins-official': true, 'terraform@claude-plugins-official': false });
+  hive.markHookProvisioned('s-pl1');
+  assert.doesNotThrow(() => hive.confirmSpawn('s-pl1', { id, provider: 'claude' }, [...argv, ...inj.args.filter((a, i, all) => a !== '--settings' && all[i - 1] !== '--settings')], {}));
+});
