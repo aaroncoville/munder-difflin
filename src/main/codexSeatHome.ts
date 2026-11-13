@@ -92,7 +92,8 @@ export const MIGRATE_MAX_BYTES = 1024 * 1024 * 1024;
 const MARKER = '.migrated-from-agent-folder.json';
 const TEMP = '.migrating-';
 
-export interface SeatMigration { from: string; copied: string[]; skipped: string[] }
+/** `finished` is false when a file has to be copied again at the next start. */
+export interface SeatMigration { from: string; copied: string[]; skipped: string[]; finished: boolean }
 
 /** Why a hive-thread.json is not the app's own thread record ({ fresh, ids }), or null when it is. */
 function threadRecordProblem(bytes: Buffer): string | null {
@@ -110,23 +111,26 @@ function threadRecordProblem(bytes: Buffer): string | null {
 }
 const CHECKS: Record<string, (bytes: Buffer) => string | null> = { 'hive-thread.json': threadRecordProblem };
 
+/** What became of one file: copied (null), skipped for good, or to be tried
+ *  again at the next start because it changed while it was read. */
+type Copied = null | { skip: string } | { retry: string };
+
 /** Copy one regular file, never following a link at the source, to a temporary
  *  name beside `to`; check its size (and content, where there is a check), then
- *  rename it into place. Returns why it was deliberately skipped, or null when
- *  copied. Any other failure throws, with nothing partial left at `to`. */
-function copyRegular(from: string, to: string, cap: number, check?: (bytes: Buffer) => string | null): string | null {
+ *  rename it into place. Any other failure throws, with nothing partial left at `to`. */
+function copyRegular(from: string, to: string, cap: number, check?: (bytes: Buffer) => string | null): Copied {
   let fd: number;
   try { fd = openSync(from, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
   catch (e) {
-    if ((e as NodeJS.ErrnoException).code === 'ELOOP') return 'a link';
+    if ((e as NodeJS.ErrnoException).code === 'ELOOP') return { skip: 'a link' };
     throw e;
   }
   const tmp = join(dirname(to), `${TEMP}${basename(to)}.${process.pid}.${randomBytes(6).toString('hex')}`);
   let placed = false;
   try {
     const st = fstatSync(fd);
-    if (!st.isFile()) return 'not a regular file';
-    if (st.size > cap) return `larger than ${cap} bytes`;
+    if (!st.isFile()) return { skip: 'not a regular file' };
+    if (st.size > cap) return { skip: `larger than ${cap} bytes` };
     const out = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     let total = 0;
     try {
@@ -135,13 +139,14 @@ function copyRegular(from: string, to: string, cap: number, check?: (bytes: Buff
         const n = readSync(fd, buf, 0, buf.length, null);
         if (n <= 0) break;
         total += n;
-        if (total > cap) return `larger than ${cap} bytes`;
+        // Grew past what was measured: another agent is writing it now.
+        if (total > st.size) return { retry: 'changed while it was copied' };
         for (let off = 0; off < n;) off += writeSync(out, buf, off, n - off);
       }
     } finally { closeSync(out); }
-    if (total !== st.size) return 'changed while it was copied';
+    if (total !== st.size) return { retry: 'changed while it was copied' };
     const problem = check ? check(readFileSync(tmp)) : null;
-    if (problem) return problem;
+    if (problem) return { skip: problem };
     renameSync(tmp, to);
     placed = true;
     return null;
@@ -158,9 +163,10 @@ function copyRegular(from: string, to: string, cap: number, check?: (bytes: Buff
  * are copied, each size-capped and renamed into place only once complete, and
  * nothing under the agent folder is renamed, moved or deleted. The marker that
  * ends the migration is written last, once every allowlisted file is in place
- * or deliberately skipped; a start interrupted before that finishes it (a file
- * already in place is kept). Returns what happened, or null when there was
- * nothing to do.
+ * or deliberately skipped. A file that changed while it was copied is not a
+ * skip: no marker is written, and the next start copies it again (a file
+ * already in place is kept).
+ * Returns what happened, or null when there was nothing to do.
  */
 export function migrateSeatHome(agentDir: string, home: string, cap = MIGRATE_MAX_BYTES): SeatMigration | null {
   const legacy = join(agentDir, '.codex');
@@ -172,12 +178,15 @@ export function migrateSeatHome(agentDir: string, home: string, cap = MIGRATE_MA
   for (const name of readdirSync(home)) if (name.startsWith(TEMP)) rmSync(join(home, name), { force: true });
   const copied: string[] = [];
   const skipped: string[] = [];
+  let finished = true;
   for (const entry of readdirSync(legacy, { withFileTypes: true })) {
     if (!MIGRATED.test(entry.name)) continue;
     if (existsSync(join(home, entry.name))) { skipped.push(`${entry.name} (already present)`); continue; }
-    const why = copyRegular(join(legacy, entry.name), join(home, entry.name), cap, CHECKS[entry.name]);
-    if (why) skipped.push(`${entry.name} (${why})`); else copied.push(entry.name);
+    const r = copyRegular(join(legacy, entry.name), join(home, entry.name), cap, CHECKS[entry.name]);
+    if (!r) copied.push(entry.name);
+    else if ('skip' in r) skipped.push(`${entry.name} (${r.skip})`);
+    else { finished = false; skipped.push(`${entry.name} (${r.retry}; copied again at the next start)`); }
   }
-  writeFileSync(join(home, MARKER), JSON.stringify({ from: legacy, copied, skipped }, null, 2), { mode: 0o600 });
-  return { from: legacy, copied, skipped };
+  if (finished) writeFileSync(join(home, MARKER), JSON.stringify({ from: legacy, copied, skipped }, null, 2), { mode: 0o600 });
+  return { from: legacy, copied, skipped, finished };
 }

@@ -485,3 +485,29 @@ test('the write-roots dry run reads the computed home as the config the app gene
   const unset = read({ ...rec, codexHomeFromApp: false });
   assert.deepEqual([unset.state, unset.source], ['unknown', 'codex-config'], 'only the spawn record makes it generated');
 });
+
+test('a source that changes while it is copied leaves no marker, and the next start copies it', (t) => {
+  const { migrateSeatHome } = loadTs('src/main/codexSeatHome.ts');
+  const root = codexTestBase(t, 'mdsc-');
+  const agent = path.join(root, 'agent');
+  const legacy = path.join(agent, '.codex');
+  fs.mkdirSync(legacy, { recursive: true });
+  const src = path.join(legacy, 'history.jsonl');
+  fs.writeFileSync(src, 'one\n');
+  const home = path.join(root, 'home');
+  // Another agent appends to the source right after the copy measured it.
+  const realFstat = fs.fstatSync;
+  let grown = false;
+  fs.fstatSync = function (fd, ...rest) {
+    const st = realFstat.call(fs, fd, ...rest);
+    if (!grown && st.isFile() && st.size === 4) { grown = true; fs.appendFileSync(src, 'two\n'); }
+    return st;
+  };
+  try { migrateSeatHome(agent, home); } finally { fs.fstatSync = realFstat; }
+  assert.equal(grown, true, 'the probe ran');
+  assert.equal(fs.existsSync(path.join(home, 'history.jsonl')), false, 'no partial copy');
+  assert.equal(fs.readdirSync(home).some((n) => n.startsWith('.migrated')), false, 'no marker: the migration is not finished');
+  const again = migrateSeatHome(agent, home);
+  assert.ok(again && again.copied.includes('history.jsonl'), JSON.stringify(again));
+  assert.equal(fs.readFileSync(path.join(home, 'history.jsonl'), 'utf8'), 'one\ntwo\n');
+});

@@ -3119,7 +3119,7 @@ export class HiveManager {
       // history: an allowlist of files is copied once, as data. The old folder
       // is left exactly as it was; the owner removes it.
       const migrated = migrateSeatHome(dir, home);
-      if (migrated) this.appendLog({ kind: 'codex-home-migrated', agentId, from: migrated.from, to: home, copied: migrated.copied, skipped: migrated.skipped });
+      if (migrated) this.appendLog({ kind: 'codex-home-migrated', agentId, from: migrated.from, to: home, copied: migrated.copied, skipped: migrated.skipped, finished: migrated.finished });
       const userHome = join(homedir(), '.codex');
       // Symlink the user's login so the isolated home authenticates as them.
       // (config.toml is NOT symlinked — we write our own below, seeded from theirs,
