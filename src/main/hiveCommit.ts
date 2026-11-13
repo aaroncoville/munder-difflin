@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { devNull } from 'node:os';
 
 export interface GitResult {
   ok: boolean;
@@ -52,6 +53,27 @@ export const HIVE_GIT_KILL_GRACE_MS = 5_000;
  * granularity.
  */
 export const HIVE_STALE_LOCK_MS = HIVE_GIT_TIMEOUT_MS + HIVE_GIT_KILL_GRACE_MS + 30_000;
+
+/**
+ * Inherited environment variables that choose which repository, config, programs or templates git uses. The app's
+ * environment is the owner's (a local build inherits the shell it was started from), never an agent's, but nothing in
+ * it should change what the hive's git reads or runs.
+ */
+const GIT_ENV_DROPPED = /^GIT_(DIR|WORK_TREE|INDEX_FILE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|COMMON_DIR|NAMESPACE|EXEC_PATH|TEMPLATE_DIR|ATTR_SOURCE|CONFIG|CONFIG_.*)$/;
+
+/**
+ * The environment every hive git runs in: the app's, without the variables above, and with neither the system nor the
+ * owner's global git config. The hive repository is the app's own bookkeeping; what it needs is on the command line
+ * (HIVE_GIT_CONFIG). Without this, the owner's global config would apply: its hooksPath, its fsmonitor, and any filter
+ * it defines (git-lfs, for one), which a `.gitattributes` an agent wrote in the hive could then name.
+ */
+export function hiveGitEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(base)) if (!GIT_ENV_DROPPED.test(k)) env[k] = v;
+  env.GIT_CONFIG_NOSYSTEM = '1';
+  env.GIT_CONFIG_GLOBAL = devNull;
+  return env;
+}
 
 /** How long git's output has to finish arriving once git itself has exited. */
 export const HIVE_GIT_OUTPUT_WAIT_MS = 500;
@@ -113,7 +135,7 @@ export function stopRunningGits(graceMs = HIVE_GIT_KILL_GRACE_MS): Promise<void>
 export function runGit(args: string[], cwd: string, timeoutMs = HIVE_GIT_TIMEOUT_MS, killGraceMs = HIVE_GIT_KILL_GRACE_MS): Promise<GitResult> {
   let child: ChildProcess;
   try {
-    child = spawn('git', [...HIVE_GIT_CONFIG, ...args], { cwd, stdio: ['ignore', 'pipe', 'pipe'], detached: GROUPS });
+    child = spawn('git', [...HIVE_GIT_CONFIG, ...args], { cwd, stdio: ['ignore', 'pipe', 'pipe'], detached: GROUPS, env: hiveGitEnv() });
   } catch (e) {
     return Promise.resolve({ ok: false, out: '', err: e instanceof Error ? e.message : String(e) });
   }

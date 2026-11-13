@@ -302,3 +302,34 @@ test('an untrack pass that keeps failing is tried at most once a minute, its fir
   assert.equal(failures.length, 1);
   assert.match(failures[0], /boom/);
 });
+
+test('a filter defined only in the owner\'s global git config is never run by the hive\'s git', async (t) => {
+  const { dir, base, marker } = scratch(t);
+  const hive = await floor(dir, base);
+  // As git-lfs does: a filter in the owner's global config, which a .gitattributes an agent wrote can name.
+  const program = path.join(dir, 'global-filter.sh');
+  fs.writeFileSync(program, `#!/bin/sh\ntouch '${marker}'\ncat\n`, { mode: 0o755 });
+  // The owner's global config, where git looks for it: ~/.gitconfig.
+  const ownerHome = path.join(dir, 'owner-home');
+  fs.mkdirSync(ownerHome);
+  fs.writeFileSync(path.join(ownerHome, '.gitconfig'), `[filter "owners"]\n\tclean = ${program}\n\tsmudge = ${program}\n`);
+  const saved = { HOME: process.env.HOME, GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL };
+  process.env.HOME = ownerHome;
+  delete process.env.GIT_CONFIG_GLOBAL;
+  t.after(() => { for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } });
+  fs.writeFileSync(path.join(hive.root(), '.gitattributes'), '* filter=owners\n');
+  fs.writeFileSync(path.join(hive.root(), 'board.md'), '# routed through the filter\n');
+
+  hive.commit('hive: with a .gitattributes naming the owner\'s filter');
+  await hive.commitsSettled();
+
+  assert.equal(fs.existsSync(marker), false, 'the owner\'s global filter ran on a hive commit');
+  // The same file through plain git, with the same global config, does run it: the test would otherwise prove nothing.
+  const control = path.join(dir, 'control');
+  fs.mkdirSync(control);
+  git(control, 'init', '-q');
+  fs.writeFileSync(path.join(control, '.gitattributes'), '* filter=owners\n');
+  fs.writeFileSync(path.join(control, 'f'), 'x');
+  git(control, 'add', '-A');
+  assert.equal(fs.existsSync(marker), true, 'the control did not run the filter');
+});
