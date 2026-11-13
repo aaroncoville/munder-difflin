@@ -518,9 +518,9 @@ test('round 4: decided once — a policy change after the decision starts under 
   assert.doesNotThrow(() => hive.confirmHookLaunch(hive.takeHookVerdict('n1'), claudeLaunch(dir('n1')).argv, {}));
   fs.rmSync(path.join(home, '.claude'), { recursive: true });
   // A final launch that adds an unchecked root refuses and rolls a NEW agent back: folder, row, and a log row saying so.
-  await hive.ensureAgent({ id: 'n2', name: 'n2', provider: 'claude', cwd: home }, { launch: claudeLaunch(dir('n2')) });
+  await hive.ensureAgent({ id: 'n2', name: 'n2', provider: 'claude', cwd: home }, { launch: claudeLaunch(dir('n2')), spawnId: 's-n2' });
   assert.ok(fs.existsSync(dir('n2')) && Object.hasOwn(hive.registry().agents, 'n2'));
-  assert.throws(() => hive.confirmHookLaunch(hive.takeHookVerdict('n2'), claudeLaunch(dir('n2'), ['--add-dir', app]).argv, {}), /write root that was not checked/);
+  assert.throws(() => hive.confirmHookLaunch(hive.takeHookVerdict('s-n2'), claudeLaunch(dir('n2'), ['--add-dir', app]).argv, {}), /write root that was not checked/);
   assert.equal(fs.existsSync(dir('n2')), true, 'no folder is ever deleted: the one this call created is left in place');
   assert.equal(Object.hasOwn(hive.registry().agents, 'n2'), false, 'only the row this call added is rolled back');
   assert.ok(log().some((r) => r.kind === 'spawn-rolled-back' && r.agentId === 'n2' && r.rowRemoved === true && r.folderLeft === dir('n2')));
@@ -644,6 +644,7 @@ test('round 6: no folder is ever deleted — a pre-existing orphan folder surviv
   fs.writeFileSync(path.join(orphan, 'notes.md'), 'keep me\n');
   const before = fs.readFileSync(path.join(orphan, 'notes.md'));
   await hive.ensureAgent({ id: 'orph', name: 'o', provider: 'claude', cwd: home }, { launch: { argv: ['claude', '--settings', path.join(orphan, 'settings.json')], env: {} }, spawnId: 'pty-1' });
+  hive.markHookProvisioned('pty-1');
   assert.throws(() => hive.confirmSpawn('pty-1', { id: 'orph', provider: 'claude' }, ['claude', '--settings', path.join(orphan, 'settings.json'), '--add-dir', path.dirname(rt)], {}), /write root that was not checked/);
   assert.deepEqual(fs.readFileSync(path.join(orphan, 'notes.md')), before, 'the file is untouched');
   assert.equal(Object.hasOwn(hive.registry().agents, 'orph'), false, 'the row this call added is gone');
@@ -657,16 +658,120 @@ test('round 6: the decision is keyed per spawn; a missing or mismatched one refu
   hive.setHookRuntime(rt);
   const L = (id) => ({ argv: ['claude', '--settings', path.join(home, 'hive', 'agents', id, 'settings.json')], env: {} });
   // Two overlapping spawns of one agent each keep their own decision.
-  await hive.ensureAgent({ id: 'a1', name: 'a', provider: 'claude', cwd: home }, { launch: L('a1'), spawnId: 'pty-A' });
-  await hive.ensureAgent({ id: 'a1', name: 'a', provider: 'claude', cwd: home }, { launch: L('a1'), spawnId: 'pty-B' });
+  await hive.ensureAgent({ id: 'a1', name: 'a', provider: 'claude', cwd: home }, { launch: L('a1'), spawnId: 'pty-A' }); hive.markHookProvisioned('pty-A');
+  await hive.ensureAgent({ id: 'a1', name: 'a', provider: 'claude', cwd: home }, { launch: L('a1'), spawnId: 'pty-B' }); hive.markHookProvisioned('pty-B');
   assert.doesNotThrow(() => hive.confirmSpawn('pty-A', { id: 'a1', provider: 'claude' }, L('a1').argv, {}));
   assert.doesNotThrow(() => hive.confirmSpawn('pty-B', { id: 'a1', provider: 'claude' }, L('a1').argv, {}));
   // Taken once: a second late check for the same spawn has no decision and refuses (no fail-open).
   assert.throws(() => hive.confirmSpawn('pty-A', { id: 'a1', provider: 'claude' }, L('a1').argv, {}), /no hook runtime decision was made for this spawn/);
   assert.throws(() => hive.confirmSpawn('pty-never', { id: 'a1', provider: 'claude' }, L('a1').argv, {}), /no hook runtime decision/);
   // A decision for another agent is not this one's.
-  await hive.ensureAgent({ id: 'a2', name: 'b', provider: 'claude', cwd: home }, { launch: L('a2'), spawnId: 'pty-C' });
+  await hive.ensureAgent({ id: 'a2', name: 'b', provider: 'claude', cwd: home }, { launch: L('a2'), spawnId: 'pty-C' }); hive.markHookProvisioned('pty-C');
   assert.throws(() => hive.confirmSpawn('pty-C', { id: 'a1', provider: 'claude' }, L('a1').argv, {}), /for another agent/);
   // A provider that gets no app hook command needs no decision.
   assert.doesNotThrow(() => hive.confirmSpawn('pty-none', { id: 'g1', provider: 'gemini' }, ['gemini'], {}));
+});
+
+test('round 7 (H1): a decision is confirmable only once provisioning finished; every swallow site is covered', async (t) => {
+  const { home, rt, hive, root } = floor(t);
+  hive.setHookRuntime(rt);
+  hive.ensureHive();
+  const L = (id) => ({ argv: ['claude', '--settings', path.join(root, 'agents', id, 'settings.json')], env: {} });
+  // Site index.ts ensureAgent catch: an ordinary provisioning error (a file where the inbox folder goes) is recorded and refuses, named.
+  fs.mkdirSync(path.join(root, 'agents', 'blocked'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'agents', 'blocked', 'inbox'), 'x');
+  let err;
+  try { await hive.ensureAgent({ id: 'blocked', name: 'b', provider: 'claude', cwd: home }, { launch: L('blocked'), spawnId: 'pty-gap' }); } catch (e) { err = e; }
+  assert.ok(err && err.code === 'ENOTDIR', String(err));
+  hive.hookProvisioningFailed('pty-gap', err);
+  hive.markHookProvisioned('pty-gap'); // a mark after a recorded failure does not clear it
+  assert.throws(() => hive.confirmSpawn('pty-gap', { id: 'blocked', provider: 'claude' }, L('blocked').argv, {}), /hook provisioning did not complete \(.*ENOTDIR/);
+  // The injection was never applied (no mark): the decision stays unconfirmable.
+  await hive.ensureAgent({ id: 'nomark', name: 'n', provider: 'claude', cwd: home }, { launch: L('nomark'), spawnId: 'pty-nomark' });
+  assert.throws(() => hive.confirmSpawn('pty-nomark', { id: 'nomark', provider: 'claude' }, L('nomark').argv, {}), /hook provisioning did not complete/);
+  // Site installCodexHooks / bridge catch: with a runtime set, a Codex hook config that cannot be written refuses instead of starting unhooked.
+  const keep = hive.exposeCodexDataDirs;
+  hive.exposeCodexDataDirs = () => { throw new Error('injected: cannot write the Codex home'); };
+  t.after(() => { hive.exposeCodexDataDirs = keep; });
+  assert.match(await refused(hive.ensureAgent({ id: 'cx', name: 'c', provider: 'codex', cwd: home }, { launch: { argv: ['codex -s workspace-write'], env: {} }, spawnId: 'pty-cx' })), /Codex hook config could not be written \(injected/);
+  hive.exposeCodexDataDirs = keep;
+  // Site copyBundledSkills catch: skills are not hooks; a failure there leaves the hook settings in place.
+  await hive.ensureAgent({ id: 'sk', name: 's', provider: 'claude', cwd: home }, { launch: L('sk'), spawnId: 'pty-sk', skillsDir: path.join(home, 'no-such-skills') });
+  hive.markHookProvisioned('pty-sk');
+  assert.ok(JSON.parse(fs.readFileSync(path.join(root, 'agents', 'sk', 'settings.json'), 'utf8')).hooks.Stop[0].hooks[0].command.includes(rt));
+  assert.doesNotThrow(() => hive.confirmSpawn('pty-sk', { id: 'sk', provider: 'claude' }, L('sk').argv, {}));
+  // Site index.ts ensureClaudePermissionsAccepted swallow: it runs after the mark and only accepts a folder trust prompt.
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.ts'), 'utf8');
+  const mark = main.indexOf('hive.markHookProvisioned(opts.id);');
+  const perm = main.indexOf('try { ensureClaudePermissionsAccepted(opts.cwd); } catch');
+  const late = main.indexOf('hive.confirmSpawn(opts.id');
+  assert.ok(mark > 0 && perm > mark && late > perm, 'mark, then the permissions swallow, then the late check');
+  assert.match(main.slice(main.indexOf('} catch (e) {', mark), late), /hive\.hookProvisioningFailed\(opts\.id, e\);/);
+});
+
+test('round 7 (H2): a late refusal removes only a row this spawn still owns — both interleavings', async (t) => {
+  const { home, rt, hive, root, log } = floor(t);
+  hive.setHookRuntime(rt);
+  const L = { argv: ['claude', '--settings', path.join(root, 'agents', 'same', 'settings.json')], env: {} };
+  const bad = [...L.argv, '--add-dir', path.dirname(rt)];
+  const both = async () => {
+    await hive.ensureAgent({ id: 'same', name: 's', provider: 'claude', cwd: home }, { launch: L, spawnId: 'A' }); hive.markHookProvisioned('A');
+    await hive.ensureAgent({ id: 'same', name: 's', provider: 'claude', cwd: home }, { launch: L, spawnId: 'B' }); hive.markHookProvisioned('B');
+  };
+  // Order 1: B starts, then A's late check refuses.
+  await both();
+  hive.confirmSpawn('B', { id: 'same', provider: 'claude' }, L.argv, {});
+  assert.throws(() => hive.confirmSpawn('A', { id: 'same', provider: 'claude' }, bad, {}), /not checked/);
+  assert.equal(Object.hasOwn(hive.registry().agents, 'same'), true, 'B keeps its row');
+  assert.ok(log().filter((r) => r.kind === 'spawn-rolled-back').at(-1).rowKept);
+  // Order 2 (a fresh floor): A refuses before B's late check; B's row still stands and B then starts.
+  const f2 = floor(t);
+  f2.hive.setHookRuntime(f2.rt);
+  const L2 = { argv: ['claude', '--settings', path.join(f2.root, 'agents', 'same', 'settings.json')], env: {} };
+  await f2.hive.ensureAgent({ id: 'same', name: 's', provider: 'claude', cwd: f2.home }, { launch: L2, spawnId: 'A' }); f2.hive.markHookProvisioned('A');
+  await f2.hive.ensureAgent({ id: 'same', name: 's', provider: 'claude', cwd: f2.home }, { launch: L2, spawnId: 'B' }); f2.hive.markHookProvisioned('B');
+  assert.throws(() => f2.hive.confirmSpawn('A', { id: 'same', provider: 'claude' }, [...L2.argv, '--add-dir', path.dirname(f2.rt)], {}), /not checked/);
+  assert.equal(Object.hasOwn(f2.hive.registry().agents, 'same'), true, 'the row now belongs to B');
+  assert.doesNotThrow(() => f2.hive.confirmSpawn('B', { id: 'same', provider: 'claude' }, L2.argv, {}));
+  // Order 3 (a fresh floor): B is decided first and starts; A wrote the row last but refuses afterwards: B has started, so the row stays.
+  const f3 = floor(t);
+  f3.hive.setHookRuntime(f3.rt);
+  const L3 = { argv: ['claude', '--settings', path.join(f3.root, 'agents', 'same', 'settings.json')], env: {} };
+  await f3.hive.ensureAgent({ id: 'same', name: 's', provider: 'claude', cwd: f3.home }, { launch: L3, spawnId: 'B' }); f3.hive.markHookProvisioned('B');
+  await f3.hive.ensureAgent({ id: 'same', name: 's', provider: 'claude', cwd: f3.home }, { launch: L3, spawnId: 'A' }); f3.hive.markHookProvisioned('A');
+  f3.hive.confirmSpawn('B', { id: 'same', provider: 'claude' }, L3.argv, {});
+  assert.throws(() => f3.hive.confirmSpawn('A', { id: 'same', provider: 'claude' }, [...L3.argv, '--add-dir', path.dirname(f3.rt)], {}), /not checked/);
+  assert.equal(Object.hasOwn(f3.hive.registry().agents, 'same'), true, 'a later spawn has started: the row stays');
+  // Alone: the row A added, and still owns, is removed.
+  await hive.ensureAgent({ id: 'solo', name: 's', provider: 'claude', cwd: home }, { launch: { argv: ['claude', '--settings', path.join(root, 'agents', 'solo', 'settings.json')], env: {} }, spawnId: 'S' }); hive.markHookProvisioned('S');
+  assert.throws(() => hive.confirmSpawn('S', { id: 'solo', provider: 'claude' }, ['claude', '--settings', path.join(root, 'agents', 'solo', 'settings.json'), '--add-dir', path.dirname(rt)], {}), /not checked/);
+  assert.equal(Object.hasOwn(hive.registry().agents, 'solo'), false);
+});
+
+test('round 7 (M): any date, time or non-finite value anywhere is not understood — expected verdicts hard-coded, not from the parser', async (t) => {
+  const L = loadTs('src/main/launchLine.ts');
+  const cases = [
+    ['sandbox_mode = "workspace-write"\nhistory_date = 2020-02-30\n', 'unknown', 'history_date'],
+    ['x = 1979-05-27T07:32:00Z\n', 'unknown', 'x'],
+    ['x = 1979-05-27T07:32:00\n', 'unknown', 'x'],
+    ['x = 1979-05-27\n', 'unknown', 'x'],
+    ['x = 07:32:00\n', 'unknown', 'x'],
+    ['f = inf\n', 'unknown', 'f'],
+    ['f = -inf\n', 'unknown', 'f'],
+    ['f = nan\n', 'unknown', 'f'],
+    ['[a.b]\nd = [1, 1979-05-27]\n', 'unknown', 'a.b.d[1]'],
+    ['m = { when = 1979-05-27 }\n', 'unknown', 'm.when'],
+    ['n = 1.5\nm = -0.0\ni = 42\nb = true\ns = "1979-05-27"\n', 'ok', null],
+  ];
+  for (const [text, state, key] of cases) {
+    const r = L.codexRoots(text);
+    assert.equal(r.state, state, JSON.stringify(text));
+    if (key) assert.ok(r.why.startsWith(`${key} is a value the app does not read`), r.why);
+  }
+  const { home, rt, hive } = floor(t);
+  hive.setHookRuntime(rt);
+  const cfg = path.join(home, '.codex', 'config.toml');
+  fs.mkdirSync(path.dirname(cfg), { recursive: true });
+  fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\nhistory_date = 2020-02-30\n');
+  assert.match(await refused(hive.ensureAgent({ id: 'd1', name: 'd', provider: 'codex', cwd: home }, { launch: { argv: ['codex'], env: {} } })), /history_date is a value the app does not read/);
 });

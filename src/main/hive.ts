@@ -218,7 +218,7 @@ export interface Registry {
 /** A launch as the spawn will make it: argv[0] is the command string, then its arguments; env holds only the variables that move configuration. */
 export interface HookLaunch { argv: string[]; env: Record<string, string> }
 /** What ensureAgent decided for a Claude or Codex spawn, carried to the late check. */
-export interface HookVerdict { agentId: string; kind: 'claude' | 'codex'; rt: StagedHookRuntime; rootPaths: string[]; claudeUserDir?: string; codexFromConfig?: boolean; dir: string; cwd: string; isNew: boolean; /** True when the agent's folder did not exist before this spawn. */ dirCreated?: boolean }
+export interface HookVerdict { agentId: string; kind: 'claude' | 'codex'; rt: StagedHookRuntime; rootPaths: string[]; claudeUserDir?: string; codexFromConfig?: boolean; dir: string; cwd: string; isNew: boolean; /** True when the agent's folder did not exist before this spawn. */ dirCreated?: boolean; /** The spawn this decision is for. */ spawnId?: string; /** Set only once every provisioning step the decision depends on has succeeded. */ provisioned?: boolean; /** Why provisioning did not complete. */ failure?: string }
 
 export interface SpawnInjection {
   args: string[];
@@ -538,6 +538,8 @@ export class HiveManager {
   private warnedNoRuntime = false;
   /** The verdict ensureAgent reached for each agent, for the late check before its terminal starts. */
   private hookVerdicts = new Map<string, HookVerdict>();
+  /** The spawn that last passed the late check, per agent. */
+  private confirmedSpawn = new Map<string, string>();
   /** The verdict for an agent's current spawn, removed as it is taken. */
   takeHookVerdict(agentId: string): HookVerdict | undefined {
     const v = this.hookVerdicts.get(agentId);
@@ -767,6 +769,16 @@ export class HiveManager {
     if (!rt || 'refuse' in r) return null;
     return { agentId: meta.id, kind, rt, rootPaths: r.roots.map((x) => x.path).filter((x): x is string => !!x), claudeUserDir: r.claudeUserDir, codexFromConfig: r.codexFromConfig, dir, cwd: meta.cwd, isNew };
   }
+  /** Called once the spawn's injection has been applied: only then can its decision be confirmed. */
+  markHookProvisioned(spawnId: string): void {
+    const v = this.hookVerdicts.get(spawnId);
+    if (v && !v.failure) v.provisioned = true;
+  }
+  /** Called when provisioning threw after the decision: the late check will refuse, naming this. */
+  hookProvisioningFailed(spawnId: string, e: unknown): void {
+    const v = this.hookVerdicts.get(spawnId);
+    if (v) { v.provisioned = false; v.failure = String((e as Error)?.message ?? e).slice(0, 300); }
+  }
   /** The late check for one spawn, by its id: the decision ensureAgent made for exactly this spawn must exist and be for
    *  this agent. A Claude or Codex spawn with no decision (while a runtime folder is set), or another agent's, refuses. */
   confirmSpawn(spawnId: string, meta: Pick<AgentMeta, 'id' | 'provider'>, argv: string[], env: Record<string, string>): void {
@@ -776,7 +788,13 @@ export class HiveManager {
       return;
     }
     if (v.agentId !== meta.id) throw new HookRuntimeUnavailable('the hook runtime decision on record is for another agent');
+    if (v.provisioned !== true) {
+      const why = `the agent's hook provisioning did not complete${v.failure ? ` (${v.failure})` : ''}`;
+      this.rollbackSpawn(v, why);
+      throw new HookRuntimeUnavailable(why);
+    }
     this.confirmHookLaunch(v, argv, env);
+    this.confirmedSpawn.set(v.agentId, v.spawnId ?? spawnId);
   }
   /** The late check, just before the terminal starts: the FINAL launch line and environment must imply nothing the
    *  verdict did not check. Reads no settings files (the verdict is the snapshot). A refusal here rolls back a new agent's
@@ -814,17 +832,24 @@ export class HiveManager {
     try {
       this.hookRuntimeRefused.set(v.agentId, { reason: why, at: Date.now() });
       let rowRemoved = false;
+      let rowKept: string | undefined;
       if (v.isNew) {
         const root = this.root();
         const reg = this.readableRegistry();
-        if (root && reg && Object.hasOwn(reg.agents, v.agentId)) {
+        const row = reg && Object.hasOwn(reg.agents, v.agentId) ? (reg.agents[v.agentId] as RegistryAgent & { spawnId?: string }) : undefined;
+        // Compare and remove: only a row this spawn still owns, and only if no later spawn of the agent has started.
+        const later = this.confirmedSpawn.get(v.agentId);
+        if (!row) rowKept = 'no row';
+        else if (!v.spawnId || row.spawnId !== v.spawnId) rowKept = 'a later spawn owns the row';
+        else if (later && later !== v.spawnId) rowKept = 'a later spawn has started';
+        else if (root && reg) {
           delete reg.agents[v.agentId];
           this.atomicWriteJson(join(root, 'registry.json'), reg);
           rowRemoved = true;
         }
       }
       this.appendLog({
-        kind: 'spawn-rolled-back', agentId: isFolderName(v.agentId) ? v.agentId : shortTarget(v.agentId), rowRemoved,
+        kind: 'spawn-rolled-back', agentId: isFolderName(v.agentId) ? v.agentId : shortTarget(v.agentId), rowRemoved, ...(rowKept ? { rowKept } : {}),
         ...(v.dirCreated ? { folderLeft: v.dir } : {}), reason: why
       });
       if (rowRemoved) this.commit(`hive: roll back ${v.agentId}`);
@@ -1169,7 +1194,7 @@ export class HiveManager {
     const dir = this.agentDir(meta.id);
     // Before the agent's folder or registry entry exists: a refused spawn leaves nothing behind.
     const verdict = this.hookVerdict(meta, dir, root, opts.extraWritableDirs, opts.launch, !Object.hasOwn(roster.agents, meta.id));
-    if (verdict) verdict.dirCreated = !existsSync(dir);
+    if (verdict) { verdict.dirCreated = !existsSync(dir); verdict.spawnId = opts.spawnId; verdict.provisioned = false; }
     // Keyed by this spawn, so two overlapping spawns of one agent never share a decision.
     const verdictKey = opts.spawnId ?? meta.id;
     if (verdict) this.hookVerdicts.set(verdictKey, verdict); else this.hookVerdicts.delete(verdictKey);
@@ -1215,6 +1240,8 @@ export class HiveManager {
     reg.agents[meta.id] = {
       ...prev,
       ...meta,
+      // Which spawn wrote this row, so a late refusal of an older spawn never removes a newer one's row.
+      ...(opts.spawnId ? { spawnId: opts.spawnId } : {}),
       capabilities: meta.capabilities ?? prev?.capabilities ?? [],
       role,
       status: 'idle',
@@ -1407,7 +1434,7 @@ export class HiveManager {
               this.emit?.('hive:degraded', { agentId: meta.id, name: meta.name, reason: 'proxy-bind', message: degraded });
             }
           }
-        } catch (e) { console.error(`[hive] install ${desc.kind} bridge failed:`, e); }
+        } catch (e) { if (e instanceof HookRuntimeUnavailable) throw e; console.error(`[hive] install ${desc.kind} bridge failed:`, e); }
       }
       // Inject the protocol text whichever way the CLI accepts it.
       // type-into-tui (Crush): the bare TUI reads a positional as a Cobra subcommand
@@ -3118,7 +3145,11 @@ export class HiveManager {
       // below Codex's standard scan roots. External usage tools can then discover
       // the sessions without understanding the hive's private directory layout.
       this.exposeCodexDataDirs(home, userHome, agentId);
-    } catch (e) { console.error('[hive] installCodexHooks failed:', e); }
+    } catch (e) {
+      // With a hook runtime set, a Codex seat without its generated hook config would start unhooked: not best-effort.
+      if (this.hookRuntimeDir) throw new HookRuntimeUnavailable(`the Codex hook config could not be written (${(e as Error)?.message ?? e})`);
+      console.error('[hive] installCodexHooks failed:', e);
+    }
     return home;
   }
 

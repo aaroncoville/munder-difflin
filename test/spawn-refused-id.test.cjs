@@ -56,7 +56,7 @@ async function setup(t, overrides = {}) {
   let removal = async () => ({ ok: true });
   const context = {
     console: { error: (...a) => errors.push(a.join(' ')), warn() {}, log() {} },
-    hive: { enabled: () => true, ensureAgent: (...a) => real.ensureAgent(...a), appendLog: (row) => real.appendLog(row), ...overrides },
+    hive: { enabled: () => true, ensureAgent: (...a) => real.ensureAgent(...a), appendLog: (row) => real.appendLog(row), markHookProvisioned: (id) => real.markHookProvisioned(id), hookProvisioningFailed: (id, e) => real.hookProvisioningFailed(id, e), ...overrides },
     memory: { active: () => false, env: () => ({}) },
     knowledge: { active: () => false, env: () => ({}) },
     readConfig: () => ({}), skillsResourceDir: () => '', breakerToast() {},

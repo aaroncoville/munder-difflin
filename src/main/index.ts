@@ -3009,9 +3009,12 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       // Point the agent's mempalace CLI at the shared palace + the `kg` CLI at the
       // enterprise knowledge store (both no-ops / empty when their flags are off).
       opts.env = { ...(opts.env ?? {}), ...inj.env, ...memory.env(), ...knowledge.env() };
+      // Only now, with the injection applied, can the hook runtime decision be confirmed.
+      hive.markHookProvisioned(opts.id);
     } catch (e) {
       if (e instanceof RefusedRosterId || e instanceof RegistryUnreadable || e instanceof HookRuntimeUnavailable) return refuseSpawn(opts.id, opts.hive.id, provider, e);
-      // Hive provisioning is best-effort; never block a spawn on it.
+      // Hive provisioning is otherwise best-effort, but not for a hooked provider: the late check refuses, naming this.
+      hive.hookProvisioningFailed(opts.id, e);
       console.error('[hive] ensureAgent failed:', e);
     }
   }
