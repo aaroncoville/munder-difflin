@@ -670,11 +670,27 @@ export class WriteRootsDryRun {
   }
 
   /** The agent's terminal is gone: what it left counted or incomplete is written now, not at a turn end that will not come. */
-  agentGone(agentId: string): void { try { this.flush(agentId); } catch { /* best effort */ } }
-  /** The app is quitting: the same for every agent. */
+  agentGone(agentId: string): void {
+    try {
+      // Its waiting calls (at most a few) are read now, before the flush, so none is lost silently.
+      const q = this.queues.get(agentId) ?? [];
+      this.queues.delete(agentId);
+      this.turn = this.turn.filter((id) => id !== agentId);
+      for (const job of q) { try { this.process(job); } catch { /* never let one call stop the rest */ } }
+      this.flush(agentId);
+    } catch { /* best effort */ }
+  }
+  /** The app is quitting: calls still waiting are not read now; each agent with some gets an incomplete row saying how
+   *  many (reason quit), then everything counted is written. */
   flushAll(): void {
+    for (const [agentId, q] of this.queues) {
+      const left = q.filter((j) => j.event === 'PreToolUse' || j.event === 'SessionStart').length;
+      if (left) this.d.record({ kind: 'write-incomplete', agentId, state: 'incomplete', reason: 'quit', shed: left, burst: false });
+    }
     const ids = new Set([...this.seen.keys(), ...this.shed.keys(), ...this.capped.keys(), ...this.flood.keys()]);
-    for (const id of ids) this.agentGone(id);
+    this.queues.clear();
+    this.turn = [];
+    for (const id of ids) { try { this.flush(id); } catch { /* best effort */ } }
   }
 
   private flush(agentId: string): void {
@@ -718,7 +734,7 @@ export const READ_SITES = [
   { id: 'patch-cap', read: 'a patch input larger than 256 KB, deeper than 3 levels, or with more than 32 fields', writer: 'the agent', planted: 'an oversized or deeply nested patch input', outcome: 'read up to those limits, plus one truncated row' },
   { id: 'path-length-cap', read: 'an edit target path over 4,096 characters', writer: 'the agent', planted: 'an absurdly long path', outcome: 'not classed, plus one truncated row' },
   { id: 'session-start', read: 'SessionStart', writer: 'the CLI, or any process that reaches the hook socket', planted: 'repeated starts; a settings change between two starts', outcome: 'every start re-reads the roots and writes a write-roots row (start source, per-spawn ordinal); starts waiting together give one row with coalesced = n; more than 8 between turn ends give write-incomplete (reason session-start-flood)' },
-  { id: 'agent-exit-flush', read: 'an agent whose terminal ends, or the app quitting', writer: 'the app', planted: 'a victim that never reaches another turn end', outcome: 'its counts and any incomplete rows are written at exit and at quit' },
+  { id: 'agent-exit-flush', read: 'an agent whose terminal ends, or the app quitting', writer: 'the app', planted: 'a victim that never reaches another turn end; calls still waiting', outcome: 'at exit its waiting calls are read and its counts and incomplete rows written; at quit calls still waiting give write-incomplete (reason quit, count) and counts are written' },
   { id: 'managed-conflict', read: 'sandbox.enabled across the managed file and its drop-ins', writer: 'root only', planted: 'two managed files disagreeing', outcome: 'unknown: Claude\'s order among them is not modelled' },
   { id: 'claude-managed-drop-ins', read: 'managed-settings.d/*.json beside the managed file', writer: 'root only', planted: '—', outcome: 'read like the managed file' },
   { id: 'payload-tool-name', read: 'hook payload tool_name', writer: 'same', planted: 'free text, non-string', outcome: 'logged as a fixed name or other' },

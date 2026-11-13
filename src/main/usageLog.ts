@@ -80,7 +80,7 @@ const EVENTS: Record<string, Record<string, FieldType>> = {
   'write-would-refuse': { agentId: 'agent', tool: { oneOf: LOG_TOOLS }, via: { oneOf: VIAS }, pathClass: { oneOf: PATH_CLASSES } },
   'write-own-settings': { agentId: 'agent', tool: { oneOf: LOG_TOOLS }, via: { oneOf: VIAS } },
   'write-observed': { agentId: 'agent', tool: { oneOf: LOG_TOOLS }, shape: { oneOf: SHAPES }, count: 'count' },
-  'write-incomplete': { agentId: 'agent', state: { oneOf: ['incomplete'] }, reason: { oneOf: ['queue', 'cap', 'session-start-flood'] }, shed: 'count', burst: 'bool' }
+  'write-incomplete': { agentId: 'agent', state: { oneOf: ['incomplete'] }, reason: { oneOf: ['queue', 'cap', 'session-start-flood', 'quit'] }, shed: 'count', burst: 'bool' }
 };
 /** Fields a kind cannot be written without. */
 const REQUIRED: Record<string, string[]> = {
