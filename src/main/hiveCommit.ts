@@ -241,6 +241,11 @@ export class CommitQueue {
     await this.idle();
   }
 
+  /** Take requests again after close. */
+  reopen(): void {
+    this.closed = false;
+  }
+
   /** Resolves once no commit is running or waiting. */
   async idle(): Promise<void> {
     while (this.running) await this.running;

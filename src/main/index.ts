@@ -3610,6 +3610,8 @@ ipcMain.handle('config:changeHome', async (_evt, payload: unknown) => {
   try { stopWebhookServer(); } catch (e) { console.error('[changeHome] webhook.stop:', e); }
   try { memory.stop(); } catch (e) { console.error('[changeHome] memory.stop:', e); }
   try { reflector.stop(); } catch (e) { console.error('[changeHome] reflector.stop:', e); }
+  // Last of all: the hive is copied below, and the app then relaunches without will-quit.
+  await stopHiveCommits();
 
   if (mode === 'move' && oldHome) {
     try {
@@ -3628,6 +3630,7 @@ ipcMain.handle('config:changeHome', async (_evt, payload: unknown) => {
     } catch (e) {
       // Copy failed: recover IN PLACE against the unchanged old home (config never
       // repointed) so the user loses nothing, and surface the error — no relaunch.
+      hive.resumeCommits();
       bootstrapHiveServices();
       const cfg = readConfig();
       if (cfg.slackEnabled && cfg.slackSigningSecret) void startSlackServer();
@@ -4223,8 +4226,15 @@ hive.setDeliveryListener((msg, landed, replaced) => {
   for (const t of landed) turns.noteDelivery(t, { from: msg.from, id: replaced[t] ?? msg.id, conversation: msg.conversation }, at);
 });
 
+/** Every path that copies or deletes the hive folder, or exits without will-quit (a relaunch), first waits for this:
+ *  no hive git may be running then. A commit still running is given a short grace, then its git is stopped and waited
+ *  for, so this is bounded (see HiveManager.stopCommits). */
+async function stopHiveCommits(): Promise<void> {
+  try { await hive.stopCommits(); } catch (e) { console.error('[hive] stopCommits:', e); }
+}
+
 // ─── IPC: full reset (wipe data + config, relaunch into onboarding) ──────────
-ipcMain.handle('app:resetAll', () => {
+ipcMain.handle('app:resetAll', async () => {
   allowQuit = true;
   // Tear everything down first so nothing writes back into the dirs we wipe.
   try { clearMissionTimers(); } catch (e) { console.error('[reset] clearMissionTimers:', e); }
@@ -4241,6 +4251,7 @@ ipcMain.handle('app:resetAll', () => {
   try { persist.close(); } catch (e) { console.error('[reset] persist.close:', e); }
   try { heavyLock.agentsGone(ptyToAgent.values()); } catch { /* bulk kill skips exit callbacks */ }
   try { ptyManager.killAll(); } catch (e) { console.error('[reset] killAll:', e); }
+  await stopHiveCommits(); // the hive folder is deleted below
   try { hive.removeExposedCodexData(); } catch (e) { console.error('[reset] removeExposedCodexData:', e); }
   // Erase the hive (Michael's + every agent's memory, inboxes, tasks, board,
   // git history) and the semantic-memory palace. Only these harness-created
@@ -6158,6 +6169,6 @@ app.on('will-quit', (e) => {
       analytics.endSession(),
       new Promise<void>((r) => setTimeout(r, 1200))
     ]),
-    hive.stopCommits().catch((e) => console.error('[quit] stopCommits:', e))
+    stopHiveCommits()
   ]).then(finish, finish);
 });

@@ -3865,6 +3865,13 @@ export class HiveManager {
     return this.commits.close(graceMs, () => stopRunningGits(killGraceMs));
   }
 
+  /** Take commits again after stopCommits, when what it was stopped for did not happen (a data-folder move that
+   *  failed and left the app running on the old folder). */
+  resumeCommits(): void {
+    this.commitsStopped = false;
+    this.commits.reopen();
+  }
+
   private async commitNow(root: string, message: string): Promise<GitResult> {
     // Checked again here: commits may have been turned off since this one was requested.
     if (this._gitCommitsDisabled || !existsSync(join(root, '.git'))) return { ok: true, out: '', err: '' };
