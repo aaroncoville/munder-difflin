@@ -68,3 +68,9 @@ test("nothing in the repository drives the original project's Discord bot or rev
   assert.doesNotMatch(owners, /@chaitanyagiri/);
   assert.match(owners, /^\* @aaroncoville$/m);
 });
+
+test('the unmounted update toast links this repository', () => {
+  const toast = code('src/renderer/src/components/UpdateToast.tsx');
+  assert.match(toast, /^const GITHUB_REPO_URL = PRODUCT_REPO_URL;$/m);
+  assert.doesNotMatch(toast, /github\.com\/chaitanyagiri/);
+});
