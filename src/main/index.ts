@@ -38,6 +38,7 @@ import {
 import { linkWorktreeDeps, unlinkWorktreeDeps } from './worktreeDeps';
 import { saveAskAttachment } from './askAttachments';
 import { HiveManager, type AgentMeta, type HiveMessage, type HiveTask } from './hive';
+import { archiveOrphanedAgents as archiveOrphans } from './orphanSweep';
 import { runCanaries, memoryCanary } from './canaries';
 import { TurnTracker, diffTasks, type UsageIds } from './usageEvents';
 import { loadUsageSecret, usageRef } from './usageRef';
@@ -1065,27 +1066,11 @@ function syncContextTriggers(): void {
   }
 }
 
-/** Startup migration (#57/#58): archive every agent entry that is `archived:false`
- *  but has NO live PTY. This runs in bootstrapHiveServices, BEFORE the renderer can
- *  respawn anything, so at this point NO agent owns a PTY — every `archived:false`
- *  entry is therefore a stale carry-over from a prior session that quit/crashed
- *  WITHOUT archiving (e.g. the pre-acc13a3 'assistant' Dwight entry). Left as-is
- *  they have no live PTY, so the breaker beat steers them and the steer bounces to
- *  GOD as a requires_reply GOD can't clear → inbox flood.
- *
- *  "No live PTY" = ptyForAgent(id) === undefined (ptyToAgent is populated only at
- *  spawn and pruned on teardown). God is never archived. A user's real agents are
- *  unaffected: the "restore team" flow respawns them through ensureAgent, which
- *  re-clears `archived` — restorability does not depend on the archived flag. */
+/** Startup migration (#57/#58), in orphanSweep.ts: archive every archived:false agent with no live PTY. Runs before
+ *  the window exists, so it must never wait on git (see orphanSweep.ts). */
 function archiveOrphanedAgents(): void {
-  if (!hive.enabled()) return;
   try {
-    const reg = hive.registry();
-    for (const [id, a] of Object.entries(reg.agents)) {
-      if (a.archived) continue;
-      if (id === reg.godId) continue;        // god is never archived
-      if (ptyForAgent(id)) continue;         // has a live PTY → genuinely active
-      hive.setArchived(id, true);            // stale archived:false orphan → archive
+    for (const id of archiveOrphans(hive, (id) => !!ptyForAgent(id))) {
       console.log('[migration] archived orphaned agent (no live PTY):', id);
     }
   } catch (e) {
