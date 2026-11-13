@@ -75,7 +75,7 @@ const EVENTS: Record<string, Record<string, FieldType>> = {
   'write-roots': {
     agentId: 'agent', provider: { oneOf: PROVIDERS }, role: { oneOf: ['god', 'agent'] },
     source: { oneOf: ['claude-settings-files', 'codex-config', 'none'] }, start: { oneOf: START_SOURCES }, ordinal: 'count', coalesced: 'count',
-    effective: 'classes', excess: 'classes'
+    effective: 'classes', excess: 'classes', unknownWhy: { oneOf: ['app-hooks-differ'] }
   },
   'write-would-refuse': { agentId: 'agent', tool: { oneOf: LOG_TOOLS }, via: { oneOf: VIAS }, pathClass: { oneOf: PATH_CLASSES } },
   'write-own-settings': { agentId: 'agent', tool: { oneOf: LOG_TOOLS }, via: { oneOf: VIAS } },

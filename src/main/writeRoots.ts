@@ -45,8 +45,8 @@ import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { isFolderName } from './messageTarget';
 import { TOOL_NAMES } from './usageEvents';
-import { claudeLaunch, claudeRoots, codexLaunchSandbox, codexRoots, launchExecutable, launchPlaces, type RootsState } from './launchLine';
-export { claudeLaunch, claudeRoots, codexLaunchSandbox, codexRoots } from './launchLine';
+import { claudeLaunch, claudeRoots, codexHookStateKeys, codexLaunchSandbox, codexRoots, launchExecutable, launchPlaces, type CodexAppHooks, type RootsState } from './launchLine';
+export { claudeLaunch, claudeRoots, codexHookStateKeys, codexLaunchSandbox, codexRoots } from './launchLine';
 
 /** Every class a path can be logged as. A name outside this list is never logged. */
 export const PATH_CLASSES = [
@@ -414,9 +414,9 @@ export function observeTool(tool: string, input: unknown, ctx: RootsContext, bud
 
 // --- effective roots ---
 
-export interface EffectiveRoots { roots: string[]; state: RootsState; source: 'claude-settings-files' | 'codex-config' | 'none'; /** The roots that are the CLI's temp folder (TMPDIR), classed apart. */ temp?: string[] }
+export interface EffectiveRoots { roots: string[]; state: RootsState; source: 'claude-settings-files' | 'codex-config' | 'none'; /** The roots that are the CLI's temp folder (TMPDIR), classed apart. */ temp?: string[]; /** Why it is unknown, when that is worth its own row: the generated config's hooks are not the app's own. */ why?: 'app-hooks-differ' }
 /** What the app launched the session with, as it holds it: how the CLI's sandbox was chosen on its command line. */
-export interface LaunchFacts { args?: string[]; platform?: string; /** The spawn's final environment, relocation variables only (relocationEnv). */ env?: Record<string, string> }
+export interface LaunchFacts { args?: string[]; platform?: string; /** The spawn's final environment, relocation variables only (relocationEnv). */ env?: Record<string, string>; /** The hooks the app writes into a generated Codex config now (Hive.codexAppHooks). */ codexHooks?: CodexAppHooks | null }
 
 type Read = { kind: 'missing' } | { kind: 'bad' } | { kind: 'text'; text: string };
 
@@ -484,8 +484,13 @@ export function effectiveRoots(provider: string, agentDir: string, cwd: string, 
     if (flag === 'unknown') return unknown('codex-config');
     const r = readSettings(join(places.codexHome, 'config.toml'));
     if (r.kind !== 'text') return unknown('codex-config');
-    const c = codexRoots(r.text);
+    // The app's CODEX_HOME inside the agent folder holds the config it generates; any other is the owner's own.
+    const ownerConfig = join(places.home, '.codex', 'config.toml');
+    const generated = resolve(places.codexHome) === resolve(join(agentDir, '.codex'));
+    const app = launch.codexHooks ? { ...launch.codexHooks, stateKeys: codexHookStateKeys(join(canonical(places.codexHome), 'config.toml'), launch.codexHooks.events) } : launch.codexHooks;
+    const c = codexRoots(r.text, generated ? 'generated' : 'user', app);
     // The command-line mode outranks the config's; the roots still come from the config.
+    if (c.hooksDiffer) return { ...unknown('codex-config'), why: 'app-hooks-differ' };
     if (c.state === 'unknown') return unknown('codex-config');
     // Codex also merges a project .codex/config.toml in the working directory or any folder above it.
     const projectRoots: string[] = [];
@@ -493,10 +498,11 @@ export function effectiveRoots(provider: string, agentDir: string, cwd: string, 
     let nearestMode: string | null | undefined;
     if (abscwd) {
       for (let d = resolve(abscwd); ; d = dirname(d)) {
-        const pr = readSettings(join(d, '.codex', 'config.toml'));
+        const pf = join(d, '.codex', 'config.toml');
+        const pr = readSettings(pf);
         if (pr.kind === 'bad') return unknown('codex-config');
         if (pr.kind === 'text') {
-          const pc = codexRoots(pr.text);
+          const pc = codexRoots(pr.text, resolve(pf) === resolve(ownerConfig) ? 'user' : 'project');
           if (pc.state === 'unknown') return unknown('codex-config'); // a mode there is outranked by the command line's
           projectRoots.push(...pc.roots);
           if (nearestMode === undefined && pc.mode) nearestMode = pc.mode;
@@ -701,7 +707,7 @@ export class WriteRootsDryRun {
     this.ordinal.set(j.agentId, { gen, n: ordinal });
     const eff = effectiveRoots(a.provider, a.agentDir, a.ctx.cwd, a.ctx.home, a.launch);
     const start = START_SOURCES.includes(j.source as (typeof START_SOURCES)[number]) ? j.source : 'unknown';
-    this.emit({ kind: 'write-roots', agentId: j.agentId, provider: providerClass(a.provider), role: a.ctx.isGod ? 'god' : 'agent', source: eff.source, start, ordinal, coalesced: j.coalesced ?? 1, ...rootsReport(eff, a.ctx) });
+    this.emit({ kind: 'write-roots', agentId: j.agentId, provider: providerClass(a.provider), role: a.ctx.isGod ? 'god' : 'agent', source: eff.source, start, ordinal, coalesced: j.coalesced ?? 1, ...rootsReport(eff, a.ctx), ...(eff.why ? { unknownWhy: eff.why } : {}) });
   }
 
   /** The agent's terminal is gone: what it left counted or incomplete is written now, not at a turn end that will not come. */
@@ -800,11 +806,13 @@ export const READ_SITES = [
   { id: 'codex-prompt', read: 'Codex launch line: the prompt', writer: 'the spawn request', planted: 'flags inside the prompt text', outcome: 'never read: options stop at the first positional' },
   { id: 'codex-sandbox-flag', read: 'Codex -s/--sandbox, --full-auto; with none (auto mode off), the configs\' sandbox_mode', writer: 'the spawn request', planted: 'any mode', outcome: 'workspace-write/read-only ok; danger-full-access unsandboxed; no -s reads the nearest config\'s sandbox_mode the same way, and no mode anywhere is unknown (Codex\'s default is not guessed)' },
   { id: 'codex-bypass-flag', read: 'Codex --dangerously-bypass-approvals-and-sandbox, --yolo', writer: 'the spawn request', planted: 'the flag', outcome: 'unsandboxed' },
-  { id: 'codex-config-flag', read: 'Codex -c/--config on sandbox_mode, sandbox_workspace_write or profile', writer: 'the spawn request', planted: 'any value', outcome: 'unknown' },
+  { id: 'codex-config-flag', read: 'Codex -c/--config', writer: 'the spawn request', planted: 'any key, any value (the app builds none)', outcome: 'unknown' },
+  { id: 'codex-config-allowlist', read: 'every top-level key of a Codex config', writer: 'whoever wrote that config', planted: 'a key off the versioned allowlist (Codex 0.162-0.167), a feature off its sub-list, a projects entry key other than trust_level', outcome: 'unknown, naming the key' },
+  { id: 'codex-app-hooks', read: '[hooks] in the generated config', writer: 'the app (installCodexHooks); the agent cannot write it under Codex\'s own sandbox', planted: 'any entry, event or field other than what the app writes now', outcome: 'unknown with its own reason (app-hooks-differ) in the write-roots row' },
   { id: 'codex-profile-flag', read: 'Codex -p/--profile', writer: 'the spawn request', planted: 'any profile', outcome: 'unknown' },
   { id: 'codex-add-dir-flag', read: 'Codex --add-dir', writer: 'the spawn request (the app passes its own roots)', planted: 'any directory', outcome: 'counted as a root' },
   { id: 'codex-remote-flag', read: 'Codex --remote', writer: 'the remote rewrite', planted: 'any server', outcome: 'unknown (the server\'s policy is in force)' },
-  { id: 'codex-unknown-option', read: 'any other Codex option', writer: 'the spawn request', planted: 'an option not in the grammar, a missing value', outcome: 'unknown' },
+  { id: 'codex-unknown-option', read: 'any Codex option the app does not emit', writer: 'the spawn request', planted: 'an option off the list (e.g. --approve-for-me, --enable hooks), a missing value', outcome: 'unknown' },
   { id: 'claude-prompt', read: 'Claude launch line: the prompt', writer: 'the spawn request', planted: 'flags inside the prompt text', outcome: 'never read' },
   { id: 'claude-add-dir-flag', read: 'Claude --add-dir (variadic)', writer: 'the spawn request', planted: 'any directories', outcome: 'counted as roots' },
   { id: 'claude-settings-flag', read: 'Claude --settings', writer: 'the app (its generated file)', planted: 'another file or inline JSON', outcome: 'unknown' },

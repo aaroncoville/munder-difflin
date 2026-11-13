@@ -2570,6 +2570,18 @@ export class HiveManager {
     return settingsPath;
   }
 
+  /** The lifecycle hooks a generated Codex config carries: these events, each running the hook shim with this timeout
+   *  (seconds); null when there is no shim. installCodexHooks writes exactly this, and the write-roots dry run compares a
+   *  generated config's [hooks] against it. */
+  codexAppHooks(): { events: string[]; command: string; timeout: number } | null {
+    const shim = this.shimPath();
+    if (!shim) return null;
+    // Preserve the existing Windows .cmd shape: nested command quotes pass
+    // through a different shell stack there (#350). The reported Codex bug
+    // is POSIX, where ordinary shell quoting is both necessary and verified.
+    const command = process.platform === 'win32' ? this.nodeRunUnquoted(shim) : this.nodeRun(shim);
+    return { events: ['PreToolUse', 'PostToolUse', 'Stop', 'SubagentStop', 'SessionStart', 'UserPromptSubmit', 'PreCompact', 'PostCompact'], command, timeout: 30 };
+  }
   /** Codex lifecycle-hook bridge → full hive parity for a `codex` worker (live
    *  status + Stop→inbox-drain), the codex counterpart of installAgyHooks().
    *
@@ -2655,21 +2667,13 @@ export class HiveManager {
       // freeze. Verify any change with codex's own resolver, no model spend:
       // `codex app-server` → initialize → `hooks/list` reports the normalized
       // timeoutSec per event.
-      const shim = this.shimPath();
+      const app = this.codexAppHooks();
       let config = existsSync(join(userHome, 'config.toml'))
         ? readFileSync(join(userHome, 'config.toml'), 'utf8') : '';
-      if (shim) {
-        const events = ['PreToolUse', 'PostToolUse', 'Stop', 'SubagentStop',
-          'SessionStart', 'UserPromptSubmit', 'PreCompact', 'PostCompact'];
-        // Preserve the existing Windows .cmd shape: nested command quotes pass
-        // through a different shell stack there (#350). The reported Codex bug
-        // is POSIX, where ordinary shell quoting is both necessary and verified.
-        const command = process.platform === 'win32'
-          ? this.nodeRunUnquoted(shim)
-          : this.nodeRun(shim);
+      if (app) {
         config += '\n# --- munder-hive lifecycle hooks (auto-generated; do not edit) ---\n';
-        for (const ev of events) {
-          config += `\n[[hooks.${ev}]]\n[[hooks.${ev}.hooks]]\ntype = "command"\ncommand = ${JSON.stringify(command)}\ntimeout = 30\n`;
+        for (const ev of app.events) {
+          config += `\n[[hooks.${ev}]]\n[[hooks.${ev}.hooks]]\ntype = "command"\ncommand = ${JSON.stringify(app.command)}\ntimeout = ${app.timeout}\n`;
         }
       }
       // Directory trust. A fresh config dir has never answered Codex's "do you

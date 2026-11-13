@@ -241,7 +241,7 @@ test('effective Codex roots: inherited roots show; full access is unsandboxed; e
   assert.equal(L('codex -s workspace-write', '--config', 'sandbox_mode="danger-full-access"'), 'unknown', 'long --config');
   assert.equal(L('codex -s workspace-write', '-c', 'sandbox_workspace_write.writable_roots=["/"]'), 'unknown');
   assert.equal(L('codex -s workspace-write', '--config=sandbox_mode=x'), 'unknown');
-  assert.equal(L('codex -s workspace-write', '-c', 'model="o3"'), 'workspace-write', 'an unrelated -c');
+  assert.equal(L('codex -s workspace-write', '-c', 'model="o3"'), 'unknown', 'any -c: the app builds none');
   assert.equal(L('codex -s workspace-write', '-p', 'fast'), 'unknown', 'a profile');
   assert.equal(L('codex -s workspace-write', '--remote', 'ws://x'), 'unknown', 'a remote app server');
   assert.equal(L('codex -s workspace-write', '--weird=1'), 'unknown', 'an option not in the grammar');
@@ -630,7 +630,25 @@ test('every row of READ_SITES has a case here, and each case holds', (t) => {
       fs.writeFileSync(cfg, '');
     },
     'codex-bypass-flag': () => assert.equal(codex('codex --yolo').state, 'unsandboxed'),
-    'codex-config-flag': () => assert.equal(codex('codex -s workspace-write', '--config', 'sandbox_mode="read-only"').state, 'unknown'),
+    'codex-config-flag': () => { assert.equal(codex('codex -s workspace-write', '--config', 'sandbox_mode="read-only"').state, 'unknown'); assert.equal(codex('codex -s workspace-write', '-c', 'model="x"').state, 'unknown', 'any -c'); },
+    'codex-config-allowlist': () => { assert.equal(W.codexRoots('project_root_markers = []\n').state, 'unknown'); assert.equal(W.codexRoots('model = "m"\n[features]\nmulti_agent = true\n').state, 'ok'); },
+    'codex-app-hooks': () => {
+      const app = { events: ['Stop'], command: 'run-shim', timeout: 30 };
+      const own = '[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "run-shim"\ntimeout = 30\n';
+      const lf = { args: ['codex -s workspace-write'], platform: 'darwin', env: cx, codexHooks: app };
+      const cfg = path.join(dir, '.codex/config.toml'); const keep = fs.readFileSync(cfg);
+      const write = (t) => { fs.writeFileSync(cfg, t); return W.effectiveRoots('codex', dir, '', home, lf); };
+      assert.equal(write(own).state, 'ok', 'the app\'s own hooks are consumed');
+      const differ = write(own.replace('run-shim', 'other'));
+      assert.deepEqual([differ.state, differ.why], ['unknown', 'app-hooks-differ']);
+      // Through onHook: the write-roots row carries the distinct reason.
+      const rows = []; const later = [];
+      const d = new W.WriteRootsDryRun({ agent: (id) => ({ ctx: { ...ctx, agentId: id }, provider: 'codex', agentDir: dir, launch: lf }), known: () => true, record: (e) => rows.push(e), defer: (f) => later.push(f) });
+      d.onHook('a1', 'SessionStart', { source: 'startup' }); while (later.length) later.shift()();
+      fs.writeFileSync(cfg, keep);
+      assert.equal(rows.find((r) => r.kind === 'write-roots').unknownWhy, 'app-hooks-differ');
+      assert.equal(sanitize(rows.find((r) => r.kind === 'write-roots'), { isAgent: () => true }).unknownWhy, 'app-hooks-differ', 'the usage log keeps it');
+    },
     'codex-profile-flag': () => assert.equal(codex('codex -s workspace-write', '-p', 'x').state, 'unknown'),
     'codex-add-dir-flag': () => assert.ok(codex('codex -s workspace-write', '--add-dir', path.join(root, 'bin')).roots.includes(path.join(root, 'bin'))),
     'codex-remote-flag': () => assert.equal(codex('codex -s workspace-write', '--remote', 'ws://x').state, 'unknown'),
@@ -689,7 +707,10 @@ test('property + differential: every TOML spelling is decoded as the parser read
       || (grant !== undefined && !(Array.isArray(grant) && grant.every((x) => typeof x === 'string')))
       || (Object.hasOwn(doc, 'sandbox_mode') && typeof doc.sandbox_mode !== 'string')
       || Object.hasOwn(doc, 'profile') || (Object.hasOwn(doc, 'profiles') && (typeof doc.profiles !== 'object' || Array.isArray(doc.profiles))) || profileSets
-      || (typeof doc.sandbox_mode === 'string' && !['workspace-write', 'read-only', 'danger-full-access'].includes(doc.sandbox_mode));
+      || (typeof doc.sandbox_mode === 'string' && !['workspace-write', 'read-only', 'danger-full-access'].includes(doc.sandbox_mode))
+      // The allowlist, hard-coded: a top-level key off it, or a projects entry key other than trust_level, is not understood.
+      || Object.keys(doc).some((k) => !['sandbox_mode', 'sandbox_workspace_write', 'projects', 'model', 'mcp_servers'].includes(k))
+      || (doc.projects && typeof doc.projects === 'object' && Object.values(doc.projects).some((p) => Object.keys(p).some((k) => k !== 'trust_level')));
     if (badShape) { assert.equal(r.state, 'unknown', `bad shape: ${JSON.stringify(t)}`); continue; }
     if (doc.sandbox_mode === 'danger-full-access') { assert.equal(r.state, 'unsandboxed', JSON.stringify(t)); continue; }
     assert.equal(r.state, 'ok', JSON.stringify(t));
@@ -699,21 +720,57 @@ test('property + differential: every TOML spelling is decoded as the parser read
   assert.ok(variants.length > 300 && ok > 50, `${variants.length} variants, ${ok} ok`);
   // Dates, times and non-finite numbers: expected verdicts hard-coded, not taken from the parser.
   for (const t of ['sandbox_mode = "workspace-write"\nhistory_date = 2020-02-30\n', 'x = 1979-05-27T07:32:00Z\n', 'x = 1979-05-27\n', 'x = 07:32:00\n', 'f = inf\n', 'f = nan\n', '[a]\nd = [1979-05-27]\n', 'm = { w = 1979-05-27 }\n']) assert.equal(W.codexRoots(t).state, 'unknown', JSON.stringify(t));
-  assert.equal(W.codexRoots('n = 1.5\ni = 42\nb = true\ns = "1979-05-27"\n').state, 'ok');
-  // Key families (hard-coded): any unread sandbox/permission/profile/writable_roots key is unknown; identifier names are not keys.
-  for (const t of ['sandbox_mode = "workspace-write"\ndefault_permissions = ":danger-full-access"\n', '[permissions.x.filesystem]\nwrite = ["/"]\n', 'permissions_v2 = 1\n', '[profiles.x]\ndefault_permissions = "r"\n', '[projects."/x"]\nsandbox_mode = "danger-full-access"\n', '[windows]\nsandbox = "elevated"\n', '[agents.a]\nconfig_file = "o.toml"\n']) assert.equal(W.codexRoots(t).state, 'unknown', JSON.stringify(t));
-  for (const t of ['[projects."/u/profile"]\ntrust_level = "trusted"\n', '[mcp_servers.profiler]\ncommand = "p"\n', '[profiles.sandboxed]\nmodel = "m"\n', '[sandbox_workspace_write]\nnetwork_access = true\n',
-    'include_permissions_instructions = true\n', '[mcp_servers.x.env]\nAWS_PROFILE = "a"\n', '[shell_environment_policy.set]\nAWS_PROFILE = "a"\n', '[mcp_servers.x.tools.get_user_profile]\nenabled = true\n',
-    '[mcp_servers.x.http_headers]\n"X-Profile" = "v"\n', '[agents.profile-reviewer]\ndescription = "d"\n', '[plugins."permission-helper@m"]\nenabled = true\n', '[apps.sandbox_app]\nenabled = true\n', '[[hooks.Stop]]\npermission_mode = "x"\n']) assert.equal(W.codexRoots(t).state, 'ok', JSON.stringify(t));
-  assert.equal(W.codexLaunchSandbox(['codex', '-c', 'default_permissions=":danger-full-access"']), 'unknown');
-  // allow_symlinked_codex_home: true (or any value but false) lets roots under CODEX_HOME follow links out of it.
-  assert.equal(W.codexRoots('allow_symlinked_codex_home = true\n').state, 'unknown');
-  assert.equal(W.codexRoots('allow_symlinked_codex_home = "yes"\n').state, 'unknown');
-  assert.equal(W.codexRoots('allow_symlinked_codex_home = false\n').state, 'ok', 'false may pass');
-  assert.equal(W.codexRoots('follow_symlinks = true\n').state, 'unknown', 'symlink is in the family');
-  assert.equal(W.codexLaunchSandbox(['codex -s workspace-write', '-c', 'allow_symlinked_codex_home=true']), 'unknown');
-  assert.equal(W.codexLaunchSandbox(['codex -s workspace-write', '-c', 'allow_symlinked_codex_home=false']), 'workspace-write');
-  assert.equal(W.codexLaunchSandbox(['codex -s workspace-write', '-c', 'model="x"']), 'workspace-write');
+  assert.equal(W.codexRoots('model = "1979-05-27"\n[tui]\nn = 1.5\ni = 42\nb = true\n').state, 'ok', 'plain numbers, booleans and date-like text are values the app reads');
+  // The versioned allowlist (Codex 0.162-0.167), hard-coded here rather than imported: every benign key reads ok, every
+  // policy input in the inventory reads unknown, and so does any key not on the list.
+  const benign = ['model = "m"', 'model_reasoning_effort = "high"', 'model_provider = "openai"', '[model_providers.x]\nbase_url = "u"', '[mcp_servers.x]\ncommand = "p"',
+    '[mcp_servers.x.env]\nAWS_PROFILE = "a"', '[shell_environment_policy.set]\nAWS_PROFILE = "a"', 'approval_policy = "never"', '[history]\npersistence = "none"', '[tui]\nx = 1',
+    'notify = ["n"]', 'include_permissions_instructions = true', '[projects."/u/profile"]\ntrust_level = "trusted"', '[features]\nmulti_agent = true',
+    'allow_symlinked_codex_home = false', '[sandbox_workspace_write]\nexclude_tmpdir_env_var = true\nexclude_slash_tmp = true', 'sandbox_mode = "workspace-write"', ''];
+  for (const t of benign) assert.equal(W.codexRoots(t + '\n').state, 'ok', `benign: ${t}`);
+  const policy = ['allow_symlinked_codex_home = true', 'allow_symlinked_codex_home = "yes"', 'default_permissions = ":workspace"', '[permissions.x]\nextends = ":workspace"',
+    '[permissions.x.workspace_roots]\n"/a" = true', '[permissions.x.filesystem]\n"/a" = "write"', 'profile = "p"', '[profiles.x]\nsandbox_mode = "danger-full-access"',
+    '[profiles.sandboxed]\nmodel = "m"', '[profiles.x.windows]\nsandbox = "elevated"', '[windows]\nsandbox = "elevated"', '[windows]\nallow_mxc = true', '[features]\nprefer_mxc = true',
+    '[features]\nuse_linux_sandbox_bwrap = true', '[features]\nuse_legacy_landlock = true', 'project_root_markers = [".git"]', '[agents.a]\nconfig_file = "o.toml"',
+    '[agents.profile-reviewer]\ndescription = "d"', '[features]\nhooks = true', '[features]\ncodex_hooks = true', '[features]\nplugins = true', '[plugins._default]\nenabled = true',
+    '[plugins."permission-helper@m"]\nenabled = true', '[[hooks.Stop]]\npermission_mode = "x"', '[hooks.state.h]\nenabled = true', 'allow_managed_hooks_only = true',
+    'approvals_reviewer = "auto"', '[projects."/x"]\nsandbox_mode = "danger-full-access"', '[apps.sandbox_app]\nenabled = true'];
+  for (const t of policy) assert.equal(W.codexRoots(t + '\n').state, 'unknown', `policy input: ${t}`);
+  for (const t of ['permissions_v2 = 1', 'follow_symlinks = true', 'brand_new_key = 1', '[sandbox_workspace_write]\nnetwork_access = true', '[projects."/x"]\nother = 1', '[features]\nnew_feature = true'])
+    assert.equal(W.codexRoots(t + '\n').state, 'unknown', `not on the list: ${t}`);
+  assert.match(W.codexRoots('project_root_markers = []\n').why, /project_root_markers is not on the list this app version understands \(Codex 0\.162-0\.167\)/);
+  // [hooks] by file: the owner's own config allows it unread; a project config does not; the generated config only as the app writes it.
+  const app = { events: ['Stop', 'PreToolUse'], command: '"/n" "/s"', timeout: 30 };
+  const gen = (evs, extra = '') => evs.map((e) => `[[hooks.${e}]]\n[[hooks.${e}.hooks]]\ntype = "command"\ncommand = ${JSON.stringify(app.command)}\ntimeout = 30\n${extra}`).join('');
+  const own = gen(app.events);
+  assert.equal(W.codexRoots(own, 'user').state, 'ok', 'owner config: allowed, not read');
+  assert.equal(W.codexRoots('[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "anything"\n', 'user').state, 'ok');
+  assert.equal(W.codexRoots(own, 'project').state, 'unknown', 'project config: not understood');
+  assert.equal(W.codexRoots(own, 'generated', app).state, 'ok', 'generated: exactly the app\'s own');
+  for (const t of [gen(['Stop']), gen([...app.events, 'PostToolUse']), gen(app.events, 'statusMessage = "x"\n'), own.replace('timeout = 30', 'timeout = 31'), own.replace('/s', '/t'),
+    own + '[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "x"\n']) {
+    const r = W.codexRoots(t, 'generated', app);
+    assert.equal(r.state, 'unknown', t); assert.equal(r.hooksDiffer, true, t);
+  }
+  assert.equal(W.codexRoots(own, 'generated', null).hooksDiffer, true, 'no shim: any hooks differ');
+  // The trust the app's remote start persists for its own hooks: only those ids, only a sha256 trusted_hash.
+  const ids = W.codexHookStateKeys('/real/home/config.toml', app.events);
+  assert.deepEqual(ids, ['/real/home/config.toml:stop:0:0', '/real/home/config.toml:pre_tool_use:0:0']);
+  const st = (id, v) => `[hooks.state.${JSON.stringify(id)}]\n${v}\n`;
+  const H = 'trusted_hash = "sha256:' + 'a'.repeat(64) + '"';
+  const appS = { ...app, stateKeys: ids };
+  assert.equal(W.codexRoots(own + st(ids[0], H) + st(ids[1], H), 'generated', appS).state, 'ok', 'the app\'s own persisted trust');
+  for (const t of [st('/real/home/config.toml:post_tool_use:0:0', H), st('/other/config.toml:stop:0:0', H), st(ids[0], H + '\nenabled = true'), st(ids[0], 'trusted_hash = "md5:x"'), st(ids[0], 'enabled = false')])
+    assert.equal(W.codexRoots(own + t, 'generated', appS).hooksDiffer, true, t);
+  assert.equal(W.codexRoots(own + st(ids[0], H), 'generated', app).hooksDiffer, true, 'no state ids known: any state differs');
+  // Launch flags: only what the app emits.
+  const F = (...a) => W.codexLaunchSandbox(['codex -a never -s workspace-write', ...a]);
+  for (const a of [['--dangerously-bypass-hook-trust'], ['--model', 'gpt'], ['--enable', 'multi_agent'], ['--disable=multi_agent']]) assert.equal(F(...a), 'workspace-write', a.join(' '));
+  for (const a of [['-c', 'model="x"'], ['--config=model=1'], ['--approve-for-me'], ['--enable', 'hooks'], ['--disable', 'plugins'], ['--enable', 'prefer_mxc'], ['-m', 'gpt'],
+    ['--strict-config'], ['--search'], ['-p', 'x'], ['-C', '/x'], ['--worktree']]) {
+    const why = []; assert.equal(W.codexLaunchSandbox(['codex -a never -s workspace-write', ...a], [], why), 'unknown', a.join(' '));
+    if (a[0] !== '-p' && a[0] !== '--enable' && a[0] !== '--disable') assert.match(why.join(), /not on the list this app version understands \(Codex 0\.162-0\.167\)/);
+  }
   // Claude JSON: unchanged strict shape.
   const okJson = [{}, { sandbox: { enabled: true } }, { sandbox: { enabled: false, filesystem: { allowWrite: [P] } } }, { permissions: { additionalDirectories: [P] } }, { permissions: {}, sandbox: {}, other: [1] }];
   for (const j of okJson) assert.notEqual(W.claudeRoots(JSON.stringify(j)), null, JSON.stringify(j));

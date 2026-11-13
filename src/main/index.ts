@@ -413,7 +413,7 @@ const writeRootsDryRun = new WriteRootsDryRun({
       ctx: { root, agentId, isGod: spawned.isGod, cwd: spawned.cwd },
       provider: spawned.provider,
       agentDir: join(root, 'agents', agentId),
-      launch: { args: spawned.args, platform: process.platform, env: spawned.env },
+      launch: { args: spawned.args, platform: process.platform, env: spawned.env, codexHooks: hive.codexAppHooks() },
       gen: spawned.gen
     };
   },
