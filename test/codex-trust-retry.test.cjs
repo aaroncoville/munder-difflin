@@ -33,6 +33,13 @@ function fakeCli(t, mode) {
       rl.on('line', (l) => { const m = JSON.parse(l);
         const result = m.method === 'hooks/list' ? { data: [{ hooks: [{ eventName: 'stop', source: 'user', sourcePath: file, handlerType: 'command', command: 'app-hook', async: false, matcher: null, timeoutSec: 30, enabled: true, key: file + ':stop:0:0', currentHash: 'sha256:' + 'a'.repeat(64), trustStatus: 'trusted' }] }] } : {};
         setTimeout(() => process.stdout.write(JSON.stringify({ id: m.id, result }) + '\\n'), m.method === 'initialize' ? 8000 : 0); });`,
+    // Exits a little after it starts, every time: a server that keeps dying late.
+    dies: `setTimeout(() => process.exit(0), 400);`,
+    // Answers with a line that is not JSON.
+    garbage: `process.stdout.write('not json at all\\n'); setInterval(() => {}, 1000);`,
+    // Answers the handshake, then whatever is asked.
+    answers: `const rl = require('readline').createInterface({ input: process.stdin });
+      rl.on('line', (l) => { const m = JSON.parse(l); process.stdout.write(JSON.stringify({ id: m.id, result: {} }) + '\\n'); });`,
     // Answers, and lists a hook the app did not write.
     foreign: `const rl = require('readline').createInterface({ input: process.stdin });
       rl.on('line', (l) => { const m = JSON.parse(l);
@@ -146,4 +153,79 @@ test('a restore refused after provisioning leaves the agent\'s registry row exac
   // And it can be started again.
   await hive.ensureAgent({ id: 'cx1', name: 'Coder', provider: 'codex', cwd: work }, { launch, spawnId: 'pty-cx1-3' });
   assert.equal(hive.registry().agents.cx1.archived, false);
+});
+
+test('the answer budget covers every start: a server that keeps dying late is refused within it', { skip: !POSIX }, async (t) => {
+  const f = fakeCli(t, 'dies');
+  const reasons = [];
+  const started = Date.now();
+  const ok = await T.seedCodexHookTrust(f.ctx, 1000, (r) => reasons.push(r), { attempts: 3, backoffMs: [10, 10] });
+  const took = Date.now() - started;
+  assert.equal(ok, false);
+  assert.ok(took < 1150, `took ${took} ms with a 1000 ms budget`);
+  assert.match(reasons[0], /did not answer within 1 s/);
+});
+
+test('an unreadable answer is named as such and not retried', { skip: !POSIX }, async (t) => {
+  const f = fakeCli(t, 'garbage');
+  const reasons = [];
+  const ok = await T.seedCodexHookTrust(f.ctx, 2000, (r) => reasons.push(r), { attempts: 3, backoffMs: [10, 10] });
+  assert.equal(ok, false);
+  assert.equal(f.starts().filter((s) => s[1] === 'start').length, 1, 'one start');
+  assert.match(reasons[0], /unreadable answer/);
+});
+
+test('a failure in the app itself is named as such and not retried', { skip: !POSIX }, async (t) => {
+  const f = fakeCli(t, 'answers');
+  // The home's config cannot be read: the failure is the app's, not the server's.
+  fs.rmSync(path.join(f.ctx.home, 'config.toml'));
+  const reasons = [];
+  const ok = await T.seedCodexHookTrust(f.ctx, 2000, (r) => reasons.push(r), { attempts: 3, backoffMs: [10, 10] });
+  assert.equal(ok, false);
+  assert.equal(f.starts().filter((s) => s[1] === 'start').length, 1, 'one start');
+  assert.match(reasons[0], /trust preparation failed: /);
+});
+
+/** An agent that already ran: provisioned, confirmed and started once. */
+async function existingAgent(t) {
+  const { jailHome } = require('./codex-test-home.cjs');
+  const { HiveManager } = loadTs('src/main/hive.ts');
+  const base = codexTestBase(t, 'mdrf-');
+  const home = path.join(base, 'home');
+  const work = path.join(base, 'work');
+  for (const d of [home, work]) fs.mkdirSync(d, { recursive: true });
+  jailHome(t, home);
+  const rt = fs.realpathSync(fs.mkdtempSync('/tmp/mdrft-'));
+  t.after(() => fs.rmSync(rt, { recursive: true, force: true }));
+  const hive = new HiveManager(() => path.join(base, 'h'));
+  hive.setHookRuntime(rt);
+  const launch = { argv: ['codex -a never -s workspace-write'], env: {} };
+  const spawn = (spawnId) => hive.ensureAgent({ id: 'cx1', name: 'Coder', provider: 'codex', cwd: work }, { launch, spawnId });
+  await spawn('p1');
+  hive.markHookProvisioned('p1');
+  hive.confirmSpawn('p1', { id: 'cx1', provider: 'codex' }, launch.argv, {});
+  hive.spawnStarted('p1');
+  return { hive, spawn, row: () => hive.registry().agents.cx1 };
+}
+
+test('a refused restore keeps a rename and a role change made while trust was being prepared', async (t) => {
+  const f = await existingAgent(t);
+  const before = f.row();
+  await f.spawn('p2');
+  assert.equal(f.hive.renameAgent('cx1', 'Renamed').ok, true);
+  assert.equal(f.hive.patchAgentRole('cx1', 'reviewer').ok, true);
+  f.hive.withdrawRefusedSpawn('p2', 'Codex hook trust could not be established');
+  const after = f.row();
+  assert.equal(after.name, 'Renamed', 'the rename stays');
+  assert.equal(after.role, 'reviewer', 'the role change stays');
+  // What provisioning itself changed is put back.
+  assert.equal(after.spawnId, before.spawnId);
+});
+
+test('a refused restore keeps an archive made while trust was being prepared', async (t) => {
+  const f = await existingAgent(t);
+  await f.spawn('p2');
+  f.hive.setArchived('cx1', true);
+  f.hive.withdrawRefusedSpawn('p2', 'Codex hook trust could not be established');
+  assert.equal(f.row().archived, true);
 });
