@@ -244,7 +244,8 @@
       "unlimited": "unlimited",
       "blankUnlimited": "blank = unlimited",
       "agentPlugins": "Plugins for agents",
-      "agentPluginsDesc": "Claude plugins every hive agent loads, one name per line. All other plugins you have stay off for agents (your own Claude sessions are unchanged). Takes effect for agents started after you save."
+      "agentPluginsDesc": "Claude plugins every hive agent loads, one name per line (a name such as github, or a full id such as github@claude-plugins-official; case does not matter). All other plugins in your Claude folder stay off for agents; an empty list turns every plugin off. Plugins enabled by a project or managed settings file are not covered. Your own Claude sessions are unchanged. Takes effect for agents started after you save.",
+      "agentPluginsReset": "Reset to default"
     },
     "autonomy": {
       "autonomy": "Autonomy",

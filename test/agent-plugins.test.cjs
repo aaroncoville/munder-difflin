@@ -72,3 +72,50 @@ test('a Claude agent\'s generated settings carry the map: kept plugins on, every
   assert.equal(own['terraform@claude-plugins-official'], true, 'the Settings list is what is kept');
   assert.equal(own['superpowers@claude-plugins-official'], false);
 });
+
+test('a kept entry may be the name or the full id, in any case', () => {
+  const ids = ['github@claude-plugins-official', 'Superpowers@claude-plugins-official', 'terraform@claude-plugins-official', 'engineering@synced'];
+  assert.deepEqual(P.agentEnabledPlugins(ids, ['GitHub', 'superpowers@CLAUDE-plugins-official', 'Engineering@Synced']), {
+    'github@claude-plugins-official': true, 'Superpowers@claude-plugins-official': true, 'terraform@claude-plugins-official': false, 'engineering@synced': true
+  });
+  assert.equal(P.agentEnabledPlugins(['github@claude-plugins-official'], ['git'])['github@claude-plugins-official'], false, 'never a substring');
+});
+
+test('the setting is validated on read: anything but a bounded list of plain strings is the default list, logged once, never a throw', () => {
+  const logs = [];
+  const log = (why) => logs.push(why);
+  assert.deepEqual(P.agentPluginList(undefined, log), [...P.DEFAULT_AGENT_PLUGINS], 'unset: the default, not logged');
+  assert.equal(logs.length, 0);
+  assert.deepEqual(P.agentPluginList(['github', ' gitlab '], log), ['github', 'gitlab']);
+  assert.deepEqual(P.agentPluginList([], log), [], 'an empty list is a choice: every plugin off');
+  for (const bad of ['github,gitlab', { github: true }, ['github', 1], ['x'.repeat(201)], Array.from({ length: 201 }, (_, i) => `p${i}`), [''], null, 42]) {
+    assert.deepEqual(P.agentPluginList(bad, log), [...P.DEFAULT_AGENT_PLUGINS], JSON.stringify(bad).slice(0, 40));
+  }
+  assert.equal(logs.length, 8, 'one log row per bad read');
+  assert.doesNotThrow(() => P.agentPluginList({ toString() { throw new Error('x'); } }, () => { throw new Error('log failed'); }));
+});
+
+test('a hand-edited setting never makes ensureAgent throw', async (t) => {
+  const electron = require.resolve('electron');
+  require.cache[electron] = { id: electron, filename: electron, loaded: true, exports: { Notification: class { show() {} static isSupported() { return false; } } } };
+  const { HiveManager } = loadTs('src/main/hive.ts');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-plugins-home-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const hive = new HiveManager(() => home);
+  for (const bad of [{ github: true }, 'github', [1, 2]]) {
+    const inj = await hive.ensureAgent({ id: `h${Math.random().toString(36).slice(2, 7)}`, name: 'h', provider: 'claude', cwd: home }, { agentPlugins: bad });
+    assert.ok(inj.args.includes('--settings'));
+  }
+  const log = fs.readFileSync(path.join(home, 'hive', 'log.jsonl'), 'utf8');
+  assert.equal((log.match(/"kind":"agent-plugins-setting"/g) ?? []).length, 3);
+});
+
+test('Settings offers Reset to default, and the hint says what an empty list and other settings files do', () => {
+  const ui = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'components', 'SettingsModal.tsx'), 'utf8');
+  // One button: its click restores the default list, and it shows the Reset label.
+  assert.match(ui, /<PixelButton[^>]*onClick=\{\(\) => \{ setAgentPluginsText\(DEFAULT_AGENT_PLUGINS\.join\('\\n'\)\); stage\(\{ agentPlugins: \[\.\.\.DEFAULT_AGENT_PLUGINS\] \}\); \}\}>\s*\{t\('settings\.agentsModels\.agentPluginsReset'\)\}\s*<\/PixelButton>/);
+  const en = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'i18n', 'locales', 'en.json'), 'utf8')).settings.agentsModels;
+  assert.ok(en.agentPluginsReset);
+  assert.match(en.agentPluginsDesc, /empty list turns every plugin off/i);
+  assert.match(en.agentPluginsDesc, /project or managed settings/i);
+});

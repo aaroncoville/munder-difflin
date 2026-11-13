@@ -244,7 +244,8 @@
       "unlimited": "无限制",
       "blankUnlimited": "留空 = 无限制",
       "agentPlugins": "智能体插件",
-      "agentPluginsDesc": "每个蜂巢智能体加载的 Claude 插件，每行一个名称。你的其他插件对智能体保持关闭（你自己的 Claude 会话不受影响）。保存后新启动的智能体生效。"
+      "agentPluginsDesc": "每个蜂巢智能体加载的 Claude 插件，每行一个（名称如 github，或完整 ID 如 github@claude-plugins-official；不区分大小写）。你 Claude 文件夹中的其他插件对智能体保持关闭；列表为空则关闭所有插件。由项目或托管设置文件启用的插件不在此范围内。你自己的 Claude 会话不受影响。保存后新启动的智能体生效。",
+      "agentPluginsReset": "恢复默认"
     },
     "autonomy": {
       "autonomy": "自主权",

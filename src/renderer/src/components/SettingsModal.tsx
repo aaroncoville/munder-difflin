@@ -259,7 +259,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
   const stage = (patch: Partial<HarnessConfig>): void =>
     setPending((prev) => ({ ...prev, ...patch }));
   // The plugins a hive agent keeps, one name per line; unset shows the app's default list.
-  const [agentPluginsText, setAgentPluginsText] = useState<string>((cfgX.agentPlugins ?? DEFAULT_AGENT_PLUGINS).join('\n'));
+  const [agentPluginsText, setAgentPluginsText] = useState<string>((Array.isArray(cfgX.agentPlugins) ? cfgX.agentPlugins.filter((x): x is string => typeof x === 'string') : DEFAULT_AGENT_PLUGINS).join('\n'));
 
   const [keepAwake, setKeepAwake] = useState<boolean>(cfgX.strongKeepalive === true);
   const toggleKeepAwake = async () => {
@@ -1287,7 +1287,12 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                         <div style={{ height: 10 }} />
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                           <span style={{ fontSize: 13, color: 'var(--cth-ink-900)' }}>{t('settings.agentsModels.agentPlugins')}</span>
-                          <span style={{ fontSize: 12, color: 'var(--cth-ink-500)' }}>{t('settings.agentsModels.agentPluginsDesc')}</span>
+                          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+                            <span style={{ fontSize: 12, color: 'var(--cth-ink-500)' }}>{t('settings.agentsModels.agentPluginsDesc')}</span>
+                            <PixelButton variant="secondary" size="sm" onClick={() => { setAgentPluginsText(DEFAULT_AGENT_PLUGINS.join('\n')); stage({ agentPlugins: [...DEFAULT_AGENT_PLUGINS] }); }}>
+                              {t('settings.agentsModels.agentPluginsReset')}
+                            </PixelButton>
+                          </div>
                           <textarea
                             rows={6}
                             value={agentPluginsText}

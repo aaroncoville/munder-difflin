@@ -18,7 +18,7 @@
  *
  * Everything here runs in the Electron main process.
  */
-import { agentEnabledPlugins, claudeUserDir, DEFAULT_AGENT_PLUGINS, knownPluginIds } from './agentPlugins';
+import { agentEnabledPlugins, agentPluginList, claudeUserDir, knownPluginIds } from './agentPlugins';
 import {
   existsSync, mkdirSync, readFileSync, writeFileSync, renameSync,
   readdirSync, statSync, lstatSync, realpathSync, rmSync, appendFileSync,
@@ -1188,7 +1188,7 @@ export class HiveManager {
       /** This spawn's own id (the terminal's), under which the decision is kept for the late check. */
       spawnId?: string;
       /** Plugin names an agent keeps (Settings); every other plugin the owner has is off for the agent. */
-      agentPlugins?: readonly string[];
+      agentPlugins?: unknown;
     } = {}
   ): Promise<SpawnInjection> {
     // One read for the whole operation. registry() reads a failure as an empty roster, and this would then replace the
@@ -1492,7 +1492,7 @@ export class HiveManager {
       const rt = verdict?.rt ?? null;
       env.HIVE_SOCK = sock;
       const settingsPath = join(dir, 'settings.json');
-      this.writeJson(settingsPath, this.hookSettings(rt ? hookCommandFor(rt, true) : null, meta.cwd, opts.mcpDefaults, opts.theme, writable, agentEnabledPlugins(knownPluginIds(claudeUserDir()), opts.agentPlugins ?? DEFAULT_AGENT_PLUGINS)));
+      this.writeJson(settingsPath, this.hookSettings(rt ? hookCommandFor(rt, true) : null, meta.cwd, opts.mcpDefaults, opts.theme, writable, agentEnabledPlugins(knownPluginIds(claudeUserDir()), agentPluginList(opts.agentPlugins, (why) => this.appendLog({ kind: 'agent-plugins-setting', agentId: meta.id, why })))));
       args.push('--settings', settingsPath);
     }
     return { args, env };
