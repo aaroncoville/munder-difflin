@@ -147,3 +147,47 @@ test('a restore refused after provisioning leaves the agent\'s registry row exac
   await hive.ensureAgent({ id: 'cx1', name: 'Coder', provider: 'codex', cwd: work }, { launch, spawnId: 'pty-cx1-3' });
   assert.equal(hive.registry().agents.cx1.archived, false);
 });
+
+/** An agent that already ran: provisioned, confirmed and started once. */
+async function existingAgent(t) {
+  const { jailHome } = require('./codex-test-home.cjs');
+  const { HiveManager } = loadTs('src/main/hive.ts');
+  const base = codexTestBase(t, 'mdrf-');
+  const home = path.join(base, 'home');
+  const work = path.join(base, 'work');
+  for (const d of [home, work]) fs.mkdirSync(d, { recursive: true });
+  jailHome(t, home);
+  const rt = fs.realpathSync(fs.mkdtempSync('/tmp/mdrft-'));
+  t.after(() => fs.rmSync(rt, { recursive: true, force: true }));
+  const hive = new HiveManager(() => path.join(base, 'h'));
+  hive.setHookRuntime(rt);
+  const launch = { argv: ['codex -a never -s workspace-write'], env: {} };
+  const spawn = (spawnId) => hive.ensureAgent({ id: 'cx1', name: 'Coder', provider: 'codex', cwd: work }, { launch, spawnId });
+  await spawn('p1');
+  hive.markHookProvisioned('p1');
+  hive.confirmSpawn('p1', { id: 'cx1', provider: 'codex' }, launch.argv, {});
+  hive.spawnStarted('p1');
+  return { hive, spawn, row: () => hive.registry().agents.cx1 };
+}
+
+test('a refused restore keeps a rename and a role change made while trust was being prepared', async (t) => {
+  const f = await existingAgent(t);
+  const before = f.row();
+  await f.spawn('p2');
+  assert.equal(f.hive.renameAgent('cx1', 'Renamed').ok, true);
+  assert.equal(f.hive.patchAgentRole('cx1', 'reviewer').ok, true);
+  f.hive.withdrawRefusedSpawn('p2', 'Codex hook trust could not be established');
+  const after = f.row();
+  assert.equal(after.name, 'Renamed', 'the rename stays');
+  assert.equal(after.role, 'reviewer', 'the role change stays');
+  // What provisioning itself changed is put back.
+  assert.equal(after.spawnId, before.spawnId);
+});
+
+test('a refused restore keeps an archive made while trust was being prepared', async (t) => {
+  const f = await existingAgent(t);
+  await f.spawn('p2');
+  f.hive.setArchived('cx1', true);
+  f.hive.withdrawRefusedSpawn('p2', 'Codex hook trust could not be established');
+  assert.equal(f.row().archived, true);
+});
