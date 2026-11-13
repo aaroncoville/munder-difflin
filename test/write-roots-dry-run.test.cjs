@@ -556,7 +556,30 @@ test('every row of READ_SITES has a case here, and each case holds', (t) => {
       d.onHook('a1', 'Stop', {}); while (later.length) later.shift()();
       assert.equal(rows.filter((r) => r.kind === 'write-would-refuse' && r.via === 'truncated').length, 3, JSON.stringify(rows));
       assert.ok(rows.every((r) => r.kind !== 'write-observed' || r.shape === 'patch'), 'counted as patches, not other'); assert.equal(W.observeTool('apply_patch', { input: '*** Update File: x\n' + ' '.repeat(W.MAX_COMMAND * 4) }, ctx).at(-1).via, 'truncated'); const wide = {}; for (let i = 0; i < 40; i++) wide['k' + i] = 'x'; wide.p = '*** Add File: y'; assert.equal(W.observeTool('apply_patch', wide, ctx).at(-1).via, 'truncated'); },
-    'path-length-cap': () => assert.deepEqual(W.observeTool('Write', { file_path: '/' + 'a'.repeat(5000) }, ctx), [{ via: 'truncated', pathClass: 'unknown', refused: true }]),
+    'path-length-cap': () => {
+      assert.deepEqual(W.observeTool('Write', { file_path: '/' + 'a'.repeat(5000) }, ctx), [{ via: 'truncated', pathClass: 'unknown', refused: true }]);
+      // Through the real entry: every source, lengths x component counts; over the bounds = truncated, never a normal row; per-call time bounded.
+      const deepPath = (n, seg = 'a') => root + '/' + Array.from({ length: n }, () => seg).join('/');
+      const sources = { edit: (q) => ({ tool_name: 'Write', tool_input: { file_path: q } }), patch: (q) => ({ tool_name: 'apply_patch', tool_input: { input: `*** Update File: ${q}\n` } }), shell: (q) => ({ tool_name: 'Bash', tool_input: { command: `rm ${q}` } }), argv: (q) => ({ tool_name: 'exec_command', tool_input: { cmd: ['rm', q] } }) };
+      const shapes = [[10, 'bin'], [255, 'a'], [300, 'a'], [25000, 'a'], [2, 'x'.repeat(5000)]];
+      for (const [src, mk] of Object.entries(sources)) for (const [n, seg] of shapes) {
+        const q = deepPath(n, seg);
+        const over = Buffer.byteLength(q) > W.MAX_PATH_BYTES || q.split('/').length > W.MAX_PATH_COMPONENTS;
+        const later = []; const rows = []; const d = new W.WriteRootsDryRun({ agent: (id) => ({ ctx: { ...ctx, agentId: id }, provider: 'codex', agentDir: dir }), known: () => true, record: (e) => rows.push(e), defer: (f) => later.push(f) });
+        d.onHook('a1', 'PreToolUse', mk(q));
+        const t0 = process.hrtime.bigint(); while (later.length) later.shift()(); const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+        assert.ok(ms < 100, `${src} n=${n}: ${ms.toFixed(1)} ms`);
+        const refuse = rows.filter((r) => r.kind === 'write-would-refuse');
+        if (over) assert.deepEqual(refuse.map((r) => r.via), ['truncated'], `${src} n=${n}: over the bounds is truncated only`);
+        else assert.ok(!refuse.some((r) => r.via === 'truncated'), `${src} n=${n}: within bounds is classed`);
+      }
+      // Jannings' probe: one valid ~50,085-byte, 25,000-component patch path.
+      const probe = root + '/' + Array.from({ length: 25000 }, () => 'a').join('/');
+      const t0 = Date.now(); const rows = W.observeTool('apply_patch', { input: `*** Update File: ${probe}\n` }, ctx); assert.ok(Date.now() - t0 < 50);
+      assert.deepEqual(rows, [{ via: 'truncated', pathClass: 'unknown', refused: true }]);
+    },
+    'root-path-cap': () => assert.deepEqual(W.rootsReport({ roots: [root + '/' + 'a/'.repeat(300)], state: 'ok', source: 'claude-settings-files' }, { ...ctx, agentId: 'a1' }), { effective: ['unknown'], excess: ['unknown'] }),
+    'deadline-after-work': () => { let clock = 0; const rows = W.observeTool('Bash', { command: `rm ${root}/bin/a` }, ctx, 10, () => (clock += 6)); assert.deepEqual(rows.map((r) => r.via), ['shell-write', 'truncated'], 'the last path crossed the deadline: checked after the work, so the call is truncated'); },
     'log-identity': () => {
       const udir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-ulog-'));
       try {

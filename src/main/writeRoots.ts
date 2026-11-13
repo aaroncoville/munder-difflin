@@ -81,6 +81,18 @@ const TOP: Record<string, PathClass> = {
   archive: 'archive', backups: 'backups', assets: 'assets', '.git': '.git', evidence: 'evidence',
 };
 
+/** A path is canonicalized and classed only within these bounds; past them it counts as a possible write and the call
+ *  gets a truncated row. One check for every path source: edit targets, patch lines, shell words, argv, roots. */
+export const MAX_PATH_BYTES = 4096;
+export const MAX_PATH_COMPONENTS = 256;
+export function admitPath(p: string): boolean {
+  if (typeof p !== 'string') return false;
+  if (Buffer.byteLength(p, 'utf8') > MAX_PATH_BYTES) return false;
+  let n = 1;
+  for (let i = 0; i < p.length; i++) if (p[i] === '/' || p[i] === '\\') { if (++n > MAX_PATH_COMPONENTS) return false; }
+  return true;
+}
+
 /** Per call: at most this many distinct paths are classed, and work stops at this many ms. */
 export const MAX_PATHS = 64;
 export const BUDGET_MS = 25;
@@ -368,7 +380,7 @@ export function observeTool(tool: string, input: unknown, ctx: RootsContext, bud
     if (EDIT_TOOLS.has(tool) || MCP_WRITE.test(tool)) {
       for (const k of PATH_FIELDS) {
         if (typeof r[k] !== 'string') continue;
-        if ((r[k] as string).length > 4096) { cut.truncated = true; continue; } // a path this long is not classed
+        if (!admitPath(r[k] as string)) { cut.truncated = true; continue; } // past the path bounds: not classed
         paths.push({ via: 'edit', path: r[k] as string });
       }
     } else {
@@ -387,10 +399,13 @@ export function observeTool(tool: string, input: unknown, ctx: RootsContext, bud
     let truncated = cut.truncated || paths.length > MAX_PATHS;
     for (const { via, path } of paths.slice(0, MAX_PATHS)) {
       if (now() > deadline) { truncated = true; break; }
+      if (!admitPath(path)) { truncated = true; continue; } // patch, shell and argv paths get the same bounds as edits
       if (!agentKnown) { out.push({ via, pathClass: 'unknown', refused: true }); continue; }
       const refused = wouldRefuse(path, ctx);
       const cls = pathClass(path, ctx);
       if (refused || (cls === 'own settings' && via !== 'shell-named')) out.push({ via, pathClass: cls, refused });
+      // Checked after the work too: a classification that crossed the deadline ends the call as truncated.
+      if (now() > deadline) { truncated = true; break; }
     }
     if (truncated) out.push({ via: 'truncated', pathClass: 'unknown', refused: true });
     return out;
@@ -534,6 +549,7 @@ export function rootsReport(eff: EffectiveRoots, ctx: RootsContext): { effective
     const effective = new Set<PathClass>();
     const excess = new Set<PathClass>();
     for (const r of eff.roots) {
+      if (!admitPath(r)) { effective.add('unknown'); excess.add('unknown'); continue; } // a root past the path bounds is not read
       const abs = canonical(r);
       // A temp folder outside the hive (macOS sets one for every session) is classed 'temp', so it is not read as a
       // real outside-hive grant; one inside the hive keeps its hive class.
@@ -761,7 +777,9 @@ export const READ_SITES = [
   { id: 'command-cap', read: 'a command or argv element over 64 KB', writer: 'the agent', planted: 'a very long command', outcome: 'read up to 64 KB, plus one truncated row' },
   { id: 'nested-script-cap', read: 'a shell script nested more than two levels (sh -c inside sh -c inside sh -c)', writer: 'the agent', planted: 'deep nesting', outcome: 'not read past two levels, plus one truncated row' },
   { id: 'patch-cap', read: 'a patch input larger than 256 KB, deeper than 3 levels, or with more than 32 fields', writer: 'the agent', planted: 'an oversized or deeply nested patch input', outcome: 'read up to those limits, plus one truncated row' },
-  { id: 'path-length-cap', read: 'an edit target path over 4,096 characters', writer: 'the agent', planted: 'an absurdly long path', outcome: 'not classed, plus one truncated row' },
+  { id: 'path-length-cap', read: 'any path (edit target, patch line, shell word, argv element) over 4,096 bytes or 256 components', writer: 'the agent', planted: 'an absurdly long or deep path (e.g. 25,000 components)', outcome: 'not canonicalized or classed: counts as a possible write, one truncated row' },
+  { id: 'root-path-cap', read: 'a write root (settings, config, --add-dir) over the same bounds', writer: 'whoever wrote that source', planted: 'an absurdly long or deep root', outcome: 'not read: the report is unknown' },
+  { id: 'deadline-after-work', read: 'the per-call time budget', writer: 'the agent', planted: 'paths each slow to classify', outcome: 'checked before and after each path; crossing it ends the call with one truncated row' },
   { id: 'session-start', read: 'SessionStart', writer: 'the CLI, or any process that reaches the hook socket', planted: 'repeated starts; a settings change between two starts', outcome: 'every start re-reads the roots and writes a write-roots row (start source, per-spawn ordinal); starts waiting together give one row with coalesced = n; more than 8 between turn ends give write-incomplete (reason session-start-flood)' },
   { id: 'log-identity', read: 'whether a write-* row\'s agent is known to the usage log', writer: 'held in main\'s memory from the spawn', planted: 'the agent removed from registry.json, or the file made unreadable', outcome: 'no effect: write-* rows check the spawn record, never registry.json' },
   { id: 'log-refused', read: 'a row the usage log did not write', writer: 'the app', planted: 'a log that refuses or fails to write', outcome: 'counted per agent and reported as write-incomplete (reason log-refused) at the next flush; if that row too cannot be written, one log.jsonl line (write-rows-refused)' },
