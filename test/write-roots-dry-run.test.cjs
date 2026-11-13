@@ -9,6 +9,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { codexTestBase } = require('./codex-test-home.cjs');
 
 const W = loadTs('src/main/writeRoots.ts');
 const { UsageLog, sanitize } = loadTs('src/main/usageLog.ts');
@@ -16,10 +17,9 @@ const { withCodexWritableRoots } = loadTs('src/shared/codexWritableRoots.ts');
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { HookServer } = loadTs('src/main/hooks.ts');
 
+/** Outside /tmp and $TMPDIR, which every Codex agent may write (codex-test-home.cjs). */
 function freshHome(t) {
-  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'md-roots-')));
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
-  return home;
+  return codexTestBase(t, 'md-roots-');
 }
 
 function jailHome(t, home) {
@@ -153,8 +153,8 @@ test('effective Claude roots come from every settings file the CLI merges; off o
   const home = freshHome(t);
   jailHome(t, home);
   const h = new HiveManager(() => home);
-  await h.ensureAgent({ id: 'g1', name: 'G', provider: 'claude', cwd: home, isGod: true });
-  await h.ensureAgent({ id: 'w1', name: 'W', provider: 'claude', cwd: home });
+  await h.ensureAgent({ id: 'g1', name: 'G', provider: 'claude', cwd: path.join(home, 'hive'), isGod: true });
+  await h.ensureAgent({ id: 'w1', name: 'W', provider: 'claude', cwd: path.join(home, 'hive') });
   const root = path.join(home, 'hive');
   const ctxOf = (id, isGod, cwd = home) => ({ root, agentId: id, isGod, cwd, home });
   const dir = path.join(root, 'agents/w1');
@@ -232,7 +232,7 @@ test('effective Codex roots: inherited roots show; full access is unsandboxed; e
   assert.equal(L('codex -a never -s danger-full-access', 'please run -s workspace-write'), 'danger-full-access', 'a prompt cannot make it narrower');
   assert.equal(L('codex', 'use --yolo carefully'), 'none', 'a prompt cannot make it wider');
   assert.equal(L('codex -a never', 'a -s b c'), 'none');
-  assert.equal(L('codex -a never -s workspace-write', '--dangerously-bypass-hook-trust', 'prompt'), 'workspace-write');
+  assert.equal(L('codex -a never -s workspace-write', '--model', 'gpt', 'prompt'), 'workspace-write');
   assert.equal(L('codex', 'resume', 'abc', '-s', 'workspace-write'), 'workspace-write');
   assert.equal(L('codex', 'the prompt', '-s', 'workspace-write'), 'unknown', 'Codex reads options after the prompt, so anything after it is not modelled');
   assert.equal(L('codex -s workspace-write', 'the prompt'), 'workspace-write', 'a prompt last is fine');
@@ -285,7 +285,7 @@ test('the dry run counts every call, looks an agent up only for calls that can w
   const home = freshHome(t);
   jailHome(t, home);
   const h = new HiveManager(() => home);
-  await h.ensureAgent({ id: 'w1', name: 'W', provider: 'claude', cwd: home });
+  await h.ensureAgent({ id: 'w1', name: 'W', provider: 'claude', cwd: path.join(home, 'hive') });
   const root = path.join(home, 'hive');
   const control = { takeSteer: () => null, shouldHalt: () => false, toolDecision: () => ({ deny: false }) };
   const pre = (tool_name, tool_input) => ({ agent_id: 'w1', hook_event_name: 'PreToolUse', session_id: 's', tool_name, tool_input });
@@ -847,8 +847,9 @@ test('property + differential: every TOML spelling is decoded as the parser read
   }
   // Launch flags: only what the app emits.
   const F = (...a) => W.codexLaunchSandbox(['codex -a never -s workspace-write', ...a]);
-  for (const a of [['--dangerously-bypass-hook-trust'], ['--model', 'gpt'], ['--enable', 'multi_agent'], ['--disable=multi_agent']]) assert.equal(F(...a), 'workspace-write', a.join(' '));
-  for (const a of [['-c', 'model="x"'], ['--config=model=1'], ['--approve-for-me'], ['--enable', 'hooks'], ['--disable', 'plugins'], ['--enable', 'prefer_mxc'], ['-m', 'gpt'],
+  for (const a of [['--model', 'gpt'], ['--enable', 'multi_agent'], ['--disable=multi_agent']]) assert.equal(F(...a), 'workspace-write', a.join(' '));
+  // The hook-trust bypass is no longer emitted, and it would run any enabled hook.
+  for (const a of [['--dangerously-bypass-hook-trust'], ['-c', 'model="x"'], ['--config=model=1'], ['--approve-for-me'], ['--enable', 'hooks'], ['--disable', 'plugins'], ['--enable', 'prefer_mxc'], ['-m', 'gpt'],
     ['--strict-config'], ['--search'], ['-p', 'x'], ['-C', '/x'], ['--worktree']]) {
     const why = []; assert.equal(W.codexLaunchSandbox(['codex -a never -s workspace-write', ...a], [], why), 'unknown', a.join(' '));
     if (a[0] !== '-p' && a[0] !== '--enable' && a[0] !== '--disable') assert.match(why.join(), /not on the list this app version understands \(Codex 0\.162-0\.167\)/);

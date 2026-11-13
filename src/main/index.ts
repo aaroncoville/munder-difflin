@@ -1,5 +1,6 @@
 import './pinUserData';
 import { seedCodexHookTrust } from './codexHookTrust';
+import { assertComputedCodexHome, CodexHomeRefused, codexSeatHome } from './codexSeatHome';
 import { applyGitCommitsSetting, gitCommitsDisabled } from './hiveGitSetting';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
 import { bundledResourcePath } from './resourcePaths';
@@ -128,10 +129,9 @@ import { listLocalSkills, loadCatalog, installSkill, uninstallSkill, type LocalS
 import { loadHero } from './hero';
 import { loadModelCatalog } from './modelCatalog';
 import {
-  shortCodexHomeEnv,
   withCodexRemoteArgs
 } from '../shared/codexRemote';
-import { CODEX_SPAWN_LOG_KIND, setUpCodexRemote } from './codexRemoteSetup';
+import { setUpCodexRemote } from './codexRemoteSetup';
 import { workerExitEvent } from './workerExitLog';
 
 const isDev = !!process.env.ELECTRON_RENDERER_URL;
@@ -230,7 +230,9 @@ async function enableCodexRemoteForSpawn(
   const result = await setUpCodexRemote(
     { home: alias, executable, agentId },
     {
-      prepareHookTrust: () => seedCodexHookTrust({ home: alias, cwd: opts.cwd, executable, env }),
+      // Established and verified before this is called; a spawn whose hooks
+      // could not be trusted was refused there, so there is no fallback here.
+      prepareHookTrust: () => Promise.resolve(true),
       run: (args) => runCodexDaemonCommand(executable, args, env),
       socketExists: (path) => existsSync(path),
       // The hive log is the one place off this machine's terminal that both the
@@ -256,7 +258,7 @@ const codexHomes = new CodexHomes();
  *  (codexThread.ts). Kept beside the worker's Codex home. */
 const codexThreads = new CodexThreads((agentId) => {
   const root = hive.root();
-  return root ? join(root, 'agents', agentId, '.codex', 'hive-thread.json') : null;
+  return root ? join(codexSeatHome(join(root, 'agents', agentId), agentId), 'hive-thread.json') : null;
 });
 /** Codex workers being moved to a new thread right now. */
 const openingThreads = new Set<string>();
@@ -309,7 +311,7 @@ const telemetry = new TelemetryCollector({
   resolveCodexHome: (agentId) => {
     if (hive.registry().agents[agentId]?.provider !== 'codex') return null;
     const root = hive.root();
-    return codexHomes.homeOf(agentId, root ? join(root, 'agents', agentId, '.codex') : null);
+    return codexHomes.homeOf(agentId, root ? codexSeatHome(join(root, 'agents', agentId), agentId) : null);
   }
 });
 // Usage provider (Seam 1) — the INTEGRATION swap: Oscar's telemetry collector (#7)
@@ -417,6 +419,9 @@ hookServer.setHeavyLock(heavyLock);
 // What the app itself spawned each agent with, kept in memory: registry.json is in the hive,
 // which agents can write, so a cwd or role read from it could be planted.
 const spawnRoots = new Map<string, SpawnRecord & { cwd: string; provider: string; isGod: boolean; gen: number }>();
+// The agents whose terminals are running, with their providers: the hive refuses a Codex agent while one the app
+// does not sandbox is among them. A terminal's agent with no spawn record counts as unsandboxed.
+hive.setLiveSeats(() => [...ptyToAgent.values()].map((agentId) => ({ agentId, provider: spawnRoots.get(agentId)?.provider ?? 'unknown' })));
 let spawnGeneration = 0;
 const writeRootsDryRun = new WriteRootsDryRun({
   agent: (agentId) => {
@@ -781,7 +786,7 @@ ptyManager.setExitHandler((id, exitCode, info) => {
       // grid, then re-run the normal spawn — which now finds the installed binary.
       const wc = (pending.owner && !pending.owner.isDestroyed()) ? pending.owner : liveWebContents();
       try { wc?.send(`pty:relaunch:${id}`); } catch { /* window gone */ }
-      void spawnAgentCore({ ...pending.opts, noAutoInstall: true }, pending.owner);
+      void spawnAgent({ ...pending.opts, noAutoInstall: true }, pending.owner);
       return; // an install PTY has no agent/worktree to tear down
     }
     // Non-zero exit = install failed; leave its honest manual-fix message on screen.
@@ -1495,7 +1500,7 @@ function writeFleetSnapshot(): void {
         const activeAt = fleetLastActiveAt(a.provider, u?.ts, () => codexAgentActiveAt(
           id,
           codexHomes,
-          hiveRoot ? join(hiveRoot, 'agents', id, '.codex') : null,
+          hiveRoot ? codexSeatHome(join(hiveRoot, 'agents', id), id) : null,
           now,
           codexActivityCache
         ));
@@ -2732,7 +2737,7 @@ function findCodexHomeForSession(sessionId: string, siblingsRoot: string): strin
     } catch { return null; }
     for (const a of agents) {
       if (!a.isDirectory()) continue;
-      const home = join(siblingsRoot, a.name, '.codex');
+      const home = codexSeatHome(join(siblingsRoot, a.name), a.name);
       const sessions = join(home, 'sessions');
       if (!existsSync(sessions)) continue;
       const stack = [sessions];
@@ -2786,8 +2791,10 @@ function spawnFailReason(error?: string): SpawnFailReason {
 /** A refused id must not start as a process with no prompt, environment, hooks or
  *  roster entry. Its worktree goes too, since no process will ever tear it down. One
  *  that cannot be removed is logged and stays tracked, because it is still on disk. */
-async function refuseSpawn(ptyId: string, agentId: string, provider: string, refusal: RefusedRosterId | RegistryUnreadable | HookRuntimeUnavailable): Promise<{ ok: false; error: string }> {
+async function refuseSpawn(ptyId: string, agentId: string, provider: string, refusal: RefusedRosterId | RegistryUnreadable | HookRuntimeUnavailable | CodexHomeRefused): Promise<{ ok: false; error: string }> {
   hive.appendLog({ kind: 'spawn-refused', agentId: shortTarget(agentId), reason: refusal.message });
+  // Whatever ensureAgent already did for this spawn (a new agent's registry row) is rolled back.
+  try { hive.withdrawRefusedSpawn(ptyId, refusal.message); } catch (e) { console.error('[hive] rollback of a refused spawn failed:', e); }
   analytics.track('agent_spawn_failed', { provider, reason: 'spawn_error' });
   const wtPath = worktreePaths.get(ptyId);
   if (wtPath) {
@@ -2810,8 +2817,16 @@ ipcMain.handle('pty:spawn', async (evt, opts: AgentSpawnOptions) => {
   // Record the spawning window as the PTY's owner so its output routes ONLY back
   // to that floor, then run the shared spawn core.
   const owner = BrowserWindow.fromWebContents(evt.sender)?.webContents ?? null;
-  return spawnAgentCore(opts, owner);
+  return spawnAgent(opts, owner);
 });
+
+/** Every agent spawn: the spawn core, and whatever it leaves marked as starting cleared however it ends. A spawn
+ *  that throws between provisioning and its terminal must not keep counting as starting (an agent the app does not
+ *  sandbox that is starting refuses every Codex agent). */
+async function spawnAgent(opts: AgentSpawnOptions, owner: Electron.WebContents | null): ReturnType<typeof spawnAgentCore> {
+  try { return await spawnAgentCore(opts, owner); }
+  finally { hive.spawnSettled(opts.id); }
+}
 
 /** Core agent-spawn logic — provider inference, the missing-CLI installer
  *  short-circuit, git-worktree isolation, hive provisioning, model/resume flags,
@@ -3023,7 +3038,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       // that owns the session) are the app's too. Recorded with the spawn, so the config's kind never comes from a path.
       if (inj.env?.CODEX_HOME !== undefined) codexHomeFromApp = true;
     } catch (e) {
-      if (e instanceof RefusedRosterId || e instanceof RegistryUnreadable || e instanceof HookRuntimeUnavailable) return refuseSpawn(opts.id, opts.hive.id, provider, e);
+      if (e instanceof RefusedRosterId || e instanceof RegistryUnreadable || e instanceof HookRuntimeUnavailable || e instanceof CodexHomeRefused) return refuseSpawn(opts.id, opts.hive.id, provider, e);
       // Hive provisioning is otherwise best-effort, but not for a hooked provider: the late check refuses, naming this.
       hive.hookProvisioningFailed(opts.id, e);
       console.error('[hive] ensureAgent failed:', e);
@@ -3143,7 +3158,10 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       // place; otherwise point CODEX_HOME at the agent home that OWNS it (that
       // home has both the rollout and the sqlite index).
       const myHome = (opts.env ?? {}).CODEX_HOME;
-      const agentsRoot = myHome ? dirname(dirname(myHome)) : '';
+      // The hive's own agents folder, never derived from a home path: homes live
+      // outside the hive (codexSeatHome.ts), so their parent says nothing about it.
+      const hiveRoot = hive.root();
+      const agentsRoot = myHome && hiveRoot ? join(hiveRoot, 'agents') : '';
       const ownerHome = agentsRoot ? findCodexHomeForSession(sid, agentsRoot) : null;
       if (!ownerHome) {
         console.warn(`[resume] codex session "${sid}" not found in any agent CODEX_HOME - starting fresh`);
@@ -3165,24 +3183,16 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     }
   }
   if (opts.requireResume === true && !didResume) {
+    // Nothing starts: what provisioning did for this spawn is undone, as for any refusal.
+    if (opts.hive?.id) {
+      try { hive.withdrawRefusedSpawn(opts.id, 'the session could not be resumed'); }
+      catch (e) { console.error('[hive] rollback after a failed resume failed:', e); }
+    }
     return {
       ok: false,
       error: 'Existing session could not be resumed; no replacement process was started.',
       ...(resumeNotFound ? { resumeNotFound: true } : {})
     };
-  }
-  // Remember which agent owns this PTY so closing the tab can archive it. A
-  // live terminal means active — ensureAgent above already cleared `archived`.
-  if (opts.hive?.id) {
-    ptyToAgent.set(opts.id, opts.hive.id);
-    // Where this worker's Codex rollouts will be written, now that any resume
-    // has settled its CODEX_HOME.
-    codexHomes.recordSpawn(opts.hive.id, opts.env?.CODEX_HOME, codexResumedSession);
-    // A new Codex process starts its own thread; a resumed one keeps its record.
-    if (provider === 'codex') codexThreads.spawned(opts.hive.id, didResume);
-    // Worker inbox-wake watchdog (#151): boot grace starts at spawn so the
-    // initial orientation prompt is never mistaken for an idle agent.
-    workerWake.noteSpawn(opts.id);
   }
   // Pre-accept Claude Code's bypass-mode warning + folder-trust dialog so the
   // agent (spawned with --permission-mode bypassPermissions) doesn't stall on an
@@ -3254,24 +3264,45 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // the TUI to it so the thread is visible in ChatGPT mobile. Best-effort: an
   // unavailable/older Codex install still gets a normal local terminal.
   if (provider === 'codex' && opts.hive?.id) {
-    // Before anything optional: Codex derives its app-server control socket from
-    // CODEX_HOME, and an agent home overflows the platform's sun_path limit. An
-    // interactive agent survives that by falling back to a local TUI; a headless
-    // worker has no TUI and exits. So the short home is a precondition of
-    // booting, not a feature of remote control.
-    const shortened = shortCodexHomeEnv(opts.env ?? {}, opts.hive.id);
-    if (shortened.shortened) opts.env = shortened.env;
-    else {
-      console.warn('[codex] no bindable short home; the daemon may fail to start:', opts.env?.CODEX_HOME);
-      hive.appendLog({
-        kind: CODEX_SPAWN_LOG_KIND,
-        agentId: opts.hive.id,
-        stage: 'short-home',
-        ok: false,
-        home: opts.env?.CODEX_HOME ?? '',
-        detail: 'no bindable short home could be established'
-      });
+    // The home is already outside the hive (codexSeatHome.ts). Before either
+    // launch form, local terminal or remote, persist trust for the
+    // exact hooks the app generated. If anything else would need trust, nothing
+    // starts: without the bypass flag an untrusted hook never runs, and a worker
+    // must not sit in the hooks-review menu with nobody at the keyboard.
+    // The home it will really run in: after any resume redirect, not the one
+    // provisioning first chose. It must exist, and it must be one of the
+    // computed homes, a real folder, so the reach check made at provisioning
+    // covers it; a resumed home gets this spawn's config written fresh.
+    const home = opts.env?.CODEX_HOME;
+    if (!home) {
+      return refuseSpawn(opts.id, opts.hive.id, provider,
+        new CodexHomeRefused(`Codex agent ${opts.hive.id} has no CODEX_HOME from provisioning, so it would start on the owner's own Codex home without the app's hooks`));
     }
+    try {
+      assertComputedCodexHome(home);
+      if (codexResumedSession) {
+        let extra: string[] = [];
+        try { extra = [memory.env().MEMPALACE_PALACE_PATH].filter((p): p is string => !!p); } catch { /* memory off */ }
+        hive.prepareResumedCodexHome(opts.hive.id, opts.cwd, home, extra);
+      }
+    } catch (e) {
+      const refusal = e instanceof CodexHomeRefused ? e : new CodexHomeRefused(`Codex home ${home} could not be prepared for ${opts.hive.id} (${(e as Error)?.message ?? e})`);
+      return refuseSpawn(opts.id, opts.hive.id, provider, refusal);
+    }
+    let reason = 'unknown';
+    const env: NodeJS.ProcessEnv = { ...process.env, ...(opts.env ?? {}) };
+    const started = Date.now();
+    const trusted = await seedCodexHookTrust(
+      { home, cwd: opts.cwd, executable: resolveCliCommand(opts.command), env, written: hive.codexConfigWritten(home) },
+      undefined,
+      (why) => { reason = why; }
+    );
+    const ms = Date.now() - started;
+    if (!trusted) {
+      return refuseSpawn(opts.id, opts.hive.id, provider,
+        new CodexHomeRefused(`Codex hook trust could not be established for ${opts.hive.id}: ${reason} (${ms} ms)`));
+    }
+    hive.appendLog({ kind: 'codex-hook-trust', agentId: opts.hive.id, ok: true, ms });
     await enableCodexRemoteForSpawn(opts, opts.hive.id);
   }
   // The late check on the launch exactly as it will start; a refusal here rolls back what ensureAgent created.
@@ -3279,12 +3310,30 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     try { hive.confirmSpawn(opts.id, { id: opts.hive.id, provider }, [opts.command, ...(opts.args ?? [])], relocationEnv(buildPtyEnv(process.env, '', opts.env))); }
     catch (e) { if (e instanceof HookRuntimeUnavailable) return refuseSpawn(opts.id, opts.hive.id, provider, e); throw e; }
   }
-  // Recorded only once the late check has passed, so a refused spawn leaves no record: the launch line as it is really
-  // spawned, after any remote rewrite, and the environment built exactly as the PTY will build it (relocation only).
-  if (opts.hive?.id) {
-    spawnRoots.set(opts.hive.id, { cwd: opts.cwd, provider, isGod: opts.hive.isGod === true, args: [opts.command, ...(opts.args ?? [])], env: relocationEnv(buildPtyEnv(process.env, '', opts.env)), codexHomeFromApp, gen: ++spawnGeneration });
-  }
   const res = ptyManager.spawn(opts, owner);
+  // Remember which agent owns this PTY so closing the tab can archive it, and
+  // record the launch as it is really spawned (after any remote rewrite, with the
+  // environment built exactly as the PTY will build it, relocation only). Only
+  // once the terminal has started, so a refused spawn, or one whose terminal
+  // could not start, leaves none of this behind.
+  if (res.ok && opts.hive?.id) {
+    hive.spawnStarted(opts.id);
+    ptyToAgent.set(opts.id, opts.hive.id);
+    spawnRoots.set(opts.hive.id, { cwd: opts.cwd, provider, isGod: opts.hive.isGod === true, args: [opts.command, ...(opts.args ?? [])], env: relocationEnv(buildPtyEnv(process.env, '', opts.env)), codexHomeFromApp, gen: ++spawnGeneration });
+    // Where this worker's Codex rollouts will be written, now that any resume
+    // has settled its CODEX_HOME.
+    codexHomes.recordSpawn(opts.hive.id, opts.env?.CODEX_HOME, codexResumedSession);
+    // A new Codex process starts its own thread; a resumed one keeps its record.
+    if (provider === 'codex') codexThreads.spawned(opts.hive.id, didResume);
+    // Worker inbox-wake watchdog (#151): boot grace starts at spawn so the
+    // initial orientation prompt is never mistaken for an idle agent.
+    workerWake.noteSpawn(opts.id);
+  }
+  // The terminal did not start (its id is in use, its folder is gone): undo what provisioning did for it.
+  if (!res.ok && opts.hive?.id) {
+    try { hive.withdrawRefusedSpawn(opts.id, `the terminal did not start: ${res.error ?? 'unknown error'}`); }
+    catch (e) { console.error('[hive] rollback after a failed terminal start failed:', e); }
+  }
   if (res.ok) analytics.track('agent_spawned', { provider });
   else analytics.track('agent_spawn_failed', { provider, reason: spawnFailReason(res.error) });
   syncKeepAwake(); // arm the power-save blocker while ≥1 agent PTY is alive (#18)
@@ -4836,7 +4885,7 @@ registerRealtimeActionIpc({
   },
   spawnAgent: async (opts) => {
     const o = opts as AgentSpawnOptions;
-    const res = await spawnAgentCore(o, null);
+    const res = await spawnAgent(o, null);
     // The renderer roster is only mutated by renderer-initiated hires (AddAgentModal),
     // so a MAIN-initiated spawn is invisible on the floor until we broadcast it. The
     // renderer (useHive) builds the Agent card from this descriptor; addAgent is
@@ -5138,7 +5187,7 @@ async function processSpawnRequest(filePath: string): Promise<void> {
 
   let res: { ok: boolean; error?: string; worktreePath?: string };
   try {
-    res = await spawnAgentCore(spawnOpts, liveWebContents());
+    res = await spawnAgent(spawnOpts, liveWebContents());
   } catch (e) {
     res = { ok: false, error: String(e) };
   }
@@ -5851,7 +5900,7 @@ function runWorkerWakeBeat(): void {
   // sessions last recorded anything and when Codex last ran its catch-up
   // summary, read from the home it actually runs in and within a per-beat budget.
   const root = hive.root();
-  const nominalHome = (agentId: string): string | null => (root ? join(root, 'agents', agentId, '.codex') : null);
+  const nominalHome = (agentId: string): string | null => (root ? codexSeatHome(join(root, 'agents', agentId), agentId) : null);
   // Only once no watchdog nudge — this beat's or any other's — still awaits its
   // Enter, so a slow, uncached reader never sits between a nudge's text and its
   // Enter (scheduleStallEnrichment). The per-reader budget is cooperative: once

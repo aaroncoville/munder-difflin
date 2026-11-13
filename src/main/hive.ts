@@ -36,7 +36,8 @@ import { stampSentCopy } from './sentStamp';
 import { RecentSends } from './outboxResend';
 import { setAsideUnlessFolder } from './sentFolder';
 import { COMMAND_GROUPS } from '../shared/claudeCommands';
-import { ensureCodexShortHome } from '../shared/codexRemote';
+import { codexShortHomeRoot } from '../shared/codexRemote';
+import { CodexHomeRefused, codexHomesReach, codexSeatHome, existingCodexHomes, migrateSeatHome } from './codexSeatHome';
 import {
   argsWithSandboxStance,
   hasSandboxStance,
@@ -265,7 +266,8 @@ function shortRand(): string {
  *  one in each agent dir; written on birth here and refreshed by the mine loop.
  *
  *  `.codex/` is here for a second reason as well, and it is the load-bearing one:
- *  a Codex worker's CODEX_HOME lives INSIDE its agent dir (see installCodexHooks —
+ *  a Codex worker's CODEX_HOME lived INSIDE its agent dir until it moved out of the
+ *  hive (codexSeatHome.ts), and older agents still have that folder (see installCodexHooks —
  *  Codex can only be given hooks through a config.toml in its own home, so it
  *  cannot share the user's ~/.codex). Codex then fills that folder with full
  *  session transcripts, an 80MB+ logs sqlite and a plugin cache, and the hive's
@@ -426,6 +428,10 @@ function pruneCrashLogs(dir: string): void {
   } catch { /* unreadable directory is not worth failing an exit path over */ }
 }
 
+/** A generated Codex config as the app wrote it: its lifecycle hooks (null when there is no hook runtime) and the
+ *  owner's own config text it was built from. */
+export interface CodexConfigWritten { hooks: { events: string[]; command: string; timeout: number } | null; ownerToml: string }
+
 export class HiveManager {
   /**
    * @param getHome  Lazily resolve harnessHome so the hive follows config changes.
@@ -542,6 +548,13 @@ export class HiveManager {
   private warnedNoRuntime = false;
   /** The verdict ensureAgent reached for each agent, for the late check before its terminal starts. */
   private hookVerdicts = new Map<string, HookVerdict>();
+  /** Decisions that passed the late check, until their terminal starts (spawnStarted) or fails to (withdrawRefusedSpawn). */
+  private startingSpawns = new Map<string, HookVerdict>();
+  /** Spawns of agents the app does not sandbox, from their admission until their terminal starts or they are withdrawn. */
+  private unconfinedStarting = new Map<string, { agentId: string; provider: string }>();
+  private liveSeats: () => Array<{ agentId: string; provider: string }> = () => [];
+  /** Per Codex home, what the app last wrote into its config.toml (writeCodexConfig). */
+  private codexConfigsWritten = new Map<string, CodexConfigWritten>();
   /** The spawn that last passed the late check, per agent. */
   private confirmedSpawn = new Map<string, string>();
   /** The verdict for an agent's current spawn, removed as it is taken. */
@@ -778,11 +791,34 @@ export class HiveManager {
    *  runtime folder is set. */
   private hookVerdict(meta: AgentMeta, dir: string, root: string, extra: string[] | undefined, launch: HookLaunch | undefined, isNew: boolean): HookVerdict | null {
     const kind = this.hookKind(meta);
-    if (!kind) return null;
+    if (!kind) {
+      // The app does not sandbox this provider: it can write anywhere, so no check of its roots holds it. It reaches
+      // every Codex home, and cannot start while one exists (a Codex home is made in the same step that admits its agent).
+      const homes = existingCodexHomes();
+      if (homes.length) {
+        throw new CodexHomeRefused(`${meta.provider ?? 'this provider'} runs without a sandbox the app can check, so ${shortTarget(meta.id)} could write every Codex agent's home under ${codexShortHomeRoot()}; it cannot start while a Codex agent has a home there`);
+      }
+      return null;
+    }
+    if (kind === 'codex') {
+      // The other order: an unsandboxed agent starting or running could write the home this agent is about to get.
+      const unconfined = this.unconfinedSeats();
+      if (unconfined.length) {
+        throw new CodexHomeRefused(`${unconfined.map((u) => `${shortTarget(u.agentId)} (${u.provider})`).join(', ')} runs without a sandbox the app can check and could write a Codex agent's home; ${shortTarget(meta.id)} cannot start until it has stopped`);
+      }
+    }
     const r = this.verdictRoots(meta, dir, root, extra, launch);
     const rt = this.runtimeFor(meta.id, 'refuse' in r ? [] : r.roots, kind === 'codex' && process.platform === 'win32', 'refuse' in r ? r.refuse : null);
+    if (!('refuse' in r)) this.refuseCodexHomesReach(r.roots);
     if (!rt || 'refuse' in r) return null;
     return { agentId: meta.id, kind, rt, rootPaths: r.roots.map((x) => x.path).filter((x): x is string => !!x), claudeUserDir: r.claudeUserDir, codexFromConfig: r.codexFromConfig, dir, cwd: meta.cwd, isNew };
+  }
+  /** Every Codex agent's home sits under one folder outside the hive (codexSeatHome.ts). An agent of any provider
+   *  whose roots reach that folder could plant hooks in any of them, and hooks run outside the sandbox, so it is refused
+   *  here, before anything for it is created. Agents already running are left alone: the one admitted later is refused. */
+  private refuseCodexHomesReach(roots: WriteRoot[]): void {
+    const why = codexHomesReach(roots);
+    if (why) throw new CodexHomeRefused(why);
   }
   /** Called once the spawn's injection has been applied: only then can its decision be confirmed. */
   markHookProvisioned(spawnId: string): void {
@@ -810,6 +846,28 @@ export class HiveManager {
     }
     this.confirmHookLaunch(v, argv, env);
     this.confirmedSpawn.set(v.agentId, v.spawnId ?? spawnId);
+    // Kept until the terminal is known to have started, so a terminal that fails to start can still be rolled back.
+    this.startingSpawns.set(spawnId, v);
+  }
+  /** The terminal for this spawn started: nothing of it is rolled back any more. */
+  spawnStarted(spawnId: string): void {
+    this.startingSpawns.delete(spawnId);
+    // Running now, it is reported by the live seats instead.
+    this.unconfinedStarting.delete(spawnId);
+  }
+  /** However a spawn ended (started, refused, or thrown), it no longer counts as starting. A started agent the app
+   *  does not sandbox is counted through the live seats instead. */
+  spawnSettled(spawnId: string): void {
+    this.unconfinedStarting.delete(spawnId);
+  }
+  /** The app's running agents and their providers (the terminals it started), for the checks above. */
+  setLiveSeats(fn: () => Array<{ agentId: string; provider: string }>): void {
+    this.liveSeats = fn;
+  }
+  /** Agents the app does not sandbox that are starting or running. */
+  private unconfinedSeats(): Array<{ agentId: string; provider: string }> {
+    const live = this.liveSeats().filter((s) => !this.hookKind({ provider: s.provider } as AgentMeta));
+    return [...this.unconfinedStarting.values(), ...live];
   }
   /** The late check, just before the terminal starts: the FINAL launch line and environment must imply nothing the
    *  verdict did not check. Reads no settings files (the verdict is the snapshot). A refusal here rolls back a new agent's
@@ -840,6 +898,18 @@ export class HiveManager {
       const p = this.settingsRoot(d, v.cwd);
       if (!p || !checked.has(resolvePath(p))) fail(`its final launch line adds a write root that was not checked: ${d}`);
     }
+  }
+  /** A spawn refused after ensureAgent made its decision (while preparing the agent, at the Codex trust step, or at
+   *  the launch): undo what ensureAgent did for it, by the same compare-and-remove rule as the late check. A spawn
+   *  with no decision on record (refused before anything was created, or already rolled back) is left as it is. */
+  withdrawRefusedSpawn(spawnId: string, why: string): void {
+    this.unconfinedStarting.delete(spawnId);
+    const v = this.takeHookVerdict(spawnId) ?? this.startingSpawns.get(spawnId);
+    this.startingSpawns.delete(spawnId);
+    if (!v) return;
+    this.rollbackSpawn(v, why);
+    // A spawn whose terminal never started is not the agent's latest started spawn.
+    if (this.confirmedSpawn.get(v.agentId) === (v.spawnId ?? spawnId)) this.confirmedSpawn.delete(v.agentId);
   }
   /** Undo what ensureAgent did for this spawn: only the registry row this call added. Main never deletes under the hive
    *  root or an agent folder, so no folder is removed, ever; one this call created is left in place and named in the log. */
@@ -1082,9 +1152,13 @@ export class HiveManager {
     }
     const userCodexHome = join(homedir(), '.codex');
     for (const [id, agent] of Object.entries(this.registry().agents)) {
-      const codexHome = join(root, 'agents', id, '.codex');
-      if (agent.provider === 'codex' && existsSync(codexHome)) {
-        this.exposeCodexDataDirs(codexHome, userCodexHome, id);
+      const codexHome = codexSeatHome(join(root, 'agents', id), id);
+      // A real folder only: existsSync follows a link, and a home that is a link is never written through.
+      const isHome = lstatSync(codexHome, { throwIfNoEntry: false });
+      if (agent.provider === 'codex' && isHome?.isDirectory()) {
+        // Best-effort here: the agent's own next spawn refuses, naming the problem.
+        try { this.exposeCodexDataDirs(codexHome, userCodexHome, id); }
+        catch (e) { console.error(`[hive] exposeCodexDataDirs(${id}) failed:`, e); }
       }
     }
     const board = join(root, 'board.md');
@@ -1217,6 +1291,7 @@ export class HiveManager {
     // Keyed by this spawn, so two overlapping spawns of one agent never share a decision.
     const verdictKey = opts.spawnId ?? meta.id;
     if (verdict) this.hookVerdicts.set(verdictKey, verdict); else this.hookVerdicts.delete(verdictKey);
+    if (!this.hookKind(meta)) this.unconfinedStarting.set(verdictKey, { agentId: meta.id, provider: meta.provider ?? 'custom' });
     mkdirSync(join(dir, 'inbox', '.done'), { recursive: true });
     mkdirSync(join(dir, 'outbox', '.sent'), { recursive: true });
 
@@ -1369,15 +1444,10 @@ export class HiveManager {
               // (withCodexRemoteArgs drops it when --remote is added).
               const writableRoots = this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs);
               env.CODEX_HOME = this.installCodexHooks(dir, meta.cwd, meta.id, writableRoots);
-              // Codex refuses to run hooks from a config dir without persisted
-              // "hook trust" (normally an interactive gate). Our hook config is
-              // hive-authored inside an isolated CODEX_HOME, so we bypass that gate
-              // for this automated spawn — the flag's documented use ("automation
-              // that already vets hook sources"). Without it the hooks silently
-              // never fire. Remote startup also persists exact generated hook hashes
-              // (codexHookTrust.ts); this flag keeps the local fallback unattended.
-              // Must precede the positional prompt.
-              preArgs.push('--dangerously-bypass-hook-trust');
+              // Codex runs a hook only once its exact hash is trusted. The spawn
+              // seeds that trust for the generated hooks alone (codexHookTrust.ts)
+              // and refuses to start if anything else would need it. There is no
+              // bypass flag: it would also run a hook planted in a project layer.
               for (const d of writableRoots) preArgs.push('--add-dir', d);
             }
             else if (desc.shim === 'pi') {
@@ -1453,7 +1523,12 @@ export class HiveManager {
               this.emit?.('hive:degraded', { agentId: meta.id, name: meta.name, reason: 'proxy-bind', message: degraded });
             }
           }
-        } catch (e) { if (e instanceof HookRuntimeUnavailable) throw e; console.error(`[hive] install ${desc.kind} bridge failed:`, e); }
+        } catch (e) {
+          // A Codex home that its own sandbox could write is not a degraded
+          // bridge, it is a spawn that must not happen.
+          if (e instanceof HookRuntimeUnavailable || e instanceof CodexHomeRefused) throw e;
+          console.error(`[hive] install ${desc.kind} bridge failed:`, e);
+        }
       }
       // Inject the protocol text whichever way the CLI accepts it.
       // type-into-tui (Crush): the bare TUI reads a positional as a Cobra subcommand
@@ -3067,7 +3142,7 @@ export class HiveManager {
    *
    *  ISOLATION: rather than mutate the user's global Codex configuration (which
    *  also holds their login), we point this worker at a PER-AGENT CODEX_HOME
-   *  (`<dir>/.codex`, alongside Claude's settings.json) holding our own config.toml
+   *  (codexSeatHome: outside the hive, where no agent's sandbox can write it) holding our own config.toml
    *  with `[hooks]` tables — so the hooks fire ONLY for hive workers and a personal
    *  `codex` run is untouched. Rollout directories are linked into that isolated
    *  home from namespaced paths under the standard global scan roots. The user's
@@ -3075,22 +3150,26 @@ export class HiveManager {
    *  (login + model/provider/trust settings still apply).
    *  Returns the CODEX_HOME path for the caller to put in the worker's env. */
   private installCodexHooks(dir: string, cwd: string, agentId: string, writableRoots: string[] = []): string {
-    const home = join(dir, '.codex');
+    // Computed, never read from the agent folder (codexSeatHome.ts). A spawn whose
+    // roots reach it was refused before anything was created (hookVerdict).
+    const home = codexSeatHome(dir, agentId);
     try {
-      // Establish the home BEFORE anything is written into it. Codex derives its
-      // app-server control socket from $CODEX_HOME and canonicalizes the path
-      // first, and an agent directory is far past the platform's 104-byte limit
-      // — so a home created here as a plain directory can never host one, and
-      // the daemon fails on every start. ensureCodexShortHome puts the real
-      // directory somewhere short and leaves this .codex as the link onto it, so
-      // everything below (and everything that reads the agent folder) is
-      // unchanged.
-      //
-      // Null means this agent keeps a plain directory: it already had a real one
-      // — which is left alone, because it holds live sessions — or no short root
-      // was available. That agent still runs; it just has no remote control, the
-      // same as before any of this existed.
-      if (!ensureCodexShortHome(home, agentId)) mkdirSync(home, { recursive: true });
+      // The home must be a real folder: a link (dangling or not) would send every
+      // write below somewhere the app did not choose. Checked before any write.
+      const realFolder = (): void => {
+        const st = lstatSync(home, { throwIfNoEntry: false });
+        if (st && (st.isSymbolicLink() || !st.isDirectory())) {
+          throw new CodexHomeRefused(`Codex home ${home} is ${st.isSymbolicLink() ? 'a link' : 'not a folder'}; it must be a real folder the app made`);
+        }
+      };
+      realFolder();
+      mkdirSync(home, { recursive: true, mode: 0o700 });
+      realFolder();
+      // An agent that ran before homes moved out of the agent folder keeps its
+      // history: an allowlist of files is copied once, as data. The old folder
+      // is left exactly as it was; the owner removes it.
+      const migrated = migrateSeatHome(dir, home);
+      if (migrated) this.appendLog({ kind: 'codex-home-migrated', agentId, from: migrated.from, to: home, copied: migrated.copied, skipped: migrated.skipped, finished: migrated.finished });
       const userHome = join(homedir(), '.codex');
       // Symlink the user's login so the isolated home authenticates as them.
       // (config.toml is NOT symlinked — we write our own below, seeded from theirs,
@@ -3114,8 +3193,9 @@ export class HiveManager {
       }
       // Wire lifecycle hooks via config.toml `[hooks]` tables — the user-layer
       // discovery surface Codex actually scans. (A bare $CODEX_HOME/hooks.json is
-      // plugin-scoped — referenced FROM a plugin manifest — and is NOT discovered
-      // for a plain config dir; verified empirically that it never fires.) We seed
+      // a user-layer source too: codex-cli 0.167 lists it as an enabled user hook
+      // and runs it once trusted. We do not write one; that it would run is why
+      // the home must sit where no agent's sandbox can write.) We seed
       // this config.toml from the user's (their model/provider/trust settings carry
       // over) and append a `[[hooks.<Event>]]` group per event, each pointing at the
       // SAME cth-hook shim — reused verbatim (Codex's hook payload + response are
@@ -3140,51 +3220,83 @@ export class HiveManager {
       // freeze. Verify any change with codex's own resolver, no model spend:
       // `codex app-server` → initialize → `hooks/list` reports the normalized
       // timeoutSec per event.
-      const app = this.codexAppHooks();
-      let config = existsSync(join(userHome, 'config.toml'))
-        ? readFileSync(join(userHome, 'config.toml'), 'utf8') : '';
-      if (app) {
-        config += '\n# --- munder-hive lifecycle hooks (auto-generated; do not edit) ---\n';
-        for (const ev of app.events) {
-          config += `\n[[hooks.${ev}]]\n[[hooks.${ev}.hooks]]\ntype = "command"\ncommand = ${JSON.stringify(app.command)}\ntimeout = ${app.timeout}\n`;
-        }
-      }
-      // Directory trust. A fresh config dir has never answered Codex's "do you
-      // trust this directory?" prompt, so an agent launched into one stops on it
-      // before its first turn and, with nobody at the keyboard, never resumes.
-      // Pressing Yes persists exactly the table below, and pre-seeding it is the
-      // ONLY suppression there is — no flag or env skips the prompt (in
-      // particular `--dangerously-bypass-approvals-and-sandbox` governs command
-      // approval, not trust) and a `-c projects…` override is not persisted, so
-      // it does not read as an answer. Trust the FINAL working directory: by the
-      // time this runs, isolation has resolved, so `cwd` is the agent's git
-      // worktree when one was created and the original repo when it fell back —
-      // one path, always the one the CLI will actually open in. Canonical
-      // (realpath) spelling, because Codex resolves the directory before looking
-      // it up and `/tmp/x` would never match its `/private/tmp/x`.
-      let trusted = cwd;
-      try { trusted = realpathSync(cwd); } catch { /* not on disk yet — best spelling we have */ }
-      config += codexTrustEntry(trusted);
-      config = withCodexWritableRoots(config, writableRoots);
-      writeFileSync(join(home, 'config.toml'), config, 'utf8');
+      this.writeCodexConfig(home, cwd, writableRoots);
 
       // Keep each worker's CODEX_HOME isolated while putting its rollout data
       // below Codex's standard scan roots. External usage tools can then discover
       // the sessions without understanding the hive's private directory layout.
       this.exposeCodexDataDirs(home, userHome, agentId);
     } catch (e) {
+      if (e instanceof CodexHomeRefused) throw e;
       // With a hook runtime set, a Codex seat without its generated hook config would start unhooked: not best-effort.
       if (this.hookRuntimeDir) throw new HookRuntimeUnavailable(`the Codex hook config could not be written (${(e as Error)?.message ?? e})`);
-      console.error('[hive] installCodexHooks failed:', e);
+      // Without one no hooks are generated, but a home left half-prepared (or holding an older config) is still not launched.
+      throw new CodexHomeRefused(`Codex home ${home} could not be prepared (${(e as Error)?.message ?? e})`);
     }
     return home;
   }
 
-  private exposeCodexDataDirs(home: string, userHome: string, agentId: string): void {
-    for (const kind of ['sessions', 'archived_sessions'] as const) {
-      try { this.exposeCodexDataDir(home, userHome, agentId, kind); }
-      catch (e) { console.error(`[hive] exposeCodexDataDir(${kind}) failed:`, e); }
+  /** A resume that runs this agent in the home of the agent that owns the session: that home's config.toml is
+   *  written fresh for this spawn (its working folder, its write roots, the app's hooks) before the trust step,
+   *  as a fresh spawn's own is. The caller has checked the home is one of the computed ones. */
+  prepareResumedCodexHome(agentId: string, cwd: string, home: string, extra: string[] = []): void {
+    const root = this.root();
+    if (!root) throw new Error('the hive folder is not known');
+    const dir = this.agentDir(agentId);
+    this.writeCodexConfig(home, cwd, this.sandboxWritableDirs({ id: agentId, name: agentId, cwd } as AgentMeta, dir, root, extra));
+  }
+
+  /** The generated config.toml for a Codex home: the owner's config, the app's lifecycle hooks, directory trust for
+   *  `cwd` and the extra writable roots. Always a whole new file, renamed into place. */
+  private writeCodexConfig(home: string, cwd: string, writableRoots: string[]): void {
+    const userHome = join(homedir(), '.codex');
+    const app = this.codexAppHooks();
+    const ownerToml = existsSync(join(userHome, 'config.toml'))
+      ? readFileSync(join(userHome, 'config.toml'), 'utf8') : '';
+    let config = ownerToml;
+    if (app) {
+      config += '\n# --- munder-hive lifecycle hooks (auto-generated; do not edit) ---\n';
+      for (const ev of app.events) {
+        config += `\n[[hooks.${ev}]]\n[[hooks.${ev}.hooks]]\ntype = "command"\ncommand = ${JSON.stringify(app.command)}\ntimeout = ${app.timeout}\n`;
+      }
     }
+    // Directory trust. A fresh config dir has never answered Codex's "do you
+    // trust this directory?" prompt, so an agent launched into one stops on it
+    // before its first turn and, with nobody at the keyboard, never resumes.
+    // Pressing Yes persists exactly the table below, and pre-seeding it is the
+    // ONLY suppression there is — no flag or env skips the prompt (in
+    // particular `--dangerously-bypass-approvals-and-sandbox` governs command
+    // approval, not trust) and a `-c projects…` override is not persisted, so
+    // it does not read as an answer. Trust the FINAL working directory: by the
+    // time this runs, isolation has resolved, so `cwd` is the agent's git
+    // worktree when one was created and the original repo when it fell back —
+    // one path, always the one the CLI will actually open in. Canonical
+    // (realpath) spelling, because Codex resolves the directory before looking
+    // it up and `/tmp/x` would never match its `/private/tmp/x`.
+    let trusted = cwd;
+    try { trusted = realpathSync(cwd); } catch { /* not on disk yet — best spelling we have */ }
+    config += codexTrustEntry(trusted);
+    config = withCodexWritableRoots(config, writableRoots);
+    // Always a whole new file, renamed into place: a stale config.toml (or a
+    // link standing in for it) is replaced, never written through or kept.
+    const configTmp = join(home, `.config.toml.${process.pid}.${shortRand()}`);
+    writeFileSync(configTmp, config, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    try { renameSync(configTmp, join(home, 'config.toml')); }
+    catch (e) { rmSync(configTmp, { force: true }); throw e; }
+    // What was written, kept in memory: the trust step compares what Codex lists against this, never against the file.
+    this.codexConfigsWritten.set(resolvePath(home), { hooks: app, ownerToml });
+  }
+
+  /** The hooks the app last wrote into this home's config.toml, and the owner's config it copied there, as held in
+   *  memory when it wrote them; undefined when it has written none this run. */
+  codexConfigWritten(home: string): CodexConfigWritten | undefined {
+    return this.codexConfigsWritten.get(resolvePath(home));
+  }
+
+  private exposeCodexDataDirs(home: string, userHome: string, agentId: string): void {
+    // A failure refuses the spawn (installCodexHooks): a home without its rollout
+    // links would start a session whose history nothing else can find.
+    for (const kind of ['sessions', 'archived_sessions'] as const) this.exposeCodexDataDir(home, userHome, agentId, kind);
   }
 
   private moveCodexDataDir(from: string, to: string): void {
@@ -3268,7 +3380,7 @@ export class HiveManager {
     for (const entry of readdirSync(agents, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       for (const kind of ['sessions', 'archived_sessions'] as const) {
-        const source = join(agents, entry.name, '.codex', kind);
+        const source = join(codexSeatHome(join(agents, entry.name), entry.name), kind);
         try {
           if (!lstatSync(source).isSymbolicLink()) continue;
           const target = realpathSync(source);

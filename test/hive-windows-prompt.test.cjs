@@ -21,6 +21,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+// No Codex agents' homes in HOME: agents the app does not sandbox cannot start beside one.
+require('./codex-test-home.cjs').isolateHomeForFile('md-nohomes-');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { argsToCommandLine } = require('node-pty/lib/windowsPtyAgent.js');
