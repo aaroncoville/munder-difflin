@@ -771,6 +771,54 @@ test('a claim written before unusableSince existed still loads, and is asked abo
   assert.ok(s.seen.some((r) => r.url.endsWith(`/operations/${op}`)));
 });
 
+// ─── A ledger an older build can still read ────────────────────────────────
+
+/** The claim fields #104's parser accepts; any other key makes it refuse the whole ledger. */
+const CLAIM_KEYS_104 = ['op', 'since', 'items', 'acked', 'seen', 'idle', 'answeredAt'];
+const openClaimOnDisk = (folder) => fs.readdirSync(folder)
+  .map((f) => JSON.parse(fs.readFileSync(path.join(folder, f), 'utf8')))
+  .find((l) => l.claim)?.claim;
+
+test('an open claim with no failure in progress carries only the fields #104 can read', async (t) => {
+  t.mock.method(console, 'warn', () => {});
+  t.mock.method(console, 'info', () => {});
+  let down = false;
+  const s = await stub(t, server2(() => 'processing', () => down));
+  const now = clock();
+  const folder = ledgerDir();
+  const adapter = make(s.url, 'b1', '/tmp/home', now, folder);
+  await adapter.mineAgent(agentDirWith(MEMORY_MD), 'pam');
+  for (const key of Object.keys(openClaimOnDisk(folder))) assert.ok(CLAIM_KEYS_104.includes(key), `#104 would refuse the key ${key}`);
+
+  down = true;
+  now.advance(PASS);
+  await adapter.mineAgent(agentDirWith(MEMORY_MD), 'jim');
+  assert.equal(typeof openClaimOnDisk(folder).unusableSince, 'number', 'written while a failure is in progress');
+
+  down = false;
+  now.advance(PASS);
+  await adapter.mineAgent(agentDirWith(MEMORY_MD), 'jim');
+  assert.ok(!('unusableSince' in openClaimOnDisk(folder)), 'gone again once the server answers');
+});
+
+test('localhost, 127.0.0.1 and ::1 are one address: a switch between them is not a move', async (t) => {
+  const warn = t.mock.method(console, 'warn', () => {});
+  t.mock.method(console, 'info', () => {});
+  let down = false;
+  const s = await stub(t, server2(() => 'processing', () => down));
+  const port = new URL(s.url).port;
+  const cfg = { url: `http://127.0.0.1:${port}`, bank: 'b1' };
+  const now = clock();
+  const folder = ledgerDir();
+  const adapter = new HindsightAdapter(() => cfg, () => '/tmp/home', now, () => folder);
+  await adapter.mineAgent(agentDirWith(MEMORY_MD), 'pam');
+  down = true;
+  cfg.url = `http://localhost:${port}`;
+  cfg.bank = 'b2';
+  for (let pass = 0; pass < 12; pass++) { now.advance(PASS); await adapter.mineAgent(agentDirWith(MEMORY_MD), 'pam'); }
+  assert.equal(warn.mock.calls.filter((c) => /set aside/.test(c.arguments[0])).length, 0);
+});
+
 // ─── The no-progress clock counts only answered time ───────────────────────
 
 test('an overnight gap does not count toward the two-hour cancel', async (t) => {
@@ -970,7 +1018,7 @@ test('save never writes a ledger that load would refuse, and keeps the previous 
   const server = 'http://h\nb1';
   const sha = (x) => require('node:crypto').createHash('sha256').update(x).digest('hex');
   const item = (content, heading = 'h') => ({ key: `pam\n${heading}\n0`, id: 'a'.repeat(32), hash: sha(content), agent: 'pam', heading, content });
-  const claim = (items) => ({ op: '6f1c1a8e-1b2c-4d3e-8f90-123456789abc', since: 1, items, acked: false, seen: '', idle: 0, answeredAt: 1, unusableSince: null });
+  const claim = (items) => ({ op: '6f1c1a8e-1b2c-4d3e-8f90-123456789abc', since: 1, items, acked: false, seen: '', idle: 0, answeredAt: 1 });
   const good = [
     emptyLedger(server),
     { ...emptyLedger(server), sections: { 'pam\nh\n0': { id: 'b'.repeat(32), hash: 'c'.repeat(64) } } },

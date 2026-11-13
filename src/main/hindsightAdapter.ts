@@ -101,8 +101,18 @@ export function memorySections(markdown: string): { heading: string; body: strin
   return sections.filter((s) => s.body.length > 0);
 }
 
-/** The server address part of a ledger's `url\nbank`. */
-const addressOf = (server: string): string => server.slice(0, server.indexOf('\n'));
+const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
+/** The server address part of a ledger's `url\nbank`, with the loopback names taken as one host. */
+const addressOf = (server: string): string => {
+  const url = server.slice(0, server.indexOf('\n'));
+  try {
+    const u = new URL(url);
+    const host = LOOPBACK.has(u.hostname) ? 'loopback' : u.hostname;
+    return `${u.protocol}//${host}:${u.port}${u.pathname.replace(/\/+$/, '')}`;
+  } catch {
+    return url;
+  }
+};
 
 const sha = (text: string, length = 64): string => createHash('sha256').update(text).digest('hex').slice(0, length);
 
@@ -345,8 +355,7 @@ export class HindsightAdapter implements MemoryBackend {
       acked: false,
       seen: '',
       idle: 0,
-      answeredAt: now,
-      unusableSince: null
+      answeredAt: now
     };
     // Fail closed: a retain whose claim is not on disk could be sent twice after a restart.
     state.claim = claim;
@@ -492,7 +501,7 @@ export class HindsightAdapter implements MemoryBackend {
     }
     // Kept in the claim, so the count survives a restart of the app.
     if ('problem' in op) {
-      if (claim.unusableSince === null) {
+      if (claim.unusableSince === undefined) {
         claim.unusableSince = this.now();
         await ledger.save(state);
       }
@@ -502,8 +511,8 @@ export class HindsightAdapter implements MemoryBackend {
       if (addressOf(state.server) !== addressOf(target) && this.now() - claim.unusableSince >= ABANDON_AFTER_MS) {
         return this.setAside(ledger, state, target);
       }
-    } else if (claim.unusableSince !== null) {
-      claim.unusableSince = null;
+    } else if (claim.unusableSince !== undefined) {
+      delete claim.unusableSince;
       await ledger.save(state);
     }
     if (!('problem' in op)) {

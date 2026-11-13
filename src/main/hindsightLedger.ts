@@ -37,8 +37,10 @@ export interface RetainClaim {
   idle: number;
   /** When a poll was last answered (any HTTP response). */
   answeredAt: number;
-  /** Since when the server has given no usable answer (none at all, or an error), or null. */
-  unusableSince: number | null;
+  /** Since when the server has given no usable answer (none at all, or an error). Absent
+   *  while answers are usable, so a ledger with no failure in progress is still readable
+   *  by #104's parser, which accepts only the fields it knew. */
+  unusableSince?: number;
 }
 export interface LedgerState {
   v: 1;
@@ -104,9 +106,7 @@ export function parseLedger(text: string, server: string): LedgerState | string 
 /** A claim if every field checks out, else why not. */
 function parseClaim(c: unknown): RetainClaim | string {
   if (!isRecord(c) || !hasOnly(c, ['op', 'since', 'items', 'acked', 'seen', 'idle', 'answeredAt', 'unusableSince'])) return 'the claim is malformed';
-  // A claim written before unusableSince existed is read as having had no failure yet.
-  const unusableSince = c.unusableSince ?? null;
-  if (unusableSince !== null && !isTime(unusableSince)) return 'the claim is malformed';
+  if ('unusableSince' in c && !isTime(c.unusableSince)) return 'the claim is malformed';
   if (typeof c.op !== 'string' || !UUID.test(c.op) || !isTime(c.since) || !isTime(c.idle) || !isTime(c.answeredAt)) return 'the claim is malformed';
   if (typeof c.acked !== 'boolean' || typeof c.seen !== 'string' || c.seen.length > MAX_SEEN_LENGTH) return 'the claim is malformed';
   if (!Array.isArray(c.items) || c.items.length < 1 || c.items.length > CLAIM_MAX_ITEMS) return 'the claim is malformed';
@@ -118,7 +118,10 @@ function parseClaim(c: unknown): RetainClaim | string {
     // The text must be the text the hash names, or a resend would carry something else.
     if (createHash('sha256').update(it.content).digest('hex') !== it.hash) return 'a claim item does not match its hash';
   }
-  return { op: c.op, since: c.since, items: c.items as ClaimItem[], acked: c.acked, seen: c.seen, idle: c.idle, answeredAt: c.answeredAt, unusableSince };
+  return {
+    op: c.op, since: c.since, items: c.items as ClaimItem[], acked: c.acked, seen: c.seen, idle: c.idle, answeredAt: c.answeredAt,
+    ...(isTime(c.unusableSince) ? { unusableSince: c.unusableSince } : {})
+  };
 }
 
 export class RetainLedger {
