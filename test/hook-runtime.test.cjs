@@ -459,7 +459,7 @@ test('round 3: an agent refused over an hour ago and never spawned since leaves 
 // --- round 4: one decision from the launch itself, made before anything is created ---
 
 const claudeLaunch = (dir, extra = [], env = {}) => ({ argv: ['claude --permission-mode bypassPermissions', '--append-system-prompt', 'hi', '--settings', path.join(dir, 'settings.json'), ...extra], env });
-const codexLaunch = (extra = [], env = {}) => ({ argv: ['codex -a never -s workspace-write', '--dangerously-bypass-hook-trust', ...extra], env });
+const codexLaunch = (extra = [], env = {}) => ({ argv: ['codex -a never -s workspace-write', ...extra], env });
 
 test('round 4: the launch line and its environment decide; anything not modelled refuses, naming the cause', async (t) => {
   const { base, home, away, rt, hive, root } = floor(t);
@@ -471,8 +471,8 @@ test('round 4: the launch line and its environment decide; anything not modelled
   await spawn('ok2', 'codex', codexLaunch());
   // The exact forms the live floor runs today (argv elements whole, as the app hands them to the PTY).
   await spawn('live1', 'claude', { argv: ['claude --model claude-opus-5-5 --permission-mode bypassPermissions', '--append-system-prompt', 'You are "X" -- a multi word prompt --text', '--settings', path.join(dir('live1'), 'settings.json'), '--remote-control-session-name-prefix', 'X', '--resume', '4df241fc-56f4-48dc-b830-602be03f8b81'], env: { HOME: home } });
-  await spawn('live2', 'codex', { argv: ['codex --model gpt-5.6-sol -a never -s workspace-write', '--dangerously-bypass-hook-trust', '--add-dir', dir('live2'), '--add-dir', root, 'You are "Y" --channel x'], env: { HOME: home, CODEX_HOME: path.join(dir('live2'), '.codex') } });
-  await spawn('live3', 'codex', { argv: ['codex', 'resume', '01a1d072-5747-7e83-a08f-03389a2cac3f', '-a', 'never', '-s', 'workspace-write', '--dangerously-bypass-hook-trust', 'prompt'], env: { HOME: home } });
+  await spawn('live2', 'codex', { argv: ['codex --model gpt-5.6-sol -a never -s workspace-write', '--add-dir', dir('live2'), '--add-dir', root, 'You are "Y" --channel x'], env: { HOME: home, CODEX_HOME: path.join(dir('live2'), '.codex') } });
+  await spawn('live3', 'codex', { argv: ['codex', 'resume', '01a1d072-5747-7e83-a08f-03389a2cac3f', '-a', 'never', '-s', 'workspace-write', 'prompt'], env: { HOME: home } });
   const cases = [
     ['w1', 'claude', { argv: ['env X=1 claude'], env: {} }, /does not run claude itself/],
     ['w2', 'claude', { argv: ['sh -c claude'], env: {} }, /does not run claude itself/],
@@ -540,7 +540,7 @@ test('round 4: decided once — a policy change after the decision starts under 
   await hive.ensureAgent({ id: 'x2', name: 'x2', provider: 'codex', cwd: away }, { launch: codexLaunch(['--add-dir', 'sub']) });
   assert.doesNotThrow(() => hive.confirmHookLaunch({ ...hive.takeHookVerdict('x2'), isNew: false }, codexLaunch(['--add-dir', 'sub']).argv, {}));
   // The app's own remote rewrite is not a change.
-  assert.doesNotThrow(() => hive.confirmHookLaunch({ ...v, isNew: false }, ['codex -a never -s workspace-write', '--dangerously-bypass-hook-trust', '--remote', 'unix:///x.sock'], {}));
+  assert.doesNotThrow(() => hive.confirmHookLaunch({ ...v, isNew: false }, ['codex -a never -s workspace-write', '--remote', 'unix:///x.sock'], {}));
   // A runtime file changed after the decision fails the late check.
   fs.appendFileSync(path.join(rt, 'cth-hook.cjs'), '\n// x');
   assert.throws(() => hive.confirmHookLaunch({ ...v, isNew: false }, codexLaunch().argv, {}), /changed since the app wrote it/);
@@ -591,7 +591,7 @@ test('round 5: a hand-written line with no -s takes the sandbox from Codex confi
   await hive.ensureAgent({ id: 'ok', name: 'ok', provider: 'codex', cwd: away }, { launch: { argv: ['codex'], env: {} } });
   const v = hive.takeHookVerdict('ok');
   assert.equal(v.codexFromConfig, true);
-  assert.doesNotThrow(() => hive.confirmHookLaunch({ ...v, isNew: false }, ['codex', '--dangerously-bypass-hook-trust'], {}));
+  assert.doesNotThrow(() => hive.confirmHookLaunch({ ...v, isNew: false }, ['codex'], {}));
   await hive.ensureAgent({ id: 'ok2', name: 'ok2', provider: 'codex', cwd: away }, { launch: { argv: ['codex -s workspace-write'], env: {} } });
   assert.throws(() => hive.confirmHookLaunch({ ...hive.takeHookVerdict('ok2'), isNew: false }, ['codex'], {}), /does not keep the Codex sandbox/);
   assert.equal(root.endsWith('hive'), true);
@@ -887,8 +887,9 @@ test('versioned allowlist: owner config with hooks starts, project hooks refuse,
   assert.match(hive.codexConfigMode(proj).refuse, /hooks in a project config is not on the list/);
   assert.equal(hive.codexConfigMode(home).mode, 'workspace-write', 'the owner config\'s hooks do not stop its mode being read');
   // Flags: what the app emits starts; anything else refuses.
-  for (const a of [['--dangerously-bypass-hook-trust'], ['--model', 'gpt'], ['--enable', 'multi_agent']]) await spawn(['codex -a never -s workspace-write', ...a]);
-  for (const a of [['--approve-for-me'], ['--enable', 'hooks'], ['--disable', 'plugins'], ['-m', 'gpt'], ['--strict-config']]) assert.match(await refused(spawn(['codex -a never -s workspace-write', ...a])), /not on the list this app version understands/, a.join(' '));
+  for (const a of [['--model', 'gpt'], ['--enable', 'multi_agent']]) await spawn(['codex -a never -s workspace-write', ...a]);
+  // The app no longer emits the hook-trust bypass, and it would run any enabled hook, planted ones included.
+  for (const a of [['--dangerously-bypass-hook-trust'], ['--approve-for-me'], ['--enable', 'hooks'], ['--disable', 'plugins'], ['-m', 'gpt'], ['--strict-config']]) assert.match(await refused(spawn(['codex -a never -s workspace-write', ...a])), /not on the list this app version understands/, a.join(' '));
 });
 
 test('auto mode off: every production builder\'s line gets the config\'s own sandbox mode, workspace-write only when none is set', async (t) => {

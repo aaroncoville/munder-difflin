@@ -70,13 +70,14 @@ export const notOnList = (what: string): string => `${what} is not on the list t
  *  --model: the preset's model flag (agentProvider.ts modelFlag, workerLaunch.ts).
  *  --add-dir: the hive spawn's extra write roots (hive.ts); collected as roots.
  *  --remote: the app's remote rewrite (codexRemote.ts); the app server's own policy is in force, so it is unknown here.
- *  --dangerously-bypass-hook-trust: the hive spawn, so its generated hooks run (hive.ts).
  *  --enable/--disable: no builder emits them; accepted only for a feature on CODEX_FEATURES (today multi_agent).
  *  resume <session>: the resume subcommand (agentProvider.ts resumeSubcommand).
  *  Also read for what they mean, though the app no longer emits them: --full-auto (workspace-write) and
- *  --dangerously-bypass-approvals-and-sandbox / --yolo (no sandbox). */
+ *  --dangerously-bypass-approvals-and-sandbox / --yolo (no sandbox).
+ *  --dangerously-bypass-hook-trust is not understood: it runs every enabled hook, a planted one included, and the app
+ *  now trusts its own generated hooks by their exact hashes instead (codexHookTrust.ts). */
 const CODEX_VALUE_OPTS = new Set(['-a', '--ask-for-approval', '-s', '--sandbox', '--model', '--add-dir', '--remote', '--enable', '--disable']);
-const CODEX_FLAGS = new Set(['--dangerously-bypass-hook-trust']);
+const CODEX_FLAGS = new Set<string>();
 
 /** How Codex's sandbox was chosen on the launch line the app spawned: the executable's own words
  *  (from the command string) followed by the argv as given, each argument whole. Options are read

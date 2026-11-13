@@ -232,7 +232,7 @@ test('effective Codex roots: inherited roots show; full access is unsandboxed; e
   assert.equal(L('codex -a never -s danger-full-access', 'please run -s workspace-write'), 'danger-full-access', 'a prompt cannot make it narrower');
   assert.equal(L('codex', 'use --yolo carefully'), 'none', 'a prompt cannot make it wider');
   assert.equal(L('codex -a never', 'a -s b c'), 'none');
-  assert.equal(L('codex -a never -s workspace-write', '--dangerously-bypass-hook-trust', 'prompt'), 'workspace-write');
+  assert.equal(L('codex -a never -s workspace-write', '--model', 'gpt', 'prompt'), 'workspace-write');
   assert.equal(L('codex', 'resume', 'abc', '-s', 'workspace-write'), 'workspace-write');
   assert.equal(L('codex', 'the prompt', '-s', 'workspace-write'), 'unknown', 'Codex reads options after the prompt, so anything after it is not modelled');
   assert.equal(L('codex -s workspace-write', 'the prompt'), 'workspace-write', 'a prompt last is fine');
@@ -847,8 +847,9 @@ test('property + differential: every TOML spelling is decoded as the parser read
   }
   // Launch flags: only what the app emits.
   const F = (...a) => W.codexLaunchSandbox(['codex -a never -s workspace-write', ...a]);
-  for (const a of [['--dangerously-bypass-hook-trust'], ['--model', 'gpt'], ['--enable', 'multi_agent'], ['--disable=multi_agent']]) assert.equal(F(...a), 'workspace-write', a.join(' '));
-  for (const a of [['-c', 'model="x"'], ['--config=model=1'], ['--approve-for-me'], ['--enable', 'hooks'], ['--disable', 'plugins'], ['--enable', 'prefer_mxc'], ['-m', 'gpt'],
+  for (const a of [['--model', 'gpt'], ['--enable', 'multi_agent'], ['--disable=multi_agent']]) assert.equal(F(...a), 'workspace-write', a.join(' '));
+  // The hook-trust bypass is no longer emitted, and it would run any enabled hook.
+  for (const a of [['--dangerously-bypass-hook-trust'], ['-c', 'model="x"'], ['--config=model=1'], ['--approve-for-me'], ['--enable', 'hooks'], ['--disable', 'plugins'], ['--enable', 'prefer_mxc'], ['-m', 'gpt'],
     ['--strict-config'], ['--search'], ['-p', 'x'], ['-C', '/x'], ['--worktree']]) {
     const why = []; assert.equal(W.codexLaunchSandbox(['codex -a never -s workspace-write', ...a], [], why), 'unknown', a.join(' '));
     if (a[0] !== '-p' && a[0] !== '--enable' && a[0] !== '--disable') assert.match(why.join(), /not on the list this app version understands \(Codex 0\.162-0\.167\)/);
