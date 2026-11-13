@@ -13,6 +13,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const loadTs = require('./load-ts.cjs');
+const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 const R = loadTs('src/main/hookRuntime.ts');
@@ -26,8 +27,9 @@ function floor(t, opts = {}) {
   fs.mkdirSync(home);
   const realHome = process.env.HOME;
   process.env.HOME = home;
-  t.after(() => {
+  t.after(async () => {
     if (realHome === undefined) delete process.env.HOME; else process.env.HOME = realHome;
+    await allCommitsIdle();
     fs.rmSync(base, { recursive: true, force: true });
   });
   assert.equal(os.homedir(), home);

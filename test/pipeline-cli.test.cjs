@@ -11,6 +11,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
 const loadTs = require('./load-ts.cjs');
+const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 const core = require('../src/main/pipeline/mr-core.cjs');
 
 const CLI = path.join(__dirname, '..', 'resources', 'hive-mr.cjs');
@@ -135,7 +136,7 @@ test('verify-log checks a card log\'s chain', () => {
 
 test('end to end: what hive-mr writes, the router hands to the conductor unchanged', async (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-cli-e2e-'));
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
   const { HiveManager } = loadTs('src/main/hive.ts');
   const hive = new HiveManager(() => home);
   await hive.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: home, isGod: true });

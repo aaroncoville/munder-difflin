@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 const { prepareCodexHookTrust } = loadTs('src/main/codexHookTrust.ts');
 const { HiveManager } = loadTs('src/main/hive.ts');
 
@@ -11,10 +12,10 @@ async function fixture(t) {
   const root = fs.realpathSync(fs.mkdtempSync('/tmp/mdch-'));
   const oldHome = process.env.HOME;
   process.env.HOME = root;
-  t.after(() => { process.env.HOME = oldHome; fs.rmSync(root, { recursive: true, force: true }); });
+  t.after(async () => { process.env.HOME = oldHome; await allCommitsIdle(); fs.rmSync(root, { recursive: true, force: true }); });
   const hive = new HiveManager(() => root);
   const runtime = fs.realpathSync(fs.mkdtempSync('/tmp/mdcr-'));
-  t.after(() => fs.rmSync(runtime, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(runtime, { recursive: true, force: true }); });
   hive.setHookRuntime(runtime);
   const injection = await hive.ensureAgent({ id: 'hook-trust', name: 'Hook trust', provider: 'codex', cwd: root });
   const home = fs.realpathSync(injection.env.CODEX_HOME);

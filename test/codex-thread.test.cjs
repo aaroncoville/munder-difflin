@@ -15,6 +15,7 @@ const os = require('node:os');
 const path = require('node:path');
 const ts = require('typescript');
 const loadTs = require('./load-ts.cjs');
+const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const { CodexThreads, newThreadWrites, typeWrites } = loadTs('src/main/codexThread.ts');
 const { HiveManager } = loadTs('src/main/hive.ts');
@@ -26,7 +27,7 @@ const isWorker = (id) => id === WORKER;
 
 function records(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-thread-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(dir, { recursive: true, force: true }); });
   const at = (id) => path.join(dir, id, 'hive-thread.json');
   return { threads: new CodexThreads(at), reopen: () => new CodexThreads(at) };
 }
@@ -221,8 +222,9 @@ test('a Codex spawn keeps the brief it was started with', async (t) => {
   fs.mkdirSync(path.join(fakeHome, '.codex'), { recursive: true });
   const realHome = process.env.HOME;
   process.env.HOME = fakeHome;
-  t.after(() => {
+  t.after(async () => {
     if (realHome === undefined) delete process.env.HOME; else process.env.HOME = realHome;
+    await allCommitsIdle();
     fs.rmSync(home, { recursive: true, force: true });
   });
   const cwd = path.join(home, 'repo');

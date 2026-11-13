@@ -15,6 +15,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const ts = require('typescript');
 const loadTs = require('./load-ts.cjs');
+const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { RegistryUnreadable } = loadTs('src/main/messageTarget.ts');
@@ -40,7 +41,7 @@ const ID = 'worker-w1';
 
 async function setup(t, { kill } = {}) {
   const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'md-worker-stop-')));
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
   const hive = new HiveManager(() => home);
   await hive.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: home, isGod: true });
   await hive.ensureAgent({ id: 'worker-1', name: 'One', provider: 'claude', cwd: home });

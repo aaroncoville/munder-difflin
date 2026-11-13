@@ -9,13 +9,14 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const { UsageLog, RETENTION_DAYS, recordFromRenderer } = loadTs('src/main/usageLog.ts');
 
 function setup(t, { enabled = true, now = Date.parse('2026-11-12T15:00:00Z') } = {}) {
   // The app's own data folder; the hive is a separate folder agents can write.
   const appData = fs.mkdtempSync(path.join(os.tmpdir(), 'md-usage-appdata-'));
-  t.after(() => fs.rmSync(appData, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(appData, { recursive: true, force: true }); });
   const state = { enabled, now };
   const dir = path.join(appData, 'usage');
   const log = new UsageLog({
@@ -94,7 +95,7 @@ test('delete removes every usage file and reports how many', (t) => {
 
 test('nothing is written under the hive root: the log lives in the app\'s data folder', (t) => {
   const hive = fs.mkdtempSync(path.join(os.tmpdir(), 'md-usage-hive-'));
-  t.after(() => fs.rmSync(hive, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(hive, { recursive: true, force: true }); });
   const { log, dir, appData } = setup(t);
   log.record({ kind: 'ui-view', view: 'settings' });
   log.prune();
@@ -132,7 +133,7 @@ test('agent and card ids are written only when the roster or tasks.json holds th
 test('the hive ignores a usage folder, so no usage file can enter its git history', (t) => {
   const { HiveManager } = loadTs('src/main/hive.ts');
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-usage-ignore-'));
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
   new HiveManager(() => home).ensureHive();
   assert.ok(fs.readFileSync(path.join(home, 'hive', '.gitignore'), 'utf8').split('\n').includes('usage/'));
 });

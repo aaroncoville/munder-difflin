@@ -12,13 +12,14 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { isKnownTarget, isRosterId, rosterIdFor } = loadTs('src/main/messageTarget.ts');
 
 async function floor(t, emit) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-message-target-'));
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
   const hive = new HiveManager(() => home, emit);
   await hive.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: home, isGod: true });
   await hive.ensureAgent({ id: 'worker-1', name: 'Helper', provider: 'claude', cwd: home });
@@ -522,7 +523,7 @@ test('a near spelling still reaches the one agent it can mean when no other fold
 
 test('a folded lookup maps only to an id whose exact folder exists and whose key no other folder shares', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-folded-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(dir, { recursive: true, force: true }); });
   const agents = { i: {} };
   assert.equal(rosterIdFor(agents, 'I', dir), null, 'the id has no folder at all');
   fs.mkdirSync(path.join(dir, 'i'));
@@ -536,7 +537,7 @@ test('a folded lookup maps only to an id whose exact folder exists and whose key
 
 test('a folded lookup refuses when the one folder with the key is not the entry\'s own', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-folded-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(dir, { recursive: true, force: true }); });
   fs.mkdirSync(path.join(dir, DOTLESS));
   assert.equal(rosterIdFor({ i: {} }, 'I', dir), null, 'only a stale twin is on disk, so the entry has no folder of its own');
 });

@@ -15,6 +15,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const electron = require.resolve('electron');
 const notifications = [];
@@ -41,7 +42,7 @@ function tmpHome() {
 
 async function floor(t) {
   const home = tmpHome();
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
   const hive = new HiveManager(() => home);
   await hive.ensureAgent({ id: 'jim-1', name: 'Jim', provider: 'claude', cwd: home });
   const server = new HookServer(hive, () => null, () => CONFIG, undefined, undefined);
@@ -103,7 +104,7 @@ test('SubagentStop behaves the same as Stop', async (t) => {
 
 test('notifications setting off suppresses the OS toast but the hook still resolves', async (t) => {
   const home = tmpHome();
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
   const hive = new HiveManager(() => home);
   await hive.ensureAgent({ id: 'jim-1', name: 'Jim', provider: 'claude', cwd: home });
   const server = new HookServer(hive, () => null, () => ({ notifications: false }), undefined, undefined);

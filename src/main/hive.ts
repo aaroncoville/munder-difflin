@@ -53,6 +53,7 @@ import { preferredAgentRole } from '../shared/agentRole';
 import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde } from './fs';
 import { refreshMineIgnoresOnce } from './hiveMineIgnore';
+import { CommitQueue, HIVE_GIT_CONFIG, runGit, type GitResult } from './hiveCommit';
 import { agentFolderId, hasExactFolder, isAppSender, isFolderName, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, RegistryUnreadable, rosterIdFor, shortTarget } from './messageTarget';
 import { nodeLauncherScript } from './nodeLauncher';
 import { codexTrustEntry } from '../shared/codexTrust';
@@ -244,11 +245,6 @@ const ARCHIVE_PENDING = '.archive-pending';
 /** How long an unparseable outbox file is given to be finished by its sender
  *  before the router drops it. */
 const MALFORMED_RETRY_MS = 2_000;
-
-function sleepSync(ms: number): void {
-  const sab = new SharedArrayBuffer(4);
-  Atomics.wait(new Int32Array(sab), 0, 0, ms);
-}
 
 /** Filesystem- and sort-safe timestamp, e.g. 2026-05-30T14-03-11-123Z. */
 function stamp(): string {
@@ -3712,27 +3708,9 @@ export class HiveManager {
     renameSync(tmp, p);
   }
 
-  // — git (single committer, retry + stale-lock recovery) —
-  //
-  // `gc.autoDetach=false` is what makes this call actually synchronous.
-  //
-  // A commit runs `gc --auto`, and git detaches that into a BACKGROUND process
-  // by default. `spawnSync` returns when `git commit` exits, so the caller
-  // believes the hive is quiescent while a gc it cannot see is still writing
-  // into `.git/objects/`. Anything that touches the hive directory right after
-  // a commit races that process: removing a hive home throws ENOTEMPTY, and a
-  // read can catch a half-written pack.
-  //
-  // It reproduces on its own — create a HiveManager on a fresh temp home, call
-  // ensureAgent, then remove the home: ~3.5% of iterations throw ENOTEMPTY,
-  // and the leftover is always `.git/objects/`, sometimes still holding a
-  // `bitmap-ref-tips_*` temp file that vanishes a fraction of a second later.
-  // With this flag, gc runs inline and 200 iterations pass clean.
-  //
-  // The gc still happens — this only stops it from outliving the command that
-  // triggered it, which is what "single committer" was supposed to mean.
+  // — git: synchronous, for `init` only; commits run in the background through CommitQueue —
   private git(args: string[], cwd: string): { ok: boolean; out: string; err: string } {
-    const res = spawnSync('git', ['-c', 'commit.gpgsign=false', '-c', 'gc.autoDetach=false', '-c', 'user.name=Hive', '-c', 'user.email=hive@local', ...args], {
+    const res = spawnSync('git', [...HIVE_GIT_CONFIG, ...args], {
       cwd, encoding: 'utf8', timeout: 8000
     });
     return { ok: res.status === 0, out: res.stdout ?? '', err: res.stderr ?? '' };
@@ -3798,24 +3776,36 @@ export class HiveManager {
     console.warn('[hive] untracked previously-committed Codex homes from the hive repo');
   }
 
-  /** Commit all hive changes. No-op if there is nothing staged. */
+  private readonly commits = new CommitQueue((root, message) => this.commitNow(root, message), {
+    onFailing: (failures, error) => this.appendLog({ kind: 'hive-commit-failing', failures, error: error.slice(0, 2000) }),
+    onRecovered: (failures) => this.appendLog({ kind: 'hive-commit-recovered', failures })
+  });
+
+  /** Commit all hive changes, in the background: returns at once, and requests made while a commit runs share one
+   *  follow-up commit. See CommitQueue. */
   commit(message: string): void {
     if (this._gitCommitsDisabled) return;
     const root = this.root();
     if (!root || !existsSync(join(root, '.git'))) return;
+    this.commits.request(root, message);
+  }
+
+  /** Resolves once no hive commit is running or waiting. */
+  commitsSettled(): Promise<void> {
+    return this.commits.idle();
+  }
+
+  private async commitNow(root: string, message: string): Promise<GitResult> {
+    // Checked again here: commits may have been turned off since this one was requested.
+    if (this._gitCommitsDisabled || !existsSync(join(root, '.git'))) return { ok: true, out: '', err: '' };
     this.untrackCostLedger(root);
     this.untrackCodexHomes(root);
-    for (let attempt = 0; attempt < 5; attempt++) {
-      this.clearStaleLock(root);
-      const add = this.git(['add', '-A'], root);
-      const commit = this.git(['commit', '-q', '-m', message], root);
-      if (commit.ok) return;
-      if (/nothing to commit/i.test(commit.out + commit.err)) return;
-      if (!add.ok || /index\.lock/i.test(commit.err)) { sleepSync(50 * (attempt + 1)); continue; }
-      console.warn(`[hive] commit gave up after ${attempt + 1} attempts:`, commit.err || commit.out);
-      return;
-    }
-    console.warn('[hive] commit gave up after 5 attempts');
+    this.clearStaleLock(root);
+    const add = await runGit(['add', '-A'], root);
+    if (!add.ok) return add;
+    const commit = await runGit(['commit', '-q', '-m', message], root);
+    if (commit.ok || /nothing to commit/i.test(commit.out + commit.err)) return { ok: true, out: commit.out, err: commit.err };
+    return commit;
   }
 
   private clearStaleLock(root: string): void {

@@ -13,6 +13,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const loadTs = require('./load-ts.cjs');
+const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const { nodeLauncherScript } = loadTs('src/main/nodeLauncher.ts');
 const { HiveManager } = loadTs('src/main/hive.ts');
@@ -20,7 +21,7 @@ const POSIX = process.platform !== 'win32';
 
 function setup(t) {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'md-launcher-')));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(dir, { recursive: true, force: true }); });
   const fake = (rel, label) => {
     const file = path.join(dir, rel);
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -152,7 +153,7 @@ test('Windows: with only the runtime shim and nothing else, it says what is miss
 
 test('Windows, under real cmd.exe: the shim is skipped and a real node runs', { skip: POSIX }, (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'md launcher ('));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(dir, { recursive: true, force: true }); });
   const shimDir = path.join(dir, 'runtime');
   const realDir = path.join(dir, 'real');
   fs.mkdirSync(shimDir);

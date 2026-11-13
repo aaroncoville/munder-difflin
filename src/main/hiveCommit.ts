@@ -1,0 +1,165 @@
+import { spawn } from 'node:child_process';
+
+export interface GitResult { ok: boolean; out: string; err: string }
+export type GitRunner = (args: string[], cwd: string) => Promise<GitResult>;
+
+/**
+ * Identity and gc settings for every hive git command.
+ *
+ * `gc.autoDetach=false` is what makes a commit finished when its command exits. A commit runs `gc --auto`, and git
+ * detaches that into a background process by default, so the caller believes the hive is quiescent while a gc it
+ * cannot see is still writing into `.git/objects/`. Anything that touches the hive directory right after a commit races
+ * that process: removing a hive home throws ENOTEMPTY, and a read can catch a half-written pack. It reproduces on its
+ * own (create a HiveManager on a fresh temp home, call ensureAgent, then remove the home: ~3.5% of iterations throw
+ * ENOTEMPTY, the leftover always `.git/objects/`); with this flag gc runs inline and 200 iterations pass clean. The gc
+ * still happens; it just no longer outlives the command that triggered it.
+ */
+export const HIVE_GIT_CONFIG = ['-c', 'commit.gpgsign=false', '-c', 'gc.autoDetach=false', '-c', 'user.name=Hive', '-c', 'user.email=hive@local'];
+
+/** A git command that takes longer than this is stopped. It no longer blocks anything while it runs, so the limit only
+ *  has to catch a command that will never finish. SIGTERM lets git remove its own lock files on the way out. */
+export const HIVE_GIT_TIMEOUT_MS = 120_000;
+
+export function runGit(args: string[], cwd: string, timeoutMs = HIVE_GIT_TIMEOUT_MS): Promise<GitResult> {
+  return new Promise((resolve) => {
+    let out = '';
+    let err = '';
+    let settled = false;
+    const finish = (ok: boolean, extra = ''): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ ok, out, err: extra ? `${err}${err && !err.endsWith('\n') ? '\n' : ''}${extra}` : err });
+    };
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn('git', [...HIVE_GIT_CONFIG, ...args], { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (e) {
+      resolve({ ok: false, out: '', err: e instanceof Error ? e.message : String(e) });
+      return;
+    }
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      finish(false, `git ${args[0]} did not finish within ${timeoutMs} ms`);
+    }, timeoutMs);
+    child.stdout?.setEncoding('utf8').on('data', (d: string) => { out += d; });
+    child.stderr?.setEncoding('utf8').on('data', (d: string) => { err += d; });
+    child.on('error', (e) => finish(false, e.message));
+    child.on('close', (code) => finish(code === 0));
+  });
+}
+
+/** Every commit queue's running drain in this process. */
+const draining = new Set<Promise<void>>();
+
+/** Resolves once no commit queue in this process is running or waiting: what has to happen before a hive folder can be
+ *  removed, because a commit still running would be writing into it. */
+export async function allCommitsIdle(): Promise<void> {
+  while (draining.size) await Promise.all([...draining]);
+}
+
+export interface CommitQueueOptions {
+  /** Consecutive failures after which the queue reports, once, that commits are failing. */
+  failingAfter?: number;
+  warn?: (line: string) => void;
+  /** Told once when a run of failures reaches `failingAfter`, and once when commits recover from it. */
+  onFailing?: (failures: number, error: string) => void;
+  onRecovered?: (failures: number) => void;
+}
+
+/**
+ * Runs hive commits one at a time, off the caller's thread.
+ *
+ * A commit used to run synchronously wherever state changed: every message, route pass and archive. Each git command
+ * had an eight-second limit and a commit could try five times, so a repository git was slow in froze the app for over a
+ * minute per call. Now a request returns at once. While a commit runs, further requests for the same repository are
+ * folded into one follow-up commit, because `git add -A` records everything that changed in between anyway.
+ *
+ * A failure is not retried: the changes stay on disk and the next commit records them. Each failure would otherwise
+ * be its own warning, so the first one is logged with git's error, and a run of failures is reported once when it
+ * reaches `failingAfter` and once more when commits succeed again.
+ */
+export class CommitQueue {
+  private running: Promise<void> | null = null;
+  private readonly pending = new Map<string, string[]>();
+  private failures = 0;
+  private readonly failingAfter: number;
+  private readonly warn: (line: string) => void;
+
+  constructor(
+    private readonly job: (root: string, message: string) => Promise<GitResult>,
+    private readonly opts: CommitQueueOptions = {}
+  ) {
+    this.failingAfter = opts.failingAfter ?? 3;
+    this.warn = opts.warn ?? ((line) => console.warn(line));
+  }
+
+  request(root: string, message: string): void {
+    const messages = this.pending.get(root);
+    if (messages) messages.push(message);
+    else this.pending.set(root, [message]);
+    if (!this.running) {
+      const running = this.drain();
+      this.running = running;
+      draining.add(running);
+      void running.finally(() => draining.delete(running));
+    }
+  }
+
+  /** Resolves once no commit is running or waiting. */
+  async idle(): Promise<void> {
+    while (this.running) await this.running;
+  }
+
+  consecutiveFailures(): number {
+    return this.failures;
+  }
+
+  private async drain(): Promise<void> {
+    try {
+      for (let next = this.takeNext(); next; next = this.takeNext()) {
+        const [root, messages] = next;
+        let result: GitResult;
+        try {
+          result = await this.job(root, combineMessages(messages));
+        } catch (e) {
+          result = { ok: false, out: '', err: e instanceof Error ? e.message : String(e) };
+        }
+        this.record(result);
+      }
+    } finally {
+      this.running = null;
+    }
+  }
+
+  private takeNext(): [string, string[]] | undefined {
+    const first = this.pending.entries().next();
+    if (first.done) return undefined;
+    this.pending.delete(first.value[0]);
+    return first.value;
+  }
+
+  private record(result: GitResult): void {
+    if (result.ok) {
+      if (this.failures >= this.failingAfter) {
+        this.warn(`[hive] commits are working again after ${this.failures} failures in a row`);
+        this.opts.onRecovered?.(this.failures);
+      }
+      this.failures = 0;
+      return;
+    }
+    this.failures += 1;
+    const error = (result.err || result.out).trim() || 'git gave no error output';
+    if (this.failures === 1) this.warn(`[hive] commit failed: ${error}`);
+    if (this.failures === this.failingAfter) {
+      this.warn(`[hive] ${this.failures} hive commits in a row have failed; changes stay on disk until one succeeds. Last error: ${error}`);
+      this.opts.onFailing?.(this.failures, error);
+    }
+  }
+}
+
+/** One commit for several requests: the first request is the subject, the rest are listed in the body. */
+export function combineMessages(messages: string[]): string {
+  if (messages.length === 1) return messages[0];
+  return `${messages[0]} (+${messages.length - 1} more)\n\n${messages.slice(1).map((m) => `- ${m}`).join('\n')}`;
+}
