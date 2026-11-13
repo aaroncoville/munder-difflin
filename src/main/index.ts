@@ -151,7 +151,9 @@ const usageLog = new UsageLog({
   // The app's own data folder, never the hive (agents can write there).
   dir: () => join(app.getPath('userData'), 'usage'), enabled: () => readConfig().usageLog !== false,
   // Checked when an event arrives, after start-up has defined usageIds.
-  isAgent: (id) => usageIds.isAgent(id), isCard: (id) => usageIds.isCard(id)
+  isAgent: (id) => usageIds.isAgent(id), isCard: (id) => usageIds.isCard(id),
+  // The write-roots dry run's rows: an agent the app spawned this run, never registry.json (agents can write it).
+  isWriteAgent: (id) => spawnRoots.has(id)
 });
 const usageSession = randomUUID();
 ipcMain.on('usage:event', (e, event: unknown) => {
@@ -417,7 +419,9 @@ const writeRootsDryRun = new WriteRootsDryRun({
   },
   known: (agentId) => spawnRoots.has(agentId),
   generation: (agentId) => spawnRoots.get(agentId)?.gen ?? 0,
-  record: (event) => { usageLog.record(event); }
+  // With the usage log switched off nothing is written by the owner's choice: that is not a refused row.
+  record: (event) => (readConfig().usageLog === false ? undefined : usageLog.record(event)),
+  logFallback: (row) => { try { hive.appendLog(row); } catch { /* nothing further */ } }
 });
 hookServer.setWriteObserver((agentId, event, p) => writeRootsDryRun.onHook(agentId, event, p));
 const memory = new MemoryManager(

@@ -554,7 +554,10 @@ export interface DryRunAgent { ctx: RootsContext; provider: string; agentDir: st
 export interface DryRunDeps {
   /** The agent's roots context from what the app spawned, or null for an id it did not spawn. */
   agent(agentId: string): DryRunAgent | null;
-  record(event: Record<string, unknown>): void;
+  /** Writes one row; false when the row was not written. */
+  record(event: Record<string, unknown>): boolean | void;
+  /** Last resort when even the incomplete row saying rows were refused cannot be written (one log.jsonl line). */
+  logFallback?(row: Record<string, unknown>): void;
   /** Cheap, in-memory (a Map.has on the spawn record): whether the app spawned this id. Checked before a call is queued. */
   known(agentId: string): boolean;
   /** Cheap, in-memory: which spawn of this agent is current (counts session starts at admission). */
@@ -594,7 +597,18 @@ export class WriteRootsDryRun {
   private flood = new Map<string, number>();
   private ordinal = new Map<string, { gen: number; n: number }>();
 
+  /** Rows the log refused, per agent, and calls dropped because the agent was no longer known. */
+  private refusedRows = new Map<string, number>();
+  private noAgent = new Map<string, number>();
+
   constructor(private readonly d: DryRunDeps) {}
+
+  /** Every row goes through here: a row the log does not write is counted, and reported at the agent's next flush. */
+  private emit(row: Record<string, unknown>): void {
+    let ok: boolean | void = false;
+    try { ok = this.d.record(row); } catch { ok = false; }
+    if (ok === false && typeof row.agentId === 'string') this.refusedRows.set(row.agentId, (this.refusedRows.get(row.agentId) ?? 0) + 1);
+  }
 
   /** Called inside the hook handler: O(1), never throws, never reads the disk. */
   onHook(agentId: string | undefined, event: string, p: { tool_name?: unknown; tool_input?: unknown; source?: unknown }): void {
@@ -646,7 +660,8 @@ export class WriteRootsDryRun {
 
   private process(j: Pending): void {
     const a = this.d.agent(j.agentId);
-    if (!a) return; // an id the app did not spawn: nothing allocated, nothing recorded
+    // Admitted (the app spawned it) but no longer resolvable, e.g. the hive root went away mid-run: counted, not silent.
+    if (!a) { if (j.event === 'PreToolUse' || j.event === 'SessionStart') this.noAgent.set(j.agentId, (this.noAgent.get(j.agentId) ?? 0) + 1); return; }
     const now = this.d.now ?? Date.now;
     if (j.event === 'PreToolUse') {
       const key = `${toolClass(j.tool)}\u0000${inputShape(j.input)}`;
@@ -657,8 +672,8 @@ export class WriteRootsDryRun {
       if (!mayWrite(j.tool, j.input)) return;
       const tool = toolClass(j.tool);
       for (const o of observeTool(j.tool as string, j.input, a.ctx, BUDGET_MS, now)) {
-        if (o.refused) this.d.record({ kind: 'write-would-refuse', agentId: j.agentId, tool, via: o.via, pathClass: o.pathClass });
-        else this.d.record({ kind: 'write-own-settings', agentId: j.agentId, tool, via: o.via });
+        if (o.refused) this.emit({ kind: 'write-would-refuse', agentId: j.agentId, tool, via: o.via, pathClass: o.pathClass });
+        else this.emit({ kind: 'write-own-settings', agentId: j.agentId, tool, via: o.via });
       }
       return;
     }
@@ -670,7 +685,7 @@ export class WriteRootsDryRun {
     this.ordinal.set(j.agentId, { gen, n: ordinal });
     const eff = effectiveRoots(a.provider, a.agentDir, a.ctx.cwd, a.ctx.home, a.launch);
     const start = START_SOURCES.includes(j.source as (typeof START_SOURCES)[number]) ? j.source : 'unknown';
-    this.d.record({ kind: 'write-roots', agentId: j.agentId, provider: providerClass(a.provider), role: a.ctx.isGod ? 'god' : 'agent', source: eff.source, start, ordinal, coalesced: j.coalesced ?? 1, ...rootsReport(eff, a.ctx) });
+    this.emit({ kind: 'write-roots', agentId: j.agentId, provider: providerClass(a.provider), role: a.ctx.isGod ? 'god' : 'agent', source: eff.source, start, ordinal, coalesced: j.coalesced ?? 1, ...rootsReport(eff, a.ctx) });
   }
 
   /** The agent's terminal is gone: what it left counted or incomplete is written now, not at a turn end that will not come. */
@@ -689,9 +704,9 @@ export class WriteRootsDryRun {
   flushAll(): void {
     for (const [agentId, q] of this.queues) {
       const left = q.filter((j) => j.event === 'PreToolUse' || j.event === 'SessionStart').length;
-      if (left) this.d.record({ kind: 'write-incomplete', agentId, state: 'incomplete', reason: 'quit', shed: left, burst: false });
+      if (left) this.emit({ kind: 'write-incomplete', agentId, state: 'incomplete', reason: 'quit', shed: left, burst: false });
     }
-    const ids = new Set([...this.seen.keys(), ...this.shed.keys(), ...this.capped.keys(), ...this.flood.keys()]);
+    const ids = new Set([...this.seen.keys(), ...this.shed.keys(), ...this.capped.keys(), ...this.flood.keys(), ...this.refusedRows.keys(), ...this.noAgent.keys()]);
     this.queues.clear();
     this.turn = [];
     for (const id of ids) { try { this.flush(id); } catch { /* best effort */ } }
@@ -699,28 +714,38 @@ export class WriteRootsDryRun {
 
   private flush(agentId: string): void {
     this.startsSinceStop.delete(agentId);
+    const lost = this.noAgent.get(agentId);
+    if (lost) { this.noAgent.delete(agentId); this.emit({ kind: 'write-incomplete', agentId, state: 'incomplete', reason: 'no-agent', shed: lost, burst: false }); }
     const flooded = this.flood.get(agentId);
     if (flooded) {
       this.flood.delete(agentId);
-      this.d.record({ kind: 'write-incomplete', agentId, state: 'incomplete', reason: 'session-start-flood', shed: flooded, burst: true });
+      this.emit({ kind: 'write-incomplete', agentId, state: 'incomplete', reason: 'session-start-flood', shed: flooded, burst: true });
     }
     const mine = this.seen.get(agentId);
     this.seen.delete(agentId);
     for (const [k, count] of mine ?? []) {
       const [tool, shape] = k.split('\u0000');
-      this.d.record({ kind: 'write-observed', agentId, tool, shape, count });
+      this.emit({ kind: 'write-observed', agentId, tool, shape, count });
     }
     const shed = this.shed.get(agentId);
     if (shed) {
       this.shed.delete(agentId);
-      this.d.record({ kind: 'write-observed', agentId, tool: 'other', shape: 'shed', count: shed });
+      this.emit({ kind: 'write-observed', agentId, tool: 'other', shape: 'shed', count: shed });
       // An agent that lost calls is incomplete for this turn, never clean: its burst filled its queue.
-      this.d.record({ kind: 'write-incomplete', agentId, state: 'incomplete', reason: 'queue', shed, burst: true });
+      this.emit({ kind: 'write-incomplete', agentId, state: 'incomplete', reason: 'queue', shed, burst: true });
     }
     const capped = this.capped.get(agentId);
     if (capped) {
       this.capped.delete(agentId);
-      this.d.record({ kind: 'write-incomplete', agentId, state: 'incomplete', reason: 'cap', shed: capped, burst: false });
+      this.emit({ kind: 'write-incomplete', agentId, state: 'incomplete', reason: 'cap', shed: capped, burst: false });
+    }
+    const refused = this.refusedRows.get(agentId);
+    if (refused) {
+      this.refusedRows.delete(agentId);
+      const row = { kind: 'write-incomplete', agentId, state: 'incomplete', reason: 'log-refused', shed: refused, burst: false };
+      let ok: boolean | void = false;
+      try { ok = this.d.record(row); } catch { ok = false; }
+      if (ok === false) { try { this.d.logFallback?.({ kind: 'write-rows-refused', agentId, count: refused }); } catch { /* nothing further */ } }
     }
   }
 }
@@ -738,6 +763,9 @@ export const READ_SITES = [
   { id: 'patch-cap', read: 'a patch input larger than 256 KB, deeper than 3 levels, or with more than 32 fields', writer: 'the agent', planted: 'an oversized or deeply nested patch input', outcome: 'read up to those limits, plus one truncated row' },
   { id: 'path-length-cap', read: 'an edit target path over 4,096 characters', writer: 'the agent', planted: 'an absurdly long path', outcome: 'not classed, plus one truncated row' },
   { id: 'session-start', read: 'SessionStart', writer: 'the CLI, or any process that reaches the hook socket', planted: 'repeated starts; a settings change between two starts', outcome: 'every start re-reads the roots and writes a write-roots row (start source, per-spawn ordinal); starts waiting together give one row with coalesced = n; more than 8 between turn ends give write-incomplete (reason session-start-flood)' },
+  { id: 'log-identity', read: 'whether a write-* row\'s agent is known to the usage log', writer: 'held in main\'s memory from the spawn', planted: 'the agent removed from registry.json, or the file made unreadable', outcome: 'no effect: write-* rows check the spawn record, never registry.json' },
+  { id: 'log-refused', read: 'a row the usage log did not write', writer: 'the app', planted: 'a log that refuses or fails to write', outcome: 'counted per agent and reported as write-incomplete (reason log-refused) at the next flush; if that row too cannot be written, one log.jsonl line (write-rows-refused)' },
+  { id: 'no-agent', read: 'an admitted call whose agent can no longer be resolved', writer: 'the app (the hive root going away)', planted: 'a hive root unset mid-run', outcome: 'counted and reported as write-incomplete (reason no-agent)' },
   { id: 'agent-exit-flush', read: 'an agent whose terminal ends, or the app quitting', writer: 'the app', planted: 'a victim that never reaches another turn end; calls still waiting', outcome: 'at exit its waiting calls are read and its counts and incomplete rows written; at quit calls still waiting give write-incomplete (reason quit, count) and counts are written' },
   { id: 'managed-conflict', read: 'sandbox.enabled across the managed file and its drop-ins', writer: 'root only', planted: 'two managed files disagreeing', outcome: 'unknown: Claude\'s order among them is not modelled' },
   { id: 'claude-managed-drop-ins', read: 'managed-settings.d/*.json beside the managed file', writer: 'root only', planted: '—', outcome: 'read like the managed file' },

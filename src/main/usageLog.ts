@@ -80,7 +80,7 @@ const EVENTS: Record<string, Record<string, FieldType>> = {
   'write-would-refuse': { agentId: 'agent', tool: { oneOf: LOG_TOOLS }, via: { oneOf: VIAS }, pathClass: { oneOf: PATH_CLASSES } },
   'write-own-settings': { agentId: 'agent', tool: { oneOf: LOG_TOOLS }, via: { oneOf: VIAS } },
   'write-observed': { agentId: 'agent', tool: { oneOf: LOG_TOOLS }, shape: { oneOf: SHAPES }, count: 'count' },
-  'write-incomplete': { agentId: 'agent', state: { oneOf: ['incomplete'] }, reason: { oneOf: ['queue', 'cap', 'session-start-flood', 'quit'] }, shed: 'count', burst: 'bool' }
+  'write-incomplete': { agentId: 'agent', state: { oneOf: ['incomplete'] }, reason: { oneOf: ['queue', 'cap', 'session-start-flood', 'quit', 'log-refused', 'no-agent'] }, shed: 'count', burst: 'bool' }
 };
 /** Fields a kind cannot be written without. */
 const REQUIRED: Record<string, string[]> = {
@@ -137,6 +137,9 @@ export interface UsageLogDeps {
   isAgent?: (id: string) => boolean;
   /** True for a card id in the current tasks.json. */
   isCard?: (id: string) => boolean;
+  /** For the write-roots dry run's rows (kinds starting write-): true for an id the app itself spawned, held in memory.
+   *  Those rows never depend on registry.json, which every agent can write. */
+  isWriteAgent?: (id: string) => boolean;
 }
 
 export class UsageLog {
@@ -161,7 +164,9 @@ export class UsageLog {
   private write(event: Record<string, unknown>): boolean {
     if (!event || typeof event !== 'object' || Array.isArray(event)) return false;
     if (!this.d.enabled()) return false;
-    const clean = sanitize(event, { isAgent: (id) => this.d.isAgent?.(id) ?? false, isCard: (id) => this.d.isCard?.(id) ?? false });
+    const writeRow = typeof event.kind === 'string' && event.kind.startsWith('write-') && this.d.isWriteAgent !== undefined;
+    const isAgent = writeRow ? (id: string) => this.d.isWriteAgent!(id) : (id: string) => this.d.isAgent?.(id) ?? false;
+    const clean = sanitize(event, { isAgent, isCard: (id) => this.d.isCard?.(id) ?? false });
     if (!clean) return false;
     const dir = this.dir(true);
     if (!dir) return false;

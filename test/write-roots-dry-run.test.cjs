@@ -557,6 +557,36 @@ test('every row of READ_SITES has a case here, and each case holds', (t) => {
       assert.equal(rows.filter((r) => r.kind === 'write-would-refuse' && r.via === 'truncated').length, 3, JSON.stringify(rows));
       assert.ok(rows.every((r) => r.kind !== 'write-observed' || r.shape === 'patch'), 'counted as patches, not other'); assert.equal(W.observeTool('apply_patch', { input: '*** Update File: x\n' + ' '.repeat(W.MAX_COMMAND * 4) }, ctx).at(-1).via, 'truncated'); const wide = {}; for (let i = 0; i < 40; i++) wide['k' + i] = 'x'; wide.p = '*** Add File: y'; assert.equal(W.observeTool('apply_patch', wide, ctx).at(-1).via, 'truncated'); },
     'path-length-cap': () => assert.deepEqual(W.observeTool('Write', { file_path: '/' + 'a'.repeat(5000) }, ctx), [{ via: 'truncated', pathClass: 'unknown', refused: true }]),
+    'log-identity': () => {
+      const udir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-ulog-'));
+      try {
+        for (const isAgent of [() => false, () => { throw new Error('registry.json unreadable'); }]) {
+          // Wired as index wires it: isAgent reads registry.json (here: the victim is missing, or the file is unreadable); isWriteAgent is the spawn record.
+          const log = new UsageLog({ dir: () => udir, enabled: () => true, isAgent, isWriteAgent: (id) => id === 'a1' });
+          const later = []; const d = new W.WriteRootsDryRun({ agent: (id) => ({ ctx: { ...ctx, agentId: id }, provider: 'claude', agentDir: dir }), known: (id) => id === 'a1', record: (e) => log.record(e), defer: (f) => later.push(f) });
+          d.onHook('a1', 'PreToolUse', { tool_name: 'Write', tool_input: { file_path: path.join(root, 'bin/x') } }); d.onHook('a1', 'Stop', {}); while (later.length) later.shift()();
+        }
+        const text = fs.readdirSync(udir).map((f) => fs.readFileSync(path.join(udir, f), 'utf8')).join('');
+        assert.equal((text.match(/"kind":"write-would-refuse"/g) ?? []).length, 2, 'the victim\'s rows are written in both cases');
+        assert.equal((text.match(/"kind":"write-observed"/g) ?? []).length, 2);
+        const other = new UsageLog({ dir: () => udir, enabled: () => true, isAgent: () => false, isWriteAgent: () => true });
+        assert.equal(other.record({ kind: 'ui-view', view: 'settings', agentId: 'a1' }), true, 'other kinds are unchanged');
+      } finally { fs.rmSync(udir, { recursive: true, force: true }); }
+    },
+    'log-refused': () => {
+      const fallback = []; let on = false; const udir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-ulog-'));
+      try {
+        const log = new UsageLog({ dir: () => (on ? udir : null), enabled: () => true, isWriteAgent: () => true });
+        const later = []; const d = new W.WriteRootsDryRun({ agent: (id) => ({ ctx: { ...ctx, agentId: id }, provider: 'claude', agentDir: dir }), known: () => true, record: (e) => log.record(e), logFallback: (r) => fallback.push(r), defer: (f) => later.push(f) });
+        d.onHook('a1', 'PreToolUse', { tool_name: 'Write', tool_input: { file_path: path.join(root, 'bin/x') } }); while (later.length) later.shift()();
+        on = true; d.onHook('a1', 'Stop', {}); while (later.length) later.shift()();
+        const text = fs.readdirSync(udir).map((f) => fs.readFileSync(path.join(udir, f), 'utf8')).join('');
+        assert.match(text, /"reason":"log-refused","shed":1/, 'the refused row is reported once the log works');
+        on = false; d.onHook('a1', 'PreToolUse', { tool_name: 'Write', tool_input: { file_path: path.join(root, 'bin/y') } }); d.onHook('a1', 'Stop', {}); while (later.length) later.shift()();
+        assert.deepEqual(fallback.at(-1), { kind: 'write-rows-refused', agentId: 'a1', count: 2 }, 'if even that cannot be written: one log.jsonl line (the would-refuse and observed rows)');
+      } finally { fs.rmSync(udir, { recursive: true, force: true }); }
+    },
+    'no-agent': () => { const later = []; const rows = []; let gone = false; const d = new W.WriteRootsDryRun({ agent: (id) => (gone ? null : { ctx: { ...ctx, agentId: id }, provider: 'claude', agentDir: dir }), known: () => true, record: (e) => rows.push(e), defer: (f) => later.push(f) }); d.onHook('a1', 'PreToolUse', { tool_name: 'Read', tool_input: {} }); gone = true; while (later.length) later.shift()(); d.agentGone('a1'); assert.deepEqual(rows.find((r) => r.kind === 'write-incomplete'), { kind: 'write-incomplete', agentId: 'a1', state: 'incomplete', reason: 'no-agent', shed: 1, burst: false }); },
     'payload-tool-name': () => assert.equal(W.toolClass('secret_text'), 'other'),
     'payload-tool-input': () => assert.equal(W.observeTool('Bash', { command: Array.from({ length: 200 }, (_, i) => `rm ${root}/bin/${i}`).join(';') }, ctx).at(-1).via, 'truncated'),
     queue: () => { assert.ok(W.MAX_QUEUE * W.BUDGET_MS <= 250, 'per agent'); const later = []; const rows = []; const d = new W.WriteRootsDryRun({ agent: (id) => ({ ctx: { ...ctx, agentId: id }, provider: 'claude', agentDir: dir }), known: () => true, record: (e) => rows.push(e), defer: (f) => later.push(f) }); for (let i = 0; i < 500; i++) d.onHook('a2', 'PreToolUse', { tool_name: 'Read', tool_input: {} }); d.onHook('a1', 'PreToolUse', { tool_name: 'Write', tool_input: { file_path: path.join(root, 'bin/x') } }); while (later.length) later.shift()(); assert.ok(rows.some((r) => r.kind === 'write-would-refuse' && r.agentId === 'a1'), 'one agent\'s burst does not shed another\'s write'); },
