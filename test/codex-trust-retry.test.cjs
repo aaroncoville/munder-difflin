@@ -80,3 +80,36 @@ test('preparations for agents started together run one after another', { skip: !
   const [[a0, a1], [b0, b1]] = [span(a), span(b)];
   assert.ok(a1 <= b0 || b1 <= a0, `one ran inside the other: a ${a0}-${a1}, b ${b0}-${b1}`);
 });
+
+test('a restore refused after provisioning leaves the agent\'s registry row exactly as it was', async (t) => {
+  const { jailHome } = require('./codex-test-home.cjs');
+  const { HiveManager } = loadTs('src/main/hive.ts');
+  const base = codexTestBase(t, 'mdrr-');
+  const home = path.join(base, 'home');
+  const work = path.join(base, 'work');
+  for (const d of [home, work]) fs.mkdirSync(d, { recursive: true });
+  jailHome(t, home);
+  const rt = fs.realpathSync(fs.mkdtempSync('/tmp/mdrrt-'));
+  t.after(() => fs.rmSync(rt, { recursive: true, force: true }));
+  const hive = new HiveManager(() => path.join(base, 'h'));
+  hive.setHookRuntime(rt);
+  const launch = { argv: ['codex -a never -s workspace-write'], env: {} };
+  // The agent's earlier session: started, with a recorded session.
+  await hive.ensureAgent({ id: 'cx1', name: 'Coder', provider: 'codex', cwd: work }, { launch, spawnId: 'pty-cx1' });
+  hive.markHookProvisioned('pty-cx1');
+  hive.confirmSpawn('pty-cx1', { id: 'cx1', provider: 'codex' }, launch.argv, {});
+  hive.spawnStarted('pty-cx1');
+  const regFile = path.join(base, 'h', 'hive', 'registry.json');
+  const reg = JSON.parse(fs.readFileSync(regFile, 'utf8'));
+  reg.agents.cx1 = { ...reg.agents.cx1, sessionId: '01a1d072-5747-7e83-a08f-03389a2cac3f', status: 'offline', lastSeen: 1 };
+  fs.writeFileSync(regFile, JSON.stringify(reg));
+  const before = JSON.parse(fs.readFileSync(regFile, 'utf8')).agents.cx1;
+  // The restore at app start: provisioned, then refused at the trust step.
+  await hive.ensureAgent({ id: 'cx1', name: 'Coder', provider: 'codex', cwd: work }, { launch, spawnId: 'pty-cx1-2' });
+  hive.markHookProvisioned('pty-cx1-2');
+  hive.withdrawRefusedSpawn('pty-cx1-2', 'Codex hook trust could not be established');
+  assert.deepEqual(JSON.parse(fs.readFileSync(regFile, 'utf8')).agents.cx1, before);
+  // And it can be started again.
+  await hive.ensureAgent({ id: 'cx1', name: 'Coder', provider: 'codex', cwd: work }, { launch, spawnId: 'pty-cx1-3' });
+  assert.equal(hive.registry().agents.cx1.archived, false);
+});

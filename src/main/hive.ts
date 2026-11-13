@@ -223,7 +223,7 @@ export interface Registry {
 /** A launch as the spawn will make it: argv[0] is the command string, then its arguments; env holds only the variables that move configuration. */
 export interface HookLaunch { argv: string[]; env: Record<string, string> }
 /** What ensureAgent decided for a Claude or Codex spawn, carried to the late check. */
-export interface HookVerdict { agentId: string; kind: 'claude' | 'codex'; rt: StagedHookRuntime; rootPaths: string[]; claudeUserDir?: string; codexFromConfig?: boolean; dir: string; cwd: string; isNew: boolean; /** True when the agent's folder did not exist before this spawn. */ dirCreated?: boolean; /** The spawn this decision is for. */ spawnId?: string; /** Set only once every provisioning step the decision depends on has succeeded. */ provisioned?: boolean; /** Why provisioning did not complete. */ failure?: string }
+export interface HookVerdict { agentId: string; kind: 'claude' | 'codex'; rt: StagedHookRuntime; rootPaths: string[]; claudeUserDir?: string; codexFromConfig?: boolean; dir: string; cwd: string; isNew: boolean; /** True when the agent's folder did not exist before this spawn. */ dirCreated?: boolean; /** The spawn this decision is for. */ spawnId?: string; /** Set only once every provisioning step the decision depends on has succeeded. */ provisioned?: boolean; /** Why provisioning did not complete. */ failure?: string; /** An agent that existed: its registry row as it was before this spawn, put back if the spawn is refused. */ prevRow?: RegistryAgent }
 
 export interface SpawnInjection {
   args: string[];
@@ -917,27 +917,31 @@ export class HiveManager {
     try {
       this.hookRuntimeRefused.set(v.agentId, { reason: why, at: Date.now() });
       let rowRemoved = false;
+      let rowRestored = false;
       let rowKept: string | undefined;
-      if (v.isNew) {
+      if (v.isNew || v.prevRow) {
         const root = this.root();
         const reg = this.readableRegistry();
         const row = reg && Object.hasOwn(reg.agents, v.agentId) ? (reg.agents[v.agentId] as RegistryAgent & { spawnId?: string }) : undefined;
-        // Compare and remove: only a row this spawn still owns, and only if no later spawn of the agent has started.
+        // Compare and remove (a new agent) or put back (one that existed): only a row this spawn still owns, and only
+        // if no later spawn of the agent has started.
         const later = this.confirmedSpawn.get(v.agentId);
         if (!row) rowKept = 'no row';
         else if (!v.spawnId || row.spawnId !== v.spawnId) rowKept = 'a later spawn owns the row';
-        else if (later && later !== v.spawnId) rowKept = 'a later spawn has started';
+        // A row put back needs only the row's own spawn id: every later spawn rewrites it.
+        else if (v.isNew && later && later !== v.spawnId) rowKept = 'a later spawn has started';
         else if (root && reg) {
-          delete reg.agents[v.agentId];
+          if (v.prevRow) { reg.agents[v.agentId] = v.prevRow; rowRestored = true; }
+          else { delete reg.agents[v.agentId]; rowRemoved = true; }
           this.atomicWriteJson(join(root, 'registry.json'), reg);
-          rowRemoved = true;
         }
       }
       this.appendLog({
-        kind: 'spawn-rolled-back', agentId: isFolderName(v.agentId) ? v.agentId : shortTarget(v.agentId), rowRemoved, ...(rowKept ? { rowKept } : {}),
+        kind: 'spawn-rolled-back', agentId: isFolderName(v.agentId) ? v.agentId : shortTarget(v.agentId), rowRemoved,
+        ...(rowRestored ? { rowRestored } : {}), ...(rowKept ? { rowKept } : {}),
         ...(v.dirCreated ? { folderLeft: v.dir } : {}), reason: why
       });
-      if (rowRemoved) this.commit(`hive: roll back ${v.agentId}`);
+      if (rowRemoved || rowRestored) this.commit(`hive: roll back ${v.agentId}`);
     } catch (e) { console.error('[hive] rollback after a refused spawn failed:', e); }
   }
   /** 'claude' or 'codex' when this agent gets the app's hook command, else null. */
@@ -1300,6 +1304,8 @@ export class HiveManager {
     // identity.md and registry.role are the durable job from the hire.
     const reg = roster;
     const prev = reg.agents[meta.id];
+    // A refused spawn of an agent that already existed puts its row back as it was (rollbackSpawn).
+    if (verdict && prev) verdict.prevRow = JSON.parse(JSON.stringify(prev)) as RegistryAgent;
     if (meta.cwd) meta = { ...meta, cwd: expandTilde(meta.cwd) };
     const role = preferredAgentRole(meta.role, prev?.role, !!meta.isGod);
     meta = { ...meta, role };
