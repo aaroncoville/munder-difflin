@@ -59,19 +59,30 @@ export function launchPlaces(provider: string, env: Record<string, string> | und
   return { home, claudeUserDir: cfg ?? join(home, '.claude'), codexHome: ch ?? join(home, '.codex'), tmpDirs };
 }
 
-/** Codex options that take a value (the next argument, or `--name=value`). */
-const CODEX_VALUE_OPTS = new Set(['-a', '--ask-for-approval', '-s', '--sandbox', '-m', '--model', '-c', '--config', '-p', '--profile',
-  '--add-dir', '--remote', '--remote-auth-token-env', '--enable', '--disable', '--local-provider']);
-/** Codex options that take no value and do not change the sandbox or the folder it runs in. */
-const CODEX_FLAGS = new Set(['--strict-config', '--oss', '--approve-for-me', '--dangerously-bypass-hook-trust', '--search', '--no-alt-screen',
-  '--no-daemon', '-h', '--help', '-V', '--version']);
+/** The Codex releases this decoder's allowlists were checked against. Outside them a key or flag may mean something else. */
+export const CODEX_VERSIONS = 'Codex 0.162-0.167';
+/** Why a key or flag is not understood: it is not on the versioned allowlist. */
+export const notOnList = (what: string): string => `${what} is not on the list this app version understands (${CODEX_VERSIONS})`;
+
+/** The Codex launch options the app's own builders emit, each with what it means here. Anything else is not understood.
+ *  -a/--ask-for-approval: auto mode's `-a never` (agentProvider.ts); the approval policy decides later escalation, not a root.
+ *  -s/--sandbox: auto mode's `-s workspace-write`; read as the sandbox mode.
+ *  --model: the preset's model flag (agentProvider.ts modelFlag, workerLaunch.ts).
+ *  --add-dir: the hive spawn's extra write roots (hive.ts); collected as roots.
+ *  --remote: the app's remote rewrite (codexRemote.ts); the app server's own policy is in force, so it is unknown here.
+ *  --dangerously-bypass-hook-trust: the hive spawn, so its generated hooks run (hive.ts).
+ *  resume <session>: the resume subcommand (agentProvider.ts resumeSubcommand).
+ *  Also read for what they mean, though the app no longer emits them: --full-auto (workspace-write) and
+ *  --dangerously-bypass-approvals-and-sandbox / --yolo (no sandbox). */
+const CODEX_VALUE_OPTS = new Set(['-a', '--ask-for-approval', '-s', '--sandbox', '--model', '--add-dir', '--remote', '--enable', '--disable']);
+const CODEX_FLAGS = new Set(['--dangerously-bypass-hook-trust']);
 
 /** How Codex's sandbox was chosen on the launch line the app spawned: the executable's own words
  *  (from the command string) followed by the argv as given, each argument whole. Options are read
  *  up to the first argument that is neither an option nor an option's value (the prompt is never
- *  read). Anything that could change the sandbox in a way not read here is `unknown`: a `-c` on a
- *  sandbox key, a profile, a remote app server (its own policy is in force), or an option this
- *  grammar does not know. `--add-dir` directories are collected as roots. 'none' when no option says. */
+ *  read). Only the options the app emits are understood; any other option, any -c, a remote app server (its own policy
+ *  is in force), or --enable/--disable of a feature not on the benign list is `unknown`, and `why` names it.
+ *  `--add-dir` directories are collected as roots. 'none' when no option says. */
 export function codexLaunchSandbox(args: string[] | undefined, addDirs: string[] = [], why: string[] = []): 'workspace-write' | 'read-only' | 'danger-full-access' | 'none' | 'unknown' {
   const a = (args ?? []).filter((x): x is string => typeof x === 'string');
   // The first element is the command string, split into its words; the rest are argv elements, whole.
@@ -92,18 +103,13 @@ export function codexLaunchSandbox(args: string[] | undefined, addDirs: string[]
     if (name === '--dangerously-bypass-approvals-and-sandbox' || name === '--yolo') return 'danger-full-access';
     if (name === '--full-auto') { mode = 'workspace-write'; continue; }
     if (CODEX_FLAGS.has(name) && value === null) continue;
-    // Anything else (-C/--cd and --worktree move the session's folder, -i takes several values, a new flag may change
-    // the sandbox) is not modelled.
-    if (!CODEX_VALUE_OPTS.has(name)) { why.push(`option ${name}`); return 'unknown'; }
+    if (!CODEX_VALUE_OPTS.has(name)) { why.push(notOnList(`option ${name}`)); return 'unknown'; }
     const v = value ?? words[++i];
     if (v === undefined) { why.push(`option ${name} without a value`); return 'unknown'; }
     if (name === '-s' || name === '--sandbox') mode = v;
-    else if ((name === '-c' || name === '--config') && v.split('=')[0].trim() === 'allow_symlinked_codex_home') {
-      if (v.slice(v.indexOf('=') + 1).trim() !== 'false') { why.push(`${name} allow_symlinked_codex_home`); return 'unknown'; }
-    }
-    else if ((name === '-c' || name === '--config') && familyPath(v.split('=')[0])) { why.push(`${name} ${v.split('=')[0]}`); return 'unknown'; }
     else if (name === '--add-dir') addDirs.push(v);
-    else if (name === '-p' || name === '--profile' || name === '--remote') { why.push(`option ${name}`); return 'unknown'; }
+    else if (name === '--remote') { why.push('option --remote (the app server\'s own policy is in force)'); return 'unknown'; }
+    else if ((name === '--enable' || name === '--disable') && !Object.hasOwn(CODEX_FEATURES, v)) { why.push(notOnList(`${name} ${v}`)); return 'unknown'; }
   }
   if (mode === null) return 'none';
   if (mode === 'workspace-write' || mode === 'read-only' || mode === 'danger-full-access') return mode;
@@ -180,59 +186,72 @@ function oddValue(v: unknown, at: string): string | null {
   return at || '(top)';
 }
 
-/** Names that may decide a Codex sandbox. */
-const POLICY_FAMILY = /sandbox|permission|profile|writable_roots|symlink/i;
-/** Tables of named entries that can each carry their own Codex settings: the keys directly inside an entry are read as
- *  policy positions (the entry names themselves are identifiers, not keys). */
-const ENTRY_TABLES = new Set(['projects', 'profiles', 'agents']);
-/** Known non-policy keys at a tested position that would otherwise match the family. Each is listed with its source in
- *  docs/usage-log.md. */
-const FAMILY_ALLOW = new Set(['include_permissions_instructions']);
+/** Top-level config keys known not to touch the writable set, the sandbox mode or hook execution, each with its source:
+ *  the inventory of Codex policy inputs (by section) or Codex's config reference. Any other top-level key is not
+ *  understood. */
+export const CODEX_BENIGN_KEYS: Readonly<Record<string, string>> = {
+  model: 'config reference (model name); in the owner config named by the inventory\'s conclusion',
+  model_reasoning_effort: 'config reference; in the owner config named by the inventory\'s conclusion',
+  model_provider: 'config reference (which provider entry serves the model); absent from the inventory\'s policy tables',
+  model_providers: 'config reference (provider endpoints); absent from the inventory\'s policy tables',
+  mcp_servers: 'config reference (MCP server definitions); absent from the inventory\'s policy tables',
+  shell_environment_policy: 'config reference (environment given to commands); absent from the inventory\'s policy tables',
+  approval_policy: 'inventory, note under "Config keys that change the sandbox": grants no path, decides later escalation',
+  history: 'config reference (transcript history); absent from the inventory\'s policy tables',
+  tui: 'config reference (terminal UI); absent from the inventory\'s policy tables',
+  notify: 'config reference (a program run after a turn); absent from the inventory\'s policy tables',
+  include_permissions_instructions: 'config reference (prompt text only); absent from the inventory\'s policy tables'
+};
+/** features.<name> entries known not to touch the sandbox, its backend, hooks or plugins (the inventory lists those:
+ *  hooks, codex_hooks, plugins, prefer_mxc, use_linux_sandbox_bwrap, use_legacy_landlock). */
+export const CODEX_FEATURES: Readonly<Record<string, string>> = {
+  multi_agent: 'inventory conclusion: the owner config\'s only feature, not a policy input'
+};
+/** Inside sandbox_workspace_write: writable_roots is read; the two exclusions only narrow the set (inventory rows). */
+const SWW_KEYS = new Set(['writable_roots', 'exclude_tmpdir_env_var', 'exclude_slash_tmp']);
 
-/** The path of the first key, at a position where Codex reads policy, whose name is in the policy family and that the
- *  decoder does not consume; or null. Tested positions: top-level keys; keys directly inside one entry of projects,
- *  profiles or agents; keys directly inside [windows] (its sandbox is policy on Windows). Not tested: free-form maps and
- *  their children (an env, shell_environment_policy.set, http_headers, an MCP server's tools, plugins, apps) and anything
- *  deeper. An agents entry's config_file is not followed, so it is not understood either. */
-function familyKey(doc: Record<string, unknown>): string | null {
-  for (const [k, x] of Object.entries(doc)) {
-    // allow_symlinked_codex_home = true lets roots under CODEX_HOME follow links out of it (to targets that can change):
-    // only false is read as harmless.
-    if (k === 'allow_symlinked_codex_home') { if (x !== false) return 'allow_symlinked_codex_home (links under the Codex home may lead anywhere)'; continue; }
-    const consumed = k === 'sandbox_mode' || k === 'sandbox_workspace_write' || k === 'profiles';
-    if (!consumed && !FAMILY_ALLOW.has(k) && POLICY_FAMILY.test(k)) return k;
-    if (ENTRY_TABLES.has(k) && isPlainObject(x)) {
-      for (const [name, entry] of Object.entries(x)) {
-        if (!isPlainObject(entry)) continue;
-        for (const k2 of Object.keys(entry)) {
-          if (k === 'agents' && k2 === 'config_file') return `${k}.${name}.config_file (a config the app does not follow)`;
-          if (!FAMILY_ALLOW.has(k2) && POLICY_FAMILY.test(k2)) return `${k}.${name}.${k2}`;
-        }
-      }
-    }
-    if (k === 'windows' && isPlainObject(x)) for (const k2 of Object.keys(x)) if (POLICY_FAMILY.test(k2)) return `windows.${k2}`;
+/** Which config file is read: the per-agent one the app generates (its CODEX_HOME), the owner's own user config, or a
+ *  project .codex/config.toml in the working directory or above it (where a seat works, so not owner-held). */
+export type CodexConfigKind = 'generated' | 'user' | 'project';
+/** The lifecycle hooks the app writes into a generated config: one group per event, one command entry each. `stateKeys`
+ *  are the hook ids whose trust the app's remote start persists (hooks.state.<id>.trusted_hash, codexHookTrust.ts). */
+export interface CodexAppHooks { events: readonly string[]; command: string; timeout: number; stateKeys?: readonly string[] }
+
+/** The ids Codex gives the generated hooks in the config at `realConfig` (its real path): `<file>:<event_in_snake_case>:0:0`,
+ *  as Codex 0.162 reports them and the app persists their trust. */
+export function codexHookStateKeys(realConfig: string, events: readonly string[]): string[] {
+  return events.map((e) => `${realConfig}:${e.replace(/(?<=[a-z])(?=[A-Z])/g, '_').toLowerCase()}:0:0`);
+}
+
+/** True when `hooks` is exactly what the app writes: the same events, each one group holding one entry of exactly
+ *  type "command", this command and this timeout. Anything extra or different is false. */
+function hooksAreApps(hooks: unknown, app: CodexAppHooks | null | undefined): boolean {
+  if (!app || !isPlainObject(hooks)) return false;
+  // The trust the app persists for its own hooks: only those ids, each holding only a sha256 trusted_hash.
+  if (Object.hasOwn(hooks, 'state')) {
+    const st = hooks.state;
+    if (!isPlainObject(st) || !Object.entries(st).every(([id, v]) => (app.stateKeys ?? []).includes(id) && isPlainObject(v)
+      && Object.keys(v).length === 1 && typeof v.trusted_hash === 'string' && /^sha256:[0-9a-f]{64}$/.test(v.trusted_hash))) return false;
   }
-  return null;
+  const evs = Object.keys(hooks).filter((k) => k !== 'state');
+  if (evs.length !== app.events.length || !app.events.every((e) => evs.includes(e))) return false;
+  return evs.every((e) => {
+    const groups = hooks[e];
+    if (!Array.isArray(groups) || groups.length !== 1 || !isPlainObject(groups[0])) return false;
+    const g = groups[0];
+    if (Object.keys(g).length !== 1 || !Array.isArray(g.hooks) || g.hooks.length !== 1 || !isPlainObject(g.hooks[0])) return false;
+    const h = g.hooks[0];
+    return Object.keys(h).length === 3 && h.type === 'command' && h.command === app.command && h.timeout === app.timeout;
+  });
 }
 
-/** True when a -c/--config key path sets a policy key: the same positions as familyKey. */
-export function familyPath(keyPath: string): boolean {
-  const segs = keyPath.split('.').map((x) => x.replace(/["'\s]/g, ''));
-  const [a, , c] = segs;
-  if (!a) return false;
-  if (segs.length === 1 && FAMILY_ALLOW.has(a)) return false;
-  if (POLICY_FAMILY.test(a)) return true;
-  if (ENTRY_TABLES.has(a) && c !== undefined) return (a === 'agents' && c === 'config_file') || (!FAMILY_ALLOW.has(c) && POLICY_FAMILY.test(c));
-  if (a === 'windows' && segs[1] !== undefined) return POLICY_FAMILY.test(segs[1]);
-  return false;
-}
-
-/** Codex writable_roots and sandbox mode from a config.toml, parsed by smol-toml and then checked
- *  for exactly the shape read: a top-level `sandbox_mode` string, a `sandbox_workspace_write` table whose
- *  `writable_roots` is a list of strings, and no `profile` (it selects a profile) or profile that sets either key. A
- *  parse error or any other type where those keys can legally live is unknown, and `why` names the key. Escaped or
- *  quoted key spellings are decoded by the parser, so they are read as the keys they are. */
-export function codexRoots(toml: string): { roots: string[]; state: RootsState; mode?: string | null; why?: string } {
+/** Codex writable_roots and sandbox mode from one config.toml, parsed by smol-toml and checked against a versioned
+ *  allowlist of top-level keys (CODEX_VERSIONS): a key is read (sandbox_mode, sandbox_workspace_write, projects' trust
+ *  levels, features on CODEX_FEATURES, allow_symlinked_codex_home = false), known benign (CODEX_BENIGN_KEYS), or not
+ *  understood, and `why` names it. [hooks] depends on the file: in the owner's user config it is allowed and not read;
+ *  in the generated config it is read only when it is exactly the app's own hooks (`hooksDiffer` otherwise); in a project
+ *  config it is not understood. A parse error or any other type where a read key lives is unknown too. */
+export function codexRoots(toml: string, kind: CodexConfigKind = 'project', appHooks?: CodexAppHooks | null): { roots: string[]; state: RootsState; mode?: string | null; why?: string; hooksDiffer?: true } {
   const unknown = (why: string): { roots: string[]; state: 'unknown'; why: string } => ({ roots: [], state: 'unknown', why });
   let doc: unknown;
   try { doc = parseToml(toml); } catch (e) {
@@ -245,32 +264,50 @@ export function codexRoots(toml: string): { roots: string[]; state: RootsState; 
   const odd = oddValue(doc, '');
   if (odd) return unknown(`${odd} is a value the app does not read (a date, time or non-finite number)`);
   let mode: string | null = null;
-  if (Object.hasOwn(doc, 'sandbox_mode')) {
-    if (typeof doc.sandbox_mode !== 'string') return unknown('sandbox_mode is not text');
-    mode = doc.sandbox_mode;
-  }
   let roots: string[] = [];
-  if (Object.hasOwn(doc, 'sandbox_workspace_write')) {
-    const sww = doc.sandbox_workspace_write;
-    if (!isPlainObject(sww)) return unknown('sandbox_workspace_write is not a table');
-    if (Object.hasOwn(sww, 'writable_roots')) {
-      if (!stringList(sww.writable_roots)) return unknown('sandbox_workspace_write.writable_roots is not a list of text');
-      roots = sww.writable_roots;
+  for (const [k, x] of Object.entries(doc)) {
+    if (Object.hasOwn(CODEX_BENIGN_KEYS, k)) continue;
+    if (k === 'sandbox_mode') { if (typeof x !== 'string') return unknown('sandbox_mode is not text'); mode = x; continue; }
+    if (k === 'sandbox_workspace_write') {
+      if (!isPlainObject(x)) return unknown('sandbox_workspace_write is not a table');
+      for (const [k2, y] of Object.entries(x)) {
+        if (!SWW_KEYS.has(k2)) return unknown(notOnList(`sandbox_workspace_write.${k2}`));
+        if (k2 === 'writable_roots') { if (!stringList(y)) return unknown('sandbox_workspace_write.writable_roots is not a list of text'); roots = y; }
+        else if (typeof y !== 'boolean') return unknown(`sandbox_workspace_write.${k2} is not true or false`);
+      }
+      continue;
     }
-  }
-  if (Object.hasOwn(doc, 'profile')) return unknown('profile (it selects a profile, which may set the sandbox)');
-  if (Object.hasOwn(doc, 'profiles')) {
-    const profiles = doc.profiles;
-    if (!isPlainObject(profiles)) return unknown('profiles is not a table');
-    for (const [name, p] of Object.entries(profiles)) {
-      if (!isPlainObject(p)) return unknown(`profiles.${name} is not a table`);
-      for (const k of ['sandbox_mode', 'sandbox_workspace_write']) if (Object.hasOwn(p, k)) return unknown(`profiles.${name}.${k}`);
+    if (k === 'projects') {
+      if (!isPlainObject(x)) return unknown('projects is not a table');
+      for (const [name, p] of Object.entries(x)) {
+        if (!isPlainObject(p)) return unknown(`projects.${name} is not a table`);
+        for (const [k2, y] of Object.entries(p)) {
+          if (k2 !== 'trust_level') return unknown(notOnList(`projects.${name}.${k2}`));
+          if (typeof y !== 'string') return unknown(`projects.${name}.trust_level is not text`);
+        }
+      }
+      continue;
     }
+    if (k === 'features') {
+      if (!isPlainObject(x)) return unknown('features is not a table');
+      for (const [f, y] of Object.entries(x)) {
+        if (!Object.hasOwn(CODEX_FEATURES, f)) return unknown(notOnList(`features.${f}`));
+        if (typeof y !== 'boolean') return unknown(`features.${f} is not true or false`);
+      }
+      continue;
+    }
+    // Lets roots under CODEX_HOME follow links out of it (to targets that can change): only false is read as harmless.
+    if (k === 'allow_symlinked_codex_home' && x === false) continue;
+    if (k === 'hooks') {
+      if (kind === 'user') continue; // the owner's own file: allowed, not read (listed before enforcement)
+      if (kind === 'generated') {
+        if (hooksAreApps(x, appHooks)) continue;
+        return { roots: [], state: 'unknown', why: 'hooks differ from the app\'s own', hooksDiffer: true };
+      }
+      return unknown(notOnList('hooks in a project config'));
+    }
+    return unknown(notOnList(k));
   }
-  // Key families: any key, at any depth, whose name says it may decide the sandbox and that is not one read above
-  // (Codex's default_permissions and [permissions.x], a future permissions_v2 ...) makes the file not understood.
-  const fam = familyKey(doc);
-  if (fam) return unknown(`${fam} (a key that may decide the sandbox and that the app does not read)`);
   if (mode === 'danger-full-access') return { roots: [], state: 'unsandboxed', mode };
   if (mode !== null && mode !== 'workspace-write' && mode !== 'read-only') return { roots: [], state: 'unknown', mode, why: `sandbox_mode = "${mode}"` };
   return { roots, state: 'ok', mode };

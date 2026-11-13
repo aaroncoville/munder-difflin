@@ -601,29 +601,33 @@ test('round 5/6: Codex config is parsed as TOML; names in strings never count; r
   const q3 = '"'.repeat(3);
   const fine = [
     '[projects."/Users/me/profile"]\ntrust_level = "trusted"\n',
-    '[profiles.x]\nmodel = "y"\n',
     '[mcp_servers.profiler]\ncommand = "p"\n',
-    'notes = "set sandbox_mode = danger later"\n',
-    'x = "writable_roots"\n',
-    '[[hooks.Stop]]\ncommand = "a"\n[[hooks.Stop.hooks]]\ntype = "command"\n',
-    `doc = ${q3}\nsandbox_mode = "danger-full-access"\n${q3}\n`,
-    'm = { name = "sandbox_mode" }\n',
+    'model = "set sandbox_mode = danger later"\n',
+    'model = "writable_roots"\n',
+    `model = ${q3}\nsandbox_mode = "danger-full-access"\n${q3}\n`,
+    '[tui]\nm = { name = "sandbox_mode" }\n',
   ];
   for (const t2 of fine) assert.equal(L.codexRoots(t2).state, 'ok', JSON.stringify(t2));
+  // Hooks in the owner's own config are allowed and not read; in a project config they are not understood.
+  const hooks = '[[hooks.Stop]]\ncommand = "a"\n[[hooks.Stop.hooks]]\ntype = "command"\n';
+  assert.equal(L.codexRoots(hooks, 'user').state, 'ok');
+  assert.equal(L.codexRoots(hooks, 'project').state, 'unknown');
+  // Keys off the versioned allowlist are not understood, by name.
+  for (const [t2, key] of [['[profiles.x]\nmodel = "y"\n', 'profiles'], ['notes = "x"\n', 'notes'], ['x = "writable_roots"\n', 'x']]) assert.equal(L.codexRoots(t2).why, `${key} is not on the list this app version understands (Codex 0.162-0.167)`);
   const bad = [
-    ['[profiles.x]\nsandbox_mode = "danger-full-access"\n', 'sandbox_mode on line 2'],
+    ['[profiles.x]\nsandbox_mode = "danger-full-access"\n', 'profiles'],
     ['[[sandbox_workspace_write]]\nx = 1\n', 'sandbox_workspace_write'],
     ['sandbox_mode = "nope"\n', 'sandbox_mode'],
     ['[sandbox_workspace_write]\nwritable_roots = "/"\n', 'writable_roots'],
-    ['profile = "fast"\n', 'profile on line 1'],
-    ['[a]\n[profiles.x.sandbox_workspace_write]\nwritable_roots = ["/"]\n', 'sandbox_workspace_write on line 2'],
+    ['profile = "fast"\n', 'profile'],
+    ['[tui]\n[profiles.x.sandbox_workspace_write]\nwritable_roots = ["/"]\n', 'profiles'],
   ];
   for (const [t2, word] of bad) { const r = L.codexRoots(t2); assert.equal(r.state, 'unknown', JSON.stringify(t2)); assert.ok(r.why.includes(word.split(' ')[0]), `${JSON.stringify(t2)}: ${r.why}`); }
   // The refusal carries it.
   const cfg = path.join(home, '.codex', 'config.toml');
   fs.mkdirSync(path.dirname(cfg), { recursive: true });
   fs.writeFileSync(cfg, 'profile = "x"\n[a]\nb = 1\n');
-  assert.match(await refused(hive.ensureAgent({ id: 'p1', name: 'p', provider: 'codex', cwd: home }, { launch: { argv: ['codex -s workspace-write'], env: {} } })), /profile \(it selects a profile/);
+  assert.match(await refused(hive.ensureAgent({ id: 'p1', name: 'p', provider: 'codex', cwd: home }, { launch: { argv: ['codex -s workspace-write'], env: {} } })), /profile is not on the list this app version understands/);
 });
 
 test('round 5: the refused list keeps at most the 32 most recent agents', async (t) => {
@@ -761,7 +765,7 @@ test('round 7 (M): any date, time or non-finite value anywhere is not understood
     ['f = nan\n', 'unknown', 'f'],
     ['[a.b]\nd = [1, 1979-05-27]\n', 'unknown', 'a.b.d[1]'],
     ['m = { when = 1979-05-27 }\n', 'unknown', 'm.when'],
-    ['n = 1.5\nm = -0.0\ni = 42\nb = true\ns = "1979-05-27"\n', 'ok', null],
+    ['[tui]\nn = 1.5\nm = -0.0\ni = 42\nb = true\ns = "1979-05-27"\n', 'ok', null],
   ];
   for (const [text, state, key] of cases) {
     const r = L.codexRoots(text);
@@ -785,20 +789,24 @@ test('round 8 (N1): any sandbox/permission/profile/writable_roots key the decode
   const spawn = (argv) => hive.ensureAgent({ id: `p${n++}`, name: 'p', provider: 'codex', cwd: home }, { launch: { argv, env: {} } });
   // Her probes: the config selects a permission profile that outranks sandbox_mode.
   fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\ndefault_permissions = ":danger-full-access"\n');
-  assert.match(await refused(spawn(['codex'])), /default_permissions \(a key that may decide the sandbox/);
+  assert.match(await refused(spawn(['codex'])), /default_permissions is not on the list this app version understands \(Codex 0\.162-0\.167\)/);
   assert.match(await refused(spawn(['codex -s workspace-write'])), /default_permissions/, 'with or without -s');
   fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\n[permissions.wide.filesystem]\nwrite = ["/"]\n');
-  assert.match(await refused(spawn(['codex'])), /permissions \(a key/);
+  assert.match(await refused(spawn(['codex'])), /permissions is not on the list/);
   fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\n');
-  assert.match(await refused(spawn(['codex', '-c', 'default_permissions=":danger-full-access"'])), /option the app does not model: -c default_permissions/);
+  assert.match(await refused(spawn(['codex', '-c', 'default_permissions=":danger-full-access"'])), /option -c is not on the list/);
   // A made-up future key in the family is refused too.
   fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\npermissions_v2 = { mode = "open" }\n');
   assert.match(await refused(spawn(['codex'])), /permissions_v2/);
   fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\n[profiles.x]\ndefault_permissions = ":read-only"\n');
-  assert.match(await refused(spawn(['codex'])), /profiles\.x\.default_permissions/);
-  // Names that are identifiers (a project path, a server, a profile name) are not policy keys.
-  fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\n[projects."/Users/me/profile"]\ntrust_level = "trusted"\n[mcp_servers.profiler]\ncommand = "p"\n[profiles.sandboxed]\nmodel = "m"\n[sandbox_workspace_write]\nnetwork_access = true\n');
+  assert.match(await refused(spawn(['codex'])), /profiles is not on the list/);
+  // Names that are identifiers (a project path, a server) are not keys; profiles and unread sandbox_workspace_write keys are off the list.
+  fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\n[projects."/Users/me/profile"]\ntrust_level = "trusted"\n[mcp_servers.profiler]\ncommand = "p"\n');
   await spawn(['codex']);
+  fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\n[profiles.sandboxed]\nmodel = "m"\n');
+  assert.match(await refused(spawn(['codex'])), /profiles is not on the list/);
+  fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\n[sandbox_workspace_write]\nnetwork_access = true\n');
+  assert.match(await refused(spawn(['codex'])), /sandbox_workspace_write\.network_access is not on the list/);
 });
 
 test('prep r7: the key-family test applies only where Codex reads policy; her false refusals start, every policy form still refuses', async (t) => {
@@ -811,22 +819,24 @@ test('prep r7: the key-family test applies only where Codex reads policy; her fa
   const base = 'sandbox_mode = "workspace-write"\n';
   const fine = [
     'include_permissions_instructions = true\n', '[mcp_servers.x.env]\nAWS_PROFILE = "a"\n', '[shell_environment_policy.set]\nAWS_PROFILE = "a"\n',
-    '[mcp_servers.x.tools.get_user_profile]\nenabled = true\n', '[mcp_servers.x.http_headers]\n"X-Profile" = "v"\n', '[agents.profile-reviewer]\ndescription = "d"\n',
-    '[plugins."permission-helper@m"]\nenabled = true\n', '[apps.sandbox_app]\nenabled = true\n', '[[hooks.Stop]]\npermission_mode = "x"\n',
-    // Jannings' R6 names: Codex accepts identifier maps agents.* and plugins.* (each fixture loads under codex 0.167.0 --strict-config).
-    '[agents.sandbox_auditor]\ndescription = "d"\n', '[plugins.profiler]\nenabled = true\n',
+    '[mcp_servers.x.tools.get_user_profile]\nenabled = true\n', '[mcp_servers.x.http_headers]\n"X-Profile" = "v"\n',
+    // The owner's own config may carry hooks: allowed, not read.
+    '[[hooks.Stop]]\npermission_mode = "x"\n',
   ];
   for (const f of fine) { fs.writeFileSync(cfg, base + f); await spawn(['codex']); }
+  // agents.*, plugins.* and apps.* are off the versioned allowlist (agents can load a whole config; plugins carry hooks).
+  for (const [f, key] of [['[agents.profile-reviewer]\ndescription = "d"\n', 'agents'], ['[agents.sandbox_auditor]\ndescription = "d"\n', 'agents'], ['[plugins."permission-helper@m"]\nenabled = true\n', 'plugins'], ['[plugins.profiler]\nenabled = true\n', 'plugins'], ['[apps.sandbox_app]\nenabled = true\n', 'apps']]) {
+    fs.writeFileSync(cfg, base + f); assert.match(await refused(spawn(['codex'])), new RegExp(`${key} is not on the list`), f);
+  }
   const bad = [
     ['default_permissions = ":danger-full-access"\n', /default_permissions/], ['permissions_v2 = 1\n', /permissions_v2/], ['[permissions.wide.filesystem]\nwrite = ["/"]\n', /permissions/],
-    ['[profiles.x]\ndefault_permissions = "r"\n', /profiles\.x\.default_permissions/], ['[projects."/x"]\nsandbox_mode = "danger-full-access"\n', /projects\.\/x\.sandbox_mode/],
-    ['[windows]\nsandbox = "elevated"\n', /windows\.sandbox/], ['[agents.a]\nconfig_file = "other.toml"\n', /agents\.a\.config_file \(a config the app does not follow\)/],
+    ['[profiles.x]\ndefault_permissions = "r"\n', /profiles is not on the list/], ['[projects."/x"]\nsandbox_mode = "danger-full-access"\n', /projects\.\/x\.sandbox_mode is not on the list/],
+    ['[windows]\nsandbox = "elevated"\n', /windows is not on the list/], ['[agents.a]\nconfig_file = "other.toml"\n', /agents is not on the list/],
   ];
   for (const [f, why] of bad) { fs.writeFileSync(cfg, base + f); assert.match(await refused(spawn(['codex'])), why, f); }
-  // -c at the same positions only.
+  // Any -c refuses: the app builds none.
   fs.writeFileSync(cfg, base);
-  for (const k of ['default_permissions=":danger-full-access"', 'projects."/x".sandbox_mode="danger-full-access"', 'agents.a.config_file="x"', 'windows.sandbox="x"']) assert.match(await refused(spawn(['codex', '-c', k])), /option the app does not model: -c/, k);
-  for (const k of ['mcp_servers.x.env.AWS_PROFILE="a"', 'include_permissions_instructions=true']) await spawn(['codex', '-c', k]);
+  for (const k of ['default_permissions=":danger-full-access"', 'projects."/x".sandbox_mode="danger-full-access"', 'agents.a.config_file="x"', 'windows.sandbox="x"', 'mcp_servers.x.env.AWS_PROFILE="a"', 'include_permissions_instructions=true']) assert.match(await refused(spawn(['codex', '-c', k])), /option -c is not on the list this app version understands \(Codex 0\.162-0\.167\)/, k);
   // Memory and knowledge settings are read outside the hook provisioning try.
   const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.ts'), 'utf8');
   const tryAt = main.indexOf('const inj = await hive.ensureAgent(');
@@ -847,8 +857,33 @@ test('fix r7: allow_symlinked_codex_home refuses unless false, in config or on -
   fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\nallow_symlinked_codex_home = false\n');
   await spawn(['codex -s workspace-write']);
   fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\n');
-  assert.match(await refused(spawn(['codex -s workspace-write', '-c', 'allow_symlinked_codex_home=true'])), /option the app does not model: -c allow_symlinked_codex_home/);
-  await spawn(['codex -s workspace-write', '-c', 'allow_symlinked_codex_home=false']);
+  // Any -c refuses now, false included.
+  for (const v of ['true', 'false']) assert.match(await refused(spawn(['codex -s workspace-write', '-c', `allow_symlinked_codex_home=${v}`])), /option -c is not on the list/);
   fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\nfollow_symlinks = true\n');
   assert.match(await refused(spawn(['codex -s workspace-write'])), /follow_symlinks/);
+});
+
+test('versioned allowlist: owner config with hooks starts, project hooks refuse, only app-emitted flags start', async (t) => {
+  const { home, rt, hive } = floor(t);
+  hive.setHookRuntime(rt);
+  const user = path.join(home, '.codex', 'config.toml');
+  fs.mkdirSync(path.dirname(user), { recursive: true });
+  const proj = path.join(home, 'work');
+  fs.mkdirSync(path.join(proj, '.codex'), { recursive: true });
+  let n = 0;
+  const spawn = (argv, cwd = home) => hive.ensureAgent({ id: `v${n++}`, name: 'v', provider: 'codex', cwd }, { launch: { argv, env: {} } });
+  // The owner's real config shape, with its own hooks: allowed, hooks not read.
+  fs.writeFileSync(user, 'model = "gpt"\nmodel_reasoning_effort = "high"\nsandbox_mode = "workspace-write"\n[projects."/x"]\ntrust_level = "trusted"\n[features]\nmulti_agent = true\n[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "owner"\n');
+  await spawn(['codex']);
+  // The same hooks in a project config where the seat works: refused, named.
+  fs.writeFileSync(path.join(proj, '.codex', 'config.toml'), '[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "x"\n');
+  assert.match(await refused(spawn(['codex'], proj)), /hooks in a project config is not on the list this app version understands \(Codex 0\.162-0\.167\)/);
+  // Each reader takes the file's kind on its own: the roots reader (a launch line with -s does not consult the mode) ...
+  assert.match(await refused(spawn(['codex -s workspace-write'], proj)), /hooks in a project config is not on the list/);
+  // ... and the mode reader, asked directly.
+  assert.match(hive.codexConfigMode(proj).refuse, /hooks in a project config is not on the list/);
+  assert.equal(hive.codexConfigMode(home).mode, 'workspace-write', 'the owner config\'s hooks do not stop its mode being read');
+  // Flags: what the app emits starts; anything else refuses.
+  for (const a of [['--dangerously-bypass-hook-trust'], ['--model', 'gpt'], ['--enable', 'multi_agent']]) await spawn(['codex -a never -s workspace-write', ...a]);
+  for (const a of [['--approve-for-me'], ['--enable', 'hooks'], ['--disable', 'plugins'], ['-m', 'gpt'], ['--strict-config']]) assert.match(await refused(spawn(['codex -a never -s workspace-write', ...a])), /not on the list this app version understands/, a.join(' '));
 });

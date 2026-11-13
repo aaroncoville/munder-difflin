@@ -672,8 +672,8 @@ export class HiveManager {
     const raw = this.readSmallFile(file);
     if (raw === 'missing') return [];
     if (raw === null) return [{ path: null, from: file }];
-    // The shared strict decoder: any sandbox key not in its exact plain form is not understood.
-    const c = codexRoots(raw);
+    // The shared strict decoder (a versioned allowlist): the owner's own config may carry [hooks], a project config may not.
+    const c = codexRoots(raw, resolvePath(file) === join(homedir(), '.codex', 'config.toml') ? 'user' : 'project');
     if (c.state === 'unknown') return [{ path: null, from: `${file} (${c.why ?? 'unknown form'})` }];
     return c.roots.map((x) => ({ path: this.settingsRoot(x, cwd), from: file }));
   }
@@ -714,7 +714,7 @@ export class HiveManager {
       const raw = this.readSmallFile(f);
       if (raw === 'missing') continue;
       if (raw === null) return { refuse: `its Codex config ${f} could not be read` };
-      const c = codexRoots(raw);
+      const c = codexRoots(raw, f === user ? 'user' : 'project');
       if (c.state === 'unknown') return { refuse: `its Codex config ${f} could not be understood (${c.why ?? 'unknown form'})` };
       if (c.mode) chosen = { mode: c.mode, file: f };
     }
