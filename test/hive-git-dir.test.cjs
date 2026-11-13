@@ -519,6 +519,28 @@ test('an in-progress merge the old repository carried never makes the app\'s fir
   assert.notEqual(git(root, '--git-dir', gitDir, 'merge-base', '--is-ancestor', seatCommit, 'HEAD').status, 0, 'the agent\'s commit is in the hive history');
 });
 
+test('a data-folder move never adopts a partial copy, and an older history already at the new path is kept aside, not resumed', async (t) => {
+  const { dir, base } = scratch(t);
+  const hive = await floor(dir, base);
+  const oldRoot = hive.root();
+  const current = git(oldRoot, '--git-dir', hiveGitDirFor(base, oldRoot), 'rev-parse', 'HEAD').stdout.trim();
+  const moved = path.join(dir, 'new-home');
+  fs.mkdirSync(path.join(moved, 'hive'), { recursive: true });
+  const to = hiveGitDirFor(base, path.join(moved, 'hive'));
+  // A folder used before, with a history of its own, and a copy an earlier, interrupted move left behind.
+  git(dir, 'init', '-q', '--bare', to);
+  fs.mkdirSync(`${to}.partial`);
+  fs.writeFileSync(path.join(`${to}.partial`, 'HEAD'), 'not a repository\n');
+
+  await hive.stopCommits();
+  assert.equal(hive.carryGitDirTo(path.join(moved, 'hive')), true);
+
+  assert.equal(git(moved, '--git-dir', to, 'rev-parse', 'HEAD').stdout.trim(), current, 'the history being moved is not the current one');
+  assert.equal(fs.existsSync(`${to}.partial`), false);
+  assert.equal(fs.existsSync(`${to}.superseded`), true, 'the older history was not kept aside');
+  assert.equal(hive.logTail(50).some((e) => e.kind === 'hive-git-dir' && e.action === 'carried' && /already had a history/.test(e.note)), true);
+});
+
 test('a move that fails is said once and not tried again on every commit; the next launch finishes it', async (t) => {
   const { dir, base } = scratch(t);
   const root = await legacyHive(dir);

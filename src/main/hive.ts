@@ -3909,7 +3909,12 @@ export class HiveManager {
   carryGitDirTo(newHiveRoot: string): boolean {
     const root = this.root();
     if (!this.gitDirBase || !root) return false;
-    return carryHiveGitDir(this.gitDirBase, root, newHiveRoot);
+    const { carried, note } = carryHiveGitDir(this.gitDirBase, root, newHiveRoot);
+    if (note) {
+      console.warn(`[hive] ${note}`);
+      this.appendLog({ kind: 'hive-git-dir', action: carried ? 'carried' : 'not-carried', note });
+    }
+    return carried;
   }
 
   /** For a full reset: the hive's git directory goes with the hive, or a new hive at the same path would take its

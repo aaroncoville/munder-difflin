@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { constants, cpSync, existsSync, realpathSync, writeFileSync } from 'node:fs';
+import { constants, cpSync, existsSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { access, cp, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { GitRunner } from './hiveCommit';
@@ -234,16 +234,28 @@ export async function settleHiveGitDir(hiveRoot: string, base: string, target: s
 
 /**
  * For a data-folder move: copy the old hive's git directory to the one the new hive's path keys to. The app knows the
- * old hive (it is doing the move), so the history comes from the app's own folder, never from a gitfile. Synchronous,
- * like the rest of that move, which runs with every service stopped.
+ * old hive (it is doing the move), so the history comes from the app's own folder, never from a gitfile. It is copied
+ * to a partial folder and renamed into place, so an interrupted copy is never taken for a repository. If the new path
+ * already has one (a folder used before), that older history is kept aside and the one being moved is current.
+ * Synchronous, like the rest of that move, which runs with every service stopped.
  */
-export function carryHiveGitDir(base: string, oldHiveRoot: string, newHiveRoot: string): boolean {
+export function carryHiveGitDir(base: string, oldHiveRoot: string, newHiveRoot: string): { carried: boolean; note?: string } {
   const from = hiveGitDirFor(base, oldHiveRoot);
   const to = hiveGitDirFor(base, newHiveRoot);
-  if (!existsSync(from) || existsSync(to)) return false;
-  cpSync(from, to, { recursive: true, force: false, errorOnExist: true, verbatimSymlinks: true });
-  writeMarker(to, from);
-  return true;
+  if (!existsSync(from)) return { carried: false, note: `no repository for ${oldHiveRoot} in the app's folder; the new folder starts a new history` };
+  const partial = `${to}.partial`;
+  rmSync(partial, { recursive: true, force: true });
+  cpSync(from, partial, { recursive: true, force: false, errorOnExist: true, verbatimSymlinks: true });
+  writeMarker(partial, from);
+  let note: string | undefined;
+  if (existsSync(to)) {
+    let aside = `${to}.superseded`;
+    if (existsSync(aside)) aside = `${aside}-${Date.now()}`;
+    renameSync(to, aside);
+    note = `${newHiveRoot} already had a history; it is kept at ${aside}, and the one carried from ${oldHiveRoot} is current`;
+  }
+  renameSync(partial, to);
+  return { carried: true, note };
 }
 
 /** Whether the hive has a repository, in either place, so a commit has somewhere to go. */
