@@ -23,7 +23,7 @@ const { RegistryUnreadable } = loadTs('src/main/messageTarget.ts');
 function liveFunctions() {
   const source = fs.readFileSync(path.resolve(__dirname, '..', 'src/main/index.ts'), 'utf8');
   const tree = ts.createSourceFile('index.ts', source, ts.ScriptTarget.ES2022, true);
-  const bodies = ['processSpawnRequest', 'archiveRequest', 'spawnRequestsDir', 'stopWorker'].map((name) => {
+  const bodies = ['processSpawnRequest', 'spawnAgent', 'archiveRequest', 'spawnRequestsDir', 'stopWorker'].map((name) => {
     const node = tree.statements.find((n) => ts.isFunctionDeclaration(n) && n.name?.text === name);
     assert.ok(node, `${name} is a top-level function of index.ts`);
     return node.getText(tree);

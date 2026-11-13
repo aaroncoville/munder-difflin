@@ -9,6 +9,7 @@ const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
+const { codexTestBase } = require('./codex-test-home.cjs');
 
 const electron = require.resolve('electron');
 require.cache[electron] = {
@@ -88,9 +89,12 @@ const loadPi = async (file, dir) => {
 
 async function server(t, limit = 1) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-heavy-'));
+  // HOME is a folder of its own, not the agents' working directory: a working directory that holds HOME holds the
+  // Codex agents' homes (~/.mdc), and the app refuses to start an agent that could write them.
+  const userHome = codexTestBase(t, 'md-heavy-home-');
   const previous = process.env.HOME;
-  process.env.HOME = home;
-  assert.equal(os.homedir(), home, 'HOME jailed before any hive is built');
+  process.env.HOME = userHome;
+  assert.equal(os.homedir(), userHome, 'HOME jailed before any hive is built');
   const hive = new HiveManager(() => home);
   t.after(async () => {
     if (previous === undefined) delete process.env.HOME; else process.env.HOME = previous;

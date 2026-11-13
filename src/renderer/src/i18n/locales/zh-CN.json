@@ -1061,7 +1061,8 @@
     "installFailed": "安装失败",
     "removeFailed": "无法移除",
     "uninstallFailed": "卸载失败",
-    "catalogUnreachable": "无法访问目录"
+    "catalogUnreachable": "无法访问目录",
+    "catalogSource": "此列表来自第三方合集 github.com/{{repo}}，在你打开“浏览”时获取，缓存一天。安装技能时会从该技能自己的仓库下载。"
   },
   "workersTab": {
     "stopping": "停止中",
