@@ -238,3 +238,40 @@ test('maintenance clears a maintenance.lock older than any step can run', async 
   assert.equal(fs.existsSync(path.join(gitDir, 'hive-maintenance-at')), true, 'the stamp lives in the app-owned directory');
   assert.equal(fs.existsSync(path.join(hive.root(), '.git', 'hive-maintenance-at')), false);
 });
+
+test('an untrack pass that keeps failing is tried at most once a minute, its first failure logged with git\'s error', async (t) => {
+  const { dir, base } = scratch(t);
+  await floor(dir, base);
+  const root = path.join(dir, 'hive');
+  const gitDir = hiveGitDirFor(base, root);
+  const junk = path.join(root, 'agents', 'god-1', '.nuget', 'pkg.nupkg');
+  fs.mkdirSync(path.dirname(junk), { recursive: true });
+  fs.writeFileSync(junk, 'package');
+  git(root, '--git-dir', gitDir, '--work-tree', root, 'add', '-f', '--', 'agents/god-1/.nuget');
+  git(root, '--git-dir', gitDir, '--work-tree', root, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'tracked');
+  // A git whose `rm` always fails.
+  const bin = path.join(dir, 'fake-bin');
+  const calls = path.join(dir, 'rm-calls');
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh\ncase " $* " in *" rm "*) echo x >> '${calls}'; echo boom >&2; exit 1 ;; esac\nexec '${REAL_GIT}' "$@"\n`, { mode: 0o755 });
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${bin}${path.delimiter}${savedPath}`;
+  t.after(() => { process.env.PATH = savedPath; });
+  const warnings = [];
+  const warn = console.warn;
+  console.warn = (...a) => warnings.push(a.join(' '));
+  t.after(() => { console.warn = warn; });
+
+  const hive = new HiveManager(() => dir);
+  hive.setGitDirBase(base);
+  hive.ensureHive();
+  for (let i = 0; i < 5; i++) {
+    hive.commit(`hive: commit ${i}`);
+    await hive.commitsSettled();
+  }
+
+  assert.equal(fs.readFileSync(calls, 'utf8').split('\n').filter(Boolean).length, 1, 'retried without backing off');
+  const failures = warnings.filter((w) => w.includes('could not stop tracking'));
+  assert.equal(failures.length, 1);
+  assert.match(failures[0], /boom/);
+});

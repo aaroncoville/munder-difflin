@@ -3869,6 +3869,16 @@ export class HiveManager {
   /** Repositories whose already-tracked, now-ignored paths have been dropped from the index in this process. */
   private readonly untrackedRoots = new Set<string>();
 
+  /** Untrack passes that did not finish, per hive: how many, and when the next may run. */
+  private readonly untrackRetries = new Map<string, { attempts: number; nextAt: number }>();
+  /** The wait before the second and the third attempt. */
+  private untrackRetryDelays: [number, number] = [60_000, 300_000];
+
+  /** Shorter waits, for tests. */
+  setUntrackRetryDelays(delays: [number, number]): void {
+    this.untrackRetryDelays = delays;
+  }
+
   // — where the hive's git directory lives (see hiveGitDir.ts) —
 
   private gitDirBase: string | null = null;
@@ -4024,18 +4034,36 @@ export class HiveManager {
       }
     }
     this.uncreatedRepos.delete(root);
-    if (!this.untrackedRoots.has(root)) {
-      const { dropped, complete } = await untrackIgnored(root, (args) => inRepo(args));
-      // Marked done only once every batch has gone through: an incomplete pass is tried again with the next commit.
-      if (complete) this.untrackedRoots.add(root);
-      if (dropped > 0) console.warn(`[hive] stopped tracking ${dropped} ignored path(s) in the hive repo; the files stay on disk`);
-    }
+    await this.untrackOnce(root, (args) => inRepo(args));
     this.clearStaleLocks(gitDir, ['index.lock', 'HEAD.lock'], HIVE_STALE_LOCK_MS);
     const add = await inRepo(['add', '-A']);
     if (!add.ok) return add;
     const commit = await inRepo(['commit', '-q', '-m', message]);
     if (commit.ok || /nothing to commit/i.test(commit.out + commit.err)) return { ok: true, out: commit.out, err: commit.err };
     return commit;
+  }
+
+  /**
+   * Drop already-tracked, now-ignored paths from the index (untrackIgnored), until one pass gets through. A pass that
+   * does not finish is tried again with a later commit, at most three times per process: one minute, then five, after
+   * the one before. The first failure is logged with git's error, and giving up is logged once.
+   */
+  private async untrackOnce(root: string, git: (args: string[]) => Promise<GitResult>): Promise<void> {
+    if (this.untrackedRoots.has(root)) return;
+    const retry = this.untrackRetries.get(root) ?? { attempts: 0, nextAt: 0 };
+    if (retry.attempts >= 3 || Date.now() < retry.nextAt) return;
+    const { dropped, complete, error } = await untrackIgnored(root, (args) => git(args));
+    if (dropped > 0) console.warn(`[hive] stopped tracking ${dropped} ignored path(s) in the hive repo; the files stay on disk`);
+    if (complete) {
+      this.untrackedRoots.add(root);
+      this.untrackRetries.delete(root);
+      return;
+    }
+    retry.attempts += 1;
+    retry.nextAt = Date.now() + this.untrackRetryDelays[retry.attempts === 1 ? 0 : 1];
+    this.untrackRetries.set(root, retry);
+    if (retry.attempts === 1) console.warn(`[hive] could not stop tracking ignored paths in the hive repo; will retry: ${error || 'no error output'}`);
+    if (retry.attempts === 3) console.warn('[hive] gave up stopping tracking of ignored paths in the hive repo until the app restarts');
   }
 
   /** Remove locks left by a git that can no longer be running: older than the longest a hive git holding them can

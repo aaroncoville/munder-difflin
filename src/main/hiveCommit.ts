@@ -204,15 +204,15 @@ export const AGENT_ALLOWLIST_IGNORE_LINES = ['agents/*/*', ...AGENT_TRACKED_FILE
  * recording a file it already tracks whatever .gitignore says, so without this a hive that predates a rule goes on
  * committing everything the rule was meant to keep out. The files stay on disk; only their history stops.
  */
-export async function untrackIgnored(root: string, git: GitRunner): Promise<{ dropped: number; complete: boolean }> {
+export async function untrackIgnored(root: string, git: GitRunner): Promise<{ dropped: number; complete: boolean; error?: string }> {
   const listed = await git(['ls-files', '-z', '--cached', '--ignored', '--exclude-standard', '--', 'agents', 'cost-ledger.jsonl'], root);
-  if (!listed.ok) return { dropped: 0, complete: false };
+  if (!listed.ok) return { dropped: 0, complete: false, error: (listed.err || listed.out).trim() };
   const paths = listed.out.split('\0').filter(Boolean);
   // In batches, so a large backlog never runs into the command-line length limit. A batch that fails ends the pass
   // incomplete, so the caller tries again with the next commit.
   for (let i = 0; i < paths.length; i += 500) {
     const removed = await git(['rm', '--cached', '-q', '--ignore-unmatch', '--', ...paths.slice(i, i + 500).map((p) => `:(literal)${p}`)], root);
-    if (!removed.ok) return { dropped: i, complete: false };
+    if (!removed.ok) return { dropped: i, complete: false, error: (removed.err || removed.out).trim() };
   }
   return { dropped: paths.length, complete: true };
 }

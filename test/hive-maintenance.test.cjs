@@ -227,6 +227,7 @@ test('agent files a failed untrack left tracked are untracked by the next commit
   shim.set('FAKE_GIT_FAIL_ONCE', 'rm');
 
   const hive = new HiveManager(() => dir);
+  hive.setUntrackRetryDelays?.([0, 0]); // the retry is what is checked here, not its backoff
   hive.ensureHive();
   hive.commit('hive: the untrack fails');
   await hive.commitsSettled();
