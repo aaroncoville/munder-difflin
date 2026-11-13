@@ -6,16 +6,12 @@
  * belong to any individual setting below (re-read the release notes, star, back
  * the project).
  *
- * Its contents come from docs/hero.json IN THIS REPO, fetched at runtime and
- * cached — so plan copy, a sponsor, or a one-line notice can change without
- * shipping a build. That payload is DATA, never markup: every field below is a
- * React text node, so it is escaped, and shared/heroPayload.ts validates types,
- * caps lengths and requires https before any of it reaches here.
- *
- * It renders instantly from the app's built-in defaults and upgrades in place
- * when the fetch lands, so the dialog never waits on the network and reads the
- * same offline. A sponsor slot with nothing in it renders NOTHING rather than a
- * "your logo here" placeholder.
+ * Its contents are the payload compiled into the app (DEFAULT_HERO), served
+ * over IPC; nothing is fetched from the network. That payload is DATA, never
+ * markup: every field below is a React text node, so it is escaped, and
+ * shared/heroPayload.ts validates types, caps lengths and requires https.
+ * A sponsor slot with nothing in it renders NOTHING rather than a "your logo
+ * here" placeholder.
  *
  * It borrows the release drop's idiom (ink borders). Plan label and blurb come
  * from hero.json.

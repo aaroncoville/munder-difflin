@@ -6,9 +6,10 @@
  *   - `src/shared/modelCatalog.json` is compiled INTO the build. It is what the
  *     pickers show offline, on first launch, and whenever the remote copy is
  *     missing or unreadable. Shipping a model here still means shipping a build.
- *   - `docs/model-catalog.json` in this repo is fetched at runtime from
- *     raw.githubusercontent. Editing that one file on GitHub puts a new model in
- *     every installed copy of the app within the TTL, with no release.
+ *   - a remote copy, which this parser guards. This build fetches none: the
+ *     main process answers the catalog request with null, so the pickers keep
+ *     the compiled list. The parser and the overlay stay for a remote copy that
+ *     would come from this project's own repository.
  *
  * The remote copy is DATA, never markup — same contract as the Settings hero
  * payload (src/shared/heroPayload.ts), for the same reasons:
