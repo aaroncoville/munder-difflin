@@ -333,3 +333,31 @@ test('a filter defined only in the owner\'s global git config is never run by th
   git(control, 'add', '-A');
   assert.equal(fs.existsSync(marker), true, 'the control did not run the filter');
 });
+
+test('history the old repository borrowed through alternates is copied in, not lost, when the alternates go', async (t) => {
+  const { dir, base } = scratch(t);
+  const legacy = new HiveManager(() => dir);
+  await legacy.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: dir, isGod: true });
+  await legacy.commitsSettled();
+  const root = legacy.root();
+  // A commit whose objects live only in another object store, reachable through a branch of the hive repository.
+  const lender = path.join(dir, 'lender');
+  fs.mkdirSync(lender);
+  git(lender, 'init', '-q');
+  fs.writeFileSync(path.join(lender, 'borrowed.txt'), 'borrowed history\n');
+  git(lender, 'add', '-A');
+  git(lender, '-c', 'user.name=l', '-c', 'user.email=l@l', 'commit', '-q', '-m', 'borrowed');
+  const borrowed = git(lender, 'rev-parse', 'HEAD').stdout.trim();
+  fs.writeFileSync(path.join(root, '.git', 'objects', 'info', 'alternates'), `${path.join(lender, '.git', 'objects')}\n`);
+  git(root, 'update-ref', 'refs/heads/borrowed', borrowed);
+
+  const hive = new HiveManager(() => dir);
+  hive.setGitDirBase(base);
+  hive.commit('hive: after the move');
+  await hive.commitsSettled();
+  fs.rmSync(lender, { recursive: true, force: true });
+
+  const gitDir = hiveGitDirFor(base, root);
+  assert.equal(fs.existsSync(path.join(gitDir, 'objects', 'info', 'alternates')), false);
+  assert.equal(git(root, '--git-dir', gitDir, 'cat-file', '-p', `${borrowed}:borrowed.txt`).stdout, 'borrowed history\n', 'the borrowed history was lost');
+});

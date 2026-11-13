@@ -64,9 +64,12 @@ async function listing(dir: string): Promise<string> {
  * - `commondir`, `gitdir`: send git to another directory, and with it another config.
  * - `info/attributes`: can route files through filters and other drivers. `info/exclude` changes what is recorded;
  *   the hive keeps its rules in .gitignore.
- * - `objects/info/alternates`, `objects/info/http-alternates`: make git read objects from elsewhere.
+ * - `objects/info/alternates`, `objects/info/http-alternates`: make git read objects from elsewhere. History that
+ *   really lives there would be lost by removing them, so the objects are first copied in (see sanitizeGitDir).
+ * The fresh config `git init` writes has no include or includeIf, so nothing the old config pulled in survives.
  */
-const IMPORTED_SETTINGS = ['config.worktree', 'hooks', 'commondir', 'gitdir', 'info/attributes', 'info/exclude', 'objects/info/alternates', 'objects/info/http-alternates'];
+const IMPORTED_SETTINGS = ['config.worktree', 'hooks', 'commondir', 'gitdir', 'info/attributes', 'info/exclude'];
+const ALTERNATES = ['objects/info/alternates', 'objects/info/http-alternates'];
 
 /** Replace what git executes or follows in `gitDir` with what the app writes. Objects, refs and history stay. Safe to
  *  run again. */
@@ -84,7 +87,20 @@ export async function sanitizeGitDir(gitDir: string, hiveRoot: string, git: GitR
   }
   // A fresh config, and no templates: nothing from the owner's template folder either.
   const init = await git([`--git-dir=${gitDir}`, `--work-tree=${hiveRoot}`, 'init', '-q', '--template='], hiveRoot);
-  return init.ok ? { ok: true } : { ok: false, error: `git init on the imported repository failed: ${(init.err || init.out).trim()}` };
+  if (!init.ok) return { ok: false, error: `git init on the imported repository failed: ${(init.err || init.out).trim()}` };
+  // Objects borrowed through alternates are copied in before the alternates go, under the config just written, so no
+  // history is lost. Objects are data: nothing here runs a program the imported directory named. If the copy fails,
+  // the alternates stay and the move stops; it is tried again on the next launch.
+  if (await exists(join(gitDir, ALTERNATES[0]))) {
+    const repack = await git([`--git-dir=${gitDir}`, `--work-tree=${hiveRoot}`, 'repack', '-a', '-d', '-q'], hiveRoot);
+    if (!repack.ok) return { ok: false, error: `could not copy in the objects the imported repository borrowed: ${(repack.err || repack.out).trim()}` };
+  }
+  try {
+    for (const name of ALTERNATES) await rm(join(gitDir, name), { force: true });
+  } catch (e) {
+    return { ok: false, error: `could not remove the imported repository's alternates: ${(e as Error).message}` };
+  }
+  return { ok: true };
 }
 
 export async function writeGitfile(hiveRoot: string, target: string): Promise<void> {
