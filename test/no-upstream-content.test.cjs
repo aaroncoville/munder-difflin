@@ -56,3 +56,7 @@ test('contributor and security paths lead to this repository', () => {
   assert.doesNotMatch(fs.readFileSync(path.join(root, 'CONTRIBUTING.md'), 'utf8'), /releases page|releases\/latest/,
     'there are no packaged releases to point at');
 });
+
+test('the illustration skill writes nowhere the removed blog used to be', () => {
+  assert.doesNotMatch(fs.readFileSync(path.join(root, '.claude/skills/ian-xiaohei-illustrations/SKILL.md'), 'utf8'), /blog\/src\//);
+});
