@@ -406,10 +406,15 @@ export class HookServer {
   private heavyLock: HeavyJobLock | null = null;
   setHeavyLock(lock: HeavyJobLock | null): void { this.heavyLock = lock; }
 
+  /** Watches every hook for the scoped-write-roots dry run; it observes only and never changes the answer. */
+  private writeObserver: ((agentId: string | undefined, event: string, p: HookPayload) => void) | null = null;
+  setWriteObserver(fn: ((agentId: string | undefined, event: string, p: HookPayload) => void) | null): void { this.writeObserver = fn; }
+
   private handle(p: HookPayload): unknown {
     const agentId = p.agent_id ?? undefined;
     const event = p.hook_event_name ?? 'Unknown';
     this.onEvent?.(agentId, event, p.message);
+    try { this.writeObserver?.(agentId, event, p); } catch { /* observation never blocks a hook */ }
     if (agentId && typeof p.transcript_path === 'string' && p.transcript_path) {
       this.transcriptPaths.set(agentId, p.transcript_path);
     }
