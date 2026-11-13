@@ -25,6 +25,14 @@ function fakeCli(t, mode) {
     gone: `process.exit(0);`,
     // Says nothing for a while, then exits: a slow, silent server.
     slow: `setTimeout(() => process.exit(0), 200);`,
+    // Never answers and never exits.
+    silent: `setInterval(() => {}, 1000);`,
+    // A cold server under load: answers, but only after ~8 s, listing the app's own hook as trusted.
+    late: `const rl = require('readline').createInterface({ input: process.stdin });
+      const file = require('fs').realpathSync(process.env.CODEX_HOME) + '/config.toml';
+      rl.on('line', (l) => { const m = JSON.parse(l);
+        const result = m.method === 'hooks/list' ? { data: [{ hooks: [{ eventName: 'stop', source: 'user', sourcePath: file, handlerType: 'command', command: 'app-hook', async: false, matcher: null, timeoutSec: 30, enabled: true, key: file + ':stop:0:0', currentHash: 'sha256:' + 'a'.repeat(64), trustStatus: 'trusted' }] }] } : {};
+        setTimeout(() => process.stdout.write(JSON.stringify({ id: m.id, result }) + '\\n'), m.method === 'initialize' ? 8000 : 0); });`,
     // Answers, and lists a hook the app did not write.
     foreign: `const rl = require('readline').createInterface({ input: process.stdin });
       rl.on('line', (l) => { const m = JSON.parse(l);
@@ -40,14 +48,36 @@ function fakeCli(t, mode) {
   return { ctx, starts };
 }
 
-test('a server that never answers is tried a bounded number of times, then refused once', { skip: !POSIX }, async (t) => {
+test('a server that exits before answering is started again, up to three times, then refused once', { skip: !POSIX }, async (t) => {
   const f = fakeCli(t, 'gone');
   const reasons = [];
   const ok = await T.seedCodexHookTrust(f.ctx, 1000, (r) => reasons.push(r), { attempts: 3, backoffMs: [10, 10] });
   assert.equal(ok, false, 'never trusted without an answer');
   assert.equal(f.starts().filter((s) => s[1] === 'start').length, 3, 'three attempts');
   assert.equal(reasons.length, 1, 'refused once');
-  assert.match(reasons[0], /did not answer.*3 attempts/);
+  assert.match(reasons[0], /exited before answering after 3 attempts/);
+});
+
+test('a server that is slow to answer is waited for, not restarted, and trusted when it answers', { skip: !POSIX, timeout: 40_000 }, async (t) => {
+  const f = fakeCli(t, 'late');
+  const reasons = [];
+  const ok = await T.seedCodexHookTrust(f.ctx, undefined, (r) => reasons.push(r), { attempts: 3, backoffMs: [10, 10] });
+  assert.equal(ok, true, reasons.join());
+  assert.equal(f.starts().filter((s) => s[1] === 'start').length, 1, 'one server, never restarted');
+});
+
+test('a server that never answers is refused once, when its budget runs out, with one start only', { skip: !POSIX }, async (t) => {
+  const f = fakeCli(t, 'silent');
+  const reasons = [];
+  const ok = await T.seedCodexHookTrust(f.ctx, 400, (r) => reasons.push(r), { attempts: 3, backoffMs: [10, 10] });
+  assert.equal(ok, false, 'never trusted on a timeout');
+  assert.equal(f.starts().filter((s) => s[1] === 'start').length, 1, 'not restarted');
+  assert.equal(reasons.length, 1);
+  assert.match(reasons[0], /did not answer within/);
+});
+
+test('the answer budget is one long wait, far beyond a cold start', () => {
+  assert.equal(T.TRUST_ANSWER_BUDGET_MS, 30_000);
 });
 
 test('a definite refusal is not retried', { skip: !POSIX }, async (t) => {
