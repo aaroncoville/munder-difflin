@@ -37,6 +37,7 @@ import { setAsideUnlessFolder } from './sentFolder';
 import { COMMAND_GROUPS } from '../shared/claudeCommands';
 import { ensureCodexShortHome } from '../shared/codexRemote';
 import {
+  argsWithSandboxStance,
   isClaudeProvider,
   isHiveAwareProvider,
   canReceiveInbox,
@@ -698,10 +699,19 @@ export class HiveManager {
       ...(kind === 'claude' ? this.claudeSettingsRoots(meta.cwd, claudeUserDir) : this.codexUserRoots(meta.cwd)),
     ];
   }
+  /** A Codex launch line that states no sandbox (auto mode off), with the one the app names for it: the configs' own mode
+   *  (the nearest project config, else the user's) when that is workspace-write or read-only, so a seat the owner narrowed
+   *  stays narrowed; workspace-write when no config sets one. When the configs choose full access or cannot be read or
+   *  understood, the line is left as it is and the spawn check refuses it, saying why. Every builder's line passes here. */
+  withCodexSandboxStance(args: string[], cwd: string): string[] {
+    const m = this.codexConfigMode(cwd);
+    if ('mode' in m) return argsWithSandboxStance(args, 'codex', m.mode);
+    return m.none ? argsWithSandboxStance(args, 'codex', 'workspace-write') : args;
+  }
   /** The sandbox Codex's own config chooses for a session started in `cwd` with no -s: the user's config, then project
    *  configs from the top folder down to the cwd (the nearest wins). A file it cannot read, a mode it does not know,
    *  full access, or no mode anywhere refuses, saying what the user can change. */
-  private codexConfigMode(cwd: string): { mode: 'workspace-write' | 'read-only'; file: string } | { refuse: string } {
+  private codexConfigMode(cwd: string): { mode: 'workspace-write' | 'read-only'; file: string } | { refuse: string; none?: true } {
     const user = join(homedir(), '.codex', 'config.toml');
     const files = [user];
     if (cwd && isAbsolute(cwd)) {
@@ -718,7 +728,7 @@ export class HiveManager {
       if (c.state === 'unknown') return { refuse: `its Codex config ${f} could not be understood (${c.why ?? 'unknown form'})` };
       if (c.mode) chosen = { mode: c.mode, file: f };
     }
-    if (!chosen) return { refuse: `its launch line chooses no Codex sandbox and no config does: add -s workspace-write to its command, or set sandbox_mode in ${user}` };
+    if (!chosen) return { refuse: `its launch line chooses no Codex sandbox and no config does: add -s workspace-write to its command, or set sandbox_mode in ${user}`, none: true };
     if (chosen.mode === 'danger-full-access') return { refuse: `its Codex config ${chosen.file} sets sandbox_mode = "danger-full-access"` };
     return { mode: chosen.mode as 'workspace-write' | 'read-only', file: chosen.file };
   }

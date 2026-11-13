@@ -888,40 +888,65 @@ test('versioned allowlist: owner config with hooks starts, project hooks refuse,
   for (const a of [['--approve-for-me'], ['--enable', 'hooks'], ['--disable', 'plugins'], ['-m', 'gpt'], ['--strict-config']]) assert.match(await refused(spawn(['codex -a never -s workspace-write', ...a])), /not on the list this app version understands/, a.join(' '));
 });
 
-test('auto mode off: the production builders always name the Codex sandbox, so the owner\'s config with no sandbox_mode starts', async (t) => {
+test('auto mode off: every production builder\'s line gets the config\'s own sandbox mode, workspace-write only when none is set', async (t) => {
   const { buildSpawnCommand } = loadTs('src/renderer/src/store/config.ts');
   const { buildWorkerLaunch } = loadTs('src/main/workerLaunch.ts');
   const { tokenizeCommand } = loadTs('src/shared/commandLine.ts');
-  const { argsWithSandboxStance } = loadTs('src/shared/agentProvider.ts');
   const { home, rt, hive } = floor(t);
   hive.setHookRuntime(rt);
   const cfg = path.join(home, '.codex', 'config.toml');
   fs.mkdirSync(path.dirname(cfg), { recursive: true });
-  // The owner's real config shape: no sandbox_mode anywhere.
-  fs.writeFileSync(cfg, 'model = "gpt"\nmodel_reasoning_effort = "high"\n[projects."/x"]\ntrust_level = "trusted"\n[features]\nmulti_agent = true\n');
+  const owner = 'model = "gpt"\nmodel_reasoning_effort = "high"\n[projects."/x"]\ntrust_level = "trusted"\n[features]\nmulti_agent = true\n';
+  const lines = (autoMode) => [
+    ...[undefined, 'gpt-x'].map((model) => ['gui', buildSpawnCommand({ defaultCommand: 'claude', autoMode }, model, 'codex')]),
+    ...[{}, { requestModel: 'gpt-x' }, { requestCommand: 'codex -a untrusted' }].map((over) => { const w = buildWorkerLaunch({ autoMode, requestProvider: 'codex', ...over }); return ['worker', [w.command, ...w.args].join(' ')]; })
+  ];
   let n = 0;
-  const lines = [];
-  for (const autoMode of [false, true]) {
-    for (const model of [undefined, 'gpt-x']) lines.push(['gui', autoMode, buildSpawnCommand({ defaultCommand: 'claude', autoMode }, model, 'codex')]);
-    for (const over of [{}, { requestModel: 'gpt-x' }, { requestCommand: 'codex -a untrusted' }]) {
-      const w = buildWorkerLaunch({ autoMode, requestProvider: 'codex', ...over });
-      lines.push(['worker', autoMode, [w.command, ...w.args].join(' ')]);
+  // The spawn core's one function, on each builder's line exactly as built.
+  const run = async (line) => {
+    const words = tokenizeCommand(line);
+    const args = hive.withCodexSandboxStance(words.slice(1), home);
+    const launch = { argv: [words[0], ...args], env: {} };
+    return { args, start: () => hive.ensureAgent({ id: `b${n++}`, name: 'b', provider: 'codex', cwd: home }, { launch }) };
+  };
+  const cases = [
+    ['no mode (the owner\'s real config)', owner, 'workspace-write'],
+    ['read-only', 'sandbox_mode = "read-only"\n' + owner, 'read-only'],
+    ['workspace-write', 'sandbox_mode = "workspace-write"\n' + owner, 'workspace-write'],
+  ];
+  for (const [name, text, mode] of cases) {
+    fs.writeFileSync(cfg, text);
+    for (const [who, line] of lines(false)) {
+      assert.doesNotMatch(line, /(^| )-(s|a never)( |$)/, `${who}: the builder itself states no sandbox and no -a`);
+      const r = await run(line);
+      assert.equal(r.args[r.args.indexOf('-s') + 1], mode, `${name}, ${who}: ${r.args.join(' ')}`);
+      await r.start();
     }
   }
-  for (const [who, autoMode, line] of lines) {
-    assert.match(line, /(^| )-s workspace-write( |$)/, `${who} auto ${autoMode}: ${line}`);
-    if (!autoMode) assert.doesNotMatch(line, /(^| )-a never/, 'auto mode off leaves approvals to Codex');
-    const words = tokenizeCommand(line);
-    await hive.ensureAgent({ id: `b${n++}`, name: 'b', provider: 'codex', cwd: home }, { launch: { argv: [words[0], ...words.slice(1)], env: {} } });
+  // Full access or a config not understood: the line is left as it is, and the check refuses it, saying why.
+  for (const [text, why] of [['sandbox_mode = "danger-full-access"\n' + owner, /sets sandbox_mode = "danger-full-access"/], ['profile = "x"\n' + owner, /could not be understood \(profile is not on the list/]]) {
+    fs.writeFileSync(cfg, text);
+    for (const [who, line] of lines(false)) {
+      const r = await run(line);
+      assert.ok(!r.args.includes('-s'), `${who}: no flag added`);
+      assert.match(await refused(r.start()), why);
+    }
   }
-  // A command stored before the builders emitted it gets the stance at the spawn core, before any prompt or after resume.
-  assert.deepEqual(argsWithSandboxStance([], 'codex'), ['-s', 'workspace-write']);
-  assert.deepEqual(argsWithSandboxStance(['resume', 'sid', 'go'], 'codex'), ['resume', 'sid', '-s', 'workspace-write', 'go']);
-  assert.deepEqual(argsWithSandboxStance(['--sandbox=read-only'], 'codex'), ['--sandbox=read-only'], 'a stated stance is kept');
-  assert.deepEqual(argsWithSandboxStance([], 'claude'), [], 'only a provider with a sandbox flag');
+  // Auto mode on: the line already states its sandbox and is unchanged.
+  fs.writeFileSync(cfg, 'sandbox_mode = "read-only"\n' + owner);
+  for (const [who, line] of lines(true)) {
+    const words = tokenizeCommand(line);
+    const out = hive.withCodexSandboxStance(words.slice(1), home);
+    if (words.includes('-s')) assert.deepEqual(out, words.slice(1), `${who}: a stated sandbox is unchanged: ${line}`);
+    else assert.equal(out[out.indexOf('-s') + 1], 'read-only', `${who}: a request that chose approvals only still gets the config's mode: ${line}`);
+  }
+  // Placement: before any prompt, after resume <session>; a stated sandbox is kept.
+  fs.writeFileSync(cfg, owner);
+  assert.deepEqual(hive.withCodexSandboxStance(['resume', 'sid', 'go'], home), ['resume', 'sid', '-s', 'workspace-write', 'go']);
+  assert.deepEqual(hive.withCodexSandboxStance(['--sandbox=read-only'], home), ['--sandbox=read-only']);
   const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.ts'), 'utf8');
-  const stanceAt = main.search(/^  if \(opts\.hive\) opts\.args = argsWithSandboxStance\(opts\.args \?\? \[\], provider\);$/m);
-  assert.ok(stanceAt > 0 && stanceAt < main.indexOf('const inj = await hive.ensureAgent('), 'the spawn core adds it, live (not commented out), before the check');
+  const at = main.search(/^  if \(opts\.hive && provider === 'codex' && hive\.enabled\(\)\) opts\.args = hive\.withCodexSandboxStance\(opts\.args \?\? \[\], opts\.cwd\);$/m);
+  assert.ok(at > 0 && at < main.indexOf('const inj = await hive.ensureAgent('), 'the spawn core applies it, live, before the check');
 });
 
 test('tables that name a program Codex runs outside its sandbox: allowed in the owner config, refused in a project config', async (t) => {

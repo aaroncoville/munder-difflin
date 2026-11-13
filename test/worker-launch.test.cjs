@@ -53,11 +53,9 @@ test('an explicit --permission-mode in the request always wins over auto-mode', 
   assert.deepEqual(l.args, ['--permission-mode', 'plan']);
 });
 
-test('auto-mode OFF appends no approval flag; Codex still names its sandbox', () => {
+test('auto-mode OFF appends nothing (the spawn core names a Codex seat\'s sandbox from its config)', () => {
   assert.deepEqual(launch({ requestCommand: 'claude', autoMode: false }).args, []);
-  // Auto mode governs approvals, not the sandbox: an auto-off Codex worker launches with -s workspace-write and no -a.
-  assert.deepEqual(launch({ requestCommand: 'codex', autoMode: false }).args, ['-s', 'workspace-write']);
-  assert.deepEqual(launch({ requestCommand: 'codex -s read-only', autoMode: false }).args, ['-s', 'read-only'], 'a stated sandbox is kept');
+  assert.deepEqual(launch({ requestCommand: 'codex', autoMode: false }).args, []);
 });
 
 test("auto-mode appends the PROVIDER'S flag, not claude's", () => {

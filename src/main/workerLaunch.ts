@@ -4,7 +4,6 @@
  * while reporting success, which is what earned it a unit test.
  */
 import {
-  argsWithSandboxStance,
   autoModeFlagForProvider,
   defaultCommandForProvider,
   hasAutoModeStance,
@@ -73,7 +72,6 @@ export function buildWorkerLaunch(opts: {
   // when argv already carries --model).
   const model =
     typeof opts.requestModel === 'string' && opts.requestModel.trim() ? opts.requestModel.trim() : '';
-  // Auto mode off (or a request that chose approvals only) still names the sandbox for a provider that has one.
-  const args = [...argsWithSandboxStance(flags, provider), ...(model && !flags.includes('--model') ? ['--model', model] : [])];
+  const args = [...flags, ...(model && !flags.includes('--model') ? ['--model', model] : [])];
   return { bin, args, command };
 }

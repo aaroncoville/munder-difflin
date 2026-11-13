@@ -108,7 +108,6 @@ import { parseHireDeepLink, type HireManifest } from '../shared/hire';
 import { ClosingTimeController } from './closingTime';
 import {
   argsWithAutoModeFlag,
-  argsWithSandboxStance,
   inferAgentProvider,
   isClaudeProvider,
   nonInteractiveEnvForProvider,
@@ -2974,9 +2973,9 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // seedDelivery:'type-into-tui') rather than passed on argv. Surfaced in the spawn
   // result so the renderer types it through the per-pty write-chain. (ondev-b)
   let seedPrompt: string | undefined;
-  // A hooked seat's launch always names its sandbox (the builders emit it; a command stored before they did gets it
-  // here), so the hook-runtime check never has to guess the CLI's default from its config.
-  if (opts.hive) opts.args = argsWithSandboxStance(opts.args ?? [], provider);
+  // A hooked Codex seat's launch always names its sandbox: every builder's line (the GUI's, a worker's, a stored command)
+  // passes here, and with none stated gets the configs' own mode, or workspace-write when none is set.
+  if (opts.hive && provider === 'codex' && hive.enabled()) opts.args = hive.withCodexSandboxStance(opts.args ?? [], opts.cwd);
   if (opts.hive && hive.enabled()) {
     // Memory and knowledge settings are best-effort and not hook provisioning: read them outside the try below, so a
     // failure here never refuses the spawn and never reads as a hook provisioning error.
