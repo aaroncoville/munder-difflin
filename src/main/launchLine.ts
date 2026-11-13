@@ -186,20 +186,17 @@ function oddValue(v: unknown, at: string): string | null {
   return at || '(top)';
 }
 
-/** Top-level config keys known not to touch the writable set, the sandbox mode or hook execution, each with its source:
- *  the inventory of Codex policy inputs (by section) or Codex's config reference. Any other top-level key is not
- *  understood. */
+/** Top-level config keys that do not change the writable set, the sandbox mode, or which programs Codex runs, each with
+ *  its source: the inventory of Codex policy inputs (by section) or Codex's config schema. Any other top-level key is not
+ *  understood. Being on this list says nothing more than that. */
 export const CODEX_BENIGN_KEYS: Readonly<Record<string, string>> = {
   model: 'config reference (model name); in the owner config named by the inventory\'s conclusion',
   model_reasoning_effort: 'config reference; in the owner config named by the inventory\'s conclusion',
   model_provider: 'config reference (which provider entry serves the model); absent from the inventory\'s policy tables',
-  model_providers: 'config reference (provider endpoints); absent from the inventory\'s policy tables',
-  mcp_servers: 'config reference (MCP server definitions); absent from the inventory\'s policy tables',
   shell_environment_policy: 'config reference (environment given to commands); absent from the inventory\'s policy tables',
   approval_policy: 'inventory, note under "Config keys that change the sandbox": grants no path, decides later escalation',
   history: 'config reference (transcript history); absent from the inventory\'s policy tables',
   tui: 'config reference (terminal UI); absent from the inventory\'s policy tables',
-  notify: 'config reference (a program run after a turn); absent from the inventory\'s policy tables',
   include_permissions_instructions: 'config reference (prompt text only); absent from the inventory\'s policy tables'
 };
 /** features.<name> entries known not to touch the sandbox, its backend, hooks or plugins (the inventory lists those:
@@ -207,8 +204,26 @@ export const CODEX_BENIGN_KEYS: Readonly<Record<string, string>> = {
 export const CODEX_FEATURES: Readonly<Record<string, string>> = {
   multi_agent: 'inventory conclusion: the owner config\'s only feature, not a policy input'
 };
-/** Inside sandbox_workspace_write: writable_roots is read; the two exclusions only narrow the set (inventory rows). */
-const SWW_KEYS = new Set(['writable_roots', 'exclude_tmpdir_env_var', 'exclude_slash_tmp']);
+/** Inside sandbox_workspace_write: writable_roots is read; the two exclusions only narrow the set (inventory rows);
+ *  network_access is a boolean about the network, not the writable set. */
+const SWW_KEYS = new Set(['writable_roots', 'exclude_tmpdir_env_var', 'exclude_slash_tmp', 'network_access']);
+/** Top-level tables that name a program Codex runs itself, outside its sandbox (Codex config schema):
+ *  mcp_servers.<x> (command, args, auth, http_headers_helper), notify, and model_providers.<x> (auth.command,
+ *  aws.auth_refresh.command, aws.credential_export.command). They are read by file, like [hooks]: allowed and not read
+ *  in the owner's own config, not understood in a project config, and in a generated config only as the app copied
+ *  them from the owner's. */
+export const CODEX_PROGRAM_KEYS: readonly string[] = ['mcp_servers', 'notify', 'model_providers'];
+
+/** Deep equality of two parsed TOML values (strings, numbers, booleans, arrays, plain tables). */
+function sameValue(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) || Array.isArray(b)) return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((x, i) => sameValue(x, b[i]));
+  if (isPlainObject(a) || isPlainObject(b)) {
+    if (!isPlainObject(a) || !isPlainObject(b)) return false;
+    const ka = Object.keys(a);
+    return ka.length === Object.keys(b).length && ka.every((k) => Object.hasOwn(b, k) && sameValue(a[k], b[k]));
+  }
+  return a === b;
+}
 
 /** Which config file is read: the per-agent one the app generates (its CODEX_HOME), the owner's own user config, or a
  *  project .codex/config.toml in the working directory or above it (where a seat works, so not owner-held). */
@@ -251,7 +266,7 @@ function hooksAreApps(hooks: unknown, app: CodexAppHooks | null | undefined): bo
  *  understood, and `why` names it. [hooks] depends on the file: in the owner's user config it is allowed and not read;
  *  in the generated config it is read only when it is exactly the app's own hooks (`hooksDiffer` otherwise); in a project
  *  config it is not understood. A parse error or any other type where a read key lives is unknown too. */
-export function codexRoots(toml: string, kind: CodexConfigKind = 'project', appHooks?: CodexAppHooks | null): { roots: string[]; state: RootsState; mode?: string | null; why?: string; hooksDiffer?: true } {
+export function codexRoots(toml: string, kind: CodexConfigKind = 'project', appHooks?: CodexAppHooks | null, ownerToml?: string | null): { roots: string[]; state: RootsState; mode?: string | null; why?: string; hooksDiffer?: true; configDiffers?: true } {
   const unknown = (why: string): { roots: string[]; state: 'unknown'; why: string } => ({ roots: [], state: 'unknown', why });
   let doc: unknown;
   try { doc = parseToml(toml); } catch (e) {
@@ -265,6 +280,23 @@ export function codexRoots(toml: string, kind: CodexConfigKind = 'project', appH
   if (odd) return unknown(`${odd} is a value the app does not read (a date, time or non-finite number)`);
   let mode: string | null = null;
   let roots: string[] = [];
+  // A generated config's program tables must be exactly the owner's (the app copies them); read the owner's once.
+  let owner: Record<string, unknown> | null | undefined;
+  const ownerDoc = (): Record<string, unknown> | null => {
+    if (owner !== undefined) return owner;
+    if (typeof ownerToml !== 'string') return (owner = ownerToml === null ? {} : null); // null = no owner config: nothing to copy
+    try { const d = parseToml(ownerToml); owner = isPlainObject(d) ? d : null; } catch { owner = null; }
+    return owner;
+  };
+  if (kind === 'generated') {
+    for (const k of CODEX_PROGRAM_KEYS) {
+      const o = ownerDoc();
+      // An owner config that cannot be read: a program table in the copy cannot be shown to be the owner's.
+      if (o === null ? Object.hasOwn(doc, k) : !sameValue(Object.hasOwn(doc, k) ? doc[k] : undefined, Object.hasOwn(o, k) ? o[k] : undefined)) {
+        return { roots: [], state: 'unknown', why: `${k} differs from the owner's config the app copied`, configDiffers: true };
+      }
+    }
+  }
   for (const [k, x] of Object.entries(doc)) {
     if (Object.hasOwn(CODEX_BENIGN_KEYS, k)) continue;
     if (k === 'sandbox_mode') { if (typeof x !== 'string') return unknown('sandbox_mode is not text'); mode = x; continue; }
@@ -298,6 +330,10 @@ export function codexRoots(toml: string, kind: CodexConfigKind = 'project', appH
     }
     // Lets roots under CODEX_HOME follow links out of it (to targets that can change): only false is read as harmless.
     if (k === 'allow_symlinked_codex_home' && x === false) continue;
+    if (CODEX_PROGRAM_KEYS.includes(k)) {
+      if (kind === 'project') return unknown(notOnList(`${k} in a project config (Codex runs the program it names outside its sandbox)`));
+      continue; // the owner's own (not read), or a generated copy already compared with the owner's above
+    }
     if (k === 'hooks') {
       if (kind === 'user') continue; // the owner's own file: allowed, not read (listed before enforcement)
       if (kind === 'generated') {

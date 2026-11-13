@@ -79,6 +79,10 @@ export interface AgentProviderPreset {
   /** Flag appended when the floor is in auto (skip-permissions) mode.
    *  PR #54 consumers read this; mirrors `autoModeFlag`. */
   autoFlag?: string;
+  /** A sandbox stance the app always launches with when the command line states none (auto mode off included): auto
+   *  mode governs approvals, not the sandbox. `sandboxStanceTokens` are the options that already state one. */
+  sandboxFlag?: string;
+  sandboxStanceTokens?: string[];
   /** Claude Code accepts the hive identity injection (`--append-system-prompt`
    *  + hook `--settings`). Other CLIs don't — they spawn with the shared AGENT_*
    *  env only. Gates the Claude-specific spawn injection in hive.ensureAgent.
@@ -212,6 +216,10 @@ export const AGENT_PROVIDER_PRESETS: AgentProviderPreset[] = [
     // Any of these on a command line means the user already chose a posture
     // (including the old full bypass) — do not stack ours on top.
     autoStanceTokens: ['-a', '--ask-for-approval', '-s', '--sandbox', '--full-auto', '--dangerously-bypass-approvals-and-sandbox'],
+    // With auto mode off the launch still names its sandbox, so the hook-runtime check never has to guess Codex's
+    // default from config. Approvals stay Codex's own default (no -a).
+    sandboxFlag: '-s workspace-write',
+    sandboxStanceTokens: ['-s', '--sandbox', '--full-auto', '--dangerously-bypass-approvals-and-sandbox', '--yolo'],
     // Suppresses first-run interactive prompts (directory-trust gate, installer).
     nonInteractiveEnv: { CODEX_NON_INTERACTIVE: '1' },
     supportsModel: true,
@@ -690,6 +698,18 @@ export function argsWithAutoModeFlag(args: string[], autoMode: boolean, provider
   if (!flag) return args;
   if (hasAutoModeStance(args, provider)) return args;
   return [...args, ...flag.trim().split(/\s+/)];
+}
+
+/** argv with the provider's sandbox stance when it states none: inserted right after the executable's own words (after
+ *  a `resume <session>` subcommand), so it always comes before any positional prompt. Unchanged for a provider with no
+ *  sandbox flag, or when an option already states one (`--sandbox=x` included). */
+export function argsWithSandboxStance(args: string[], provider: AgentProvider): string[] {
+  const preset = providerPreset(provider);
+  if (!preset.sandboxFlag) return args;
+  const stance = new Set(preset.sandboxStanceTokens ?? []);
+  if (args.some((a) => stance.has(a) || stance.has(a.split('=')[0]))) return args;
+  const at = args[0] === preset.resumeSubcommand ? Math.min(2, args.length) : 0;
+  return [...args.slice(0, at), ...preset.sandboxFlag.trim().split(/\s+/), ...args.slice(at)];
 }
 
 /** True when argv already states a permission posture for this provider: the

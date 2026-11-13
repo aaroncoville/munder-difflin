@@ -432,5 +432,7 @@ export function buildSpawnCommand(
   // bypassPermissions, Codex's dangerous bypass, Grok's always-approve, Kimi's
   // auto, or agy's skip flag.
   if (config.autoMode && preset.autoFlag) cmd = `${cmd} ${preset.autoFlag}`;
+  // Auto mode off still names the sandbox for a provider that has one (Codex: -s workspace-write).
+  else if (preset.sandboxFlag) cmd = `${cmd} ${preset.sandboxFlag}`;
   return cmd;
 }

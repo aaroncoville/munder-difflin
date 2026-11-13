@@ -718,7 +718,7 @@ export class HiveManager {
       if (c.state === 'unknown') return { refuse: `its Codex config ${f} could not be understood (${c.why ?? 'unknown form'})` };
       if (c.mode) chosen = { mode: c.mode, file: f };
     }
-    if (!chosen) return { refuse: `its launch line chooses no Codex sandbox and no config does: turn auto mode on in Settings, or set sandbox_mode in ${user}` };
+    if (!chosen) return { refuse: `its launch line chooses no Codex sandbox and no config does: add -s workspace-write to its command, or set sandbox_mode in ${user}` };
     if (chosen.mode === 'danger-full-access') return { refuse: `its Codex config ${chosen.file} sets sandbox_mode = "danger-full-access"` };
     return { mode: chosen.mode as 'workspace-write' | 'read-only', file: chosen.file };
   }

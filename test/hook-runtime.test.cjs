@@ -477,7 +477,7 @@ test('round 4: the launch line and its environment decide; anything not modelled
     ['f1', 'claude', claudeLaunch(dir('f1'), ['--weird']), /option the app does not model: option --weird/],
     ['f2', 'claude', claudeLaunch(dir('f2'), ['--settings', '/tmp/other.json']), /option the app does not model/],
     ['f3', 'codex', codexLaunch(['-p', 'fast']), /option the app does not model: option -p/],
-    ['f4', 'codex', { argv: ['codex -a never'], env: {} }, /chooses no Codex sandbox and no config does: turn auto mode on in Settings, or set sandbox_mode in /],
+    ['f4', 'codex', { argv: ['codex -a never'], env: {} }, /chooses no Codex sandbox and no config does: add -s workspace-write to its command, or set sandbox_mode in /],
     ['f5', 'codex', { argv: ['codex --yolo'], env: {} }, /turns the Codex sandbox off/],
     ['e1', 'claude', claudeLaunch(dir('e1'), [], { XDG_CONFIG_HOME: base }), /XDG_CONFIG_HOME/],
     ['e2', 'claude', claudeLaunch(dir('e2'), [], { CLAUDE_CODE_MCP_SERVE_SETTINGS: '' }), /CLAUDE_CODE_MCP_SERVE_SETTINGS/],
@@ -554,20 +554,20 @@ test('round 4: the app passes the launch to ensureAgent and runs the late check 
   assert.match(main.slice(late, spawnAt), /instanceof HookRuntimeUnavailable\) return refuseSpawn\(/);
 });
 
-test('round 5: auto mode off — no -s takes the sandbox from Codex config; none, unknown or full access refuses saying what to change', async (t) => {
+test('round 5: a hand-written line with no -s takes the sandbox from Codex config; none, unknown or full access refuses saying what to change', async (t) => {
   const { base, home, rt, hive, root } = floor(t);
   hive.setHookRuntime(rt);
   const userCfg = path.join(home, '.codex', 'config.toml');
   fs.mkdirSync(path.dirname(userCfg), { recursive: true });
   const work = path.join(base, 'w');
   fs.mkdirSync(path.join(work, '.codex'), { recursive: true });
-  // The app-built forms with auto mode off: bare 'codex', and 'codex --model x'.
+  // Hand-written lines with no -s (the app's builders always emit one): bare 'codex', and 'codex --model x'.
   const forms = [{ argv: ['codex'], env: {} }, { argv: ['codex --model gpt-x'], env: {} }];
   let n = 0;
   const spawn = (launch, cwd = home) => hive.ensureAgent({ id: `ao${n++}`, name: 'a', provider: 'codex', cwd }, { launch });
   for (const f of forms) {
     fs.rmSync(userCfg, { force: true });
-    assert.match(await refused(spawn(f)), /turn auto mode on in Settings, or set sandbox_mode in .*config\.toml/, 'no mode anywhere');
+    assert.match(await refused(spawn(f)), /add -s workspace-write to its command, or set sandbox_mode in .*config\.toml/, 'no mode anywhere');
     fs.writeFileSync(userCfg, 'sandbox_mode = "workspace-write"\n');
     await spawn(f);
     fs.writeFileSync(userCfg, 'sandbox_mode = "read-only"\n');
@@ -601,7 +601,6 @@ test('round 5/6: Codex config is parsed as TOML; names in strings never count; r
   const q3 = '"'.repeat(3);
   const fine = [
     '[projects."/Users/me/profile"]\ntrust_level = "trusted"\n',
-    '[mcp_servers.profiler]\ncommand = "p"\n',
     'model = "set sandbox_mode = danger later"\n',
     'model = "writable_roots"\n',
     `model = ${q3}\nsandbox_mode = "danger-full-access"\n${q3}\n`,
@@ -805,8 +804,9 @@ test('round 8 (N1): any sandbox/permission/profile/writable_roots key the decode
   await spawn(['codex']);
   fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\n[profiles.sandboxed]\nmodel = "m"\n');
   assert.match(await refused(spawn(['codex'])), /profiles is not on the list/);
+  // network_access is about the network, not the writable set: read as allowed.
   fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\n[sandbox_workspace_write]\nnetwork_access = true\n');
-  assert.match(await refused(spawn(['codex'])), /sandbox_workspace_write\.network_access is not on the list/);
+  await spawn(['codex']);
 });
 
 test('prep r7: the key-family test applies only where Codex reads policy; her false refusals start, every policy form still refuses', async (t) => {
@@ -886,4 +886,60 @@ test('versioned allowlist: owner config with hooks starts, project hooks refuse,
   // Flags: what the app emits starts; anything else refuses.
   for (const a of [['--dangerously-bypass-hook-trust'], ['--model', 'gpt'], ['--enable', 'multi_agent']]) await spawn(['codex -a never -s workspace-write', ...a]);
   for (const a of [['--approve-for-me'], ['--enable', 'hooks'], ['--disable', 'plugins'], ['-m', 'gpt'], ['--strict-config']]) assert.match(await refused(spawn(['codex -a never -s workspace-write', ...a])), /not on the list this app version understands/, a.join(' '));
+});
+
+test('auto mode off: the production builders always name the Codex sandbox, so the owner\'s config with no sandbox_mode starts', async (t) => {
+  const { buildSpawnCommand } = loadTs('src/renderer/src/store/config.ts');
+  const { buildWorkerLaunch } = loadTs('src/main/workerLaunch.ts');
+  const { tokenizeCommand } = loadTs('src/shared/commandLine.ts');
+  const { argsWithSandboxStance } = loadTs('src/shared/agentProvider.ts');
+  const { home, rt, hive } = floor(t);
+  hive.setHookRuntime(rt);
+  const cfg = path.join(home, '.codex', 'config.toml');
+  fs.mkdirSync(path.dirname(cfg), { recursive: true });
+  // The owner's real config shape: no sandbox_mode anywhere.
+  fs.writeFileSync(cfg, 'model = "gpt"\nmodel_reasoning_effort = "high"\n[projects."/x"]\ntrust_level = "trusted"\n[features]\nmulti_agent = true\n');
+  let n = 0;
+  const lines = [];
+  for (const autoMode of [false, true]) {
+    for (const model of [undefined, 'gpt-x']) lines.push(['gui', autoMode, buildSpawnCommand({ defaultCommand: 'claude', autoMode }, model, 'codex')]);
+    for (const over of [{}, { requestModel: 'gpt-x' }, { requestCommand: 'codex -a untrusted' }]) {
+      const w = buildWorkerLaunch({ autoMode, requestProvider: 'codex', ...over });
+      lines.push(['worker', autoMode, [w.command, ...w.args].join(' ')]);
+    }
+  }
+  for (const [who, autoMode, line] of lines) {
+    assert.match(line, /(^| )-s workspace-write( |$)/, `${who} auto ${autoMode}: ${line}`);
+    if (!autoMode) assert.doesNotMatch(line, /(^| )-a never/, 'auto mode off leaves approvals to Codex');
+    const words = tokenizeCommand(line);
+    await hive.ensureAgent({ id: `b${n++}`, name: 'b', provider: 'codex', cwd: home }, { launch: { argv: [words[0], ...words.slice(1)], env: {} } });
+  }
+  // A command stored before the builders emitted it gets the stance at the spawn core, before any prompt or after resume.
+  assert.deepEqual(argsWithSandboxStance([], 'codex'), ['-s', 'workspace-write']);
+  assert.deepEqual(argsWithSandboxStance(['resume', 'sid', 'go'], 'codex'), ['resume', 'sid', '-s', 'workspace-write', 'go']);
+  assert.deepEqual(argsWithSandboxStance(['--sandbox=read-only'], 'codex'), ['--sandbox=read-only'], 'a stated stance is kept');
+  assert.deepEqual(argsWithSandboxStance([], 'claude'), [], 'only a provider with a sandbox flag');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.ts'), 'utf8');
+  const stanceAt = main.search(/^  if \(opts\.hive\) opts\.args = argsWithSandboxStance\(opts\.args \?\? \[\], provider\);$/m);
+  assert.ok(stanceAt > 0 && stanceAt < main.indexOf('const inj = await hive.ensureAgent('), 'the spawn core adds it, live (not commented out), before the check');
+});
+
+test('tables that name a program Codex runs outside its sandbox: allowed in the owner config, refused in a project config', async (t) => {
+  const { home, rt, hive } = floor(t);
+  hive.setHookRuntime(rt);
+  const user = path.join(home, '.codex', 'config.toml');
+  fs.mkdirSync(path.dirname(user), { recursive: true });
+  const proj = path.join(home, 'work');
+  fs.mkdirSync(path.join(proj, '.codex'), { recursive: true });
+  let n = 0;
+  const spawn = (cwd) => hive.ensureAgent({ id: `m${n++}`, name: 'm', provider: 'codex', cwd }, { launch: { argv: ['codex -s workspace-write'], env: {} } });
+  const tables = ['[mcp_servers.x]\ncommand = "/bin/p"\nargs = ["a"]\n', 'notify = ["/bin/n"]\n', '[model_providers.p.auth]\ncommand = "/bin/tok"\n', '[model_providers.p.aws.credential_export]\ncommand = "/bin/c"\n'];
+  for (const tb of tables) {
+    fs.writeFileSync(user, tb);
+    fs.rmSync(path.join(proj, '.codex', 'config.toml'), { force: true });
+    await spawn(proj); // the owner's own: allowed, not read
+    fs.writeFileSync(user, '');
+    fs.writeFileSync(path.join(proj, '.codex', 'config.toml'), tb);
+    assert.match(await refused(spawn(proj)), /in a project config \(Codex runs the program it names outside its sandbox\) is not on the list this app version understands/, tb);
+  }
 });
