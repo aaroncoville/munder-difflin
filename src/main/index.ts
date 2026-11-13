@@ -1,3 +1,4 @@
+import './pinUserData';
 import { seedCodexHookTrust } from './codexHookTrust';
 import { applyGitCommitsSetting, gitCommitsDisabled } from './hiveGitSetting';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
