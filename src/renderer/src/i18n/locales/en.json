@@ -242,7 +242,9 @@
       "advanced": "Advanced",
       "maxTurns": "Max turns per run",
       "unlimited": "unlimited",
-      "blankUnlimited": "blank = unlimited"
+      "blankUnlimited": "blank = unlimited",
+      "agentPlugins": "Plugins for agents",
+      "agentPluginsDesc": "Claude plugins every hive agent loads, one name per line. All other plugins you have stay off for agents (your own Claude sessions are unchanged). Takes effect for agents started after you save."
     },
     "autonomy": {
       "autonomy": "Autonomy",

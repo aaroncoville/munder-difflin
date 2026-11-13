@@ -296,6 +296,8 @@ export interface HarnessConfig {
   telemetryEnabled?: boolean;
   /** Local-only usage log (default ON). Mirrors main HarnessConfig. */
   usageLog?: boolean;
+  /** Claude plugins a hive agent keeps; unset = the app's default list. */
+  agentPlugins?: string[];
   slackEnabled?: boolean;
   slackSigningSecret?: string;
   slackBotToken?: string;

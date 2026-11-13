@@ -18,6 +18,7 @@
  *
  * Everything here runs in the Electron main process.
  */
+import { agentEnabledPlugins, claudeUserDir, DEFAULT_AGENT_PLUGINS, knownPluginIds } from './agentPlugins';
 import {
   existsSync, mkdirSync, readFileSync, writeFileSync, renameSync,
   readdirSync, statSync, lstatSync, realpathSync, rmSync, appendFileSync,
@@ -1186,6 +1187,8 @@ export class HiveManager {
       launch?: HookLaunch;
       /** This spawn's own id (the terminal's), under which the decision is kept for the late check. */
       spawnId?: string;
+      /** Plugin names an agent keeps (Settings); every other plugin the owner has is off for the agent. */
+      agentPlugins?: readonly string[];
     } = {}
   ): Promise<SpawnInjection> {
     // One read for the whole operation. registry() reads a failure as an empty roster, and this would then replace the
@@ -1489,7 +1492,7 @@ export class HiveManager {
       const rt = verdict?.rt ?? null;
       env.HIVE_SOCK = sock;
       const settingsPath = join(dir, 'settings.json');
-      this.writeJson(settingsPath, this.hookSettings(rt ? hookCommandFor(rt, true) : null, meta.cwd, opts.mcpDefaults, opts.theme, writable));
+      this.writeJson(settingsPath, this.hookSettings(rt ? hookCommandFor(rt, true) : null, meta.cwd, opts.mcpDefaults, opts.theme, writable, agentEnabledPlugins(knownPluginIds(claudeUserDir()), opts.agentPlugins ?? DEFAULT_AGENT_PLUGINS)));
       args.push('--settings', settingsPath);
     }
     return { args, env };
@@ -1750,7 +1753,7 @@ export class HiveManager {
     return Array.from(new Set(out));
   }
 
-  private hookSettings(cmd: string | null, cwd: string, cfg: McpDefaultsMap, theme?: 'light' | 'dark', writableDirs: string[] = []): unknown {
+  private hookSettings(cmd: string | null, cwd: string, cfg: McpDefaultsMap, theme?: 'light' | 'dark', writableDirs: string[] = [], enabledPlugins?: Record<string, boolean>): unknown {
     // `cmd` runs the shim under the bundled node, NOT bare `node` — see
     // nodeLauncherPath(). Claude runs each of these through `sh -c` with a
     // stripped PATH, where `node` is often absent.
@@ -1772,6 +1775,8 @@ export class HiveManager {
       // listens. The terminal reports the current theme the moment the CLI enables
       // 2031, so startup still matches without pinning anything.
       ...(theme ? { theme: 'auto' } : {}),
+      // Only the plugins the owner keeps for agents (Settings): this session-level map outranks their user-level `true`.
+      ...(enabledPlugins && Object.keys(enabledPlugins).length ? { enabledPlugins } : {}),
       // W3 — default skills/MCP bundle. Written into the PER-SESSION settings file
       // only (never ~/.claude), so the user's own MCP servers are never clobbered;
       // Claude merges this additively. Omitted entirely when empty so a settings

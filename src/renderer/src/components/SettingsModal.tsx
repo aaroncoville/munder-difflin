@@ -1,4 +1,5 @@
 import { useState, useEffect, type CSSProperties } from 'react';
+import { DEFAULT_AGENT_PLUGINS } from '@shared/agentPluginDefaults';
 import { useUsageView } from '@/usage';
 import { useTranslation } from 'react-i18next';
 import { agentModels, type HarnessConfig } from '@/store/config';
@@ -257,6 +258,8 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
   const dirty = Object.keys(pending).length > 0 || autoCompactPending !== null;
   const stage = (patch: Partial<HarnessConfig>): void =>
     setPending((prev) => ({ ...prev, ...patch }));
+  // The plugins a hive agent keeps, one name per line; unset shows the app's default list.
+  const [agentPluginsText, setAgentPluginsText] = useState<string>((cfgX.agentPlugins ?? DEFAULT_AGENT_PLUGINS).join('\n'));
 
   const [keepAwake, setKeepAwake] = useState<boolean>(cfgX.strongKeepalive === true);
   const toggleKeepAwake = async () => {
@@ -1280,6 +1283,20 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                             style={{ ...slackInputStyle, width: 120 }}
                           />
                           <span style={{ fontSize: 12, color: 'var(--cth-ink-500)' }}>{t('settings.agentsModels.blankUnlimited')}</span>
+                        </div>
+                        <div style={{ height: 10 }} />
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                          <span style={{ fontSize: 13, color: 'var(--cth-ink-900)' }}>{t('settings.agentsModels.agentPlugins')}</span>
+                          <span style={{ fontSize: 12, color: 'var(--cth-ink-500)' }}>{t('settings.agentsModels.agentPluginsDesc')}</span>
+                          <textarea
+                            rows={6}
+                            value={agentPluginsText}
+                            onChange={(e) => {
+                              setAgentPluginsText(e.target.value);
+                              stage({ agentPlugins: e.target.value.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean) });
+                            }}
+                            style={{ ...slackInputStyle, width: '100%', fontFamily: 'inherit', resize: 'vertical' }}
+                          />
                         </div>
                       </div>
                     </>
