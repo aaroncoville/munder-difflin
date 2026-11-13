@@ -33,6 +33,8 @@ function fakeCli(t, mode) {
       rl.on('line', (l) => { const m = JSON.parse(l);
         const result = m.method === 'hooks/list' ? { data: [{ hooks: [{ eventName: 'stop', source: 'user', sourcePath: file, handlerType: 'command', command: 'app-hook', async: false, matcher: null, timeoutSec: 30, enabled: true, key: file + ':stop:0:0', currentHash: 'sha256:' + 'a'.repeat(64), trustStatus: 'trusted' }] }] } : {};
         setTimeout(() => process.stdout.write(JSON.stringify({ id: m.id, result }) + '\\n'), m.method === 'initialize' ? 8000 : 0); });`,
+    // Exits a little after it starts, every time: a server that keeps dying late.
+    dies: `setTimeout(() => process.exit(0), 400);`,
     // Answers, and lists a hook the app did not write.
     foreign: `const rl = require('readline').createInterface({ input: process.stdin });
       rl.on('line', (l) => { const m = JSON.parse(l);
@@ -146,6 +148,17 @@ test('a restore refused after provisioning leaves the agent\'s registry row exac
   // And it can be started again.
   await hive.ensureAgent({ id: 'cx1', name: 'Coder', provider: 'codex', cwd: work }, { launch, spawnId: 'pty-cx1-3' });
   assert.equal(hive.registry().agents.cx1.archived, false);
+});
+
+test('the answer budget covers every start: a server that keeps dying late is refused within it', { skip: !POSIX }, async (t) => {
+  const f = fakeCli(t, 'dies');
+  const reasons = [];
+  const started = Date.now();
+  const ok = await T.seedCodexHookTrust(f.ctx, 1000, (r) => reasons.push(r), { attempts: 3, backoffMs: [10, 10] });
+  const took = Date.now() - started;
+  assert.equal(ok, false);
+  assert.ok(took < 1150, `took ${took} ms with a 1000 ms budget`);
+  assert.match(reasons[0], /did not answer within 1 s/);
 });
 
 /** An agent that already ran: provisioned, confirmed and started once. */
