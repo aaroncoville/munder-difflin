@@ -65,7 +65,7 @@ async function setup(t, overrides = {}) {
     worktreePaths, worktreeOrigins,
     removeWorktree: (origin, wt) => { removed.push([origin, wt]); return removal(); },
     relocationEnv: loadTs('src/main/launchLine.ts').relocationEnv, buildPtyEnv: loadTs('src/main/ptyEnv.ts').buildPtyEnv, process,
-    RefusedRosterId, RegistryUnreadable, HookRuntimeUnavailable: loadTs('src/main/hookRuntime.ts').HookRuntimeUnavailable, CodexHomeRefused: loadTs('src/main/codexSeatHome.ts').CodexHomeRefused, shortTarget: loadTs('src/main/messageTarget.ts').shortTarget
+    RefusedRosterId, RegistryUnreadable, HookRuntimeUnavailable: loadTs('src/main/hookRuntime.ts').HookRuntimeUnavailable, CodexHomeRefused: loadTs('src/main/codexSeatHome.ts').CodexHomeRefused, shortTarget: loadTs('src/main/messageTarget.ts').shortTarget, isFolderName: loadTs('src/main/messageTarget.ts').isFolderName
   };
   const run = vm.runInNewContext(liveProvisioning(), context);
   const spawn = (id) => run({ id: `pty-${id}`, cwd: home, hive: { id, name: 'x' } }, 'claude');
@@ -190,4 +190,20 @@ test('a Codex spawn refused after provisioning wrote its registry row leaves no 
   assert.match(result.error, /is a link/);
   assert.equal(Object.hasOwn(f.real.registry().agents, id), false, 'the row this spawn added is gone');
   assert.ok(f.real.logTail(500).some((r) => r.kind === 'spawn-rolled-back' && r.agentId === id && r.rowRemoved === true));
+});
+
+test('the refusal row names an ordinary agent id as it is, not quoted', async (t) => {
+  const f = await setup(t);
+  await f.spawn('heartbeat');
+  const [row] = rows(f.real);
+  assert.equal(row.agentId, 'heartbeat');
+});
+
+test('the registry-write refusal row names an ordinary agent id as it is', async (t) => {
+  const f = await setup(t);
+  fs.writeFileSync(path.join(f.real.root(), 'registry.json'), '{"agents":');
+  await f.spawn('worker-9');
+  const row = f.real.logTail(500).find((e) => e.kind === 'registry-write-refused');
+  assert.ok(row, 'the refusal is logged');
+  assert.equal(row.agentId, 'worker-9');
 });

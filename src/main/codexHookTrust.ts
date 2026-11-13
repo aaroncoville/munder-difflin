@@ -128,14 +128,33 @@ export async function prepareCodexHookTrust(ctx: Context, rpc: Rpc, why: (reason
   return ok;
 }
 
+/** One try at preparing trust: trusted, or refused with why. `noAnswer` says the app server failed to start or
+ *  exited before it answered: a fast failure that says nothing about the hooks and is worth another start. A server
+ *  that stays up but does not answer within the budget is not started again (see TRUST_ANSWER_BUDGET_MS). */
+export type TrustAttempt = { ok: true } | { ok: false; why: string; noAnswer: boolean };
+
+/** How long one trust preparation waits for its app server's answers, start to finish.
+ *
+ *  A cold `codex app-server` started while the app restores a dozen agents at once can take more than five seconds to
+ *  answer: one took 4.5 s, and one never answered within its five, with its timers firing late on a busy main
+ *  process. Killing a server that was about to answer and starting a fresh one only adds a second cold start, so one
+ *  server is given one long budget and is not restarted on a slow answer. Only a fast failure is retried.
+ *
+ *  Worst case for an agent whose app server never answers: this budget plus the short pauses of any fast-failure
+ *  retries, about 30 s, then refused. Preparations run one at a time (oneAtATime), all of it asynchronous and off
+ *  the main thread's critical path: other agents keep starting; only Codex agents queued behind it wait. */
+export const TRUST_ANSWER_BUDGET_MS = 30_000;
+
+/** Thrown by the RPC when the app server answered with an error: a definite answer, not a missing one. */
+class TrustRequestRejected extends Error {}
+
 /** Bounded, model-free stdio app-server session. No shell and no hook execution:
  * only initialize, hooks/list and config writes. Never log protocol payloads
  * (the inherited user configuration may contain sensitive values). */
-export async function seedCodexHookTrust(
+async function seedCodexHookTrustOnce(
   ctx: Context & { executable: string; env: NodeJS.ProcessEnv },
-  timeoutMs = 5000,
-  why: (reason: string) => void = () => {}
-): Promise<boolean> {
+  timeoutMs: number
+): Promise<TrustAttempt> {
   const child = spawn(ctx.executable, ['app-server'], {
     env: { ...ctx.env, CODEX_HOME: ctx.home }, cwd: ctx.cwd,
     stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true
@@ -143,20 +162,23 @@ export async function seedCodexHookTrust(
   const lines = createInterface({ input: child.stdout });
   let nextId = 0;
   const pending = new Map<number, { resolve(value: any): void; reject(error: Error): void }>();
+  // Why the answers stopped coming: the budget ran out, or the server went away first.
+  let ended: 'budget' | 'exited' | null = null;
   const fail = (): void => {
     for (const request of pending.values()) request.reject(new Error('Codex hook trust preparation failed'));
     pending.clear();
   };
-  child.on('error', fail);
-  child.on('exit', fail);
-  child.stdin.on('error', fail);
+  const exited = (): void => { ended ??= 'exited'; fail(); };
+  child.on('error', exited);
+  child.on('exit', exited);
+  child.stdin.on('error', exited);
   lines.on('line', line => {
     try {
       const response = JSON.parse(line);
       const request = pending.get(response.id);
       if (!request) return;
       pending.delete(response.id);
-      if (response.error) request.reject(new Error('Codex hook trust request rejected'));
+      if (response.error) request.reject(new TrustRequestRejected('Codex hook trust request rejected'));
       else request.resolve(response.result);
     } catch { fail(); }
   });
@@ -165,15 +187,63 @@ export async function seedCodexHookTrust(
     pending.set(id, { resolve, reject });
     child.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
   });
-  const timer = setTimeout(() => { fail(); child.kill(); }, timeoutMs);
+  const timer = setTimeout(() => { ended ??= 'budget'; fail(); child.kill(); }, timeoutMs);
+  let reason = '';
   try {
     await rpc('initialize', { clientInfo: { name: 'munder-difflin', version: '1' }, capabilities: { experimentalApi: true } });
-    return await prepareCodexHookTrust(ctx, rpc, why);
-  } catch { why('the Codex app server did not answer'); return false; }
-  finally {
+    const ok = await prepareCodexHookTrust(ctx, rpc, (r) => { reason = r; });
+    return ok ? { ok: true } : { ok: false, why: reason || 'trust was not established', noAnswer: false };
+  } catch (e) {
+    if (e instanceof TrustRequestRejected) return { ok: false, why: 'the Codex app server rejected a trust request', noAnswer: false };
+    // Never trusted on a missing answer, even if a write went out before the time ran out.
+    if (ended === 'budget') return { ok: false, why: `the Codex app server did not answer within ${seconds(timeoutMs)}`, noAnswer: false };
+    return { ok: false, why: 'the Codex app server exited before answering', noAnswer: true };
+  } finally {
     clearTimeout(timer);
     lines.close();
     child.stdin.destroy();
     child.kill();
   }
+}
+
+export interface TrustRetry { attempts?: number; backoffMs?: number[]; sleep?: (ms: number) => Promise<void> }
+
+/** Try `attempt` until it gives a definite answer, at most `attempts` times, waiting `backoffMs[i]` between tries.
+ *  A definite refusal is final at once; only a missing answer is tried again. Says why once, when it refuses. */
+export async function trustWithRetry(
+  attempt: () => Promise<TrustAttempt>,
+  why: (reason: string) => void,
+  { attempts = 3, backoffMs = [1000, 2000], sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }: TrustRetry = {}
+): Promise<boolean> {
+  for (let i = 1; ; i++) {
+    const r = await attempt();
+    if (r.ok) return true;
+    if (!r.noAnswer) { why(r.why); return false; }
+    if (i >= attempts) { why(`${r.why} after ${i} attempt${i === 1 ? '' : 's'}`); return false; }
+    await sleep(backoffMs[Math.min(i - 1, backoffMs.length - 1)] ?? 0);
+  }
+}
+
+const seconds = (ms: number): string => (ms >= 1000 ? `${Math.round(ms / 1000)} s` : `${ms} ms`);
+
+/** One preparation at a time: agents restored together at app start would otherwise start an app server each at
+ *  once and starve one another of the time to answer. */
+let queue: Promise<unknown> = Promise.resolve();
+function oneAtATime<T>(run: () => Promise<T>): Promise<T> {
+  const next = queue.then(run, run);
+  queue = next.then(() => undefined, () => undefined);
+  return next;
+}
+
+/** Prepare trust for one agent's generated hooks, model-free, through its own app server, after any preparation
+ *  already running has finished. The server gets `timeoutMs` to answer and is not restarted on a slow answer; one that
+ *  fails to start or exits before answering is started again (TrustRetry). Refused at once on a definite refusal, on
+ *  a budget that ran out, or once the restarts are spent. */
+export async function seedCodexHookTrust(
+  ctx: Context & { executable: string; env: NodeJS.ProcessEnv },
+  timeoutMs = TRUST_ANSWER_BUDGET_MS,
+  why: (reason: string) => void = () => {},
+  retry: TrustRetry = {}
+): Promise<boolean> {
+  return oneAtATime(() => trustWithRetry(() => seedCodexHookTrustOnce(ctx, timeoutMs), why, retry));
 }

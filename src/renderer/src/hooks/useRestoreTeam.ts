@@ -178,10 +178,25 @@ export function useRestoreTeam(config?: HarnessConfig | null): RestoreTeamState 
             alreadyLive++;
             useStore.getState().removeRestorableAgent(a.id);
           } else {
-            // Leave it restorable so the user can retry — but record WHY so the
-            // outcome is shown on the floor, not buried in the devtools console.
+            // Record WHY so the outcome is shown on the floor, not buried in the
+            // devtools console.
             failures.push(`${a.name}: ${res.error ?? 'spawn failed'}`);
             console.error('[restore] spawn failed for', a.id, res.error);
+            // And keep the agent on the floor: a stopped card that says why, with its
+            // terminal id, so Restart & Continue starts it again (it accepts a terminal
+            // that is already gone). Left only in the restorable list it had no card,
+            // and nothing could start it short of relaunching the app.
+            useStore.getState().removeRestorableAgent(a.id);
+            return {
+              ...a,
+              provider,
+              ptyId,
+              archived: false,
+              status: 'blocked',
+              action: `not started: ${res.error ?? 'spawn failed'}`,
+              carrying: undefined,
+              currentStation: 'desk'
+            };
           }
         } catch (e) {
           failures.push(`${a.name}: ${e instanceof Error ? e.message : String(e)}`);
