@@ -13,10 +13,12 @@
  */
 import type { HiveManager } from './hive';
 
-/** Archives each orphan; returns the ids archived. `hasLivePty` is the app's PTY map. */
+/** Archives each orphan; returns the ids archived. `hasLivePty` is the app's PTY map. `onArchived` is told each id as
+ *  soon as it is archived, so an error later in the sweep loses no record of the ones already done. */
 export function archiveOrphanedAgents(
   hive: Pick<HiveManager, 'enabled' | 'registry' | 'setArchived'>,
-  hasLivePty: (agentId: string) => boolean
+  hasLivePty: (agentId: string) => boolean,
+  onArchived: (agentId: string) => void = () => {}
 ): string[] {
   if (!hive.enabled()) return [];
   const reg = hive.registry();
@@ -27,6 +29,7 @@ export function archiveOrphanedAgents(
     if (hasLivePty(id)) continue;     // has a live PTY → genuinely active
     hive.setArchived(id, true);       // stale archived:false orphan → archive
     archived.push(id);
+    onArchived(id);
   }
   return archived;
 }

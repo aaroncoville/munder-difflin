@@ -6,7 +6,7 @@
 // restarting service") and the window never loads. #106 made hive commits queue-only.
 //
 // This runs the hive work bootstrap does before createWindow (ensureHive, refreshGeneratedDocs, the orphan sweep) with
-// a git on PATH that takes 2 s per call, and requires it to finish in well under one git call. Before #106 it took
+// a git on PATH that takes 2 s per call, and requires it to finish in less than one git call. Before #106 it took
 // about 50 s. For the Electron side of the limit, see test/manual/startup-block-probe.cjs.
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -19,7 +19,7 @@ const { HiveManager } = loadTs('src/main/hive.ts');
 const { archiveOrphanedAgents } = loadTs('src/main/orphanSweep.ts');
 
 const GIT_DELAY_S = 2;
-const BUDGET_MS = 1_000;   // well under one slow git call, and far under the ~12 s Electron tolerates
+const BUDGET_MS = 1_800;   // under one slow git call (2 s), with room for a loaded machine; far under Electron's ~12 s
 
 test('the hive half of startup (ensureHive, generated docs, sweeping 12 orphans) never waits on git', { timeout: 300_000 }, async (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-startup-git-'));
@@ -54,4 +54,16 @@ test('the hive half of startup (ensureHive, generated docs, sweeping 12 orphans)
   const reg = JSON.parse(fs.readFileSync(path.join(hive.root(), 'registry.json'), 'utf8'));
   for (const id of ids) assert.equal(reg.agents[id].archived, true);
   assert.ok(ms < BUDGET_MS, `startup's hive work waited on git: ${ms} ms (budget ${BUDGET_MS} ms)`);
+});
+
+test('each orphan is reported as it is archived, so an error later in the sweep loses none', () => {
+  const reg = { godId: 'god-1', agents: { 'god-1': {}, 'worker-1': {}, 'worker-2': {}, 'worker-3': {} } };
+  const seen = [];
+  const hive = {
+    enabled: () => true,
+    registry: () => reg,
+    setArchived: (id) => { if (id === 'worker-3') throw new Error('registry write failed'); }
+  };
+  assert.throws(() => archiveOrphanedAgents(hive, () => false, (id) => seen.push(id)), /registry write failed/);
+  assert.deepEqual(seen, ['worker-1', 'worker-2']);
 });

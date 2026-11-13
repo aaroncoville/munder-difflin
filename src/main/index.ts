@@ -1070,9 +1070,8 @@ function syncContextTriggers(): void {
  *  the window exists, so it must never wait on git (see orphanSweep.ts). */
 function archiveOrphanedAgents(): void {
   try {
-    for (const id of archiveOrphans(hive, (id) => !!ptyForAgent(id))) {
-      console.log('[migration] archived orphaned agent (no live PTY):', id);
-    }
+    // Logged as each one is archived, so an error mid-sweep loses no line for the ones already done.
+    archiveOrphans(hive, (id) => !!ptyForAgent(id), (id) => console.log('[migration] archived orphaned agent (no live PTY):', id));
   } catch (e) {
     console.error('[migration] archiveOrphanedAgents failed:', e);
   }
