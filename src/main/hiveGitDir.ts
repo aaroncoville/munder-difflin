@@ -1,6 +1,7 @@
+import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { constants, cpSync, existsSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { access, cp, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { access, copyFile, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { GitRunner } from './hiveCommit';
 import { HIVE_MAINTENANCE_TIMEOUT_MS } from './hiveCommit';
@@ -83,33 +84,92 @@ const IMPORTED = ['HEAD', 'refs', 'packed-refs', 'objects', 'index', 'logs'];
 const HEAD_FORMAT = /^(ref: refs\/heads\/[^\s]+|[0-9a-f]{40}|[0-9a-f]{64})\s*$/;
 
 /**
- * Why the git directory being imported cannot be, or null. It is checked as it stands: what is still in the holding
- * folder, plus whatever an interrupted import already moved into the partial (HEAD among it).
+ * Why the git directory being imported cannot be, or null. Checked on the source before anything is copied; the copy
+ * itself also stops at any symlink it meets, should one appear in between.
  */
-async function refusal(holding: string, partial: string): Promise<string | null> {
-  for (const dir of [holding, partial]) {
-    const link = await findSymlink(dir);
-    if (link) return `it holds a symlink (${link})`;
-  }
-  if (await exists(join(holding, 'shallow'))) return 'it is a shallow repository, so its history is incomplete';
-  const head = (await readFile(join(holding, 'HEAD'), 'utf8').catch(() => null)) ?? (await readFile(join(partial, 'HEAD'), 'utf8').catch(() => null));
+async function refusal(source: string): Promise<string | null> {
+  const link = await findSymlink(source);
+  if (link) return `it holds a symlink (${link})`;
+  if (await exists(join(source, 'shallow'))) return 'it is a shallow repository, so its history is incomplete';
+  const head = await readFile(join(source, 'HEAD'), 'utf8').catch(() => null);
   if (head === null || !HEAD_FORMAT.test(head)) return 'its HEAD is not a branch or a commit';
   return null;
 }
 
 /**
- * Build `partial` from what `source` may bring (IMPORTED). Entries are renamed across, so on one volume this is
- * instant; every step can be repeated after an interruption.
+ * Copy `from` to `to`: folders are made by the app, files are copied (a clone where the volume can make one, else a
+ * full copy). Never a rename or a link: no file in the result is one an agent could reach before, through a hard link
+ * or a descriptor it holds open for writing. A symlink, or anything that is not a file or folder, stops the import.
  */
-async function importInto(source: string, partial: string, hiveRoot: string, git: GitRunner): Promise<{ ok: boolean; error?: string }> {
-  if (!(await exists(partial))) {
-    const init = await git([`--git-dir=${partial}`, `--work-tree=${hiveRoot}`, 'init', '-q', '--template='], hiveRoot);
-    if (!init.ok) return { ok: false, error: `git init failed: ${(init.err || init.out).trim()}` };
+async function copyFresh(from: string, to: string): Promise<void> {
+  const st = await lstat(from);
+  if (st.isSymbolicLink()) throw new Refused(`it holds a symlink (${from})`);
+  if (st.isDirectory()) {
+    await mkdir(to, { recursive: true, mode: 0o700 });
+    for (const name of await readdir(from)) await copyFresh(join(from, name), join(to, name));
+    return;
   }
-  for (const name of IMPORTED) {
-    if (!(await exists(join(source, name)))) continue;
-    await rm(join(partial, name), { recursive: true, force: true });
-    await rename(join(source, name), join(partial, name));
+  if (!st.isFile()) throw new Refused(`it holds something that is not a file or a folder (${from})`);
+  await copyFile(from, to, constants.COPYFILE_EXCL | constants.COPYFILE_FICLONE);
+}
+
+class Refused extends Error {}
+
+/** Anything under `dir` that is not a plain file or folder (a symlink above all), which stops the import. */
+async function strayEntry(dir: string): Promise<string | null> {
+  const st = await lstat(dir);
+  if (st.isSymbolicLink()) return `it holds a symlink (${dir})`;
+  if (st.isDirectory()) {
+    for (const name of await readdir(dir)) {
+      const found = await strayEntry(join(dir, name));
+      if (found) return found;
+    }
+    return null;
+  }
+  return st.isFile() ? null : `it holds something that is not a file or a folder (${dir})`;
+}
+
+/**
+ * Copy one imported entry. On macOS that is `/bin/cp -c -R`: clonefile(2), so a clone costs no space and next to no
+ * time, and cp falls back to a plain copy where the volume cannot clone. Node's copyFile cannot clone there (its
+ * clone flag is not supported on macOS and silently becomes a full copy). A clone is a new file of its own, so a hard
+ * link or an open descriptor on the original cannot reach it. cp copies a symlink as a link, so the result is checked
+ * for anything that is not a plain file or folder. Elsewhere copyFresh does it file by file.
+ */
+async function copyEntry(from: string, to: string): Promise<void> {
+  if (process.platform === 'darwin') {
+    await new Promise<void>((resolveCopy, reject) => {
+      execFile('/bin/cp', ['-c', '-R', from, to], (err, _out, stderr) => (err ? reject(new Error(`cp failed: ${String(stderr).trim() || err.message}`)) : resolveCopy()));
+    });
+    const stray = await strayEntry(to);
+    if (stray) throw new Refused(stray);
+    return;
+  }
+  await copyFresh(from, to);
+}
+
+/**
+ * Build `partial` from what `source` may bring (IMPORTED), by copy. `source` is not changed. Each copied entry is
+ * checked against the original by file list and sizes. Rebuilt from nothing every time, so it is safe to repeat.
+ */
+async function importInto(source: string, partial: string, hiveRoot: string, git: GitRunner): Promise<{ ok: boolean; refused?: string; error?: string }> {
+  await rm(partial, { recursive: true, force: true });
+  const init = await git([`--git-dir=${partial}`, `--work-tree=${hiveRoot}`, 'init', '-q', '--template='], hiveRoot);
+  if (!init.ok) return { ok: false, error: `git init failed: ${(init.err || init.out).trim()}` };
+  try {
+    for (const name of IMPORTED) {
+      if (!(await exists(join(source, name)))) continue;
+      await rm(join(partial, name), { recursive: true, force: true });
+      await copyEntry(join(source, name), join(partial, name));
+      const st = await lstat(join(source, name));
+      const same = st.isDirectory()
+        ? (await listing(join(source, name))) === (await listing(join(partial, name)))
+        : st.size === (await lstat(join(partial, name))).size;
+      if (!same) return { ok: false, error: `the copy of ${name} does not match the original` };
+    }
+  } catch (e) {
+    if (e instanceof Refused) return { ok: false, refused: e.message };
+    return { ok: false, error: (e as Error).message };
   }
   await rm(join(partial, 'refs', 'replace'), { recursive: true, force: true });
   const packed = await readFile(join(partial, 'packed-refs'), 'utf8').catch(() => null);
@@ -149,20 +209,36 @@ async function asideName(path: string, label: string): Promise<string> {
   return name;
 }
 
+/** Rename `from` to `aside`; where that crosses volumes, keep it aside inside the hive instead (the hive's .gitignore
+ *  excludes that name). Returns where it went. */
+async function keepAside(from: string, aside: string, hiveRoot: string): Promise<string> {
+  try {
+    await rename(from, aside);
+    return aside;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'EXDEV') throw e;
+    const inHive = join(hiveRoot, `${SET_ASIDE_PREFIX}${Date.now()}`);
+    await rename(from, inHive);
+    return inHive;
+  }
+}
+
 /**
  * Bring the hive's repository to `target`, the git directory in the app data folder. Every step is safe to interrupt
- * and repeat; nothing that holds history is deleted, only renamed, copied or kept aside.
+ * and repeat. Nothing that holds history is deleted, and nothing is moved out of the hive before `target` is complete,
+ * so until then the hive keeps a working `.git`.
  *
  * - `target` exists: it wins, always. A `hive/.git` folder next to it was put there after the move, and an agent could
  *   have: it is renamed aside inside the hive, never read and never adopted. The gitfile is rewritten.
- * - `hive/.git` is a folder and `target` does not exist: the first move. The folder is renamed to `<target>.import`
- *   (copied and checked across volumes), refused if it holds a symlink, is shallow or has a HEAD that is not a branch
- *   or a commit, and otherwise only what IMPORTED names goes into a fresh `<target>.partial`, which becomes `target`.
- *   What is left of the old directory (its config, hooks and the rest) is kept, unread, as `<target>.before-move`, and
- *   a refused one as `<target>.refused`.
- * - `<target>.import` is left from an interrupted move: carry on from there.
- * - Otherwise there is no history the app may take: the caller starts a new repository. A gitfile pointing elsewhere is
- *   not followed.
+ * - Otherwise the history comes from `<target>.import` if an earlier build left one (it may be the only copy, so it is
+ *   never deleted, and a `hive/.git` folder found beside it is set aside unread), else from the `hive/.git` folder.
+ *   That source is refused if it holds a symlink, is shallow or has a HEAD that is not a branch or a commit: it is kept,
+ *   unread, as `<target>.refused`, and a new history starts. Otherwise what IMPORTED names is copied into a fresh
+ *   `<target>.partial` (importInto), which is renamed to `target`; only then is the source kept aside, whole and unread,
+ *   as `<target>.before-move`, and the gitfile written.
+ * - If the copy fails, the partial is dropped and the source stays where it was: a `hive/.git` folder in the hive, or
+ *   the holding folder put back as `hive/.git`.
+ * - With no source, the caller starts a new repository. A gitfile pointing elsewhere is not followed.
  */
 export async function settleHiveGitDir(hiveRoot: string, base: string, target: string, git: GitRunner): Promise<SettleResult> {
   const dotGit = join(hiveRoot, '.git');
@@ -176,11 +252,12 @@ export async function settleHiveGitDir(hiveRoot: string, base: string, target: s
     if (await exists(target)) {
       // Finish an interrupted move's last step, then hold to the target.
       if (await exists(holding)) await rename(holding, await asideName(target, 'before-move'));
+      await rm(partial, { recursive: true, force: true });
       let note: string | undefined;
       if (isFolder) {
         const aside = join(hiveRoot, `${SET_ASIDE_PREFIX}${Date.now()}`);
         await rename(dotGit, aside);
-        note = `${dotGit} was a folder again; renamed to ${aside}, not read`;
+        note = `${dotGit} was a folder; renamed to ${aside}, not read`;
       } else if (st) {
         await rm(dotGit, { force: true });
       }
@@ -188,39 +265,44 @@ export async function settleHiveGitDir(hiveRoot: string, base: string, target: s
       return { ok: true, action: note ? 'set-aside' : 'none', ...(note ? { note } : {}) };
     }
 
-    if (isFolder) {
-      // A fresh start: whatever an earlier attempt left came from this same folder, which is still whole.
-      await rm(partial, { recursive: true, force: true });
-      await rm(holding, { recursive: true, force: true });
-      try {
-        await rename(dotGit, holding);
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== 'EXDEV') throw e;
-        await cp(dotGit, holding, { recursive: true, errorOnExist: true, force: false, verbatimSymlinks: true });
-        if ((await listing(holding)) !== (await listing(dotGit))) return { ok: false, error: `the copy of ${dotGit} does not match it; nothing was moved` };
-        await rm(dotGit, { recursive: true, force: true });
-      }
-    }
-
+    let source: string | null = null;
+    let note: string | undefined;
     if (await exists(holding)) {
-      // Checked on what is still in the holding folder and on what an interrupted import already moved across.
-      const why = await refusal(holding, partial);
-      if (why) {
-        const kept = await asideName(target, 'refused');
-        await rename(holding, kept);
-        if (await exists(partial)) await rename(partial, `${kept}.partial`);
-        return { ok: true, action: 'refused-import', note: `the repository in ${dotGit} was not imported because ${why}; it is kept, unread, at ${kept}, and a new history starts` };
+      source = holding;
+      if (isFolder) {
+        const aside = join(hiveRoot, `${SET_ASIDE_PREFIX}${Date.now()}`);
+        await rename(dotGit, aside);
+        note = `${dotGit} was a folder next to an earlier move's ${holding}; renamed to ${aside}, not read`;
       }
-      const imported = await importInto(holding, partial, hiveRoot, git);
-      if (!imported.ok) return { ok: false, error: imported.error! };
-      writeMarker(partial, dotGit);
-      await rename(partial, target);
-      await rename(holding, await asideName(target, 'before-move'));
-      await writeGitfile(hiveRoot, target);
-      return { ok: true, action: 'moved' };
+    } else if (isFolder) {
+      source = dotGit;
     }
 
-    // No history the app may take. A partial with no holding folder has no source to finish from.
+    if (source) {
+      const why = await refusal(source);
+      const imported = why ? null : await importInto(source, partial, hiveRoot, git);
+      const refused = why ?? imported?.refused;
+      if (refused) {
+        await rm(partial, { recursive: true, force: true });
+        const kept = await keepAside(source, await asideName(target, 'refused'), hiveRoot);
+        // What is left at hive/.git can only be a gitfile now; the new history writes its own.
+        await rm(dotGit, { force: true });
+        return { ok: true, action: 'refused-import', note: `the repository in ${source} was not imported because ${refused}; it is kept, unread, at ${kept}, and a new history starts` };
+      }
+      if (!imported!.ok) {
+        await rm(partial, { recursive: true, force: true });
+        // Never leave the hive without its repository while the move waits for the next launch.
+        if (source === holding && !(await lstat(dotGit).catch(() => null))) await rename(holding, dotGit);
+        return { ok: false, error: imported!.error! };
+      }
+      writeMarker(partial, source);
+      await rename(partial, target);
+      await keepAside(source, await asideName(target, 'before-move'), hiveRoot);
+      await writeGitfile(hiveRoot, target);
+      return { ok: true, action: 'moved', ...(note ? { note } : {}) };
+    }
+
+    // No history the app may take.
     await rm(partial, { recursive: true, force: true });
     if (st) {
       await rm(dotGit, { recursive: true, force: true });

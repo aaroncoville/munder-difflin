@@ -567,6 +567,7 @@ test('a move that fails is said once and not tried again on every commit; the ne
   }
   assert.equal(fs.readFileSync(calls, 'utf8').split('\n').filter(Boolean).length, 1, 'the move was tried again on a later commit');
   assert.equal(hive.logTail(50).filter((e) => e.kind === 'hive-git-dir' && e.action === 'failed').length, 1);
+  assert.equal(git(root, 'rev-parse', 'HEAD').stdout.trim(), oldHead, 'the hive has no working .git while the move waits');
 
   process.env.PATH = savedPath;
   const relaunched = new HiveManager(() => dir);
@@ -613,4 +614,99 @@ test('a move that fails while the old repository is still in place is tried once
 
   assert.equal(hive.logTail(50).filter((e) => e.kind === 'hive-git-dir' && e.action === 'failed').length, 1, 'the move was tried on every commit');
   assert.equal(fs.statSync(path.join(root, '.git')).isDirectory(), true, 'the old repository was touched');
+});
+
+
+for (const [what, prepare] of [
+  ['a hard-linked object file', (root, seatDir) => {
+    const objects = path.join(root, '.git', 'objects');
+    const sub = fs.readdirSync(objects).find((d) => /^[0-9a-f]{2}$/.test(d));
+    const file = path.join(objects, sub, fs.readdirSync(path.join(objects, sub))[0]);
+    const link = path.join(seatDir, 'object-link');
+    fs.linkSync(file, link);
+    // Object files are read-only, but whoever owns one can make it writable again.
+    return { rel: path.relative(path.join(root, '.git'), file), write: (bytes) => { fs.chmodSync(link, 0o644); fs.writeFileSync(link, bytes); } };
+  }],
+  ['a hard-linked packed-refs', (root, seatDir) => {
+    git(root, 'pack-refs', '--all');
+    const file = path.join(root, '.git', 'packed-refs');
+    const link = path.join(seatDir, 'packed-refs-link');
+    fs.linkSync(file, link);
+    return { rel: 'packed-refs', write: (bytes) => fs.writeFileSync(link, bytes) };
+  }],
+  ['a descriptor opened for writing', (root) => {
+    git(root, 'pack-refs', '--all');
+    const fd = fs.openSync(path.join(root, '.git', 'packed-refs'), 'r+');
+    return { rel: 'packed-refs', write: (bytes) => { fs.ftruncateSync(fd, 0); fs.writeSync(fd, bytes, 0, bytes.length, 0); fs.closeSync(fd); } };
+  }]
+]) {
+  test(`what an agent writes after the move through ${what} it made before is never served`, async (t) => {
+    const { dir, base } = scratch(t);
+    const root = await legacyHive(dir);
+    const seatDir = path.join(root, 'agents', 'god-1', 'scratch');
+    fs.mkdirSync(seatDir, { recursive: true });
+    const hold = prepare(root, seatDir);
+
+    const hive = new HiveManager(() => dir);
+    hive.setGitDirBase?.(base);
+    hive.ensureHive();
+    hive.commit('hive: first commit of the new build');
+    await hive.commitsSettled();
+
+    const moved = path.join(target(base, root), hold.rel);
+    const before = fs.readFileSync(moved);
+    hold.write(Buffer.from('written-by-the-agent-after-the-move\n'));
+    assert.deepEqual(fs.readFileSync(moved), before, 'the agent changed a file in the app\'s repository');
+    assert.equal(fs.statSync(moved).nlink, 1);
+  });
+}
+
+test('a holding folder an earlier attempt left is never deleted, even with a .git folder back in the hive', async (t) => {
+  const { dir, base } = scratch(t);
+  const root = await legacyHive(dir);
+  const oldHead = git(root, 'rev-parse', 'HEAD').stdout.trim();
+  // An earlier build moved the repository to the holding folder and stopped; the only copy of the history is there.
+  const gitDir = hiveGitDirFor(base, root);
+  fs.mkdirSync(base, { recursive: true });
+  fs.renameSync(path.join(root, '.git'), `${gitDir}.import`);
+  // Since then a .git folder has appeared in the hive (an older build's git init, or an agent).
+  git(root, 'init', '-q');
+
+  const hive = new HiveManager(() => dir);
+  hive.setGitDirBase(base);
+  hive.ensureHive();
+  fs.writeFileSync(path.join(root, 'board.md'), '# after\n');
+  hive.commit('hive: after the interruption');
+  await hive.commitsSettled();
+
+  assert.equal(git(root, '--git-dir', gitDir, 'merge-base', '--is-ancestor', oldHead, 'HEAD').status, 0, 'the history in the holding folder was lost');
+  assert.equal(fs.readdirSync(root).some((n) => n.startsWith('.git.set-aside-')), true, 'the .git folder in the hive was not set aside');
+});
+
+test('a move from an earlier attempt\'s holding folder that fails puts that folder back, so the hive keeps a working .git', async (t) => {
+  const { dir, base } = scratch(t);
+  const root = await legacyHive(dir);
+  const oldHead = git(root, 'rev-parse', 'HEAD').stdout.trim();
+  const gitDir = hiveGitDirFor(base, root);
+  fs.mkdirSync(base, { recursive: true });
+  // Borrowed objects make the move repack, and this git cannot.
+  const lender = path.join(dir, 'lender');
+  git(dir, 'init', '-q', lender);
+  fs.writeFileSync(path.join(root, '.git', 'objects', 'info', 'alternates'), `${path.join(lender, '.git', 'objects')}\n`);
+  fs.renameSync(path.join(root, '.git'), `${gitDir}.import`);
+  const bin = path.join(dir, 'fake-bin');
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh\ncase " $* " in *" repack "*) echo cannot >&2; exit 1 ;; esac\nexec '${REAL_GIT}' "$@"\n`, { mode: 0o755 });
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${bin}${path.delimiter}${savedPath}`;
+  t.after(() => { process.env.PATH = savedPath; });
+
+  const hive = new HiveManager(() => dir);
+  hive.setGitDirBase(base);
+  hive.ensureHive();
+  await hive.commitsSettled();
+
+  assert.equal(fs.statSync(path.join(root, '.git')).isDirectory(), true, 'the hive was left without its repository');
+  assert.equal(git(root, 'rev-parse', 'HEAD').stdout.trim(), oldHead);
+  assert.equal(fs.existsSync(`${gitDir}.import`), false);
 });
