@@ -3163,38 +3163,7 @@ export class HiveManager {
       // freeze. Verify any change with codex's own resolver, no model spend:
       // `codex app-server` → initialize → `hooks/list` reports the normalized
       // timeoutSec per event.
-      const app = this.codexAppHooks();
-      let config = existsSync(join(userHome, 'config.toml'))
-        ? readFileSync(join(userHome, 'config.toml'), 'utf8') : '';
-      if (app) {
-        config += '\n# --- munder-hive lifecycle hooks (auto-generated; do not edit) ---\n';
-        for (const ev of app.events) {
-          config += `\n[[hooks.${ev}]]\n[[hooks.${ev}.hooks]]\ntype = "command"\ncommand = ${JSON.stringify(app.command)}\ntimeout = ${app.timeout}\n`;
-        }
-      }
-      // Directory trust. A fresh config dir has never answered Codex's "do you
-      // trust this directory?" prompt, so an agent launched into one stops on it
-      // before its first turn and, with nobody at the keyboard, never resumes.
-      // Pressing Yes persists exactly the table below, and pre-seeding it is the
-      // ONLY suppression there is — no flag or env skips the prompt (in
-      // particular `--dangerously-bypass-approvals-and-sandbox` governs command
-      // approval, not trust) and a `-c projects…` override is not persisted, so
-      // it does not read as an answer. Trust the FINAL working directory: by the
-      // time this runs, isolation has resolved, so `cwd` is the agent's git
-      // worktree when one was created and the original repo when it fell back —
-      // one path, always the one the CLI will actually open in. Canonical
-      // (realpath) spelling, because Codex resolves the directory before looking
-      // it up and `/tmp/x` would never match its `/private/tmp/x`.
-      let trusted = cwd;
-      try { trusted = realpathSync(cwd); } catch { /* not on disk yet — best spelling we have */ }
-      config += codexTrustEntry(trusted);
-      config = withCodexWritableRoots(config, writableRoots);
-      // Always a whole new file, renamed into place: a stale config.toml (or a
-      // link standing in for it) is replaced, never written through or kept.
-      const configTmp = join(home, `.config.toml.${process.pid}.${shortRand()}`);
-      writeFileSync(configTmp, config, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
-      try { renameSync(configTmp, join(home, 'config.toml')); }
-      catch (e) { rmSync(configTmp, { force: true }); throw e; }
+      this.writeCodexConfig(home, cwd, writableRoots);
 
       // Keep each worker's CODEX_HOME isolated while putting its rollout data
       // below Codex's standard scan roots. External usage tools can then discover
@@ -3208,6 +3177,44 @@ export class HiveManager {
       throw new CodexHomeRefused(`Codex home ${home} could not be prepared (${(e as Error)?.message ?? e})`);
     }
     return home;
+  }
+
+  /** The generated config.toml for a Codex home: the owner's config, the app's lifecycle hooks, directory trust for
+   *  `cwd` and the extra writable roots. Always a whole new file, renamed into place. */
+  private writeCodexConfig(home: string, cwd: string, writableRoots: string[]): void {
+    const userHome = join(homedir(), '.codex');
+    const app = this.codexAppHooks();
+    let config = existsSync(join(userHome, 'config.toml'))
+      ? readFileSync(join(userHome, 'config.toml'), 'utf8') : '';
+    if (app) {
+      config += '\n# --- munder-hive lifecycle hooks (auto-generated; do not edit) ---\n';
+      for (const ev of app.events) {
+        config += `\n[[hooks.${ev}]]\n[[hooks.${ev}.hooks]]\ntype = "command"\ncommand = ${JSON.stringify(app.command)}\ntimeout = ${app.timeout}\n`;
+      }
+    }
+    // Directory trust. A fresh config dir has never answered Codex's "do you
+    // trust this directory?" prompt, so an agent launched into one stops on it
+    // before its first turn and, with nobody at the keyboard, never resumes.
+    // Pressing Yes persists exactly the table below, and pre-seeding it is the
+    // ONLY suppression there is — no flag or env skips the prompt (in
+    // particular `--dangerously-bypass-approvals-and-sandbox` governs command
+    // approval, not trust) and a `-c projects…` override is not persisted, so
+    // it does not read as an answer. Trust the FINAL working directory: by the
+    // time this runs, isolation has resolved, so `cwd` is the agent's git
+    // worktree when one was created and the original repo when it fell back —
+    // one path, always the one the CLI will actually open in. Canonical
+    // (realpath) spelling, because Codex resolves the directory before looking
+    // it up and `/tmp/x` would never match its `/private/tmp/x`.
+    let trusted = cwd;
+    try { trusted = realpathSync(cwd); } catch { /* not on disk yet — best spelling we have */ }
+    config += codexTrustEntry(trusted);
+    config = withCodexWritableRoots(config, writableRoots);
+    // Always a whole new file, renamed into place: a stale config.toml (or a
+    // link standing in for it) is replaced, never written through or kept.
+    const configTmp = join(home, `.config.toml.${process.pid}.${shortRand()}`);
+    writeFileSync(configTmp, config, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    try { renameSync(configTmp, join(home, 'config.toml')); }
+    catch (e) { rmSync(configTmp, { force: true }); throw e; }
   }
 
   private exposeCodexDataDirs(home: string, userHome: string, agentId: string): void {
