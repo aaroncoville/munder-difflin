@@ -16,6 +16,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const loadTs = require('./load-ts.cjs');
+const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 const { codexTestBase, jailHome } = require('./codex-test-home.cjs');
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { codexShortHomePath } = loadTs('src/shared/codexRemote.ts');
@@ -176,7 +177,7 @@ test('an agent rooted at $HOME or the homes folder is refused, whichever starts 
 test('a Codex home under a temp folder Codex lets every agent write is refused', async (t) => {
   // HOME under /tmp: workspace-write grants /tmp to every Codex agent.
   const tmpRoot = fs.realpathSync(fs.mkdtempSync('/tmp/mdtt-'));
-  t.after(() => fs.rmSync(tmpRoot, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(tmpRoot, { recursive: true, force: true }); });
   jailHome(t, tmpRoot);
   const cwd = path.join(tmpRoot, 'work');
   fs.mkdirSync(cwd);
