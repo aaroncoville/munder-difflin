@@ -834,3 +834,21 @@ test('prep r7: the key-family test applies only where Codex reads policy; her fa
   assert.doesNotMatch(block, /memory\.env\(\)|knowledge\.env\(\)/, 'no env() call inside the provisioning try');
   assert.match(main.slice(main.lastIndexOf('if (opts.hive && hive.enabled()) {', tryAt), tryAt), /try \{ memEnv = memory\.env\(\); \} catch[\s\S]*try \{ kgEnv = knowledge\.env\(\); \} catch/);
 });
+
+test('fix r7: allow_symlinked_codex_home refuses unless false, in config or on -c', async (t) => {
+  const { home, rt, hive } = floor(t);
+  hive.setHookRuntime(rt);
+  const cfg = path.join(home, '.codex', 'config.toml');
+  fs.mkdirSync(path.dirname(cfg), { recursive: true });
+  let n = 0;
+  const spawn = (argv) => hive.ensureAgent({ id: `s${n++}`, name: 's', provider: 'codex', cwd: home }, { launch: { argv, env: {} } });
+  fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\nallow_symlinked_codex_home = true\n');
+  assert.match(await refused(spawn(['codex -s workspace-write'])), /allow_symlinked_codex_home/);
+  fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\nallow_symlinked_codex_home = false\n');
+  await spawn(['codex -s workspace-write']);
+  fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\n');
+  assert.match(await refused(spawn(['codex -s workspace-write', '-c', 'allow_symlinked_codex_home=true'])), /option the app does not model: -c allow_symlinked_codex_home/);
+  await spawn(['codex -s workspace-write', '-c', 'allow_symlinked_codex_home=false']);
+  fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\nfollow_symlinks = true\n');
+  assert.match(await refused(spawn(['codex -s workspace-write'])), /follow_symlinks/);
+});
