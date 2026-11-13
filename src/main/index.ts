@@ -36,7 +36,7 @@ import { runCanaries, memoryCanary } from './canaries';
 import { TurnTracker, diffTasks, type UsageIds } from './usageEvents';
 import { loadUsageSecret, usageRef } from './usageRef';
 import { UsageLog, recordFromRenderer } from './usageLog';
-import { WriteRootsDryRun } from './writeRoots';
+import { WriteRootsDryRun, spawnLaunchFacts, type SpawnRecord } from './writeRoots';
 import { relocationEnv } from './launchLine';
 import { buildPtyEnv } from './ptyEnv';
 import { writeWeeklyDigest } from './usageDigest';
@@ -402,7 +402,7 @@ hookServer.setHeavyLock(heavyLock);
 // roots would refuse are recorded in the usage log as path classes (see writeRoots.ts).
 // What the app itself spawned each agent with, kept in memory: registry.json is in the hive,
 // which agents can write, so a cwd or role read from it could be planted.
-const spawnRoots = new Map<string, { cwd: string; provider: string; isGod: boolean; args: string[]; env?: Record<string, string>; gen: number }>();
+const spawnRoots = new Map<string, SpawnRecord & { cwd: string; provider: string; isGod: boolean; gen: number }>();
 let spawnGeneration = 0;
 const writeRootsDryRun = new WriteRootsDryRun({
   agent: (agentId) => {
@@ -413,7 +413,7 @@ const writeRootsDryRun = new WriteRootsDryRun({
       ctx: { root, agentId, isGod: spawned.isGod, cwd: spawned.cwd },
       provider: spawned.provider,
       agentDir: join(root, 'agents', agentId),
-      launch: { args: spawned.args, platform: process.platform, env: spawned.env, codexHooks: hive.codexAppHooks() },
+      launch: spawnLaunchFacts(spawned, process.platform, hive.codexAppHooks()),
       gen: spawned.gen
     };
   },
@@ -2995,6 +2995,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // seedDelivery:'type-into-tui') rather than passed on argv. Surfaced in the spawn
   // result so the renderer types it through the per-pty write-chain. (ondev-b)
   let seedPrompt: string | undefined;
+  let codexHomeFromApp = false;
   if (opts.hive && hive.enabled()) {
     try {
       const inj = await hive.ensureAgent(
@@ -3027,6 +3028,9 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       // Point the agent's mempalace CLI at the shared palace + the `kg` CLI at the
       // enterprise knowledge store (both no-ops / empty when their flags are off).
       opts.env = { ...(opts.env ?? {}), ...inj.env, ...memory.env(), ...knowledge.env() };
+      // The app chose this seat's Codex home (its generated config); later rewrites (the short home, a resume in the home
+      // that owns the session) are the app's too. Recorded with the spawn, so the config's kind never comes from a path.
+      if (inj.env?.CODEX_HOME !== undefined) codexHomeFromApp = true;
     } catch (e) {
       if (e instanceof RefusedRosterId || e instanceof RegistryUnreadable) return refuseSpawn(opts.id, opts.hive.id, provider, e);
       // Hive provisioning is best-effort; never block a spawn on it.
@@ -3179,7 +3183,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // live terminal means active — ensureAgent above already cleared `archived`.
   if (opts.hive?.id) {
     ptyToAgent.set(opts.id, opts.hive.id);
-    spawnRoots.set(opts.hive.id, { cwd: opts.cwd, provider, isGod: opts.hive.isGod === true, args: [opts.command, ...(opts.args ?? [])], gen: ++spawnGeneration });
+    spawnRoots.set(opts.hive.id, { cwd: opts.cwd, provider, isGod: opts.hive.isGod === true, args: [opts.command, ...(opts.args ?? [])], codexHomeFromApp, gen: ++spawnGeneration });
     // Where this worker's Codex rollouts will be written, now that any resume
     // has settled its CODEX_HOME.
     codexHomes.recordSpawn(opts.hive.id, opts.env?.CODEX_HOME, codexResumedSession);

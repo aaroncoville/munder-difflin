@@ -632,10 +632,65 @@ test('every row of READ_SITES has a case here, and each case holds', (t) => {
     'codex-bypass-flag': () => assert.equal(codex('codex --yolo').state, 'unsandboxed'),
     'codex-config-flag': () => { assert.equal(codex('codex -s workspace-write', '--config', 'sandbox_mode="read-only"').state, 'unknown'); assert.equal(codex('codex -s workspace-write', '-c', 'model="x"').state, 'unknown', 'any -c'); },
     'codex-config-allowlist': () => { assert.equal(W.codexRoots('project_root_markers = []\n').state, 'unknown'); assert.equal(W.codexRoots('model = "m"\n[features]\nmulti_agent = true\n').state, 'ok'); },
+    'codex-home-kind': () => {
+      // The real path: the short home the spawn core sets (shortCodexHomeEnv), the spawn record, spawnLaunchFacts, onHook.
+      const { shortCodexHomeEnv } = loadTs('src/shared/codexRemote.ts');
+      const shortRoot = fs.mkdtempSync('/tmp/cx'); // short: the home's socket path must fit the platform limit
+      const app = { events: ['Stop'], command: 'run-shim', timeout: 30 };
+      const ownHooks = '[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "run-shim"\ntimeout = 30\n';
+      const ownerCfg = path.join(home, '.codex', 'config.toml');
+      fs.mkdirSync(path.dirname(ownerCfg), { recursive: true });
+      const ownerKeep = fs.existsSync(ownerCfg) ? fs.readFileSync(ownerCfg) : null;
+      fs.writeFileSync(ownerCfg, '[mcp_servers.x]\ncommand = "/bin/owner"\n');
+      const seat = (id) => {
+        const agentHome = path.join(root, 'agents', id, '.codex');
+        fs.rmSync(agentHome, { recursive: true, force: true });
+        const { env, shortened } = shortCodexHomeEnv({ CODEX_HOME: agentHome }, id, shortRoot);
+        assert.equal(shortened, true);
+        return { agentHome, env };
+      };
+      const row = (rec, id) => {
+        const rows = []; const later = [];
+        const d = new W.WriteRootsDryRun({ agent: (a) => ({ ctx: { ...ctx, agentId: a }, provider: 'codex', agentDir: path.join(root, 'agents', id), launch: W.spawnLaunchFacts(rec, 'darwin', app) }), known: () => true, record: (e) => rows.push(e), defer: (f) => later.push(f) });
+        d.onHook(id, 'SessionStart', { source: 'startup' }); while (later.length) later.shift()();
+        return rows.find((r) => r.kind === 'write-roots');
+      };
+      try {
+        const { agentHome, env } = seat('k1');
+        const cfg = path.join(env.CODEX_HOME, 'config.toml');
+        const rec = { args: ['codex -s workspace-write'], env: { CODEX_HOME: env.CODEX_HOME }, codexHomeFromApp: true };
+        assert.notEqual(env.CODEX_HOME, agentHome, 'the short home is not <agent>/.codex');
+        fs.writeFileSync(cfg, ownHooks + '[mcp_servers.x]\ncommand = "/bin/owner"\n');
+        assert.equal(row(rec, 'k1').unknownWhy, undefined, 'the app\'s own hooks and the owner\'s tables');
+        for (const [bad, why] of [[ownHooks.replace('run-shim', 'other') + '[mcp_servers.x]\ncommand = "/bin/owner"\n', 'app-hooks-differ'], [ownHooks + '[mcp_servers.x]\ncommand = "/bin/other"\n', 'app-config-differs'],
+          [ownHooks + '[mcp_servers.x]\ncommand = "/bin/owner"\nnotify = ["/bin/n"]\n', 'app-config-differs'], [ownHooks + '[mcp_servers.x]\ncommand = "/bin/owner"\n[model_providers.p.auth]\ncommand = "/bin/t"\n', 'app-config-differs']]) {
+          fs.writeFileSync(cfg, bad);
+          const r = row(rec, 'k1');
+          assert.deepEqual([r.effective, r.unknownWhy], [['unknown'], why], bad);
+        }
+        // Resumed in the home of the agent that owns the session: still a home the app chose, so still generated.
+        const other = seat('k2');
+        fs.writeFileSync(path.join(other.env.CODEX_HOME, 'config.toml'), ownHooks.replace('run-shim', 'other') + '[mcp_servers.x]\ncommand = "/bin/owner"\n');
+        assert.equal(row({ ...rec, env: { CODEX_HOME: other.env.CODEX_HOME } }, 'k1').unknownWhy, 'app-hooks-differ');
+        // A home the app did not set (the operator's own CODEX_HOME) is the owner's config: hooks allowed, not read.
+        assert.equal(row({ ...rec, codexHomeFromApp: false }, 'k1').unknownWhy, undefined);
+      } finally {
+        fs.rmSync(shortRoot, { recursive: true, force: true });
+        if (ownerKeep) fs.writeFileSync(ownerCfg, ownerKeep); else fs.rmSync(ownerCfg, { force: true });
+      }
+    },
+    'codex-home-kind-wiring': () => {
+      // index.ts: the flag is set from the hive injection's CODEX_HOME, stored on the record, and read through spawnLaunchFacts.
+      const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.ts'), 'utf8');
+      assert.match(main, /^      if \(inj\.env\?\.CODEX_HOME !== undefined\) codexHomeFromApp = true;$/m);
+      assert.match(main, /^    spawnRoots\.set\(opts\.hive\.id, \{[^\n]*codexHomeFromApp,[^\n]*\}\);$/m);
+      assert.match(main, /^      launch: spawnLaunchFacts\(spawned, process\.platform, hive\.codexAppHooks\(\)\),$/m);
+    },
+    'codex-program-tables': () => { assert.match(W.codexRoots('notify = ["/bin/n"]\n', 'project').why, /notify in a project config/); assert.equal(W.codexRoots('notify = ["/bin/n"]\n', 'user').state, 'ok'); },
     'codex-app-hooks': () => {
       const app = { events: ['Stop'], command: 'run-shim', timeout: 30 };
       const own = '[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "run-shim"\ntimeout = 30\n';
-      const lf = { args: ['codex -s workspace-write'], platform: 'darwin', env: cx, codexHooks: app };
+      const lf = { args: ['codex -s workspace-write'], platform: 'darwin', env: cx, codexHooks: app, codexHomeFromApp: true };
       const cfg = path.join(dir, '.codex/config.toml'); const keep = fs.readFileSync(cfg);
       const write = (t) => { fs.writeFileSync(cfg, t); return W.effectiveRoots('codex', dir, '', home, lf); };
       assert.equal(write(own).state, 'ok', 'the app\'s own hooks are consumed');
@@ -709,7 +764,7 @@ test('property + differential: every TOML spelling is decoded as the parser read
       || Object.hasOwn(doc, 'profile') || (Object.hasOwn(doc, 'profiles') && (typeof doc.profiles !== 'object' || Array.isArray(doc.profiles))) || profileSets
       || (typeof doc.sandbox_mode === 'string' && !['workspace-write', 'read-only', 'danger-full-access'].includes(doc.sandbox_mode))
       // The allowlist, hard-coded: a top-level key off it, or a projects entry key other than trust_level, is not understood.
-      || Object.keys(doc).some((k) => !['sandbox_mode', 'sandbox_workspace_write', 'projects', 'model', 'mcp_servers'].includes(k))
+      || Object.keys(doc).some((k) => !['sandbox_mode', 'sandbox_workspace_write', 'projects', 'model'].includes(k))
       || (doc.projects && typeof doc.projects === 'object' && Object.values(doc.projects).some((p) => Object.keys(p).some((k) => k !== 'trust_level')));
     if (badShape) { assert.equal(r.state, 'unknown', `bad shape: ${JSON.stringify(t)}`); continue; }
     if (doc.sandbox_mode === 'danger-full-access') { assert.equal(r.state, 'unsandboxed', JSON.stringify(t)); continue; }
@@ -723,9 +778,9 @@ test('property + differential: every TOML spelling is decoded as the parser read
   assert.equal(W.codexRoots('model = "1979-05-27"\n[tui]\nn = 1.5\ni = 42\nb = true\n').state, 'ok', 'plain numbers, booleans and date-like text are values the app reads');
   // The versioned allowlist (Codex 0.162-0.167), hard-coded here rather than imported: every benign key reads ok, every
   // policy input in the inventory reads unknown, and so does any key not on the list.
-  const benign = ['model = "m"', 'model_reasoning_effort = "high"', 'model_provider = "openai"', '[model_providers.x]\nbase_url = "u"', '[mcp_servers.x]\ncommand = "p"',
-    '[mcp_servers.x.env]\nAWS_PROFILE = "a"', '[shell_environment_policy.set]\nAWS_PROFILE = "a"', 'approval_policy = "never"', '[history]\npersistence = "none"', '[tui]\nx = 1',
-    'notify = ["n"]', 'include_permissions_instructions = true', '[projects."/u/profile"]\ntrust_level = "trusted"', '[features]\nmulti_agent = true',
+  const benign = ['model = "m"', 'model_reasoning_effort = "high"', 'model_provider = "openai"',
+    '[shell_environment_policy.set]\nAWS_PROFILE = "a"', 'approval_policy = "never"', '[history]\npersistence = "none"', '[tui]\nx = 1',
+    'include_permissions_instructions = true', '[sandbox_workspace_write]\nnetwork_access = true', '[projects."/u/profile"]\ntrust_level = "trusted"', '[features]\nmulti_agent = true',
     'allow_symlinked_codex_home = false', '[sandbox_workspace_write]\nexclude_tmpdir_env_var = true\nexclude_slash_tmp = true', 'sandbox_mode = "workspace-write"', ''];
   for (const t of benign) assert.equal(W.codexRoots(t + '\n').state, 'ok', `benign: ${t}`);
   const policy = ['allow_symlinked_codex_home = true', 'allow_symlinked_codex_home = "yes"', 'default_permissions = ":workspace"', '[permissions.x]\nextends = ":workspace"',
@@ -736,7 +791,7 @@ test('property + differential: every TOML spelling is decoded as the parser read
     '[plugins."permission-helper@m"]\nenabled = true', '[[hooks.Stop]]\npermission_mode = "x"', '[hooks.state.h]\nenabled = true', 'allow_managed_hooks_only = true',
     'approvals_reviewer = "auto"', '[projects."/x"]\nsandbox_mode = "danger-full-access"', '[apps.sandbox_app]\nenabled = true'];
   for (const t of policy) assert.equal(W.codexRoots(t + '\n').state, 'unknown', `policy input: ${t}`);
-  for (const t of ['permissions_v2 = 1', 'follow_symlinks = true', 'brand_new_key = 1', '[sandbox_workspace_write]\nnetwork_access = true', '[projects."/x"]\nother = 1', '[features]\nnew_feature = true'])
+  for (const t of ['permissions_v2 = 1', 'follow_symlinks = true', 'brand_new_key = 1', '[projects."/x"]\nother = 1', '[features]\nnew_feature = true', '[mcp_servers.x]\ncommand = "p"', 'notify = ["n"]', '[model_providers.x.auth]\ncommand = "t"'])
     assert.equal(W.codexRoots(t + '\n').state, 'unknown', `not on the list: ${t}`);
   assert.match(W.codexRoots('project_root_markers = []\n').why, /project_root_markers is not on the list this app version understands \(Codex 0\.162-0\.167\)/);
   // [hooks] by file: the owner's own config allows it unread; a project config does not; the generated config only as the app writes it.
@@ -763,6 +818,16 @@ test('property + differential: every TOML spelling is decoded as the parser read
   for (const t of [st('/real/home/config.toml:post_tool_use:0:0', H), st('/other/config.toml:stop:0:0', H), st(ids[0], H + '\nenabled = true'), st(ids[0], 'trusted_hash = "md5:x"'), st(ids[0], 'enabled = false')])
     assert.equal(W.codexRoots(own + t, 'generated', appS).hooksDiffer, true, t);
   assert.equal(W.codexRoots(own + st(ids[0], H), 'generated', app).hooksDiffer, true, 'no state ids known: any state differs');
+  // Tables naming a program Codex runs outside its sandbox: the owner's own allowed; a project's not understood; a generated
+  // config's only when equal to the owner's it was copied from (missing owner config = none may appear).
+  for (const tb of ['[mcp_servers.x]\ncommand = "/bin/p"\n', 'notify = ["/bin/n"]\n', '[model_providers.p.auth]\ncommand = "/bin/t"\n']) {
+    assert.equal(W.codexRoots(tb, 'user').state, 'ok', tb);
+    assert.match(W.codexRoots(tb, 'project').why, /in a project config \(Codex runs the program it names outside its sandbox\)/);
+    assert.equal(W.codexRoots(tb, 'generated', null, tb).state, 'ok', 'equal to the owner\'s');
+    for (const owner of ['', null, tb.replace('/bin/', '/usr/bin/')]) assert.equal(W.codexRoots(tb, 'generated', null, owner).configDiffers, true, `owner ${JSON.stringify(owner)}`);
+    assert.equal(W.codexRoots('', 'generated', null, tb).configDiffers, true, 'dropped from the copy');
+    assert.equal(W.codexRoots(tb, 'generated', null, undefined).configDiffers, true, 'owner config unreadable');
+  }
   // Launch flags: only what the app emits.
   const F = (...a) => W.codexLaunchSandbox(['codex -a never -s workspace-write', ...a]);
   for (const a of [['--dangerously-bypass-hook-trust'], ['--model', 'gpt'], ['--enable', 'multi_agent'], ['--disable=multi_agent']]) assert.equal(F(...a), 'workspace-write', a.join(' '));
