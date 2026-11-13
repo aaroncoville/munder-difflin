@@ -17,7 +17,7 @@
  */
 import { appendFileSync, chmodSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { LOG_TOOLS, PATH_CLASSES, PROVIDERS, SHAPES, VIAS } from './writeRoots';
+import { LOG_TOOLS, PATH_CLASSES, PROVIDERS, SHAPES, START_SOURCES, VIAS } from './writeRoots';
 
 export const RETENTION_DAYS = 90;
 const SCHEMA = 1;
@@ -74,13 +74,13 @@ const EVENTS: Record<string, Record<string, FieldType>> = {
   // The scoped-write-roots dry run (writeRoots.ts): path classes only, never a path.
   'write-roots': {
     agentId: 'agent', provider: { oneOf: PROVIDERS }, role: { oneOf: ['god', 'agent'] },
-    source: { oneOf: ['claude-settings-files', 'codex-config', 'none'] }, effective: 'classes', excess: 'classes'
+    source: { oneOf: ['claude-settings-files', 'codex-config', 'none'] }, start: { oneOf: START_SOURCES }, ordinal: 'count', coalesced: 'count',
+    effective: 'classes', excess: 'classes'
   },
   'write-would-refuse': { agentId: 'agent', tool: { oneOf: LOG_TOOLS }, via: { oneOf: VIAS }, pathClass: { oneOf: PATH_CLASSES } },
   'write-own-settings': { agentId: 'agent', tool: { oneOf: LOG_TOOLS }, via: { oneOf: VIAS } },
   'write-observed': { agentId: 'agent', tool: { oneOf: LOG_TOOLS }, shape: { oneOf: SHAPES }, count: 'count' },
-  'write-incomplete': { agentId: 'agent', state: { oneOf: ['incomplete'] }, reason: { oneOf: ['queue', 'cap'] }, shed: 'count', burst: 'bool' },
-  'write-duplicate-session-start': { agentId: 'agent', count: 'count' }
+  'write-incomplete': { agentId: 'agent', state: { oneOf: ['incomplete'] }, reason: { oneOf: ['queue', 'cap', 'session-start-flood'] }, shed: 'count', burst: 'bool' }
 };
 /** Fields a kind cannot be written without. */
 const REQUIRED: Record<string, string[]> = {
@@ -89,7 +89,7 @@ const REQUIRED: Record<string, string[]> = {
   'write-roots': ['agentId', 'provider', 'role', 'source', 'effective', 'excess'],
   'write-would-refuse': ['agentId', 'tool', 'via', 'pathClass'], 'write-own-settings': ['agentId', 'tool', 'via'],
   'write-observed': ['agentId', 'tool', 'shape', 'count'],
-  'write-incomplete': ['agentId', 'state', 'reason', 'shed', 'burst'], 'write-duplicate-session-start': ['agentId', 'count']
+  'write-incomplete': ['agentId', 'state', 'reason', 'shed', 'burst']
 };
 
 function valid(type: FieldType, v: unknown, known: KnownIds): boolean {

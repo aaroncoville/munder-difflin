@@ -500,6 +500,8 @@ export function effectiveRoots(provider: string, agentDir: string, cwd: string, 
   const files = [...managedFiles(), generated, ...(abscwd ? [join(abscwd, '.claude', 'settings.local.json'), join(abscwd, '.claude', 'settings.json')] : []), join(places.claudeUserDir, 'settings.json')];
   const roots: string[] = [];
   let enabled: boolean | undefined;
+  const managed = new Set(managedFiles());
+  let managedEnabled: boolean | undefined;
   for (const f of files) {
     const r = readSettings(f);
     if (r.kind === 'missing') { if (f === generated) return unknown('claude-settings-files'); continue; }
@@ -507,6 +509,11 @@ export function effectiveRoots(provider: string, agentDir: string, cwd: string, 
     const c = claudeRoots(r.text);
     if (!c) return unknown('claude-settings-files');
     roots.push(...c.roots);
+    // Claude's order among the managed file and its drop-ins is not modelled: two that disagree are unknown.
+    if (managed.has(f) && c.enabled !== undefined) {
+      if (managedEnabled !== undefined && managedEnabled !== c.enabled) return unknown('claude-settings-files');
+      managedEnabled = c.enabled;
+    }
     if (enabled === undefined && c.enabled !== undefined) enabled = c.enabled;
   }
   const claudeRootsOut = withCwd([...roots, ...launchDirs, ...places.tmpDirs]);
@@ -553,6 +560,9 @@ export interface DryRunDeps {
   now?: () => number;
 }
 
+/** Where a session start came from, as the hook reports it. */
+export const START_SOURCES = ['startup', 'resume', 'clear', 'compact', 'unknown'] as const;
+
 /** Calls waiting to be read, per agent. Past this the hook sheds that agent's call and counts it: one agent's burst can
  *  only shed its own calls, never another's. Agents are drained in turn, one call per event-loop turn, so a full queue
  *  is at most 8 × 25 ms = 200 ms of main-thread work per spawned agent, in slices with hooks answered between them. */
@@ -560,7 +570,7 @@ export const MAX_QUEUE = 8;
 /** Distinct tool/shape counters kept per agent per turn; past it the agent's turn is incomplete (reason: cap). */
 export const MAX_KEYS_PER_AGENT = 64;
 
-type Pending = { agentId: string; event: string; tool: unknown; input: unknown };
+type Pending = { agentId: string; event: string; tool: unknown; input: unknown; source?: string; coalesced?: number };
 
 /** Records, from the hook channel, what scoped roots would have refused. Observes only: never throws, never decides,
  *  and does nothing on the hook's answer path but queue the call. */
@@ -575,13 +585,15 @@ export class WriteRootsDryRun {
   /** Calls not counted because the agent's counters were full. */
   private capped = new Map<string, number>();
   /** Session starts admitted per agent: the generation already counted, and duplicates seen for it. */
-  private admittedGen = new Map<string, number>();
-  private dupStarts = new Map<string, number>();
+  /** Session starts admitted since the agent's last turn end, starts past the bound, and the per-spawn ordinal. */
+  private startsSinceStop = new Map<string, number>();
+  private flood = new Map<string, number>();
+  private ordinal = new Map<string, { gen: number; n: number }>();
 
   constructor(private readonly d: DryRunDeps) {}
 
   /** Called inside the hook handler: O(1), never throws, never reads the disk. */
-  onHook(agentId: string | undefined, event: string, p: { tool_name?: unknown; tool_input?: unknown }): void {
+  onHook(agentId: string | undefined, event: string, p: { tool_name?: unknown; tool_input?: unknown; source?: unknown }): void {
     try {
       if (typeof agentId !== 'string' || !agentId) return;
       if (event !== 'PreToolUse' && event !== 'Stop' && event !== 'SessionEnd' && event !== 'SessionStart') return;
@@ -590,10 +602,17 @@ export class WriteRootsDryRun {
       let q = this.queues.get(agentId);
       if (!q) { q = []; this.queues.set(agentId, q); this.turn.push(agentId); }
       if (event === 'SessionStart') {
-        // Counted here, at admission and per spawn generation, before anything can be merged in the queue.
-        const gen = this.d.generation?.(agentId) ?? 0;
-        if (this.admittedGen.get(agentId) === gen) { this.dupStarts.set(agentId, (this.dupStarts.get(agentId) ?? 0) + 1); this.schedule(); return; }
-        this.admittedGen.set(agentId, gen);
+        // Every start is recorded (its roots are re-read), bounded per agent like tool calls; past the bound the turn
+        // reads incomplete. Starts waiting together are recorded once, with how many they were.
+        const n = (this.startsSinceStop.get(agentId) ?? 0) + 1;
+        this.startsSinceStop.set(agentId, n);
+        if (n > MAX_QUEUE) { this.flood.set(agentId, (this.flood.get(agentId) ?? 0) + 1); return; }
+        const waiting = q.find((j) => j.event === 'SessionStart');
+        const source = typeof p?.source === 'string' ? p.source : undefined;
+        if (waiting) { waiting.coalesced = (waiting.coalesced ?? 1) + 1; waiting.source = source ?? waiting.source; this.schedule(); return; }
+        q.push({ agentId, event, tool: undefined, input: undefined, source, coalesced: 1 });
+        this.schedule();
+        return;
       }
       if (event === 'PreToolUse') {
         if (q.filter((j) => j.event === 'PreToolUse').length >= MAX_QUEUE) { this.shed.set(agentId, (this.shed.get(agentId) ?? 0) + 1); return; }
@@ -618,10 +637,6 @@ export class WriteRootsDryRun {
     const job = q?.shift();
     if (id !== undefined && q) { if (q.length) this.turn.push(id); else this.queues.delete(id); }
     if (job) { try { this.process(job); } catch { /* never let one call stop the rest */ } }
-    for (const [agentId, count] of this.dupStarts) {
-      this.dupStarts.delete(agentId);
-      if (this.d.agent(agentId)) this.d.record({ kind: 'write-duplicate-session-start', agentId, count });
-    }
     if (this.turn.length) this.schedule();
   }
 
@@ -644,12 +659,31 @@ export class WriteRootsDryRun {
       return;
     }
     if (j.event === 'Stop' || j.event === 'SessionEnd') { this.flush(j.agentId); return; }
-    // The first session start of a spawn is the one queued; duplicates were counted at admission.
+    // A session start: the roots are re-read now, so a settings change between two starts shows as two rows.
+    const gen = this.d.generation?.(j.agentId) ?? 0;
+    const o = this.ordinal.get(j.agentId);
+    const ordinal = o && o.gen === gen ? o.n + 1 : 1;
+    this.ordinal.set(j.agentId, { gen, n: ordinal });
     const eff = effectiveRoots(a.provider, a.agentDir, a.ctx.cwd, a.ctx.home, a.launch);
-    this.d.record({ kind: 'write-roots', agentId: j.agentId, provider: providerClass(a.provider), role: a.ctx.isGod ? 'god' : 'agent', source: eff.source, ...rootsReport(eff, a.ctx) });
+    const start = START_SOURCES.includes(j.source as (typeof START_SOURCES)[number]) ? j.source : 'unknown';
+    this.d.record({ kind: 'write-roots', agentId: j.agentId, provider: providerClass(a.provider), role: a.ctx.isGod ? 'god' : 'agent', source: eff.source, start, ordinal, coalesced: j.coalesced ?? 1, ...rootsReport(eff, a.ctx) });
+  }
+
+  /** The agent's terminal is gone: what it left counted or incomplete is written now, not at a turn end that will not come. */
+  agentGone(agentId: string): void { try { this.flush(agentId); } catch { /* best effort */ } }
+  /** The app is quitting: the same for every agent. */
+  flushAll(): void {
+    const ids = new Set([...this.seen.keys(), ...this.shed.keys(), ...this.capped.keys(), ...this.flood.keys()]);
+    for (const id of ids) this.agentGone(id);
   }
 
   private flush(agentId: string): void {
+    this.startsSinceStop.delete(agentId);
+    const flooded = this.flood.get(agentId);
+    if (flooded) {
+      this.flood.delete(agentId);
+      this.d.record({ kind: 'write-incomplete', agentId, state: 'incomplete', reason: 'session-start-flood', shed: flooded, burst: true });
+    }
     const mine = this.seen.get(agentId);
     this.seen.delete(agentId);
     for (const [k, count] of mine ?? []) {
@@ -683,7 +717,9 @@ export const READ_SITES = [
   { id: 'nested-script-cap', read: 'a shell script nested more than two levels (sh -c inside sh -c inside sh -c)', writer: 'the agent', planted: 'deep nesting', outcome: 'not read past two levels, plus one truncated row' },
   { id: 'patch-cap', read: 'a patch input larger than 256 KB, deeper than 3 levels, or with more than 32 fields', writer: 'the agent', planted: 'an oversized or deeply nested patch input', outcome: 'read up to those limits, plus one truncated row' },
   { id: 'path-length-cap', read: 'an edit target path over 4,096 characters', writer: 'the agent', planted: 'an absurdly long path', outcome: 'not classed, plus one truncated row' },
-  { id: 'duplicate-session-start', read: 'SessionStart', writer: 'any process that reaches the hook socket', planted: 'a second session start for the same spawn', outcome: 'counted at admission per spawn generation, before any merging in the queue: the first wins, and each further one is recorded as write-duplicate-session-start (count)' },
+  { id: 'session-start', read: 'SessionStart', writer: 'the CLI, or any process that reaches the hook socket', planted: 'repeated starts; a settings change between two starts', outcome: 'every start re-reads the roots and writes a write-roots row (start source, per-spawn ordinal); starts waiting together give one row with coalesced = n; more than 8 between turn ends give write-incomplete (reason session-start-flood)' },
+  { id: 'agent-exit-flush', read: 'an agent whose terminal ends, or the app quitting', writer: 'the app', planted: 'a victim that never reaches another turn end', outcome: 'its counts and any incomplete rows are written at exit and at quit' },
+  { id: 'managed-conflict', read: 'sandbox.enabled across the managed file and its drop-ins', writer: 'root only', planted: 'two managed files disagreeing', outcome: 'unknown: Claude\'s order among them is not modelled' },
   { id: 'claude-managed-drop-ins', read: 'managed-settings.d/*.json beside the managed file', writer: 'root only', planted: '—', outcome: 'read like the managed file' },
   { id: 'payload-tool-name', read: 'hook payload tool_name', writer: 'same', planted: 'free text, non-string', outcome: 'logged as a fixed name or other' },
   { id: 'payload-tool-input', read: 'hook payload tool_input', writer: 'same', planted: 'huge command, thousands or deep missing paths, wrong types', outcome: 'answer not delayed; at most 64 paths, 25 ms, 64 KB per call, then one truncated row; wrong types record nothing' },

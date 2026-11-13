@@ -582,6 +582,8 @@ function teardownPty(id: string): void {
   // 1) Archive the agent — retained + flagged; only live-PTY agents are active.
   const agentId = ptyToAgent.get(id);
   if (agentId) {
+    // The write-roots dry run writes what this agent left counted or incomplete: no later turn end will.
+    try { writeRootsDryRun.agentGone(agentId); } catch { /* best-effort */ }
     ptyToAgent.delete(id);
     // Drop watchdog state so a dead agent can't get nudged or leak its grace.
     try { workerWake.forget(agentId, id); } catch { /* best-effort */ }
@@ -6090,6 +6092,7 @@ app.on('window-all-closed', () => {
 // exactly what's left to do.
 let analyticsFlushed = false;
 app.on('will-quit', (e) => {
+  try { writeRootsDryRun.flushAll(); } catch { /* best-effort */ }
   if (analyticsFlushed) return;
   analyticsFlushed = true;
   e.preventDefault();

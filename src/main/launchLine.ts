@@ -98,7 +98,7 @@ export function codexLaunchSandbox(args: string[] | undefined, addDirs: string[]
     const v = value ?? words[++i];
     if (v === undefined) { why.push(`option ${name} without a value`); return 'unknown'; }
     if (name === '-s' || name === '--sandbox') mode = v;
-    else if ((name === '-c' || name === '--config') && /^\s*"?(sandbox_mode|sandbox_workspace_write|profile)\b/.test(v)) { why.push(`${name} ${v}`); return 'unknown'; }
+    else if ((name === '-c' || name === '--config') && v.split('=')[0].split('.').some((seg) => POLICY_FAMILY.test(seg.replace(/["'\s]/g, '')))) { why.push(`${name} ${v.split('=')[0]}`); return 'unknown'; }
     else if (name === '--add-dir') addDirs.push(v);
     else if (name === '-p' || name === '--profile' || name === '--remote') { why.push(`option ${name}`); return 'unknown'; }
   }
@@ -177,6 +177,26 @@ function oddValue(v: unknown, at: string): string | null {
   return at || '(top)';
 }
 
+/** Names that may decide a Codex sandbox. */
+const POLICY_FAMILY = /sandbox|permission|profile|writable_roots/i;
+/** Tables whose child names are user-chosen identifiers (a project path, a server, a profile or provider name): those
+ *  names are not policy keys, but the keys inside them are tested like any other. */
+const MAP_TABLES = new Set(['projects', 'mcp_servers', 'profiles', 'model_providers']);
+
+/** The path of the first key in the policy family that the decoder does not consume, or null. */
+function familyKey(v: unknown, at: string, childNamesAreIds: boolean): string | null {
+  if (Array.isArray(v)) { for (const x of v) { const o = familyKey(x, at, false); if (o) return o; } return null; }
+  if (v === null || typeof v !== 'object') return null;
+  for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
+    const p = at ? `${at}.${k}` : k;
+    const consumed = (at === '' && (k === 'sandbox_mode' || k === 'sandbox_workspace_write' || k === 'profiles')) || (at === 'sandbox_workspace_write' && k === 'writable_roots');
+    if (!consumed && !childNamesAreIds && POLICY_FAMILY.test(k)) return p;
+    const o = familyKey(x, p, at === '' && MAP_TABLES.has(k));
+    if (o) return o;
+  }
+  return null;
+}
+
 /** Codex writable_roots and sandbox mode from a config.toml, parsed by smol-toml and then checked
  *  for exactly the shape read: a top-level `sandbox_mode` string, a `sandbox_workspace_write` table whose
  *  `writable_roots` is a list of strings, and no `profile` (it selects a profile) or profile that sets either key. A
@@ -217,6 +237,10 @@ export function codexRoots(toml: string): { roots: string[]; state: RootsState; 
       for (const k of ['sandbox_mode', 'sandbox_workspace_write']) if (Object.hasOwn(p, k)) return unknown(`profiles.${name}.${k}`);
     }
   }
+  // Key families: any key, at any depth, whose name says it may decide the sandbox and that is not one read above
+  // (Codex's default_permissions and [permissions.x], a future permissions_v2 ...) makes the file not understood.
+  const fam = familyKey(doc, '', false);
+  if (fam) return unknown(`${fam} (a key that may decide the sandbox and that the app does not read)`);
   if (mode === 'danger-full-access') return { roots: [], state: 'unsandboxed', mode };
   if (mode !== null && mode !== 'workspace-write' && mode !== 'read-only') return { roots: [], state: 'unknown', mode, why: `sandbox_mode = "${mode}"` };
   return { roots, state: 'ok', mode };
