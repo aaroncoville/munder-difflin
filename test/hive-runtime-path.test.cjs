@@ -19,6 +19,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const loadTs = require('./load-ts.cjs');
+const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { withHiveRuntimeFallback } = loadTs('src/main/pty.ts');
@@ -29,7 +30,7 @@ const SEP = path.delimiter;
 
 async function hiveIn(t) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-runtime-'));
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
   const hive = new HiveManager(() => home);
   await hive.ensureAgent({ id: 'a1', name: 'A', provider: 'claude', cwd: home });
   return { home, hive, root: path.join(home, 'hive') };
@@ -75,7 +76,7 @@ test('no hive root, or no runtime dir, leaves PATH exactly as it was', async (t)
   assert.equal(withHiveRuntimeFallback(original, undefined), original, 'plain terminals are untouched');
 
   const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'md-runtime-none-'));
-  t.after(() => fs.rmSync(empty, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(empty, { recursive: true, force: true }); });
   assert.equal(withHiveRuntimeFallback(original, empty), original,
     'a pre-fix hive that never wrote the dir must degrade, not point PATH at nothing');
 });

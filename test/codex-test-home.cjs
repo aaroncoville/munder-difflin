@@ -12,19 +12,25 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const loadTs = require('./load-ts.cjs');
+
+// A hive commit can still be running after the call that asked for it returns, and removing the folder under it
+// fails with ENOTEMPTY, so every cleanup here waits for commits to finish first.
+const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 function codexTestBase(t, prefix = 'md-') {
   if (process.platform !== 'win32' && fs.existsSync('/var/tmp')) {
     const base = fs.realpathSync(fs.mkdtempSync(path.join('/var/tmp', prefix)));
-    t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+    t.after(async () => { await allCommitsIdle(); fs.rmSync(base, { recursive: true, force: true }); });
     return base;
   }
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
   const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}tmp-`)));
   const saved = { TMPDIR: process.env.TMPDIR, TMP: process.env.TMP, TEMP: process.env.TEMP };
   for (const k of Object.keys(saved)) process.env[k] = tmp;
-  t.after(() => {
+  t.after(async () => {
     for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    await allCommitsIdle();
     fs.rmSync(base, { recursive: true, force: true });
     fs.rmSync(tmp, { recursive: true, force: true });
   });
@@ -48,8 +54,9 @@ function isolateHomeForFile(prefix = 'md-') {
   const home = fs.realpathSync(fs.mkdtempSync(path.join(root, prefix)));
   const real = process.env.HOME;
   process.env.HOME = home;
-  after(() => {
+  after(async () => {
     if (real === undefined) delete process.env.HOME; else process.env.HOME = real;
+    await allCommitsIdle();
     fs.rmSync(home, { recursive: true, force: true });
   });
   return home;

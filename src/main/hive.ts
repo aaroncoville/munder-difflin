@@ -28,7 +28,7 @@ import { join, dirname, basename, isAbsolute, relative, resolve as resolvePath }
 import { homedir } from 'node:os';
 import { claudeLaunch, claudeRoots, codexLaunchSandbox, codexRoots, launchExecutable, launchPlaces } from './launchLine';
 import { HookRuntimeUnavailable, hookCommandFor, overlaps, rootOverlap, stageHookRuntime, unsafePathReason, verifyHookRuntime, type StagedHookRuntime, type WriteRoot } from './hookRuntime';
-import { spawnSync, spawn, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
 import type { AgentUsageSample } from './usage';
 import { archiveOutboxFile, moveWithoutReplacing, quarantineOutboxFile, reportOutboxFailure, type OutboxStage } from './outboxFailure';
@@ -54,6 +54,7 @@ import { preferredAgentRole } from '../shared/agentRole';
 import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde } from './fs';
 import { refreshMineIgnoresOnce } from './hiveMineIgnore';
+import { AGENT_ALLOWLIST_IGNORE_LINES, CommitQueue, HIVE_STALE_LOCK_MS, runGit, stopRunningGits, untrackIgnored, type GitResult } from './hiveCommit';
 import { agentFolderId, hasExactFolder, isAppSender, isFolderName, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, RegistryUnreadable, rosterIdFor, shortTarget } from './messageTarget';
 import { nodeLauncherScript } from './nodeLauncher';
 import { codexTrustEntry } from '../shared/codexTrust';
@@ -246,11 +247,6 @@ const ARCHIVE_PENDING = '.archive-pending';
 /** How long an unparseable outbox file is given to be finished by its sender
  *  before the router drops it. */
 const MALFORMED_RETRY_MS = 2_000;
-
-function sleepSync(ms: number): void {
-  const sab = new SharedArrayBuffer(4);
-  Atomics.wait(new Int32Array(sab), 0, 0, ms);
-}
 
 /** Filesystem- and sort-safe timestamp, e.g. 2026-05-30T14-03-11-123Z. */
 function stamp(): string {
@@ -1203,7 +1199,8 @@ export class HiveManager {
     // log.jsonl gets the structured, non-sensitive fields; the dump stays local.
     // `usage/`: the owner's usage log lives in the app's data folder, not here;
     // ignored anyway so a stray usage file can never enter the hive's history.
-    const want = ['fleet.json', 'hooks.sock', 'cost-ledger.jsonl', 'crashes/', '.DS_Store', 'usage/'];
+    // AGENT_ALLOWLIST_IGNORE_LINES: inside an agent's folder only its memory, identity and ignore file are hive state.
+    const want = ['fleet.json', 'hooks.sock', 'cost-ledger.jsonl', 'crashes/', '.DS_Store', 'usage/', ...AGENT_ALLOWLIST_IGNORE_LINES];
     let lines: string[] = [];
     if (existsSync(gitignore)) { try { lines = readFileSync(gitignore, 'utf8').split('\n'); } catch { lines = []; } }
     const missing = want.filter((w) => !lines.includes(w));
@@ -1226,7 +1223,8 @@ export class HiveManager {
 
     refreshMineIgnoresOnce(this, root, (dir) => { ensureMineIgnore(dir); sweepInboxLeftovers(join(dir, 'inbox')); });
     if (!this._gitCommitsDisabled && !existsSync(join(root, '.git'))) {
-      this.git(['init', '-q'], root);
+      // Created by the first commit, in the background like every other hive git: see commitNow.
+      this.uncreatedRepos.add(root);
       this.commit('hive: init');
     }
   }
@@ -3854,114 +3852,81 @@ export class HiveManager {
     renameSync(tmp, p);
   }
 
-  // — git (single committer, retry + stale-lock recovery) —
-  //
-  // `gc.autoDetach=false` is what makes this call actually synchronous.
-  //
-  // A commit runs `gc --auto`, and git detaches that into a BACKGROUND process
-  // by default. `spawnSync` returns when `git commit` exits, so the caller
-  // believes the hive is quiescent while a gc it cannot see is still writing
-  // into `.git/objects/`. Anything that touches the hive directory right after
-  // a commit races that process: removing a hive home throws ENOTEMPTY, and a
-  // read can catch a half-written pack.
-  //
-  // It reproduces on its own — create a HiveManager on a fresh temp home, call
-  // ensureAgent, then remove the home: ~3.5% of iterations throw ENOTEMPTY,
-  // and the leftover is always `.git/objects/`, sometimes still holding a
-  // `bitmap-ref-tips_*` temp file that vanishes a fraction of a second later.
-  // With this flag, gc runs inline and 200 iterations pass clean.
-  //
-  // The gc still happens — this only stops it from outliving the command that
-  // triggered it, which is what "single committer" was supposed to mean.
-  private git(args: string[], cwd: string): { ok: boolean; out: string; err: string } {
-    const res = spawnSync('git', ['-c', 'commit.gpgsign=false', '-c', 'gc.autoDetach=false', '-c', 'user.name=Hive', '-c', 'user.email=hive@local', ...args], {
-      cwd, encoding: 'utf8', timeout: 8000
-    });
-    return { ok: res.status === 0, out: res.stdout ?? '', err: res.stderr ?? '' };
-  }
+  // — git: every hive git runs in the background, through CommitQueue —
 
-  /** Has the one-time cost-ledger untrack pass run in this process yet? */
-  private untrackedCostLedger = false;
+  /** Repositories whose already-tracked, now-ignored paths have been dropped from the index in this process. */
+  private readonly untrackedRoots = new Set<string>();
 
-  /**
-   * Stop versioning the cost ledger.
-   *
-   * `cost-ledger.jsonl` is append-only and gains a row per usage sample, so a
-   * repo that tracks it stores a fresh copy of the WHOLE file on every hive
-   * commit — and the hive commits constantly. A quarter-gigabyte ledger with a
-   * few thousand commits behind it is several hundred gigabytes of blob that
-   * git has to walk, which is what turns a routine `gc` into a multi-gigabyte
-   * `pack-objects` run. The ignore line in ensureHive keeps new copies out;
-   * this drops the one already in the index, because git keeps recording a
-   * file it is already tracking no matter what .gitignore says — so the ignore
-   * line alone reads as a fix while the repo goes on growing. The ledger stays
-   * on disk, so the cost history the app reads is untouched.
-   */
-  private untrackCostLedger(root: string): void {
-    if (this.untrackedCostLedger) return;
-    this.untrackedCostLedger = true;
-    // Probe before mutating: `rm --cached` on a repo that never tracked it
-    // would still rewrite the index on every launch, inside the retry path.
-    const tracked = this.git(['ls-files', '--', 'cost-ledger.jsonl'], root);
-    if (!tracked.ok || !tracked.out.trim()) return;
-    this.git(['rm', '--cached', '-q', '--ignore-unmatch', '--', 'cost-ledger.jsonl'], root);
-    console.warn('[hive] untracked the cost ledger from the hive repo');
-  }
+  private readonly commits = new CommitQueue((root, message) => this.commitNow(root, message), {
+    onFailing: (failures, error) => this.appendLog({ kind: 'hive-commit-failing', failures, error: error.slice(0, 2000) }),
+    onRecovered: (failures) => this.appendLog({ kind: 'hive-commit-recovered', failures })
+  });
 
-  /** Has the one-time Codex-home untrack pass run in this process yet? */
-  private untrackedCodexHomes = false;
-
-  /**
-   * Stop versioning Codex worker homes that are ALREADY in the index.
-   *
-   * Adding `.codex/` to each agent's .gitignore only keeps NEW paths out; git
-   * happily keeps recording a file it is already tracking, so a hive that
-   * predates that ignore line goes on committing every SQLite and transcript
-   * revision exactly as before — the .gitignore reads as a fix while the repo
-   * keeps growing. This closes that: once per process, refresh every agent's
-   * ignore file (agents that are not running never pass through spawn, and the
-   * mine loop only reaches them if mempalace is installed) and drop any tracked
-   * `.codex` path from the index. The files stay on disk, so `codex --resume`
-   * is unaffected; only their history stops.
-   */
-  private untrackCodexHomes(root: string): void {
-    if (this.untrackedCodexHomes) return;
-    this.untrackedCodexHomes = true;
-    const agentsDir = join(root, 'agents');
-    if (!existsSync(agentsDir)) return;
-    try {
-      for (const id of readdirSync(agentsDir)) ensureMineIgnore(join(agentsDir, id));
-    } catch { /* best-effort */ }
-    // Probe before mutating: `rm --cached` on a clean repo would still rewrite
-    // the index on every launch, and this runs inside the commit retry path.
-    const tracked = this.git(['ls-files', '--', 'agents/*/.codex'], root);
-    if (!tracked.ok || !tracked.out.trim()) return;
-    this.git(['rm', '-r', '--cached', '-q', '--ignore-unmatch', '--', 'agents/*/.codex'], root);
-    console.warn('[hive] untracked previously-committed Codex homes from the hive repo');
-  }
-
-  /** Commit all hive changes. No-op if there is nothing staged. */
+  /** Commit all hive changes, in the background: returns at once, and requests made while a commit runs share one
+   *  follow-up commit. See CommitQueue. */
   commit(message: string): void {
-    if (this._gitCommitsDisabled) return;
+    if (this._gitCommitsDisabled || this.commitsStopped) return;
     const root = this.root();
-    if (!root || !existsSync(join(root, '.git'))) return;
-    this.untrackCostLedger(root);
-    this.untrackCodexHomes(root);
-    for (let attempt = 0; attempt < 5; attempt++) {
-      this.clearStaleLock(root);
-      const add = this.git(['add', '-A'], root);
-      const commit = this.git(['commit', '-q', '-m', message], root);
-      if (commit.ok) return;
-      if (/nothing to commit/i.test(commit.out + commit.err)) return;
-      if (!add.ok || /index\.lock/i.test(commit.err)) { sleepSync(50 * (attempt + 1)); continue; }
-      console.warn(`[hive] commit gave up after ${attempt + 1} attempts:`, commit.err || commit.out);
-      return;
-    }
-    console.warn('[hive] commit gave up after 5 attempts');
+    if (!root || !(existsSync(join(root, '.git')) || this.uncreatedRepos.has(root))) return;
+    this.commits.request(root, message);
   }
 
+  /** Resolves once no hive commit is running or waiting. */
+  commitsSettled(): Promise<void> {
+    return this.commits.idle();
+  }
+
+  /** Set once the app is quitting: no new commit, and no further git step in one already running. */
+  private commitsStopped = false;
+
+  /** Hive folders whose repository ensureHive asked for and the first commit has yet to create. */
+  private readonly uncreatedRepos = new Set<string>();
+
+  /**
+   * For quitting, so no hive git outlives the app. A git left running after quit could still hold the index lock when
+   * the app starts again. Requests stop being taken, a commit still running gets `graceMs` to finish, and then its git
+   * is stopped (SIGTERM, SIGKILL `killGraceMs` later) and waited for. Uncommitted changes stay on disk for the next run.
+   */
+  stopCommits(graceMs = 1_500, killGraceMs = 2_000): Promise<void> {
+    this.commitsStopped = true;
+    return this.commits.close(graceMs, () => stopRunningGits(killGraceMs));
+  }
+
+  /** Take commits again after stopCommits, when what it was stopped for did not happen (a data-folder move that
+   *  failed and left the app running on the old folder). */
+  resumeCommits(): void {
+    this.commitsStopped = false;
+    this.commits.reopen();
+  }
+
+  private async commitNow(root: string, message: string): Promise<GitResult> {
+    // Once quitting has begun, no further git starts: the one already running is all there is to stop.
+    const git = (args: string[], cwd: string): Promise<GitResult> =>
+      (this.commitsStopped ? Promise.resolve({ ok: false, out: '', err: 'the app is quitting' }) : runGit(args, cwd));
+    // Checked again here: commits may have been turned off since this one was requested.
+    if (this._gitCommitsDisabled) return { ok: true, out: '', err: '' };
+    if (!existsSync(join(root, '.git'))) {
+      if (!this.uncreatedRepos.has(root)) return { ok: true, out: '', err: '' };
+      const init = await git(['init', '-q'], root);
+      if (!init.ok) return init;
+    }
+    this.uncreatedRepos.delete(root);
+    if (!this.untrackedRoots.has(root)) {
+      this.untrackedRoots.add(root);
+      const dropped = await untrackIgnored(root, git);
+      if (dropped > 0) console.warn(`[hive] stopped tracking ${dropped} ignored path(s) in the hive repo; the files stay on disk`);
+    }
+    this.clearStaleLock(root);
+    const add = await git(['add', '-A'], root);
+    if (!add.ok) return add;
+    const commit = await git(['commit', '-q', '-m', message], root);
+    if (commit.ok || /nothing to commit/i.test(commit.out + commit.err)) return { ok: true, out: commit.out, err: commit.err };
+    return commit;
+  }
+
+  /** Remove a lock left by a git that can no longer be running. See HIVE_STALE_LOCK_MS. */
   private clearStaleLock(root: string): void {
-    const STALE_THRESHOLD_MS = 10_000;
+    const STALE_THRESHOLD_MS = HIVE_STALE_LOCK_MS;
     try {
       for (const lock of ['index.lock', 'HEAD.lock']) {
         const path = join(root, '.git', lock);

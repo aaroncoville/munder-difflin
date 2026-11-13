@@ -15,6 +15,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 // No Codex agents' homes in HOME: agents the app does not sandbox cannot start beside one.
 require('./codex-test-home.cjs').isolateHomeForFile('md-nohomes-');
 
@@ -22,7 +23,7 @@ const { HiveManager } = loadTs('src/main/hive.ts');
 
 async function floor(t) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-archived-to-'));
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
   const hive = new HiveManager(() => home);
   await hive.ensureAgent({ id: 'god-1', name: 'Michael', provider: 'claude', cwd: home, isGod: true });
   await hive.ensureAgent({ id: 'worker-jim', name: 'Jim', provider: 'claude', cwd: home });

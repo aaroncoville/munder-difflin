@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 const { codexTestBase } = require('./codex-test-home.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
@@ -35,8 +36,9 @@ function sandbox(t, userConfig) {
   }
   const realHome = process.env.HOME;
   process.env.HOME = fakeHome;
-  t.after(() => {
+  t.after(async () => {
     if (realHome === undefined) delete process.env.HOME; else process.env.HOME = realHome;
+    await allCommitsIdle();
     fs.rmSync(home, { recursive: true, force: true });
   });
   return home;

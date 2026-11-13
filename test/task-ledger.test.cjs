@@ -22,6 +22,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const { mergeTaskLedger, patchTaskInLedger } = loadTs('src/shared/taskLedger.ts');
 const { HiveManager } = loadTs('src/main/hive.ts');
@@ -133,7 +134,7 @@ test('a card without updatedAt gets one', () => {
 
 test('hive.writeTasks stamps a card moved to doing', (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-task-ledger-stamp-'));
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
   const hive = new HiveManager(() => home);
   const ledger = () => JSON.parse(fs.readFileSync(path.join(home, 'hive', 'tasks.json'), 'utf8')).tasks;
 
@@ -172,7 +173,7 @@ test('patching one card leaves its neighbours byte-identical', () => {
 
 test('answering a question through hive.writeTasks preserves the whole board', (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-task-ledger-'));
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
   const hive = new HiveManager(() => home);
   const ledger = () => JSON.parse(fs.readFileSync(path.join(home, 'hive', 'tasks.json'), 'utf8')).tasks;
 
@@ -206,7 +207,7 @@ test('answering a question through hive.writeTasks preserves the whole board', (
 
 test('hive.writeTasks can still empty the ledger', (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-task-ledger-del-'));
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
   const hive = new HiveManager(() => home);
   const ledger = () => JSON.parse(fs.readFileSync(path.join(home, 'hive', 'tasks.json'), 'utf8')).tasks;
 

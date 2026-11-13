@@ -11,6 +11,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const electron = require.resolve('electron');
 require.cache[electron] = {
@@ -34,7 +35,7 @@ function recordingBreaker() {
 
 async function server(t) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-hooks-breaker-'));
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
   const hive = new HiveManager(() => home);
   await hive.ensureAgent({ id: 'jim-1', name: 'Jim', provider: 'claude', cwd: home });
   const { breaker, stopped } = recordingBreaker();

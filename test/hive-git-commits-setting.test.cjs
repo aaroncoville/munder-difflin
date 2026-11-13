@@ -1,8 +1,7 @@
 'use strict';
 
 /**
- * The hive commits itself to git on every state change, synchronously on the
- * main process. A setting turns that off. These pin what the setting promises,
+ * The hive commits itself to git on every state change, in the background. A setting turns that off. These pin what the setting promises,
  * what stays the same without it, and the semantic-memory ignore files, which
  * used to be refreshed only as a side effect of the first commit.
  */
@@ -14,13 +13,14 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { applyGitCommitsSetting, gitCommitsDisabled } = loadTs('src/main/hiveGitSetting.ts');
 
 function home(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-hive-git-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(dir, { recursive: true, force: true }); });
   return dir;
 }
 
@@ -29,6 +29,7 @@ async function floor(t, dir, disabled) {
   hive.setGitCommitsDisabled(disabled);
   await hive.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: dir, isGod: true });
   await hive.ensureAgent({ id: 'worker-1', name: 'Helper', provider: 'claude', cwd: dir });
+  await hive.commitsSettled();
   return hive;
 }
 
@@ -47,6 +48,7 @@ test('without the setting a new hive is a git repository and a message commits',
   const before = head(root);
 
   hive.send(MESSAGE, 'worker-1');
+  await hive.commitsSettled();
 
   assert.notEqual(head(root), before);
 });
@@ -132,9 +134,11 @@ test('turning commits back on while running creates the repository and commits r
   assert.equal(fs.existsSync(path.join(root, '.git')), false);
 
   applyGitCommitsSetting(hive, false);
+  await hive.commitsSettled();
 
   const before = head(root);
   hive.send(MESSAGE, 'worker-1');
+  await hive.commitsSettled();
   assert.notEqual(head(root), before);
 });
 
@@ -182,6 +186,7 @@ test('turning commits off while running stops them and leaves the repository', a
 
   applyGitCommitsSetting(hive, true);
   hive.send(MESSAGE, 'worker-1');
+  await hive.commitsSettled();
 
   assert.equal(head(root), before);
 });
@@ -195,8 +200,10 @@ for (const junk of ['true', 'false', 1, 0, null, {}, []]) {
     const dir = home(t);
     const hive = await floor(t, dir, true);
     applyGitCommitsSetting(hive, junk, () => {});
+    await hive.commitsSettled();
     const before = head(path.join(dir, 'hive'));
     hive.send(MESSAGE, 'worker-1');
+    await hive.commitsSettled();
     assert.notEqual(head(path.join(dir, 'hive')), before);
   });
 }

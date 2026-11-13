@@ -10,6 +10,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 // No Codex agents' homes in HOME: agents the app does not sandbox cannot start beside one.
 require('./codex-test-home.cjs').isolateHomeForFile('md-nohomes-');
 
@@ -43,7 +44,7 @@ function proxyBridgeBound(injection, agentDir) {
 
 test('crush: light theme writes options.tui.transparent and COLORFGBG', async (t) => {
   const home = tmpHome();
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
   const hive = new HiveManager(() => home);
   hive.setProxyBridgeScript(path.join(__dirname, '..', 'resources', 'hive-proxy.cjs')); // the app's bundled helper
   t.after(() => { try { hive.stopAllProxyBridges(); } catch { /* already gone */ } });
@@ -61,7 +62,7 @@ test('crush: light theme writes options.tui.transparent and COLORFGBG', async (t
 
 test('crush: dark theme sends the dark hint and still goes transparent', async (t) => {
   const home = tmpHome();
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
   const hive = new HiveManager(() => home);
   hive.setProxyBridgeScript(path.join(__dirname, '..', 'resources', 'hive-proxy.cjs')); // the app's bundled helper
   t.after(() => { try { hive.stopAllProxyBridges(); } catch { /* already gone */ } });
@@ -78,7 +79,7 @@ test('crush: dark theme sends the dark hint and still goes transparent', async (
 
 test('no theme passed: no hint, no options block (old behaviour)', async (t) => {
   const home = tmpHome();
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
   const hive = new HiveManager(() => home);
   hive.setProxyBridgeScript(path.join(__dirname, '..', 'resources', 'hive-proxy.cjs')); // the app's bundled helper
   t.after(() => { try { hive.stopAllProxyBridges(); } catch { /* already gone */ } });
@@ -92,7 +93,7 @@ test('no theme passed: no hint, no options block (old behaviour)', async (t) => 
 
 test('opencode: theme lands in the per agent config dir as the system theme', async (t) => {
   const home = tmpHome();
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
   const hive = new HiveManager(() => home);
   hive.setProxyBridgeScript(path.join(__dirname, '..', 'resources', 'hive-proxy.cjs')); // the app's bundled helper
 
