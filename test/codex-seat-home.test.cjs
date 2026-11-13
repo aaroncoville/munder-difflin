@@ -310,6 +310,52 @@ test('with the real CLI: generated hooks get trusted, a planted project hook ref
   assert.equal(await seedCodexHookTrust(ctx, 15_000), false);
 });
 
+test('with the real CLI: a planted hook whose hash is already trusted in the home still refuses the start', { skip: !codex && 'codex CLI not installed', timeout: 30_000 }, async (t) => {
+  const { seedCodexHookTrust } = loadTs('src/main/codexHookTrust.ts');
+  const f = fixture(t);
+  const inj = await f.spawn('pre');
+  const ctx = { home: inj.env.CODEX_HOME, cwd: f.cwd, executable: codex, env: { ...process.env, ...inj.env } };
+  fs.mkdirSync(path.join(f.cwd, '.codex'), { recursive: true });
+  fs.writeFileSync(path.join(f.cwd, '.codex', 'hooks.json'), '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"planted"}]}]}}');
+  const planted = (await listHooks(ctx)).find((h) => h.source === 'project');
+  assert.ok(planted, 'Codex lists the planted project hook');
+  // Its exact hash recorded as trusted in the agent's own home.
+  fs.appendFileSync(path.join(fs.realpathSync(ctx.home), 'config.toml'), `\n[hooks.state.${JSON.stringify(planted.key)}]\ntrusted_hash = ${JSON.stringify(planted.currentHash)}\n`);
+  assert.equal((await listHooks(ctx)).find((h) => h.key === planted.key).trustStatus, 'trusted', 'Codex now reports it trusted');
+  let why = '';
+  assert.equal(await seedCodexHookTrust(ctx, 15_000, (r) => { why = r; }), false);
+  assert.match(why, /did not write.*\.codex\/hooks\.json/);
+});
+
+test('with the real CLI: the owner\'s own trusted hooks are allowed, an untrusted one refuses', { skip: !codex && 'codex CLI not installed', timeout: 60_000 }, async (t) => {
+  const { seedCodexHookTrust } = loadTs('src/main/codexHookTrust.ts');
+  const f = fixture(t);
+  const ownerHome = path.join(f.root, '.codex');
+  fs.mkdirSync(ownerHome, { recursive: true });
+  const ownerCfg = path.join(ownerHome, 'config.toml');
+  fs.writeFileSync(ownerCfg, '[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "echo owner"\n');
+  const spawnAndSeed = async (id) => {
+    const inj = await f.spawn(id);
+    const ctx = { home: inj.env.CODEX_HOME, cwd: f.cwd, executable: codex, env: { ...process.env, ...inj.env } };
+    let why = '';
+    const ok = await seedCodexHookTrust(ctx, 15_000, (r) => { why = r; });
+    return { ok, why, ctx };
+  };
+  const untrusted = await spawnAndSeed('o1');
+  assert.equal(untrusted.ok, false);
+  assert.match(untrusted.why, /not trusted in .*\.codex\/config\.toml: stop/);
+
+  // The owner trusts it in their own Codex (as the review menu would record it).
+  const own = (await listHooks({ home: ownerHome, cwd: f.cwd, executable: codex, env: process.env })).find((h) => h.command === 'echo owner');
+  assert.ok(own, 'Codex lists the owner hook in the owner\'s own home');
+  fs.appendFileSync(ownerCfg, `\n[hooks.state.${JSON.stringify(own.key)}]\ntrusted_hash = ${JSON.stringify(own.currentHash)}\n`);
+  const trusted = await spawnAndSeed('o2');
+  assert.equal(trusted.ok, true, trusted.why);
+  const listed = await listHooks(trusted.ctx);
+  assert.equal(listed.find((h) => h.command === 'echo owner').trustStatus, 'trusted');
+  assert.ok(listed.every((h) => h.trustStatus === 'trusted'), 'every listed hook is trusted');
+});
+
 /** `codex app-server` → initialize → hooks/list, nothing else. */
 function listHooks({ home, cwd, executable, env }) {
   const { spawn } = require('node:child_process');
