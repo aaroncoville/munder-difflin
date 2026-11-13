@@ -55,7 +55,7 @@ import { preferredAgentRole } from '../shared/agentRole';
 import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde } from './fs';
 import { refreshMineIgnoresOnce } from './hiveMineIgnore';
-import { AGENT_ALLOWLIST_IGNORE_LINES, CommitQueue, HIVE_STALE_LOCK_MS, runGit, stopRunningGits, untrackIgnored, type GitResult } from './hiveCommit';
+import { AGENT_ALLOWLIST_IGNORE_LINES, CommitQueue, HIVE_MAINTENANCE_EVERY_MS, HIVE_MAINTENANCE_IDLE_MS, HIVE_MAINTENANCE_TASKS, HIVE_MAINTENANCE_TIMEOUT_MS, HIVE_STALE_LOCK_MS, maintenanceArgs, runGit, stopRunningGits, untrackIgnored, type GitResult } from './hiveCommit';
 import { agentFolderId, hasExactFolder, isAppSender, isFolderName, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, RegistryUnreadable, rosterIdFor, shortTarget } from './messageTarget';
 import { nodeLauncherScript } from './nodeLauncher';
 import { codexTrustEntry } from '../shared/codexTrust';
@@ -3870,8 +3870,58 @@ export class HiveManager {
 
   private readonly commits = new CommitQueue((root, message) => this.commitNow(root, message), {
     onFailing: (failures, error) => this.appendLog({ kind: 'hive-commit-failing', failures, error: error.slice(0, 2000) }),
-    onRecovered: (failures) => this.appendLog({ kind: 'hive-commit-recovered', failures })
+    onRecovered: (failures) => this.appendLog({ kind: 'hive-commit-recovered', failures }),
+    onIdle: () => this.armMaintenance()
   });
+
+  // — maintenance: the hive repository's own upkeep, which commits no longer start (see HIVE_MAINTENANCE_TASKS) —
+
+  private maintenanceIdleMs = HIVE_MAINTENANCE_IDLE_MS;
+  private maintenanceEveryMs = HIVE_MAINTENANCE_EVERY_MS;
+  private maintenanceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** Shorter waits, for tests. */
+  setMaintenanceTiming(timing: { idleMs: number; everyMs: number }): void {
+    this.maintenanceIdleMs = timing.idleMs;
+    this.maintenanceEveryMs = timing.everyMs;
+  }
+
+  /** Called each time the commit queue goes idle: maintenance may start once it has stayed idle for the idle period.
+   *  Never at startup, since the timer is armed only by the queue finishing work. */
+  private armMaintenance(): void {
+    if (this.maintenanceTimer) clearTimeout(this.maintenanceTimer);
+    this.maintenanceTimer = null;
+    if (this.commitsStopped || this._gitCommitsDisabled) return;
+    this.maintenanceTimer = setTimeout(() => { this.maintenanceTimer = null; this.maybeMaintain(); }, this.maintenanceIdleMs);
+    this.maintenanceTimer.unref?.();
+  }
+
+  /** When maintenance last started, kept inside .git so it is never committed or copied as hive state. */
+  private maintenanceStamp(root: string): string {
+    return join(root, '.git', 'hive-maintenance-at');
+  }
+
+  private maybeMaintain(): void {
+    const root = this.root();
+    if (!root || this.commitsStopped || this._gitCommitsDisabled || this.commits.busy()) return;
+    if (!existsSync(join(root, '.git'))) return;
+    let last = 0;
+    try { last = Number(readFileSync(this.maintenanceStamp(root), 'utf8')) || 0; } catch { /* never ran */ }
+    if (Date.now() - last < this.maintenanceEveryMs) return;
+    // Stamped when it starts, so a run that is stopped or fails waits a day too rather than retrying all day.
+    try { writeFileSync(this.maintenanceStamp(root), String(Date.now()), 'utf8'); } catch { return; }
+    for (const task of HIVE_MAINTENANCE_TASKS) this.commits.requestStep(() => this.maintenanceStep(root, task));
+  }
+
+  private async maintenanceStep(root: string, task: (typeof HIVE_MAINTENANCE_TASKS)[number]): Promise<void> {
+    if (this.commitsStopped || this._gitCommitsDisabled) return;
+    const started = Date.now();
+    this.appendLog({ kind: 'hive-maintenance', phase: 'start', task });
+    const r = await runGit(maintenanceArgs(task), root, HIVE_MAINTENANCE_TIMEOUT_MS);
+    const durationMs = Date.now() - started;
+    this.appendLog({ kind: 'hive-maintenance', phase: 'end', task, ok: r.ok, durationMs, ...(r.ok ? {} : { error: (r.err || r.out).trim().slice(0, 2000) }) });
+    if (!r.ok) console.warn(`[hive] maintenance ${task} failed after ${durationMs} ms: ${(r.err || r.out).trim()}`);
+  }
 
   /** Commit all hive changes, in the background: returns at once, and requests made while a commit runs share one
    *  follow-up commit. See CommitQueue. */
@@ -3900,6 +3950,8 @@ export class HiveManager {
    */
   stopCommits(graceMs = 1_500, killGraceMs = 2_000): Promise<void> {
     this.commitsStopped = true;
+    if (this.maintenanceTimer) clearTimeout(this.maintenanceTimer);
+    this.maintenanceTimer = null;
     return this.commits.close(graceMs, () => stopRunningGits(killGraceMs));
   }
 
@@ -3919,12 +3971,13 @@ export class HiveManager {
     if (!existsSync(join(root, '.git'))) {
       if (!this.uncreatedRepos.has(root)) return { ok: true, out: '', err: '' };
       const init = await git(['init', '-q'], root);
-      if (!init.ok) return init;
+      if (!init.ok) return { ...init, failed: 'could not create the hive repository (git init)' };
     }
     this.uncreatedRepos.delete(root);
     if (!this.untrackedRoots.has(root)) {
-      this.untrackedRoots.add(root);
-      const dropped = await untrackIgnored(root, git);
+      const { dropped, complete } = await untrackIgnored(root, git);
+      // Marked done only once every batch has gone through: an incomplete pass is tried again with the next commit.
+      if (complete) this.untrackedRoots.add(root);
       if (dropped > 0) console.warn(`[hive] stopped tracking ${dropped} ignored path(s) in the hive repo; the files stay on disk`);
     }
     this.clearStaleLock(root);
