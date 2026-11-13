@@ -98,6 +98,9 @@ export function codexLaunchSandbox(args: string[] | undefined, addDirs: string[]
     const v = value ?? words[++i];
     if (v === undefined) { why.push(`option ${name} without a value`); return 'unknown'; }
     if (name === '-s' || name === '--sandbox') mode = v;
+    else if ((name === '-c' || name === '--config') && v.split('=')[0].trim() === 'allow_symlinked_codex_home') {
+      if (v.slice(v.indexOf('=') + 1).trim() !== 'false') { why.push(`${name} allow_symlinked_codex_home`); return 'unknown'; }
+    }
     else if ((name === '-c' || name === '--config') && familyPath(v.split('=')[0])) { why.push(`${name} ${v.split('=')[0]}`); return 'unknown'; }
     else if (name === '--add-dir') addDirs.push(v);
     else if (name === '-p' || name === '--profile' || name === '--remote') { why.push(`option ${name}`); return 'unknown'; }
@@ -178,7 +181,7 @@ function oddValue(v: unknown, at: string): string | null {
 }
 
 /** Names that may decide a Codex sandbox. */
-const POLICY_FAMILY = /sandbox|permission|profile|writable_roots/i;
+const POLICY_FAMILY = /sandbox|permission|profile|writable_roots|symlink/i;
 /** Tables of named entries that can each carry their own Codex settings: the keys directly inside an entry are read as
  *  policy positions (the entry names themselves are identifiers, not keys). */
 const ENTRY_TABLES = new Set(['projects', 'profiles', 'agents']);
@@ -193,6 +196,9 @@ const FAMILY_ALLOW = new Set(['include_permissions_instructions']);
  *  deeper. An agents entry's config_file is not followed, so it is not understood either. */
 function familyKey(doc: Record<string, unknown>): string | null {
   for (const [k, x] of Object.entries(doc)) {
+    // allow_symlinked_codex_home = true lets roots under CODEX_HOME follow links out of it (to targets that can change):
+    // only false is read as harmless.
+    if (k === 'allow_symlinked_codex_home') { if (x !== false) return 'allow_symlinked_codex_home (links under the Codex home may lead anywhere)'; continue; }
     const consumed = k === 'sandbox_mode' || k === 'sandbox_workspace_write' || k === 'profiles';
     if (!consumed && !FAMILY_ALLOW.has(k) && POLICY_FAMILY.test(k)) return k;
     if (ENTRY_TABLES.has(k) && isPlainObject(x)) {

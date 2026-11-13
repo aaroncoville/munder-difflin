@@ -683,6 +683,13 @@ test('property + differential: every TOML spelling is decoded as the parser read
     'include_permissions_instructions = true\n', '[mcp_servers.x.env]\nAWS_PROFILE = "a"\n', '[shell_environment_policy.set]\nAWS_PROFILE = "a"\n', '[mcp_servers.x.tools.get_user_profile]\nenabled = true\n',
     '[mcp_servers.x.http_headers]\n"X-Profile" = "v"\n', '[agents.profile-reviewer]\ndescription = "d"\n', '[plugins."permission-helper@m"]\nenabled = true\n', '[apps.sandbox_app]\nenabled = true\n', '[[hooks.Stop]]\npermission_mode = "x"\n']) assert.equal(W.codexRoots(t).state, 'ok', JSON.stringify(t));
   assert.equal(W.codexLaunchSandbox(['codex', '-c', 'default_permissions=":danger-full-access"']), 'unknown');
+  // allow_symlinked_codex_home: true (or any value but false) lets roots under CODEX_HOME follow links out of it.
+  assert.equal(W.codexRoots('allow_symlinked_codex_home = true\n').state, 'unknown');
+  assert.equal(W.codexRoots('allow_symlinked_codex_home = "yes"\n').state, 'unknown');
+  assert.equal(W.codexRoots('allow_symlinked_codex_home = false\n').state, 'ok', 'false may pass');
+  assert.equal(W.codexRoots('follow_symlinks = true\n').state, 'unknown', 'symlink is in the family');
+  assert.equal(W.codexLaunchSandbox(['codex -s workspace-write', '-c', 'allow_symlinked_codex_home=true']), 'unknown');
+  assert.equal(W.codexLaunchSandbox(['codex -s workspace-write', '-c', 'allow_symlinked_codex_home=false']), 'workspace-write');
   assert.equal(W.codexLaunchSandbox(['codex -s workspace-write', '-c', 'model="x"']), 'workspace-write');
   // Claude JSON: unchanged strict shape.
   const okJson = [{}, { sandbox: { enabled: true } }, { sandbox: { enabled: false, filesystem: { allowWrite: [P] } } }, { permissions: { additionalDirectories: [P] } }, { permissions: {}, sandbox: {}, other: [1] }];
