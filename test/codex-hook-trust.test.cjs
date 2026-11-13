@@ -147,7 +147,7 @@ test('an unresponsive CLI is terminated within the preparation budget', { skip: 
   const executable = path.join(f.ctx.cwd, 'silent-cli');
   fs.writeFileSync(executable, `#!${process.execPath}\nprocess.stdin.resume();\n`, { mode: 0o700 });
   const start = Date.now();
-  assert.equal(await seedCodexHookTrust({ ...f.ctx, executable, env: process.env }, 100), false);
+  assert.equal(await seedCodexHookTrust({ ...f.ctx, executable, env: process.env }, 100, () => {}, { attempts: 1 }), false);
   assert.ok(Date.now() - start < 2000);
 });
 
