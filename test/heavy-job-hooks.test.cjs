@@ -8,6 +8,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 const { codexTestBase } = require('./codex-test-home.cjs');
 
 const electron = require.resolve('electron');
@@ -95,8 +96,9 @@ async function server(t, limit = 1) {
   process.env.HOME = userHome;
   assert.equal(os.homedir(), userHome, 'HOME jailed before any hive is built');
   const hive = new HiveManager(() => home);
-  t.after(() => {
+  t.after(async () => {
     if (previous === undefined) delete process.env.HOME; else process.env.HOME = previous;
+    await allCommitsIdle();
     fs.rmSync(home, { recursive: true, force: true });
   });
   for (const id of ['a1', 'a2']) await hive.ensureAgent({ id, name: id, provider: 'claude', cwd: home });

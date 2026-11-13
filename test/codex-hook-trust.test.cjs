@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 const { codexTestBase } = require('./codex-test-home.cjs');
 const { prepareCodexHookTrust } = loadTs('src/main/codexHookTrust.ts');
 const { HiveManager } = loadTs('src/main/hive.ts');
@@ -12,14 +13,14 @@ async function fixture(t, ownerToml) {
   const root = codexTestBase(t, 'mdch-');
   const oldHome = process.env.HOME;
   process.env.HOME = root;
-  t.after(() => { process.env.HOME = oldHome; fs.rmSync(root, { recursive: true, force: true }); });
+  t.after(async () => { process.env.HOME = oldHome; await allCommitsIdle(); fs.rmSync(root, { recursive: true, force: true }); });
   if (ownerToml !== undefined) {
     fs.mkdirSync(path.join(root, '.codex'));
     fs.writeFileSync(path.join(root, '.codex', 'config.toml'), typeof ownerToml === 'function' ? ownerToml(root) : ownerToml);
   }
   const hive = new HiveManager(() => root);
   const runtime = fs.realpathSync(fs.mkdtempSync('/tmp/mdcr-'));
-  t.after(() => fs.rmSync(runtime, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(runtime, { recursive: true, force: true }); });
   hive.setHookRuntime(runtime);
   // Not the home itself: a working folder that contains the Codex home is refused.
   const cwd = path.join(root, 'work');

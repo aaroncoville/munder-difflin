@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 
@@ -16,8 +17,8 @@ function tmpHome() {
 async function setupPi(t, { get, id }) {
   const hiveHome = tmpHome();
   const fakeHome = tmpHome();
-  t.after(() => fs.rmSync(hiveHome, { recursive: true, force: true }));
-  t.after(() => fs.rmSync(fakeHome, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(hiveHome, { recursive: true, force: true }); });
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(fakeHome, { recursive: true, force: true }); });
 
   const realHome = process.env.HOME;
   const realProfile = process.env.USERPROFILE;

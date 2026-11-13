@@ -10,12 +10,13 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 
 async function floor(t) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-created-at-'));
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
   const hive = new HiveManager(() => home);
   await hive.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: home, isGod: true });
   await hive.ensureAgent({ id: 'worker-1', name: 'Helper', provider: 'claude', cwd: home });
@@ -108,7 +109,7 @@ test('a message already in an inbox with only the old field still reads, unchang
 /** A floor whose sender and recipient folders sort in the given order, so either copy is met first. */
 async function pair(t, senderId, godId) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-created-at-pair-'));
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
   const hive = new HiveManager(() => home);
   await hive.ensureAgent({ id: godId, name: 'Boss', provider: 'claude', cwd: home, isGod: true });
   await hive.ensureAgent({ id: senderId, name: 'Helper', provider: 'claude', cwd: home });
@@ -160,7 +161,7 @@ const { ROUTED_LEAD_MS } = loadTs('src/main/hive.ts');
 /** A file outside every agent folder that a planted link points at. */
 function outsideFile(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-outside-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(dir, { recursive: true, force: true }); });
   const file = path.join(dir, 'precious.txt');
   fs.writeFileSync(file, 'keep me');
   return { dir, file };

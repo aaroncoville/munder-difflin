@@ -9,6 +9,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const U = loadTs('src/main/usageEvents.ts');
 const { HeavyJobLock } = loadTs('src/main/heavyJob.ts');
@@ -51,7 +52,7 @@ test('message ids and conversations are always keyed refs, whatever their shape;
 
 test('end to end through the router: lookalike ids a sender supplies reach the row only as refs', async (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-lookalike-'));
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
   const hive = new HiveManager(() => home);
   await hive.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: home, isGod: true });
   await hive.ensureAgent({ id: 'worker-1', name: 'Helper', provider: 'claude', cwd: home });
@@ -279,7 +280,7 @@ test('property: random prose in every input field never appears in any emitted r
 
 test('the delivery listener hears only recipients that took delivery', async (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-landed-'));
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
   const hive = new HiveManager(() => home);
   hive.setGitCommitsDisabled?.(true);
   await hive.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: home, isGod: true });

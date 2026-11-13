@@ -22,6 +22,7 @@ const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const electron = require.resolve('electron');
 const toasts = [];
@@ -48,7 +49,7 @@ async function floor(t) {
   await hive.ensureAgent({ id: 'jim-1', name: 'Jim', provider: 'claude', cwd: home });
   const servers = [];
   const make = () => { const s = new HookServer(hive, () => null, () => CONFIG, undefined, undefined); servers.push(s); return s; };
-  t.after(() => { for (const s of servers) { try { s.stop(); } catch { /* noop */ } } fs.rmSync(home, { recursive: true, force: true }); });
+  t.after(async () => { for (const s of servers) { try { s.stop(); } catch { /* noop */ } } await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
   toasts.length = 0;
   return { home, hive, make, sock: hive.sockPath() };
 }

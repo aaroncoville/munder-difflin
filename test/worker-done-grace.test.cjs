@@ -14,6 +14,7 @@ const vm = require('node:vm');
 const { execFileSync } = require('node:child_process');
 const ts = require('typescript');
 const loadTs = require('./load-ts.cjs');
+const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const grace = loadTs('src/main/workerDoneGrace.ts');
 const unpushed = loadTs('src/main/workerUnpushed.ts');
@@ -26,7 +27,7 @@ const iso = (ms) => new Date(ms).toISOString();
 
 function inboxDir(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-grace-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(dir, { recursive: true, force: true }); });
   fs.mkdirSync(path.join(dir, '.done'));
   return dir;
 }
@@ -134,7 +135,7 @@ const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encodi
 
 async function setup(t, overrides = {}) {
   const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'md-grace-tick-')));
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
   const hive = new HiveManager(() => home, () => true);
   await hive.ensureAgent({ id: 'god-1', name: 'G', provider: 'claude', cwd: home, isGod: true });
   const id = 'worker-w';

@@ -21,6 +21,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 // No Codex agents' homes in HOME: agents the app does not sandbox cannot start beside one.
 require('./codex-test-home.cjs').isolateHomeForFile('md-nohomes-');
 
@@ -31,7 +32,7 @@ const KG_CLI = path.join('/Applications', 'Munder Difflin.app', 'Contents', 'Res
 
 async function floor(t, opts = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-winprompt-'));
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
   const hive = new HiveManager(() => home);
   const inj = await hive.ensureAgent(
     { id: 'god-1', name: 'Michael', provider: opts.provider ?? 'claude', cwd: home, isGod: true },

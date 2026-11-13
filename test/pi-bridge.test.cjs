@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const loadTs = require('./load-ts.cjs');
+const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { CircuitBreaker } = loadTs('src/main/breaker.ts');
@@ -14,7 +15,7 @@ const { CircuitBreaker } = loadTs('src/main/breaker.ts');
 async function installedPiBridge(t) {
   const hiveHome = fs.mkdtempSync(path.join(os.tmpdir(), 'md-pi-bridge-hive-'));
   const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'md-pi-bridge-user-'));
-  t.after(() => fs.rmSync(hiveHome, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(hiveHome, { recursive: true, force: true }); });
   t.after(() => fs.rmSync(fakeHome, { recursive: true, force: true }));
 
   const realHome = process.env.HOME;

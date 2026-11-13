@@ -15,13 +15,14 @@ const path = require('node:path');
 const vm = require('node:vm');
 const ts = require('typescript');
 const loadTs = require('./load-ts.cjs');
+const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { RegistryUnreadable } = loadTs('src/main/messageTarget.ts');
 
 async function setup(t) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-registry-guard-'));
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
   const hive = new HiveManager(() => home);
   await hive.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: home, isGod: true });
   await hive.ensureAgent({ id: 'worker-1', name: 'One', provider: 'claude', cwd: home });
@@ -88,7 +89,7 @@ test('the refusal says what is wrong, and names no path', async (t) => {
 
 test('a first agent on a new hive, with no file yet, still provisions', async (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-registry-guard-'));
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
   const hive = new HiveManager(() => home);
   await hive.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: home, isGod: true });
   assert.equal(hive.registry().godId, 'god-1');
@@ -134,7 +135,7 @@ for (const [label, prepare, established] of [
 ]) {
   test(`with no registry and ${label}, a new agent is ${established ? 'refused' : 'allowed'}`, async (t) => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-registry-guard-'));
-    t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+    t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
     const hive = new HiveManager(() => home);
     const root = hive.root();
     fs.mkdirSync(root, { recursive: true });
@@ -152,7 +153,7 @@ for (const [label, prepare, established] of [
 
 test('a failed send on a brand new hive leaves it new: the refusal does not make it look established', async (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-registry-guard-'));
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
   const hive = new HiveManager(() => home);
   fs.mkdirSync(hive.root(), { recursive: true });
   assert.throws(() => hive.send(message('worker-2'), 'worker-1'), RegistryUnreadable);
@@ -366,7 +367,7 @@ test('ensureAgent\'s id check uses the roster it read, not the file as it is now
 
 test('a corrupt registry on a hive with nothing else yet refuses before setting anything up', async (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-registry-guard-'));
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
   const hive = new HiveManager(() => home);
   fs.mkdirSync(hive.root(), { recursive: true });
   fs.writeFileSync(path.join(hive.root(), 'registry.json'), '{');
