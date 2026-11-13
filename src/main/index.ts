@@ -452,7 +452,10 @@ const writeRootsDryRun = new WriteRootsDryRun({
 hookServer.setWriteObserver((agentId, event, p) => writeRootsDryRun.onHook(agentId, event, p));
 const memory = new MemoryManager(
   () => readConfig().harnessHome,
-  () => migrateMemorySettings(readConfig())
+  () => migrateMemorySettings(readConfig()),
+  undefined,
+  // What Hindsight already holds is the app's record, kept where no agent can write it.
+  join(app.getPath('userData'), 'hindsight-ledger')
 );
 // Enterprise Knowledge Graph — file-backed store + agent CLI (default OFF).
 const knowledge = new KnowledgeManager();
