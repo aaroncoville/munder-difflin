@@ -236,17 +236,120 @@ test('a retain with no answer is held open, not recorded, until the server is as
   assert.deepEqual(brief(await adapter.mineAgent(dir, 'pam')), { ok: false }, 'the server says it is working on it');
   assert.equal(retains(s).length, 1);
 
-  // The server has no such operation: the slot frees with nothing recorded.
+  // The server has no record of it: the same request goes again under the same id, never a new one.
+  operation = 'not_found';
+  retainMode = 'ok';
+  now.advance(PASS);
+  assert.deepEqual(brief(await adapter.mineAgent(dir, 'pam')), { ok: false });
+  const [first, second] = retains(s);
+  assert.equal(second.body.operation_id, first.body.operation_id);
+  assert.deepEqual(second.body.items, first.body.items);
+
+  operation = 'completed';
+  now.advance(PASS);
+  assert.deepEqual(brief(await adapter.mineAgent(dir, 'pam')), { ok: false }, 'the pass that hears "completed" records it');
+  now.advance(PASS);
+  assert.deepEqual(brief(await adapter.mineAgent(dir, 'pam')), { ok: true });
+  assert.equal(retains(s).length, 2);
+});
+
+test('an acknowledged retain the server later has no record of frees the slot, and its sections go again', async (t) => {
+  let operation = 'processing';
+  const s = await stub(t, { [RETAIN]: { json: { success: true } }, [OPERATION]: () => ({ json: { status: operation } }) });
+  const now = clock();
+  const adapter = make(s.url, 'b1', '/tmp/home', now);
+  const dir = agentDirWith(MEMORY_MD);
+  await adapter.mineAgent(dir, 'pam');
   operation = 'not_found';
   now.advance(PASS);
   assert.deepEqual(brief(await adapter.mineAgent(dir, 'pam')), { ok: false });
-  retainMode = 'ok';
   operation = 'completed';
   now.advance(PASS);
-  assert.deepEqual(brief(await adapter.mineAgent(dir, 'pam')), { ok: true, sent: true }, 'the unconfirmed sections go again');
+  assert.deepEqual(brief(await adapter.mineAgent(dir, 'pam')), { ok: true, sent: true });
   const [first, second] = retains(s);
-  assert.deepEqual(second.body.items.map((i) => i.document_id), first.body.items.map((i) => i.document_id));
   assert.notEqual(second.body.operation_id, first.body.operation_id);
+});
+
+/** A server whose one operation stays `processing` with the same updated_at, and that may or may not honour a cancel. */
+function strandedServer({ honoursCancel }) {
+  const cancelled = new Set();
+  const opOf = (entry) => entry.url.split('/').pop();
+  return {
+    routes: {
+      [RETAIN]: { json: { success: true } },
+      [OPERATION]: (entry) => ({ json: { status: cancelled.has(opOf(entry)) ? 'cancelled' : 'processing', updated_at: '2026-11-13T02:00:00Z' } }),
+      'DELETE /v1/default/banks/b1/operations/*': (entry) => { if (honoursCancel) cancelled.add(opOf(entry)); return { json: { success: honoursCancel } }; }
+    }
+  };
+}
+
+test('a stranded operation is cancelled after two hours without change, and the slot frees only on the server\'s word', async (t) => {
+  const warn = t.mock.method(console, 'warn', () => {});
+  const s = await stub(t, strandedServer({ honoursCancel: false }).routes);
+  const now = clock();
+  const adapter = make(s.url, 'b1', '/tmp/home', now);
+  await adapter.mineAgent(agentDirWith(MEMORY_MD), 'pam');
+  for (let pass = 0; pass < 300; pass++) { // 50 hours of 10-minute passes
+    now.advance(PASS);
+    await adapter.mineAgent(agentDirWith(MEMORY_MD), 'jim');
+  }
+  assert.equal(retains(s).length, 1, 'a cancel the server does not confirm keeps the slot held');
+  assert.ok(s.seen.some((r) => r.method === 'DELETE'), 'the stranded operation is cancelled');
+  const said = warn.mock.calls.map((c) => c.arguments[0]).join('\n');
+  assert.match(said, /still processing after \d+ min/);
+  assert.match(said, /did not confirm the cancel/);
+});
+
+test('a stranded operation the server cancels frees the slot', async (t) => {
+  t.mock.method(console, 'warn', () => {});
+  const s = await stub(t, strandedServer({ honoursCancel: true }).routes);
+  const now = clock();
+  const adapter = make(s.url, 'b1', '/tmp/home', now);
+  await adapter.mineAgent(agentDirWith(MEMORY_MD), 'pam');
+  let deletes = 0;
+  for (let pass = 0; pass < 11; pass++) { // 110 min: not yet
+    now.advance(PASS);
+    await adapter.mineAgent(agentDirWith(MEMORY_MD), 'jim');
+  }
+  deletes = s.seen.filter((r) => r.method === 'DELETE').length;
+  assert.equal(deletes, 0, 'not cancelled before two hours without change');
+  now.advance(PASS);
+  await adapter.mineAgent(agentDirWith(MEMORY_MD), 'jim');
+  assert.equal(s.seen.filter((r) => r.method === 'DELETE').length, 1);
+  now.advance(PASS);
+  await adapter.mineAgent(agentDirWith(MEMORY_MD), 'jim');
+  assert.equal(retains(s).length, 2, 'after the confirmed cancel the next retain goes');
+});
+
+test('a slow operation that keeps moving is never cancelled', async (t) => {
+  t.mock.method(console, 'warn', () => {});
+  let tick = 0;
+  const s = await stub(t, {
+    [RETAIN]: { json: { success: true } },
+    [OPERATION]: () => ({ json: { status: 'processing', updated_at: `2026-11-13T02:${String(tick++ % 60).padStart(2, '0')}:00Z` } })
+  });
+  const now = clock();
+  const adapter = make(s.url, 'b1', '/tmp/home', now);
+  await adapter.mineAgent(agentDirWith(MEMORY_MD), 'pam');
+  for (let pass = 0; pass < 30; pass++) {
+    now.advance(PASS);
+    await adapter.mineAgent(agentDirWith(MEMORY_MD), 'jim');
+  }
+  assert.equal(s.seen.filter((r) => r.method === 'DELETE').length, 0);
+  assert.equal(retains(s).length, 1);
+});
+
+test('a refusal the server repeats backs off and is logged once', async (t) => {
+  const error = t.mock.method(console, 'error', () => {});
+  const s = await stub(t, { [RETAIN]: { status: 422, json: { detail: 'bad item' } } });
+  const now = clock();
+  const adapter = make(s.url, 'b1', '/tmp/home', now);
+  for (let pass = 0; pass < 18; pass++) { // three hours of passes
+    await adapter.mineAgent(agentDirWith(MEMORY_MD), 'pam');
+    now.advance(PASS);
+  }
+  assert.ok(retains(s).length <= 5, `sent ${retains(s).length} times in three hours`);
+  assert.equal(error.mock.calls.filter((c) => /HTTP 422/.test(c.arguments[0])).length, 1);
 });
 
 test('only a completed operation records its sections; a failed one sends them again', async (t) => {

@@ -21,12 +21,18 @@ export const LEDGER_MAX_SECTIONS = 20_000;
 export const CLAIM_MAX_ITEMS = 8;
 
 export interface RetainedSection { id: string; hash: string }
-export interface ClaimItem extends RetainedSection { key: string }
+/** One section as it was sent, so the same request can be sent again word for word. */
+export interface ClaimItem extends RetainedSection { key: string; agent: string; heading: string; content: string }
 export interface RetainClaim {
   /** Client-chosen operation id: re-sending it to Hindsight creates no new work. */
   op: string;
   since: number;
   items: ClaimItem[];
+  /** The server answered the POST, so it registered the operation. */
+  acked: boolean;
+  /** The operation's last reported `status|updated_at`, and when that last changed. */
+  seen: string;
+  changedAt: number;
 }
 export interface LedgerState {
   v: 1;
@@ -43,6 +49,8 @@ const HEX32 = /^[0-9a-f]{32}$/;
 const HEX64 = /^[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const MAX_KEY_LENGTH = 1024;
+const MAX_CONTENT_LENGTH = 256 * 1024;
+const MAX_SEEN_LENGTH = 256;
 
 export const emptyLedger = (server: string): LedgerState => ({ v: 1, server, busyUntil: 0, sections: {}, claim: null });
 
@@ -68,13 +76,19 @@ export function parseLedger(text: string, server: string): LedgerState | string 
   let claim: RetainClaim | null = null;
   if (raw.claim !== null) {
     const c = raw.claim;
-    if (!isRecord(c) || !hasOnly(c, ['op', 'since', 'items'])) return 'the claim is malformed';
-    if (typeof c.op !== 'string' || !UUID.test(c.op) || !isTime(c.since)) return 'the claim is malformed';
+    if (!isRecord(c) || !hasOnly(c, ['op', 'since', 'items', 'acked', 'seen', 'changedAt'])) return 'the claim is malformed';
+    if (typeof c.op !== 'string' || !UUID.test(c.op) || !isTime(c.since) || !isTime(c.changedAt)) return 'the claim is malformed';
+    if (typeof c.acked !== 'boolean' || typeof c.seen !== 'string' || c.seen.length > MAX_SEEN_LENGTH) return 'the claim is malformed';
     if (!Array.isArray(c.items) || c.items.length < 1 || c.items.length > CLAIM_MAX_ITEMS) return 'the claim is malformed';
     for (const it of c.items) {
-      if (!isRecord(it) || !hasOnly(it, ['key', 'id', 'hash']) || !isKey(it.key) || !isSection({ id: it.id, hash: it.hash })) return 'a claim item is malformed';
+      if (!isRecord(it) || !hasOnly(it, ['key', 'id', 'hash', 'agent', 'heading', 'content'])) return 'a claim item is malformed';
+      if (!isKey(it.key) || !isSection({ id: it.id, hash: it.hash })) return 'a claim item is malformed';
+      if (typeof it.agent !== 'string' || typeof it.heading !== 'string' || typeof it.content !== 'string') return 'a claim item is malformed';
+      if (!it.key.startsWith(`${it.agent}\n${it.heading}\n`) || it.content.length > MAX_CONTENT_LENGTH) return 'a claim item is malformed';
+      // The text must be the text the hash names, or a resend would carry something else.
+      if (createHash('sha256').update(it.content).digest('hex') !== it.hash) return 'a claim item does not match its hash';
     }
-    claim = { op: c.op, since: c.since, items: c.items as ClaimItem[] };
+    claim = { op: c.op, since: c.since, items: c.items as ClaimItem[], acked: c.acked, seen: c.seen, changedAt: c.changedAt };
   }
   return { v: 1, server, busyUntil: raw.busyUntil, sections: raw.sections as Record<string, RetainedSection>, claim };
 }
