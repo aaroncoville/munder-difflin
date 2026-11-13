@@ -22,8 +22,11 @@ const POSIX = process.platform !== 'win32';
 function floor(t, opts = {}) {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(POSIX ? '/tmp' : os.tmpdir(), 'mdhr-')));
   const home = path.join(base, 'h');
+  // The agents' working folder: beside HOME, never HOME itself, which holds every Codex agent's home.
+  const away = path.join(base, 'a');
   const rt = path.join(base, 'app', 'hook-runtime');
   fs.mkdirSync(home);
+  fs.mkdirSync(away);
   const realHome = process.env.HOME;
   process.env.HOME = home;
   t.after(() => {
@@ -36,7 +39,7 @@ function floor(t, opts = {}) {
   const hive = new HiveManager(() => homeNow);
   const root = path.join(home, 'hive');
   const log = () => (fs.existsSync(path.join(root, 'log.jsonl')) ? fs.readFileSync(path.join(root, 'log.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
-  return { base, home, rt, hive, root, log, setHome: () => { homeNow = home; }, moveHome };
+  return { base, home, away, rt, hive, root, log, setHome: () => { homeNow = home; }, moveHome };
 }
 
 function run(cmd, env, payload) {
@@ -78,7 +81,7 @@ const refused = async (p) => {
 };
 
 test('the runtime is staged private, from the app\'s own text, and new Claude and Codex sessions fire hooks through it, never through hive/bin', { skip: !POSIX, timeout: 20_000 }, async (t) => {
-  const { home, rt, hive, root, log } = floor(t);
+  const { home, away, rt, hive, root, log } = floor(t);
   hive.ensureHive();
   hive.setHookRuntime(rt);
   assert.deepEqual(hive.hookRuntimeStatus(), { configured: true, ok: true });
@@ -88,9 +91,9 @@ test('the runtime is staged private, from the app\'s own text, and new Claude an
   const shim = path.join(rt, 'cth-hook.cjs');
   assert.equal(fs.readFileSync(shim, 'utf8'), fs.readFileSync(path.join(root, 'bin', 'cth-hook.cjs'), 'utf8'), 'the same shim text the app has always written');
 
-  await hive.ensureAgent({ id: 'c1', name: 'C', provider: 'claude', cwd: home });
+  await hive.ensureAgent({ id: 'c1', name: 'C', provider: 'claude', cwd: away });
   const claude = claudeCommands(claudeSettings(root, 'c1'));
-  const codex = tomlCommands(fs.readFileSync(path.join(hive.installCodexHooks(path.join(root, 'agents/x1'), home, 'x1'), 'config.toml'), 'utf8'));
+  const codex = tomlCommands(fs.readFileSync(path.join(hive.installCodexHooks(path.join(root, 'agents/x1'), away, 'x1'), 'config.toml'), 'utf8'));
   assert.equal(claude.length, 11);
   assert.equal(codex.length, 8);
   const expected = `"${launcher}" "${shim}"`;
@@ -113,18 +116,18 @@ test('the runtime is staged private, from the app\'s own text, and new Claude an
 });
 
 test('with no runtime folder configured, no hook command is written at all', async (t) => {
-  const { home, hive, root } = floor(t);
-  await hive.ensureAgent({ id: 'c1', name: 'C', provider: 'claude', cwd: home });
+  const { home, away, hive, root } = floor(t);
+  await hive.ensureAgent({ id: 'c1', name: 'C', provider: 'claude', cwd: away });
   assert.deepEqual(claudeCommands(claudeSettings(root, 'c1')), []);
   assert.deepEqual(hive.hookRuntimeStatus(), { configured: false, ok: false });
-  assert.equal(tomlCommands(fs.readFileSync(path.join(hive.installCodexHooks(path.join(root, 'agents/x1'), home, 'x1'), 'config.toml'), 'utf8')).length, 0);
+  assert.equal(tomlCommands(fs.readFileSync(path.join(hive.installCodexHooks(path.join(root, 'agents/x1'), away, 'x1'), 'config.toml'), 'utf8')).length, 0);
 });
 
 test('a spawn fails visibly when the runtime folder is in the hive, reached through a link, or the hive is not known yet', async (t) => {
   {
-    const { home, hive, root, log } = floor(t);
+    const { home, away, hive, root, log } = floor(t);
     hive.setHookRuntime(path.join(root, 'bin', 'rt'));
-    assert.match(await refused(hive.ensureAgent({ id: 'c1', name: 'C', provider: 'claude', cwd: home })), /hive folder/);
+    assert.match(await refused(hive.ensureAgent({ id: 'c1', name: 'C', provider: 'claude', cwd: away })), /hive folder/);
     assert.equal(fs.existsSync(path.join(root, 'bin', 'rt')), false, 'nothing is written into the hive');
     const rows = log().filter((r) => r.kind === 'hook-runtime');
     assert.ok(rows.length >= 1 && rows.every((r) => r.ok === false && /hive folder/.test(r.reason)), JSON.stringify(rows));
@@ -132,19 +135,19 @@ test('a spawn fails visibly when the runtime folder is in the hive, reached thro
     assert.equal(fs.existsSync(path.join(root, 'agents/c1/settings.json')) && claudeCommands(claudeSettings(root, 'c1')).length > 0, false, 'no hook command written');
   }
   {
-    const { base, home, hive, root } = floor(t);
+    const { base, home, away, hive, root } = floor(t);
     hive.ensureHive();
     fs.symlinkSync(path.join(root, 'bin'), path.join(base, 'link'));
     hive.setHookRuntime(path.join(base, 'link', 'rt'));
-    assert.match(await refused(hive.ensureAgent({ id: 'c1', name: 'C', provider: 'claude', cwd: home })), /hive folder/);
+    assert.match(await refused(hive.ensureAgent({ id: 'c1', name: 'C', provider: 'claude', cwd: away })), /hive folder/);
     assert.equal(fs.existsSync(path.join(root, 'bin', 'rt')), false);
   }
   {
-    const { home, rt, hive, setHome } = floor(t, { unknownRoot: true });
+    const { home, away, rt, hive, setHome } = floor(t, { unknownRoot: true });
     hive.setHookRuntime(rt);
     assert.match(hive.hookRuntimeStatus().reason, /not known/, 'unknown is a refusal, recorded');
     setHome();
-    await hive.ensureAgent({ id: 'c1', name: 'C', provider: 'claude', cwd: home });
+    await hive.ensureAgent({ id: 'c1', name: 'C', provider: 'claude', cwd: away });
     assert.equal(hive.hookRuntimeStatus().ok, true, 'staged once the hive is known');
   }
 });
@@ -159,11 +162,11 @@ test('a hive that moves over the staged runtime fails the next spawn', async (t)
 });
 
 test('a spawn fails when the agent could write the runtime: cwd, an extra root, Claude user settings, Codex user config; unreadable reads as overlap', async (t) => {
-  const { base, home, rt, hive } = floor(t);
+  const { base, home, away, rt, hive } = floor(t);
   hive.setHookRuntime(rt);
   const appDir = path.dirname(rt);
   assert.match(await refused(hive.ensureAgent({ id: 'c1', name: 'C', provider: 'claude', cwd: appDir })), /may write the hook runtime/);
-  assert.match(await refused(hive.ensureAgent({ id: 'c2', name: 'C', provider: 'claude', cwd: home }, { extraWritableDirs: [base] })), /may write the hook runtime/);
+  assert.match(await refused(hive.ensureAgent({ id: 'c2', name: 'C', provider: 'claude', cwd: away }, { extraWritableDirs: [base] })), /may write the hook runtime/);
   const work = path.join(base, 'work');
   fs.mkdirSync(work);
   fs.mkdirSync(path.join(home, '.claude'));
@@ -180,17 +183,17 @@ test('a spawn fails when the agent could write the runtime: cwd, an extra root, 
   fs.rmSync(path.join(home, '.claude'), { recursive: true });
   fs.mkdirSync(path.join(home, '.codex'));
   fs.writeFileSync(path.join(home, '.codex/config.toml'), `[sandbox_workspace_write]\nwritable_roots = [${JSON.stringify(base)}]\n`);
-  assert.match(await refused(hive.ensureAgent({ id: 'x1', name: 'X', provider: 'codex', cwd: home })), /may write the hook runtime/);
+  assert.match(await refused(hive.ensureAgent({ id: 'x1', name: 'X', provider: 'codex', cwd: away })), /may write the hook runtime/);
   fs.writeFileSync(path.join(home, '.codex/config.toml'), 'sandbox_workspace_write.writable_roots = ["/"]\n');
-  assert.match(await refused(hive.ensureAgent({ id: 'x2', name: 'X', provider: 'codex', cwd: home })), /through \/ \(/, 'a dotted key is parsed as the grant it is, and / reaches the runtime folder');
+  assert.match(await refused(hive.ensureAgent({ id: 'x2', name: 'X', provider: 'codex', cwd: away })), /through \/ \(/, 'a dotted key is parsed as the grant it is, and / reaches the runtime folder');
   fs.writeFileSync(path.join(home, '.codex/config.toml'), 'writable_roots = $X\n');
-  assert.match(await refused(hive.ensureAgent({ id: 'x3', name: 'X', provider: 'codex', cwd: home })), /could not be read/);
+  assert.match(await refused(hive.ensureAgent({ id: 'x3', name: 'X', provider: 'codex', cwd: away })), /could not be read/);
   fs.rmSync(path.join(home, '.codex'), { recursive: true });
-  await hive.ensureAgent({ id: 'ok', name: 'OK', provider: 'claude', cwd: home });
+  await hive.ensureAgent({ id: 'ok', name: 'OK', provider: 'claude', cwd: away });
 });
 
 test('a changed, replaced or loosened runtime fails the next spawn, and the one after stages it afresh', async (t) => {
-  const { home, rt, hive, log } = floor(t);
+  const { home, away, rt, hive, log } = floor(t);
   hive.setHookRuntime(rt);
   const shim = path.join(rt, 'cth-hook.cjs');
   for (const [why, spoil] of [
@@ -200,11 +203,11 @@ test('a changed, replaced or loosened runtime fails the next spawn, and the one 
     ...(POSIX ? [['folder loosened', () => fs.chmodSync(rt, 0o777)]] : []),
     ['folder gone', () => fs.rmSync(rt, { recursive: true })],
   ]) {
-    await hive.ensureAgent({ id: 'ok', name: 'OK', provider: 'claude', cwd: home });
+    await hive.ensureAgent({ id: 'ok', name: 'OK', provider: 'claude', cwd: away });
     spoil();
-    await refused(hive.ensureAgent({ id: 'c1', name: 'C', provider: 'claude', cwd: home }));
+    await refused(hive.ensureAgent({ id: 'c1', name: 'C', provider: 'claude', cwd: away }));
     assert.equal(hive.hookRuntimeStatus().ok, false, why);
-    await hive.ensureAgent({ id: 'c1', name: 'C', provider: 'claude', cwd: home });
+    await hive.ensureAgent({ id: 'c1', name: 'C', provider: 'claude', cwd: away });
     assert.equal(hive.hookRuntimeStatus().ok, true, `${why}: restaged`);
   }
   assert.equal(fs.readFileSync(shim, 'utf8').includes('// x'), false);
@@ -276,7 +279,7 @@ test('the app sets the runtime from its own data folder, refuses a spawn it cann
 });
 
 test('round 2: refusals name what to change, ~ and $HOME roots are understood, other forms are not', async (t) => {
-  const { base, home, rt, hive, root } = floor(t);
+  const { base, home, away, rt, hive, root } = floor(t);
   hive.setHookRuntime(rt);
   const work = path.join(base, 'work');
   fs.mkdirSync(path.join(work, '.claude'), { recursive: true });
@@ -306,7 +309,7 @@ test('round 2: refusals name what to change, ~ and $HOME roots are understood, o
 });
 
 test('round 2: a refused new agent leaves nothing behind; the floor state stays ok and the refusal is per agent', async (t) => {
-  const { home, rt, hive, root } = floor(t);
+  const { home, away, rt, hive, root } = floor(t);
   hive.setHookRuntime(rt);
   await refused(hive.ensureAgent({ id: 'nope', name: 'N', provider: 'claude', cwd: path.dirname(rt) }));
   assert.equal(fs.existsSync(path.join(root, 'agents', 'nope')), false, 'no folder');
@@ -314,24 +317,24 @@ test('round 2: a refused new agent leaves nothing behind; the floor state stays 
   const st = hive.hookRuntimeStatus();
   assert.equal(st.ok, true, 'one agent\'s reach does not mark the floor down');
   assert.match(st.refused.nope, /working directory/);
-  await hive.ensureAgent({ id: 'nope', name: 'N', provider: 'claude', cwd: home });
+  await hive.ensureAgent({ id: 'nope', name: 'N', provider: 'claude', cwd: away });
   assert.equal(hive.hookRuntimeStatus().refused, undefined, 'cleared once it starts');
 });
 
 test('round 2: a file changed while an agent was being refused is reported, not silently restaged', async (t) => {
-  const { home, rt, hive, log } = floor(t);
+  const { home, away, rt, hive, log } = floor(t);
   hive.setHookRuntime(rt);
   await refused(hive.ensureAgent({ id: 'n1', name: 'N', provider: 'claude', cwd: path.dirname(rt) }));
   fs.appendFileSync(path.join(rt, 'cth-hook.cjs'), '\n// x');
-  await refused(hive.ensureAgent({ id: 'ok', name: 'OK', provider: 'claude', cwd: home }));
+  await refused(hive.ensureAgent({ id: 'ok', name: 'OK', provider: 'claude', cwd: away }));
   assert.ok(log().some((r) => r.kind === 'hook-runtime' && r.ok === false && /changed since the app wrote it/.test(r.reason)));
-  await hive.ensureAgent({ id: 'ok', name: 'OK', provider: 'claude', cwd: home });
+  await hive.ensureAgent({ id: 'ok', name: 'OK', provider: 'claude', cwd: away });
 });
 
 test('round 2: a manager with no runtime folder says so once in the log', async (t) => {
-  const { home, hive, log } = floor(t);
-  await hive.ensureAgent({ id: 'c1', name: 'C', provider: 'claude', cwd: home });
-  await hive.ensureAgent({ id: 'c2', name: 'C', provider: 'claude', cwd: home });
+  const { home, away, hive, log } = floor(t);
+  await hive.ensureAgent({ id: 'c1', name: 'C', provider: 'claude', cwd: away });
+  await hive.ensureAgent({ id: 'c2', name: 'C', provider: 'claude', cwd: away });
   const rows = log().filter((r) => r.kind === 'hook-runtime');
   assert.equal(rows.length, 1);
   assert.match(rows[0].reason, /no hook runtime folder/);
@@ -391,7 +394,7 @@ test('round 2: every Codex config that can add a write root is read: user, proje
 });
 
 test('round 3: comments and names with ~ are read as such; Claude settings get the link, size and pipe checks; CLAUDE_CONFIG_DIR and the managed drop-ins are read', async (t) => {
-  const { base, home, rt, hive, log } = floor(t);
+  const { base, home, away, rt, hive, log } = floor(t);
   hive.setHookRuntime(rt);
   const app = path.dirname(rt);
   const work = path.join(base, 'work');
@@ -459,11 +462,11 @@ const claudeLaunch = (dir, extra = [], env = {}) => ({ argv: ['claude --permissi
 const codexLaunch = (extra = [], env = {}) => ({ argv: ['codex -a never -s workspace-write', '--dangerously-bypass-hook-trust', ...extra], env });
 
 test('round 4: the launch line and its environment decide; anything not modelled refuses, naming the cause', async (t) => {
-  const { base, home, rt, hive, root } = floor(t);
+  const { base, home, away, rt, hive, root } = floor(t);
   hive.setHookRuntime(rt);
   const app = path.dirname(rt);
   const dir = (id) => path.join(root, 'agents', id);
-  const spawn = (id, provider, launch) => hive.ensureAgent({ id, name: id, provider, cwd: home }, { launch });
+  const spawn = (id, provider, launch) => hive.ensureAgent({ id, name: id, provider, cwd: away }, { launch });
   await spawn('ok1', 'claude', claudeLaunch(dir('ok1')));
   await spawn('ok2', 'codex', codexLaunch());
   // The exact forms the live floor runs today (argv elements whole, as the app hands them to the PTY).
@@ -507,34 +510,34 @@ test('round 4: the launch line and its environment decide; anything not modelled
 });
 
 test('round 4: decided once — a policy change after the decision starts under the snapshot; the late check refuses a launch that changed, and rolls back', async (t) => {
-  const { base, home, rt, hive, root, log } = floor(t);
+  const { base, home, away, rt, hive, root, log } = floor(t);
   hive.setHookRuntime(rt);
   const app = path.dirname(rt);
   const dir = (id) => path.join(root, 'agents', id);
   // Policy changes between the decision and the terminal: the snapshot stands, no disk re-read.
-  await hive.ensureAgent({ id: 'n1', name: 'n1', provider: 'claude', cwd: home }, { launch: claudeLaunch(dir('n1')) });
+  await hive.ensureAgent({ id: 'n1', name: 'n1', provider: 'claude', cwd: away }, { launch: claudeLaunch(dir('n1')) });
   fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
   fs.writeFileSync(path.join(home, '.claude/settings.json'), JSON.stringify({ permissions: { additionalDirectories: [app] } }));
   assert.doesNotThrow(() => hive.confirmHookLaunch(hive.takeHookVerdict('n1'), claudeLaunch(dir('n1')).argv, {}));
   fs.rmSync(path.join(home, '.claude'), { recursive: true });
   // A final launch that adds an unchecked root refuses and rolls a NEW agent back: folder, row, and a log row saying so.
-  await hive.ensureAgent({ id: 'n2', name: 'n2', provider: 'claude', cwd: home }, { launch: claudeLaunch(dir('n2')), spawnId: 's-n2' });
+  await hive.ensureAgent({ id: 'n2', name: 'n2', provider: 'claude', cwd: away }, { launch: claudeLaunch(dir('n2')), spawnId: 's-n2' });
   assert.ok(fs.existsSync(dir('n2')) && Object.hasOwn(hive.registry().agents, 'n2'));
   assert.throws(() => hive.confirmHookLaunch(hive.takeHookVerdict('s-n2'), claudeLaunch(dir('n2'), ['--add-dir', app]).argv, {}), /write root that was not checked/);
   assert.equal(fs.existsSync(dir('n2')), true, 'no folder is ever deleted: the one this call created is left in place');
   assert.equal(Object.hasOwn(hive.registry().agents, 'n2'), false, 'only the row this call added is rolled back');
   assert.ok(log().some((r) => r.kind === 'spawn-rolled-back' && r.agentId === 'n2' && r.rowRemoved === true && r.folderLeft === dir('n2')));
   // A final environment that moves Claude's settings refuses too; an EXISTING agent keeps its row and folder.
-  await hive.ensureAgent({ id: 'n1', name: 'n1', provider: 'claude', cwd: home }, { launch: claudeLaunch(dir('n1')) });
+  await hive.ensureAgent({ id: 'n1', name: 'n1', provider: 'claude', cwd: away }, { launch: claudeLaunch(dir('n1')) });
   assert.throws(() => hive.confirmHookLaunch(hive.takeHookVerdict('n1'), claudeLaunch(dir('n1')).argv, { CLAUDE_CONFIG_DIR: base }), /moved Claude's settings/);
   assert.ok(fs.existsSync(dir('n1')) && Object.hasOwn(hive.registry().agents, 'n1'), 'an existing agent is not removed');
   // A final launch line that is a wrapper, or drops the Codex sandbox, refuses.
-  await hive.ensureAgent({ id: 'x1', name: 'x1', provider: 'codex', cwd: home }, { launch: codexLaunch() });
+  await hive.ensureAgent({ id: 'x1', name: 'x1', provider: 'codex', cwd: away }, { launch: codexLaunch() });
   const v = hive.takeHookVerdict('x1');
   assert.throws(() => hive.confirmHookLaunch({ ...v, isNew: false }, ['codex -a never'], {}), /does not keep the Codex sandbox/);
   assert.throws(() => hive.confirmHookLaunch({ ...v, isNew: false }, ['sh -c codex'], {}), /does not run codex itself/);
   // A relative --add-dir checked at the decision passes the late check: both read it against the spawn's cwd.
-  await hive.ensureAgent({ id: 'x2', name: 'x2', provider: 'codex', cwd: home }, { launch: codexLaunch(['--add-dir', 'sub']) });
+  await hive.ensureAgent({ id: 'x2', name: 'x2', provider: 'codex', cwd: away }, { launch: codexLaunch(['--add-dir', 'sub']) });
   assert.doesNotThrow(() => hive.confirmHookLaunch({ ...hive.takeHookVerdict('x2'), isNew: false }, codexLaunch(['--add-dir', 'sub']).argv, {}));
   // The app's own remote rewrite is not a change.
   assert.doesNotThrow(() => hive.confirmHookLaunch({ ...v, isNew: false }, ['codex -a never -s workspace-write', '--dangerously-bypass-hook-trust', '--remote', 'unix:///x.sock'], {}));
@@ -555,7 +558,7 @@ test('round 4: the app passes the launch to ensureAgent and runs the late check 
 });
 
 test('round 5: a hand-written line with no -s takes the sandbox from Codex config; none, unknown or full access refuses saying what to change', async (t) => {
-  const { base, home, rt, hive, root } = floor(t);
+  const { base, home, away, rt, hive, root } = floor(t);
   hive.setHookRuntime(rt);
   const userCfg = path.join(home, '.codex', 'config.toml');
   fs.mkdirSync(path.dirname(userCfg), { recursive: true });
@@ -564,7 +567,7 @@ test('round 5: a hand-written line with no -s takes the sandbox from Codex confi
   // Hand-written lines with no -s (the app's builders always emit one): bare 'codex', and 'codex --model x'.
   const forms = [{ argv: ['codex'], env: {} }, { argv: ['codex --model gpt-x'], env: {} }];
   let n = 0;
-  const spawn = (launch, cwd = home) => hive.ensureAgent({ id: `ao${n++}`, name: 'a', provider: 'codex', cwd }, { launch });
+  const spawn = (launch, cwd = away) => hive.ensureAgent({ id: `ao${n++}`, name: 'a', provider: 'codex', cwd }, { launch });
   for (const f of forms) {
     fs.rmSync(userCfg, { force: true });
     assert.match(await refused(spawn(f)), /add -s workspace-write to its command, or set sandbox_mode in .*config\.toml/, 'no mode anywhere');
@@ -585,17 +588,17 @@ test('round 5: a hand-written line with no -s takes the sandbox from Codex confi
   assert.match(await refused(spawn({ argv: ['codex'], env: {} }, work)), /danger-full-access/);
   fs.rmSync(path.join(work, '.codex', 'config.toml'));
   // The late check accepts a final line with no -s only when the decision took the sandbox from config.
-  await hive.ensureAgent({ id: 'ok', name: 'ok', provider: 'codex', cwd: home }, { launch: { argv: ['codex'], env: {} } });
+  await hive.ensureAgent({ id: 'ok', name: 'ok', provider: 'codex', cwd: away }, { launch: { argv: ['codex'], env: {} } });
   const v = hive.takeHookVerdict('ok');
   assert.equal(v.codexFromConfig, true);
   assert.doesNotThrow(() => hive.confirmHookLaunch({ ...v, isNew: false }, ['codex', '--dangerously-bypass-hook-trust'], {}));
-  await hive.ensureAgent({ id: 'ok2', name: 'ok2', provider: 'codex', cwd: home }, { launch: { argv: ['codex -s workspace-write'], env: {} } });
+  await hive.ensureAgent({ id: 'ok2', name: 'ok2', provider: 'codex', cwd: away }, { launch: { argv: ['codex -s workspace-write'], env: {} } });
   assert.throws(() => hive.confirmHookLaunch({ ...hive.takeHookVerdict('ok2'), isNew: false }, ['codex'], {}), /does not keep the Codex sandbox/);
   assert.equal(root.endsWith('hive'), true);
 });
 
 test('round 5/6: Codex config is parsed as TOML; names in strings never count; refusals name the key', async (t) => {
-  const { base, home, rt, hive } = floor(t);
+  const { base, home, away, rt, hive } = floor(t);
   hive.setHookRuntime(rt);
   const L = loadTs('src/main/launchLine.ts');
   const q3 = '"'.repeat(3);
@@ -626,7 +629,7 @@ test('round 5/6: Codex config is parsed as TOML; names in strings never count; r
   const cfg = path.join(home, '.codex', 'config.toml');
   fs.mkdirSync(path.dirname(cfg), { recursive: true });
   fs.writeFileSync(cfg, 'profile = "x"\n[a]\nb = 1\n');
-  assert.match(await refused(hive.ensureAgent({ id: 'p1', name: 'p', provider: 'codex', cwd: home }, { launch: { argv: ['codex -s workspace-write'], env: {} } })), /profile is not on the list this app version understands/);
+  assert.match(await refused(hive.ensureAgent({ id: 'p1', name: 'p', provider: 'codex', cwd: away }, { launch: { argv: ['codex -s workspace-write'], env: {} } })), /profile is not on the list this app version understands/);
 });
 
 test('round 5: the refused list keeps at most the 32 most recent agents', async (t) => {
@@ -639,14 +642,14 @@ test('round 5: the refused list keeps at most the 32 most recent agents', async 
 });
 
 test('round 6: no folder is ever deleted — a pre-existing orphan folder survives a late refusal byte for byte', async (t) => {
-  const { home, rt, hive, root, log } = floor(t);
+  const { home, away, rt, hive, root, log } = floor(t);
   hive.setHookRuntime(rt);
   hive.ensureHive();
   const orphan = path.join(root, 'agents', 'orph');
   fs.mkdirSync(orphan, { recursive: true });
   fs.writeFileSync(path.join(orphan, 'notes.md'), 'keep me\n');
   const before = fs.readFileSync(path.join(orphan, 'notes.md'));
-  await hive.ensureAgent({ id: 'orph', name: 'o', provider: 'claude', cwd: home }, { launch: { argv: ['claude', '--settings', path.join(orphan, 'settings.json')], env: {} }, spawnId: 'pty-1' });
+  await hive.ensureAgent({ id: 'orph', name: 'o', provider: 'claude', cwd: away }, { launch: { argv: ['claude', '--settings', path.join(orphan, 'settings.json')], env: {} }, spawnId: 'pty-1' });
   hive.markHookProvisioned('pty-1');
   assert.throws(() => hive.confirmSpawn('pty-1', { id: 'orph', provider: 'claude' }, ['claude', '--settings', path.join(orphan, 'settings.json'), '--add-dir', path.dirname(rt)], {}), /write root that was not checked/);
   assert.deepEqual(fs.readFileSync(path.join(orphan, 'notes.md')), before, 'the file is untouched');
@@ -657,26 +660,26 @@ test('round 6: no folder is ever deleted — a pre-existing orphan folder surviv
 });
 
 test('round 6: the decision is keyed per spawn; a missing or mismatched one refuses', async (t) => {
-  const { home, rt, hive } = floor(t);
+  const { home, away, rt, hive } = floor(t);
   hive.setHookRuntime(rt);
   const L = (id) => ({ argv: ['claude', '--settings', path.join(home, 'hive', 'agents', id, 'settings.json')], env: {} });
   // Two overlapping spawns of one agent each keep their own decision.
-  await hive.ensureAgent({ id: 'a1', name: 'a', provider: 'claude', cwd: home }, { launch: L('a1'), spawnId: 'pty-A' }); hive.markHookProvisioned('pty-A');
-  await hive.ensureAgent({ id: 'a1', name: 'a', provider: 'claude', cwd: home }, { launch: L('a1'), spawnId: 'pty-B' }); hive.markHookProvisioned('pty-B');
+  await hive.ensureAgent({ id: 'a1', name: 'a', provider: 'claude', cwd: away }, { launch: L('a1'), spawnId: 'pty-A' }); hive.markHookProvisioned('pty-A');
+  await hive.ensureAgent({ id: 'a1', name: 'a', provider: 'claude', cwd: away }, { launch: L('a1'), spawnId: 'pty-B' }); hive.markHookProvisioned('pty-B');
   assert.doesNotThrow(() => hive.confirmSpawn('pty-A', { id: 'a1', provider: 'claude' }, L('a1').argv, {}));
   assert.doesNotThrow(() => hive.confirmSpawn('pty-B', { id: 'a1', provider: 'claude' }, L('a1').argv, {}));
   // Taken once: a second late check for the same spawn has no decision and refuses (no fail-open).
   assert.throws(() => hive.confirmSpawn('pty-A', { id: 'a1', provider: 'claude' }, L('a1').argv, {}), /no hook runtime decision was made for this spawn/);
   assert.throws(() => hive.confirmSpawn('pty-never', { id: 'a1', provider: 'claude' }, L('a1').argv, {}), /no hook runtime decision/);
   // A decision for another agent is not this one's.
-  await hive.ensureAgent({ id: 'a2', name: 'b', provider: 'claude', cwd: home }, { launch: L('a2'), spawnId: 'pty-C' }); hive.markHookProvisioned('pty-C');
+  await hive.ensureAgent({ id: 'a2', name: 'b', provider: 'claude', cwd: away }, { launch: L('a2'), spawnId: 'pty-C' }); hive.markHookProvisioned('pty-C');
   assert.throws(() => hive.confirmSpawn('pty-C', { id: 'a1', provider: 'claude' }, L('a1').argv, {}), /for another agent/);
   // A provider that gets no app hook command needs no decision.
   assert.doesNotThrow(() => hive.confirmSpawn('pty-none', { id: 'g1', provider: 'gemini' }, ['gemini'], {}));
 });
 
 test('round 7 (H1): a decision is confirmable only once provisioning finished; every swallow site is covered', async (t) => {
-  const { home, rt, hive, root } = floor(t);
+  const { home, away, rt, hive, root } = floor(t);
   hive.setHookRuntime(rt);
   hive.ensureHive();
   const L = (id) => ({ argv: ['claude', '--settings', path.join(root, 'agents', id, 'settings.json')], env: {} });
@@ -684,22 +687,22 @@ test('round 7 (H1): a decision is confirmable only once provisioning finished; e
   fs.mkdirSync(path.join(root, 'agents', 'blocked'), { recursive: true });
   fs.writeFileSync(path.join(root, 'agents', 'blocked', 'inbox'), 'x');
   let err;
-  try { await hive.ensureAgent({ id: 'blocked', name: 'b', provider: 'claude', cwd: home }, { launch: L('blocked'), spawnId: 'pty-gap' }); } catch (e) { err = e; }
+  try { await hive.ensureAgent({ id: 'blocked', name: 'b', provider: 'claude', cwd: away }, { launch: L('blocked'), spawnId: 'pty-gap' }); } catch (e) { err = e; }
   assert.ok(err && err.code === 'ENOTDIR', String(err));
   hive.hookProvisioningFailed('pty-gap', err);
   hive.markHookProvisioned('pty-gap'); // a mark after a recorded failure does not clear it
   assert.throws(() => hive.confirmSpawn('pty-gap', { id: 'blocked', provider: 'claude' }, L('blocked').argv, {}), /hook provisioning did not complete \(.*ENOTDIR/);
   // The injection was never applied (no mark): the decision stays unconfirmable.
-  await hive.ensureAgent({ id: 'nomark', name: 'n', provider: 'claude', cwd: home }, { launch: L('nomark'), spawnId: 'pty-nomark' });
+  await hive.ensureAgent({ id: 'nomark', name: 'n', provider: 'claude', cwd: away }, { launch: L('nomark'), spawnId: 'pty-nomark' });
   assert.throws(() => hive.confirmSpawn('pty-nomark', { id: 'nomark', provider: 'claude' }, L('nomark').argv, {}), /hook provisioning did not complete/);
   // Site installCodexHooks / bridge catch: with a runtime set, a Codex hook config that cannot be written refuses instead of starting unhooked.
   const keep = hive.exposeCodexDataDirs;
   hive.exposeCodexDataDirs = () => { throw new Error('injected: cannot write the Codex home'); };
   t.after(() => { hive.exposeCodexDataDirs = keep; });
-  assert.match(await refused(hive.ensureAgent({ id: 'cx', name: 'c', provider: 'codex', cwd: home }, { launch: { argv: ['codex -s workspace-write'], env: {} }, spawnId: 'pty-cx' })), /Codex hook config could not be written \(injected/);
+  assert.match(await refused(hive.ensureAgent({ id: 'cx', name: 'c', provider: 'codex', cwd: away }, { launch: { argv: ['codex -s workspace-write'], env: {} }, spawnId: 'pty-cx' })), /Codex hook config could not be written \(injected/);
   hive.exposeCodexDataDirs = keep;
   // Site copyBundledSkills catch: skills are not hooks; a failure there leaves the hook settings in place.
-  await hive.ensureAgent({ id: 'sk', name: 's', provider: 'claude', cwd: home }, { launch: L('sk'), spawnId: 'pty-sk', skillsDir: path.join(home, 'no-such-skills') });
+  await hive.ensureAgent({ id: 'sk', name: 's', provider: 'claude', cwd: away }, { launch: L('sk'), spawnId: 'pty-sk', skillsDir: path.join(home, 'no-such-skills') });
   hive.markHookProvisioned('pty-sk');
   assert.ok(JSON.parse(fs.readFileSync(path.join(root, 'agents', 'sk', 'settings.json'), 'utf8')).hooks.Stop[0].hooks[0].command.includes(rt));
   assert.doesNotThrow(() => hive.confirmSpawn('pty-sk', { id: 'sk', provider: 'claude' }, L('sk').argv, {}));
@@ -713,13 +716,13 @@ test('round 7 (H1): a decision is confirmable only once provisioning finished; e
 });
 
 test('round 7 (H2): a late refusal removes only a row this spawn still owns — both interleavings', async (t) => {
-  const { home, rt, hive, root, log } = floor(t);
+  const { home, away, rt, hive, root, log } = floor(t);
   hive.setHookRuntime(rt);
   const L = { argv: ['claude', '--settings', path.join(root, 'agents', 'same', 'settings.json')], env: {} };
   const bad = [...L.argv, '--add-dir', path.dirname(rt)];
   const both = async () => {
-    await hive.ensureAgent({ id: 'same', name: 's', provider: 'claude', cwd: home }, { launch: L, spawnId: 'A' }); hive.markHookProvisioned('A');
-    await hive.ensureAgent({ id: 'same', name: 's', provider: 'claude', cwd: home }, { launch: L, spawnId: 'B' }); hive.markHookProvisioned('B');
+    await hive.ensureAgent({ id: 'same', name: 's', provider: 'claude', cwd: away }, { launch: L, spawnId: 'A' }); hive.markHookProvisioned('A');
+    await hive.ensureAgent({ id: 'same', name: 's', provider: 'claude', cwd: away }, { launch: L, spawnId: 'B' }); hive.markHookProvisioned('B');
   };
   // Order 1: B starts, then A's late check refuses.
   await both();
@@ -731,8 +734,8 @@ test('round 7 (H2): a late refusal removes only a row this spawn still owns — 
   const f2 = floor(t);
   f2.hive.setHookRuntime(f2.rt);
   const L2 = { argv: ['claude', '--settings', path.join(f2.root, 'agents', 'same', 'settings.json')], env: {} };
-  await f2.hive.ensureAgent({ id: 'same', name: 's', provider: 'claude', cwd: f2.home }, { launch: L2, spawnId: 'A' }); f2.hive.markHookProvisioned('A');
-  await f2.hive.ensureAgent({ id: 'same', name: 's', provider: 'claude', cwd: f2.home }, { launch: L2, spawnId: 'B' }); f2.hive.markHookProvisioned('B');
+  await f2.hive.ensureAgent({ id: 'same', name: 's', provider: 'claude', cwd: f2.away }, { launch: L2, spawnId: 'A' }); f2.hive.markHookProvisioned('A');
+  await f2.hive.ensureAgent({ id: 'same', name: 's', provider: 'claude', cwd: f2.away }, { launch: L2, spawnId: 'B' }); f2.hive.markHookProvisioned('B');
   assert.throws(() => f2.hive.confirmSpawn('A', { id: 'same', provider: 'claude' }, [...L2.argv, '--add-dir', path.dirname(f2.rt)], {}), /not checked/);
   assert.equal(Object.hasOwn(f2.hive.registry().agents, 'same'), true, 'the row now belongs to B');
   assert.doesNotThrow(() => f2.hive.confirmSpawn('B', { id: 'same', provider: 'claude' }, L2.argv, {}));
@@ -740,13 +743,13 @@ test('round 7 (H2): a late refusal removes only a row this spawn still owns — 
   const f3 = floor(t);
   f3.hive.setHookRuntime(f3.rt);
   const L3 = { argv: ['claude', '--settings', path.join(f3.root, 'agents', 'same', 'settings.json')], env: {} };
-  await f3.hive.ensureAgent({ id: 'same', name: 's', provider: 'claude', cwd: f3.home }, { launch: L3, spawnId: 'B' }); f3.hive.markHookProvisioned('B');
-  await f3.hive.ensureAgent({ id: 'same', name: 's', provider: 'claude', cwd: f3.home }, { launch: L3, spawnId: 'A' }); f3.hive.markHookProvisioned('A');
+  await f3.hive.ensureAgent({ id: 'same', name: 's', provider: 'claude', cwd: f3.away }, { launch: L3, spawnId: 'B' }); f3.hive.markHookProvisioned('B');
+  await f3.hive.ensureAgent({ id: 'same', name: 's', provider: 'claude', cwd: f3.away }, { launch: L3, spawnId: 'A' }); f3.hive.markHookProvisioned('A');
   f3.hive.confirmSpawn('B', { id: 'same', provider: 'claude' }, L3.argv, {});
   assert.throws(() => f3.hive.confirmSpawn('A', { id: 'same', provider: 'claude' }, [...L3.argv, '--add-dir', path.dirname(f3.rt)], {}), /not checked/);
   assert.equal(Object.hasOwn(f3.hive.registry().agents, 'same'), true, 'a later spawn has started: the row stays');
   // Alone: the row A added, and still owns, is removed.
-  await hive.ensureAgent({ id: 'solo', name: 's', provider: 'claude', cwd: home }, { launch: { argv: ['claude', '--settings', path.join(root, 'agents', 'solo', 'settings.json')], env: {} }, spawnId: 'S' }); hive.markHookProvisioned('S');
+  await hive.ensureAgent({ id: 'solo', name: 's', provider: 'claude', cwd: away }, { launch: { argv: ['claude', '--settings', path.join(root, 'agents', 'solo', 'settings.json')], env: {} }, spawnId: 'S' }); hive.markHookProvisioned('S');
   assert.throws(() => hive.confirmSpawn('S', { id: 'solo', provider: 'claude' }, ['claude', '--settings', path.join(root, 'agents', 'solo', 'settings.json'), '--add-dir', path.dirname(rt)], {}), /not checked/);
   assert.equal(Object.hasOwn(hive.registry().agents, 'solo'), false);
 });
@@ -771,21 +774,21 @@ test('round 7 (M): any date, time or non-finite value anywhere is not understood
     assert.equal(r.state, state, JSON.stringify(text));
     if (key) assert.ok(r.why.startsWith(`${key} is a value the app does not read`), r.why);
   }
-  const { home, rt, hive } = floor(t);
+  const { home, away, rt, hive } = floor(t);
   hive.setHookRuntime(rt);
   const cfg = path.join(home, '.codex', 'config.toml');
   fs.mkdirSync(path.dirname(cfg), { recursive: true });
   fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\nhistory_date = 2020-02-30\n');
-  assert.match(await refused(hive.ensureAgent({ id: 'd1', name: 'd', provider: 'codex', cwd: home }, { launch: { argv: ['codex'], env: {} } })), /history_date is a value the app does not read/);
+  assert.match(await refused(hive.ensureAgent({ id: 'd1', name: 'd', provider: 'codex', cwd: away }, { launch: { argv: ['codex'], env: {} } })), /history_date is a value the app does not read/);
 });
 
 test('round 8 (N1): any sandbox/permission/profile/writable_roots key the decoder does not read refuses — Codex permission profiles included', async (t) => {
-  const { home, rt, hive } = floor(t);
+  const { home, away, rt, hive } = floor(t);
   hive.setHookRuntime(rt);
   const cfg = path.join(home, '.codex', 'config.toml');
   fs.mkdirSync(path.dirname(cfg), { recursive: true });
   let n = 0;
-  const spawn = (argv) => hive.ensureAgent({ id: `p${n++}`, name: 'p', provider: 'codex', cwd: home }, { launch: { argv, env: {} } });
+  const spawn = (argv) => hive.ensureAgent({ id: `p${n++}`, name: 'p', provider: 'codex', cwd: away }, { launch: { argv, env: {} } });
   // Her probes: the config selects a permission profile that outranks sandbox_mode.
   fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\ndefault_permissions = ":danger-full-access"\n');
   assert.match(await refused(spawn(['codex'])), /default_permissions is not on the list this app version understands \(Codex 0\.162-0\.167\)/);
@@ -810,12 +813,12 @@ test('round 8 (N1): any sandbox/permission/profile/writable_roots key the decode
 });
 
 test('prep r7: the key-family test applies only where Codex reads policy; her false refusals start, every policy form still refuses', async (t) => {
-  const { home, rt, hive } = floor(t);
+  const { home, away, rt, hive } = floor(t);
   hive.setHookRuntime(rt);
   const cfg = path.join(home, '.codex', 'config.toml');
   fs.mkdirSync(path.dirname(cfg), { recursive: true });
   let n = 0;
-  const spawn = (argv) => hive.ensureAgent({ id: `q${n++}`, name: 'q', provider: 'codex', cwd: home }, { launch: { argv, env: {} } });
+  const spawn = (argv) => hive.ensureAgent({ id: `q${n++}`, name: 'q', provider: 'codex', cwd: away }, { launch: { argv, env: {} } });
   const base = 'sandbox_mode = "workspace-write"\n';
   const fine = [
     'include_permissions_instructions = true\n', '[mcp_servers.x.env]\nAWS_PROFILE = "a"\n', '[shell_environment_policy.set]\nAWS_PROFILE = "a"\n',
@@ -846,12 +849,12 @@ test('prep r7: the key-family test applies only where Codex reads policy; her fa
 });
 
 test('fix r7: allow_symlinked_codex_home refuses unless false, in config or on -c', async (t) => {
-  const { home, rt, hive } = floor(t);
+  const { home, away, rt, hive } = floor(t);
   hive.setHookRuntime(rt);
   const cfg = path.join(home, '.codex', 'config.toml');
   fs.mkdirSync(path.dirname(cfg), { recursive: true });
   let n = 0;
-  const spawn = (argv) => hive.ensureAgent({ id: `s${n++}`, name: 's', provider: 'codex', cwd: home }, { launch: { argv, env: {} } });
+  const spawn = (argv) => hive.ensureAgent({ id: `s${n++}`, name: 's', provider: 'codex', cwd: away }, { launch: { argv, env: {} } });
   fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\nallow_symlinked_codex_home = true\n');
   assert.match(await refused(spawn(['codex -s workspace-write'])), /allow_symlinked_codex_home/);
   fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\nallow_symlinked_codex_home = false\n');
@@ -864,14 +867,14 @@ test('fix r7: allow_symlinked_codex_home refuses unless false, in config or on -
 });
 
 test('versioned allowlist: owner config with hooks starts, project hooks refuse, only app-emitted flags start', async (t) => {
-  const { home, rt, hive } = floor(t);
+  const { home, away, rt, hive } = floor(t);
   hive.setHookRuntime(rt);
   const user = path.join(home, '.codex', 'config.toml');
   fs.mkdirSync(path.dirname(user), { recursive: true });
   const proj = path.join(home, 'work');
   fs.mkdirSync(path.join(proj, '.codex'), { recursive: true });
   let n = 0;
-  const spawn = (argv, cwd = home) => hive.ensureAgent({ id: `v${n++}`, name: 'v', provider: 'codex', cwd }, { launch: { argv, env: {} } });
+  const spawn = (argv, cwd = away) => hive.ensureAgent({ id: `v${n++}`, name: 'v', provider: 'codex', cwd }, { launch: { argv, env: {} } });
   // The owner's real config shape, with its own hooks: allowed, hooks not read.
   fs.writeFileSync(user, 'model = "gpt"\nmodel_reasoning_effort = "high"\nsandbox_mode = "workspace-write"\n[projects."/x"]\ntrust_level = "trusted"\n[features]\nmulti_agent = true\n[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "owner"\n');
   await spawn(['codex']);
@@ -892,7 +895,7 @@ test('auto mode off: every production builder\'s line gets the config\'s own san
   const { buildSpawnCommand } = loadTs('src/renderer/src/store/config.ts');
   const { buildWorkerLaunch } = loadTs('src/main/workerLaunch.ts');
   const { tokenizeCommand } = loadTs('src/shared/commandLine.ts');
-  const { home, rt, hive } = floor(t);
+  const { home, away, rt, hive } = floor(t);
   hive.setHookRuntime(rt);
   const cfg = path.join(home, '.codex', 'config.toml');
   fs.mkdirSync(path.dirname(cfg), { recursive: true });
@@ -907,7 +910,7 @@ test('auto mode off: every production builder\'s line gets the config\'s own san
     const words = tokenizeCommand(line);
     const args = hive.withCodexSandboxStance(words.slice(1), home);
     const launch = { argv: [words[0], ...args], env: {} };
-    return { args, start: () => hive.ensureAgent({ id: `b${n++}`, name: 'b', provider: 'codex', cwd: home }, { launch }) };
+    return { args, start: () => hive.ensureAgent({ id: `b${n++}`, name: 'b', provider: 'codex', cwd: away }, { launch }) };
   };
   const cases = [
     ['no mode (the owner\'s real config)', owner, 'workspace-write'],
@@ -960,7 +963,7 @@ test('auto mode off: every production builder\'s line gets the config\'s own san
 });
 
 test('tables that name a program Codex runs outside its sandbox: allowed in the owner config, refused in a project config', async (t) => {
-  const { home, rt, hive } = floor(t);
+  const { home, away, rt, hive } = floor(t);
   hive.setHookRuntime(rt);
   const user = path.join(home, '.codex', 'config.toml');
   fs.mkdirSync(path.dirname(user), { recursive: true });

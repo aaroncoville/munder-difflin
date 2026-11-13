@@ -1,4 +1,5 @@
 import { seedCodexHookTrust } from './codexHookTrust';
+import { CodexHomeRefused, codexSeatHome } from './codexSeatHome';
 import { applyGitCommitsSetting, gitCommitsDisabled } from './hiveGitSetting';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
 import { bundledResourcePath } from './resourcePaths';
@@ -125,10 +126,9 @@ import { listLocalSkills, loadCatalog, installSkill, uninstallSkill, type LocalS
 import { loadHero } from './hero';
 import { loadModelCatalog } from './modelCatalog';
 import {
-  shortCodexHomeEnv,
   withCodexRemoteArgs
 } from '../shared/codexRemote';
-import { CODEX_SPAWN_LOG_KIND, setUpCodexRemote } from './codexRemoteSetup';
+import { setUpCodexRemote } from './codexRemoteSetup';
 import { workerExitEvent } from './workerExitLog';
 
 const isDev = !!process.env.ELECTRON_RENDERER_URL;
@@ -253,7 +253,7 @@ const codexHomes = new CodexHomes();
  *  (codexThread.ts). Kept beside the worker's Codex home. */
 const codexThreads = new CodexThreads((agentId) => {
   const root = hive.root();
-  return root ? join(root, 'agents', agentId, '.codex', 'hive-thread.json') : null;
+  return root ? join(codexSeatHome(join(root, 'agents', agentId), agentId), 'hive-thread.json') : null;
 });
 /** Codex workers being moved to a new thread right now. */
 const openingThreads = new Set<string>();
@@ -306,7 +306,7 @@ const telemetry = new TelemetryCollector({
   resolveCodexHome: (agentId) => {
     if (hive.registry().agents[agentId]?.provider !== 'codex') return null;
     const root = hive.root();
-    return codexHomes.homeOf(agentId, root ? join(root, 'agents', agentId, '.codex') : null);
+    return codexHomes.homeOf(agentId, root ? codexSeatHome(join(root, 'agents', agentId), agentId) : null);
   }
 });
 // Usage provider (Seam 1) — the INTEGRATION swap: Oscar's telemetry collector (#7)
@@ -1492,7 +1492,7 @@ function writeFleetSnapshot(): void {
         const activeAt = fleetLastActiveAt(a.provider, u?.ts, () => codexAgentActiveAt(
           id,
           codexHomes,
-          hiveRoot ? join(hiveRoot, 'agents', id, '.codex') : null,
+          hiveRoot ? codexSeatHome(join(hiveRoot, 'agents', id), id) : null,
           now,
           codexActivityCache
         ));
@@ -2768,7 +2768,7 @@ function findCodexHomeForSession(sessionId: string, siblingsRoot: string): strin
     } catch { return null; }
     for (const a of agents) {
       if (!a.isDirectory()) continue;
-      const home = join(siblingsRoot, a.name, '.codex');
+      const home = codexSeatHome(join(siblingsRoot, a.name), a.name);
       const sessions = join(home, 'sessions');
       if (!existsSync(sessions)) continue;
       const stack = [sessions];
@@ -2822,7 +2822,7 @@ function spawnFailReason(error?: string): SpawnFailReason {
 /** A refused id must not start as a process with no prompt, environment, hooks or
  *  roster entry. Its worktree goes too, since no process will ever tear it down. One
  *  that cannot be removed is logged and stays tracked, because it is still on disk. */
-async function refuseSpawn(ptyId: string, agentId: string, provider: string, refusal: RefusedRosterId | RegistryUnreadable | HookRuntimeUnavailable): Promise<{ ok: false; error: string }> {
+async function refuseSpawn(ptyId: string, agentId: string, provider: string, refusal: RefusedRosterId | RegistryUnreadable | HookRuntimeUnavailable | CodexHomeRefused): Promise<{ ok: false; error: string }> {
   hive.appendLog({ kind: 'spawn-refused', agentId: shortTarget(agentId), reason: refusal.message });
   analytics.track('agent_spawn_failed', { provider, reason: 'spawn_error' });
   const wtPath = worktreePaths.get(ptyId);
@@ -3059,7 +3059,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       // that owns the session) are the app's too. Recorded with the spawn, so the config's kind never comes from a path.
       if (inj.env?.CODEX_HOME !== undefined) codexHomeFromApp = true;
     } catch (e) {
-      if (e instanceof RefusedRosterId || e instanceof RegistryUnreadable || e instanceof HookRuntimeUnavailable) return refuseSpawn(opts.id, opts.hive.id, provider, e);
+      if (e instanceof RefusedRosterId || e instanceof RegistryUnreadable || e instanceof HookRuntimeUnavailable || e instanceof CodexHomeRefused) return refuseSpawn(opts.id, opts.hive.id, provider, e);
       // Hive provisioning is otherwise best-effort, but not for a hooked provider: the late check refuses, naming this.
       hive.hookProvisioningFailed(opts.id, e);
       console.error('[hive] ensureAgent failed:', e);
@@ -3290,24 +3290,8 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // the TUI to it so the thread is visible in ChatGPT mobile. Best-effort: an
   // unavailable/older Codex install still gets a normal local terminal.
   if (provider === 'codex' && opts.hive?.id) {
-    // Before anything optional: Codex derives its app-server control socket from
-    // CODEX_HOME, and an agent home overflows the platform's sun_path limit. An
-    // interactive agent survives that by falling back to a local TUI; a headless
-    // worker has no TUI and exits. So the short home is a precondition of
-    // booting, not a feature of remote control.
-    const shortened = shortCodexHomeEnv(opts.env ?? {}, opts.hive.id);
-    if (shortened.shortened) opts.env = shortened.env;
-    else {
-      console.warn('[codex] no bindable short home; the daemon may fail to start:', opts.env?.CODEX_HOME);
-      hive.appendLog({
-        kind: CODEX_SPAWN_LOG_KIND,
-        agentId: opts.hive.id,
-        stage: 'short-home',
-        ok: false,
-        home: opts.env?.CODEX_HOME ?? '',
-        detail: 'no bindable short home could be established'
-      });
-    }
+    // The home is already outside the hive and short enough for the control
+    // socket (codexSeatHome.ts); nothing here may move it back.
     await enableCodexRemoteForSpawn(opts, opts.hive.id);
   }
   // The late check on the launch exactly as it will start; a refusal here rolls back what ensureAgent created.
@@ -5887,7 +5871,7 @@ function runWorkerWakeBeat(): void {
   // sessions last recorded anything and when Codex last ran its catch-up
   // summary, read from the home it actually runs in and within a per-beat budget.
   const root = hive.root();
-  const nominalHome = (agentId: string): string | null => (root ? join(root, 'agents', agentId, '.codex') : null);
+  const nominalHome = (agentId: string): string | null => (root ? codexSeatHome(join(root, 'agents', agentId), agentId) : null);
   // Only once no watchdog nudge — this beat's or any other's — still awaits its
   // Enter, so a slow, uncached reader never sits between a nudge's text and its
   // Enter (scheduleStallEnrichment). The per-reader budget is cooperative: once

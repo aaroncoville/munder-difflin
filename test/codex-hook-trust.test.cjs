@@ -16,7 +16,10 @@ async function fixture(t) {
   const runtime = fs.realpathSync(fs.mkdtempSync('/tmp/mdcr-'));
   t.after(() => fs.rmSync(runtime, { recursive: true, force: true }));
   hive.setHookRuntime(runtime);
-  const injection = await hive.ensureAgent({ id: 'hook-trust', name: 'Hook trust', provider: 'codex', cwd: root });
+  // Not the home itself: a working folder that contains the Codex home is refused.
+  const cwd = path.join(root, 'work');
+  fs.mkdirSync(cwd);
+  const injection = await hive.ensureAgent({ id: 'hook-trust', name: 'Hook trust', provider: 'codex', cwd });
   const home = fs.realpathSync(injection.env.CODEX_HOME);
   const config = fs.readFileSync(path.join(home, 'config.toml'), 'utf8');
   const command = JSON.parse(config.match(/^command = (.+)$/m)[1]);

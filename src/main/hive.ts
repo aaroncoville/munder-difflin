@@ -36,7 +36,7 @@ import { stampSentCopy } from './sentStamp';
 import { RecentSends } from './outboxResend';
 import { setAsideUnlessFolder } from './sentFolder';
 import { COMMAND_GROUPS } from '../shared/claudeCommands';
-import { ensureCodexShortHome } from '../shared/codexRemote';
+import { assertCodexSeatHome, CodexHomeRefused, codexSeatHome, migrateSeatHome } from './codexSeatHome';
 import {
   argsWithSandboxStance,
   hasSandboxStance,
@@ -264,7 +264,8 @@ function shortRand(): string {
  *  one in each agent dir; written on birth here and refreshed by the mine loop.
  *
  *  `.codex/` is here for a second reason as well, and it is the load-bearing one:
- *  a Codex worker's CODEX_HOME lives INSIDE its agent dir (see installCodexHooks —
+ *  a Codex worker's CODEX_HOME lived INSIDE its agent dir until it moved out of the
+ *  hive (codexSeatHome.ts), and older agents still have that folder (see installCodexHooks —
  *  Codex can only be given hooks through a config.toml in its own home, so it
  *  cannot share the user's ~/.codex). Codex then fills that folder with full
  *  session transcripts, an 80MB+ logs sqlite and a plugin cache, and the hive's
@@ -1081,7 +1082,7 @@ export class HiveManager {
     }
     const userCodexHome = join(homedir(), '.codex');
     for (const [id, agent] of Object.entries(this.registry().agents)) {
-      const codexHome = join(root, 'agents', id, '.codex');
+      const codexHome = codexSeatHome(join(root, 'agents', id), id);
       if (agent.provider === 'codex' && existsSync(codexHome)) {
         this.exposeCodexDataDirs(codexHome, userCodexHome, id);
       }
@@ -1452,7 +1453,12 @@ export class HiveManager {
               this.emit?.('hive:degraded', { agentId: meta.id, name: meta.name, reason: 'proxy-bind', message: degraded });
             }
           }
-        } catch (e) { if (e instanceof HookRuntimeUnavailable) throw e; console.error(`[hive] install ${desc.kind} bridge failed:`, e); }
+        } catch (e) {
+          // A Codex home that its own sandbox could write is not a degraded
+          // bridge, it is a spawn that must not happen.
+          if (e instanceof HookRuntimeUnavailable || e instanceof CodexHomeRefused) throw e;
+          console.error(`[hive] install ${desc.kind} bridge failed:`, e);
+        }
       }
       // Inject the protocol text whichever way the CLI accepts it.
       // type-into-tui (Crush): the bare TUI reads a positional as a Cobra subcommand
@@ -3066,7 +3072,7 @@ export class HiveManager {
    *
    *  ISOLATION: rather than mutate the user's global Codex configuration (which
    *  also holds their login), we point this worker at a PER-AGENT CODEX_HOME
-   *  (`<dir>/.codex`, alongside Claude's settings.json) holding our own config.toml
+   *  (codexSeatHome: outside the hive, where no agent's sandbox can write it) holding our own config.toml
    *  with `[hooks]` tables — so the hooks fire ONLY for hive workers and a personal
    *  `codex` run is untouched. Rollout directories are linked into that isolated
    *  home from namespaced paths under the standard global scan roots. The user's
@@ -3074,22 +3080,17 @@ export class HiveManager {
    *  (login + model/provider/trust settings still apply).
    *  Returns the CODEX_HOME path for the caller to put in the worker's env. */
   private installCodexHooks(dir: string, cwd: string, agentId: string, writableRoots: string[] = []): string {
-    const home = join(dir, '.codex');
+    // Computed, never read from the agent folder (codexSeatHome.ts), and refused
+    // outright if this agent's own sandbox could write it.
+    const home = codexSeatHome(dir, agentId);
+    assertCodexSeatHome(home, [cwd, ...writableRoots]);
     try {
-      // Establish the home BEFORE anything is written into it. Codex derives its
-      // app-server control socket from $CODEX_HOME and canonicalizes the path
-      // first, and an agent directory is far past the platform's 104-byte limit
-      // — so a home created here as a plain directory can never host one, and
-      // the daemon fails on every start. ensureCodexShortHome puts the real
-      // directory somewhere short and leaves this .codex as the link onto it, so
-      // everything below (and everything that reads the agent folder) is
-      // unchanged.
-      //
-      // Null means this agent keeps a plain directory: it already had a real one
-      // — which is left alone, because it holds live sessions — or no short root
-      // was available. That agent still runs; it just has no remote control, the
-      // same as before any of this existed.
-      if (!ensureCodexShortHome(home, agentId)) mkdirSync(home, { recursive: true });
+      mkdirSync(home, { recursive: true, mode: 0o700 });
+      // An agent that ran before homes moved out of the agent folder keeps its
+      // history: an allowlist of files is copied once, as data. The old folder
+      // is left exactly as it was; the owner removes it.
+      const migrated = migrateSeatHome(dir, home);
+      if (migrated) this.appendLog({ kind: 'codex-home-migrated', agentId, from: migrated.from, to: home, copied: migrated.copied, skipped: migrated.skipped });
       const userHome = join(homedir(), '.codex');
       // Symlink the user's login so the isolated home authenticates as them.
       // (config.toml is NOT symlinked — we write our own below, seeded from theirs,
@@ -3113,8 +3114,9 @@ export class HiveManager {
       }
       // Wire lifecycle hooks via config.toml `[hooks]` tables — the user-layer
       // discovery surface Codex actually scans. (A bare $CODEX_HOME/hooks.json is
-      // plugin-scoped — referenced FROM a plugin manifest — and is NOT discovered
-      // for a plain config dir; verified empirically that it never fires.) We seed
+      // a user-layer source too: codex-cli 0.167 lists it as an enabled user hook
+      // and runs it once trusted. We do not write one; that it would run is why
+      // the home must sit where no agent's sandbox can write.) We seed
       // this config.toml from the user's (their model/provider/trust settings carry
       // over) and append a `[[hooks.<Event>]]` group per event, each pointing at the
       // SAME cth-hook shim — reused verbatim (Codex's hook payload + response are
@@ -3267,7 +3269,7 @@ export class HiveManager {
     for (const entry of readdirSync(agents, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       for (const kind of ['sessions', 'archived_sessions'] as const) {
-        const source = join(agents, entry.name, '.codex', kind);
+        const source = join(codexSeatHome(join(agents, entry.name), entry.name), kind);
         try {
           if (!lstatSync(source).isSymbolicLink()) continue;
           const target = realpathSync(source);
