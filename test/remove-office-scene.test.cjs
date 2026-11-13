@@ -58,42 +58,20 @@ test('nothing in the renderer imports from the office scene', () => {
 });
 
 test('LimeZu is credited wherever media of the old office are still shown, and nowhere the app ships', () => {
-  // The app no longer ships the tilesets, but the README and site still show
-  // screenshots and video drawn with them; the licence credit stays beside them.
-  for (const rel of ['README.md', 'docs/index.html', 'docs/pro/index.html', 'tools/landing-halloween/base.html']) {
+  // The app no longer ships the tilesets, but some pages may still show
+  // screenshots and video drawn with them; wherever one does, the licence
+  // credit stays beside it.
+  const officeMedia = /media\/floor\.png|hero\.mp4|\/media\/demo\//;
+  for (const rel of ['README.md', 'docs/index.html']) {
+    if (!fs.existsSync(R(rel)) || !officeMedia.test(read(rel))) continue;
     assert.match(read(rel), /limezu/i, `${rel} shows office media without the LimeZu credit`);
   }
-  assert.match(read('README.md'), /docs\/media\/floor\.png/, 'the README credit is there because it shows the office');
   for (const rel of ['CONTRIBUTING.md', 'src/renderer/src/assets/ATTRIBUTION.md']) {
     assert.doesNotMatch(read(rel), /limezu/i, `${rel} credits art the app no longer ships`);
   }
-  assert.doesNotMatch(read('docs/terms.html'), /assets bundled with the app[^.]*tilesets/i, 'terms still say the app bundles the tilesets');
   assert.doesNotMatch(read('.github/CODEOWNERS'), /LICENSE-ASSETS/);
   assert.equal(fs.existsSync(R('LICENSE-ASSETS')), false, 'the asset licence carve-out has nothing left to carve out');
 });
-
-test('a blog post that plays a recording of the old office credits LimeZu beside it', () => {
-  // The demo recordings under /media/demo/ were made in the pixel office, so
-  // the licence credit goes with them wherever the blog embeds one, in the
-  // post's source and in the page built from it.
-  const posts = fs.readdirSync(R('blog/src/posts')).filter((f) => f.endsWith('.md'));
-  const embedding = posts.filter((f) => /\/media\/demo\//.test(read(`blog/src/posts/${f}`)));
-  assert.ok(embedding.length >= 3, `only ${embedding.length} posts embed a recording; the scan no longer sees them`);
-  const missing = [];
-  for (const f of embedding) {
-    const slug = f.replace(/\.md$/, '');
-    for (const rel of [`blog/src/posts/${f}`, `docs/blog/${slug}/index.html`]) {
-      if (!fs.existsSync(R(rel))) { missing.push(`${rel} (not built)`); continue; }
-      const text = read(rel);
-      // The credit sits right after each recording, not somewhere else on the page.
-      for (const m of text.matchAll(/<\/video>/g)) {
-        if (!/limezu/i.test(text.slice(m.index, m.index + 600))) missing.push(`${rel}:${text.slice(0, m.index).split('\n').length}`);
-      }
-    }
-  }
-  assert.deepEqual(missing, []);
-});
-
 test('the asset attribution lists only files that still ship', () => {
   const doc = read('src/renderer/src/assets/ATTRIBUTION.md');
   const linked = [...doc.matchAll(/\]\(([^)#]+)\)/g)].map((m) => m[1]).filter((l) => !/^https?:/.test(l));

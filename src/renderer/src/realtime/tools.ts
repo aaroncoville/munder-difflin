@@ -23,6 +23,7 @@
  * lifecycle in session.ts is tool-agnostic, so it survives the swap unchanged.
  */
 import { tool } from '@openai/agents-realtime';
+import { PRODUCT_NAME } from '@shared/productName';
 
 // ─── spoken-prose formatting helpers ────────────────────────────────────────
 
@@ -602,13 +603,13 @@ export function realtimeReadTools(): ReturnType<typeof tool>[] {
     tool({
       name: 'get_app_info',
       description:
-        'About the Munder Difflin app itself: the running version and the latest release notes (changelog). Use for "what version is this" or "what is new in this release".',
+        `About the ${PRODUCT_NAME} app itself: the running version and the latest release notes (changelog). Use for "what version is this" or "what is new in this release".`,
       parameters: { type: 'object', properties: {}, required: [], additionalProperties: false },
       execute: () =>
         spoken(async () => {
           const info = await window.cth.appInfo();
           const notes = despan(info.changelog || '');
-          return `This is Munder Difflin version ${info.version}. ${notes ? `Latest release notes: ${clip(notes, 1600)}` : 'No release notes are bundled with this build.'}`;
+          return `This is ${PRODUCT_NAME} version ${info.version}. ${notes ? `Latest release notes: ${clip(notes, 1600)}` : 'No release notes are bundled with this build.'}`;
         }, 'app info')
     })
   ];

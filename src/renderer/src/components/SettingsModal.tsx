@@ -34,6 +34,8 @@ import {
 import { notifyArabicTerminalChangeAll } from '@/components/terminalPool';
 import { isComposingKey } from '@shared/imeGuard';
 import { LANGUAGES, setLanguage } from '@/i18n';
+import { PRODUCT_NAME } from '@shared/productName';
+import { UPDATE_FEED_ENABLED } from '@shared/updateFeed';
 
 export interface SettingsModalProps {
   config: HarnessConfig;
@@ -92,10 +94,10 @@ const slackLabelStyle: CSSProperties = {
 /** The exact connect walkthrough shown behind the i icon. Steps 6 & 7 spell out
  *  the both-lists requirement: subscribe to message.channels / message.groups in
  *  BOTH "Subscribe to bot events" AND "Subscribe to events on behalf of users". */
-const SLACK_CONNECT_STEPS = `Connect Munder Difflin to Slack
+const SLACK_CONNECT_STEPS = `Connect ${PRODUCT_NAME} to Slack
 
 1. api.slack.com/apps -> Create New App -> From scratch. Name it
-   "Munder Difflin" and pick your workspace.
+   "${PRODUCT_NAME}" and pick your workspace.
 2. Basic Information -> Signing Secret -> copy it into the
    "Signing secret" field here.
 3. OAuth & Permissions -> Bot Token Scopes: add
@@ -117,7 +119,7 @@ const SLACK_CONNECT_STEPS = `Connect Munder Difflin to Slack
      message.channels
      message.groups
 8. Save Changes, reinstall if Slack prompts, then invite the bot
-   to your channel:  /invite @MunderDifflin`;
+   to your channel:  /invite @${PRODUCT_NAME.replace(/\s+/g, '')}`;
 
 /** The request/response contract shown behind the webhook i icon. Every webhook
  *  shares one server and one tunnel and is told apart by its id in the path, so
@@ -1005,9 +1007,13 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                           on the latest?" is the question people open Settings to
                           answer, and the toolbar chip says nothing at all when
                           the answer is yes. */}
-                      <UpdatesSection />
+                      {UPDATE_FEED_ENABLED && (
+                        <>
+                          <UpdatesSection />
 
-                      <div style={{ height: 1, background: 'var(--cth-ink-300)' }} />
+                          <div style={{ height: 1, background: 'var(--cth-ink-300)' }} />
+                        </>
+                      )}
 
                       {/* Home folder */}
                       <div>
@@ -1163,24 +1169,30 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                             {autoCompactOn ? t('common.on') : t('common.off')}
                           </PixelButton>
                         </div>
-                        <div style={{ height: 10 }} />
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                            <span style={{ fontSize: 13, lineHeight: '20px', color: 'var(--cth-ink-900)' }}>
-                              {t('settings.general.autoUpdate')}
-                            </span>
-                            <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>
-                              {t('settings.general.autoUpdateDesc')}
-                            </span>
-                          </div>
-                          <PixelButton
-                            variant={autoUpdateOn ? 'primary' : 'secondary'}
-                            size="sm"
-                            onClick={toggleAutoUpdate}
-                          >
-                            {autoUpdateOn ? t('common.on') : t('common.off')}
-                          </PixelButton>
-                        </div>
+                        {/* Only offered when this build has an update feed of its own; a switch
+                            that changes nothing would show a choice that is not real. */}
+                        {UPDATE_FEED_ENABLED && (
+                          <>
+                            <div style={{ height: 10 }} />
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                <span style={{ fontSize: 13, lineHeight: '20px', color: 'var(--cth-ink-900)' }}>
+                                  {t('settings.general.autoUpdate')}
+                                </span>
+                                <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>
+                                  {t('settings.general.autoUpdateDesc')}
+                                </span>
+                              </div>
+                              <PixelButton
+                                variant={autoUpdateOn ? 'primary' : 'secondary'}
+                                size="sm"
+                                onClick={toggleAutoUpdate}
+                              >
+                                {autoUpdateOn ? t('common.on') : t('common.off')}
+                              </PixelButton>
+                            </div>
+                          </>
+                        )}
                         <div style={{ height: 10 }} />
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>

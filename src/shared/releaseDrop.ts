@@ -42,6 +42,7 @@
  */
 
 import { DROP_FONT_WOFF2_BASE64 } from './dropFonts';
+import { PRODUCT_NAME } from './productName';
 
 const DROP_OPEN = '<!-- drop -->';
 const DROP_CLOSE = '<!-- /drop -->';
@@ -123,7 +124,7 @@ const FRAME_FONT_CSS = `
  *  here — an author writing `var(--ink)` gets the app's palette for free, while
  *  a fully bespoke drop can ignore them entirely. */
 const FRAME_BASE_CSS = `
-  /* The landing site palette (docs/DESIGN.md §2): warm paper, near-black ink,
+  /* The original landing site's palette: warm paper, near-black ink,
      one yellow CTA, sky for a highlighted phrase, maroon for the brand. Square
      corners and hard offset shadows are the look; --radius is 0 on purpose.
      --accent and --line are kept as aliases so older drops still resolve. */
@@ -334,7 +335,7 @@ export const DEFAULT_DROP_HTML = `<style>
 
   <section class="page p1">
     <div class="content center">
-      <p class="kicker">Munder Difflin</p>
+      <p class="kicker">${PRODUCT_NAME}</p>
       <h1 class="big">0.4.4</h1>
       <p class="lede" style="font-size:clamp(1.05rem,2.1vw,1.3rem);margin-top:.5em">
         The release where Windows finally joined the floor — and the first run

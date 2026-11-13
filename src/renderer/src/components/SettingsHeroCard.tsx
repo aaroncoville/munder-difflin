@@ -6,32 +6,27 @@
  * belong to any individual setting below (re-read the release notes, star, back
  * the project).
  *
- * Its contents come from docs/hero.json IN THIS REPO, fetched at runtime and
- * cached — so plan copy, a sponsor, or a one-line notice can change without
- * shipping a build. That payload is DATA, never markup: every field below is a
- * React text node, so it is escaped, and shared/heroPayload.ts validates types,
- * caps lengths and requires https before any of it reaches here.
+ * Its contents are the payload compiled into the app (DEFAULT_HERO), served
+ * over IPC; nothing is fetched from the network. That payload is DATA, never
+ * markup: every field below is a React text node, so it is escaped, and
+ * shared/heroPayload.ts validates types, caps lengths and requires https.
+ * A sponsor slot with nothing in it renders NOTHING rather than a "your logo
+ * here" placeholder.
  *
- * It renders instantly from the app's built-in defaults and upgrades in place
- * when the fetch lands, so the dialog never waits on the network and reads the
- * same offline. A sponsor slot with nothing in it renders NOTHING rather than a
- * "your logo here" placeholder.
- *
- * Since 0.4.5 it borrows the release drop's idiom (ink borders, a lilac
- * announcement block, a dark offer band) and carries the v0.5.0 Pro announcement and the
- * Founders' Wall offer, so the one card people see in Settings says the same
- * thing the release modal does. Plan label and blurb still come from hero.json.
+ * It borrows the release drop's idiom (ink borders). Plan label and blurb come
+ * from hero.json.
  */
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { PixelButton } from './PixelButton';
 import { Icon } from './Icon';
+import { SixthHistoryCredit } from './SixthHistoryCredit';
+import { PRODUCT_REPO_URL, PRODUCT_WORDMARK } from '@shared/productName';
+import { UPDATE_FEED_ENABLED } from '@shared/updateFeed';
 import { DEFAULT_HERO, type HeroPayload } from '@shared/heroPayload';
 import { manualDownloadUrl, pendingVersion, reduceStatus, type UpdateStatus } from '@shared/updateState';
 
-const GITHUB_REPO_URL = 'https://github.com/chaitanyagiri/munder-difflin';
-const FOUNDERS_WALL_URL = 'https://munderdiffl.in/wall.html';
-const DISCORD_URL = 'https://discord.gg/SEDzP5ZPk5';
+const GITHUB_REPO_URL = PRODUCT_REPO_URL;
 
 export function SettingsHeroCard() {
   const { t } = useTranslation();
@@ -92,7 +87,7 @@ export function SettingsHeroCard() {
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
             <span style={{
               fontFamily: 'var(--cth-font-display)', fontSize: 13, lineHeight: '20px', color: INK
-            }}>MUNDER DIFFLIN</span>
+            }}>{PRODUCT_WORDMARK}</span>
             {version && (
               <span style={{
                 fontFamily: MONO, fontSize: 15, fontWeight: 700, color: INK
@@ -103,7 +98,7 @@ export function SettingsHeroCard() {
               padding: '2px 7px', background: 'var(--cth-mint-light)',
               boxShadow: 'inset 0 0 0 1px var(--cth-mint)', color: INK
             }}>{PLAN.label}</span>
-            {pending && (
+            {UPDATE_FEED_ENABLED && pending && (
               <>
                 <span style={{ flex: 1 }} />
                 <span style={{ fontFamily: MONO, fontSize: 11, color: 'var(--cth-ink-700)' }}>
@@ -119,6 +114,7 @@ export function SettingsHeroCard() {
           <div style={{ marginTop: 6, fontSize: 12.5, lineHeight: 1.5, color: 'var(--cth-ink-700)', maxWidth: '64ch' }}>
             {PLAN.blurb}
           </div>
+          <SixthHistoryCredit style={{ marginRight: 0, marginTop: 10, maxWidth: '64ch' }} />
         </div>
 
         {/* A one-line notice (an incident, a migration heads-up), when set. */}
@@ -128,58 +124,6 @@ export function SettingsHeroCard() {
             background: 'var(--cth-lemon-light)', border: `2px solid ${INK}`
           }}>{hero.notice}</div>
         )}
-
-        {/* Pro announcement. Same block the release drop carries. */}
-        <div style={{
-          padding: '12px 14px',
-          background: 'var(--cth-lilac-light)',
-          border: `2px solid ${INK}`
-        }}>
-          <span style={{
-            display: 'inline-block', fontFamily: MONO, fontSize: 9, letterSpacing: '.18em',
-            textTransform: 'uppercase', padding: '2px 7px',
-            background: INK, color: 'var(--cth-paper-100)'
-          }}>{t('settingsHero.announcement')}</span>
-          <div style={{
-            marginTop: 8, fontFamily: MONO, fontSize: 14, fontWeight: 700, color: INK
-          }}>{t('settingsHero.proLaunch')}</div>
-          <div style={{ marginTop: 6, fontSize: 12.5, lineHeight: 1.5, color: 'var(--cth-ink-700)', maxWidth: '64ch' }}>
-            <b style={{ color: INK }}>{t('settingsHero.proCommunityFree')}</b>{' '}
-            {t('settingsHero.proParagraph')}
-          </div>
-        </div>
-
-        {/* Founders' Wall offer. */}
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap',
-          padding: '12px 14px',
-          background: INK, color: 'var(--cth-paper-100)',
-          marginTop: 2
-        }}>
-          <div style={{
-            fontFamily: MONO, fontSize: 30, fontWeight: 700, lineHeight: 0.9,
-            letterSpacing: '-.05em', color: 'var(--cth-cream-50)', textAlign: 'center', flexShrink: 0
-          }}>
-            50<span style={{
-              display: 'block', fontSize: 8, letterSpacing: '.2em', fontWeight: 500,
-              color: 'var(--cth-paper-100)', opacity: 0.7, marginTop: 5
-            }}>% OFF</span>
-          </div>
-          <div style={{ flex: 1, minWidth: 200 }}>
-            <div style={{ fontFamily: MONO, fontSize: 12.5, fontWeight: 600 }}>{t('settingsHero.foundersWallTitle')}</div>
-            <div style={{ fontSize: 12, lineHeight: 1.45, opacity: 0.85, marginTop: 2 }}>
-              {t('settingsHero.foundersWallBody')}
-            </div>
-          </div>
-          <PixelButton variant="primary" size="sm" onClick={() => void window.cth.openExternal(FOUNDERS_WALL_URL)}>
-            {t('settingsHero.seeTheWall')}
-          </PixelButton>
-          {PLAN.upgrade && (
-            <PixelButton variant="secondary" size="sm" onClick={() => void window.cth.openExternal(PLAN.upgrade!.url)}>
-              {PLAN.upgrade.label}
-            </PixelButton>
-          )}
-        </div>
 
         {/* Sponsor — only when there is one. */}
         {SPONSOR && (
@@ -206,20 +150,18 @@ export function SettingsHeroCard() {
           display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center',
           paddingTop: 12, borderTop: `2px solid ${INK}`
         }}>
-          <PixelButton variant="secondary" size="sm" onClick={showReleaseNotes}>
-            <span title={t('settingsHero.whatsNewTitle')}
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-              <Icon name="sparkle" /> {t('settingsHero.whatsNew')}
-            </span>
-          </PixelButton>
+          {/* Release notes come from the update feed's releases; none while it is off. */}
+          {UPDATE_FEED_ENABLED && (
+            <PixelButton variant="secondary" size="sm" onClick={showReleaseNotes}>
+              <span title={t('settingsHero.whatsNewTitle')}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                <Icon name="sparkle" /> {t('settingsHero.whatsNew')}
+              </span>
+            </PixelButton>
+          )}
           <PixelButton variant="secondary" size="sm" onClick={() => void window.cth.openExternal(GITHUB_REPO_URL)}>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
               ⭐ {t('settingsHero.starOnGitHub')}
-            </span>
-          </PixelButton>
-          <PixelButton variant="secondary" size="sm" onClick={() => void window.cth.openExternal(DISCORD_URL)}>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-              💬 {t('settingsHero.joinDiscord')}
             </span>
           </PixelButton>
           <PixelButton
@@ -229,8 +171,8 @@ export function SettingsHeroCard() {
           >{t('settingsHero.reportProblem')}</PixelButton>
           <span style={{ flex: 1 }} />
           <a
-            href={`${GITHUB_REPO_URL}/blob/main/CHANGELOG.md`}
-            onClick={(e) => { e.preventDefault(); void window.cth.openExternal(`${GITHUB_REPO_URL}/blob/main/CHANGELOG.md`); }}
+            href={`${GITHUB_REPO_URL}/blob/theme/sixth-history/CHANGELOG.md`}
+            onClick={(e) => { e.preventDefault(); void window.cth.openExternal(`${GITHUB_REPO_URL}/blob/theme/sixth-history/CHANGELOG.md`); }}
             style={{ fontSize: 12, color: 'var(--cth-ink-500)' }}
           >{t('settingsHero.fullChangelog')}</a>
         </div>

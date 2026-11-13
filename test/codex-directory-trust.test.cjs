@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
+const { codexTestBase } = require('./codex-test-home.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { CODEX_REMOTE_SOCKET_RELATIVE, CODEX_REMOTE_SOCKET_MAX } = loadTs('src/shared/codexRemote.ts');
@@ -23,12 +24,11 @@ function trustTable(cwd) {
  *  installCodexHooks seeds the generated config from the user's, so the test has
  *  to own that file to say anything about what survives. */
 function sandbox(t, userConfig) {
-  // Rooted at /tmp with short names, not os.tmpdir(): the agent's Codex home is
-  // placed under this fake $HOME, and macOS resolves os.tmpdir() through
-  // /private/var/folders/xx/<30-char-hash>/T/ — which leaves no room for a
-  // control socket inside 104 bytes, so the whole point of the test would be
-  // fixture length rather than behaviour.
-  const home = fs.realpathSync(fs.mkdtempSync('/tmp/mdct-'));
+  // Short names under /var/tmp, not /tmp or os.tmpdir(): the agent's Codex home is
+  // placed under this fake $HOME, which must be outside the temp folders every
+  // Codex agent may write, and short enough for a control socket inside 104 bytes
+  // (codex-test-home.cjs).
+  const home = codexTestBase(t, 'mdct-');
   const fakeHome = path.join(home, 'h');
   fs.mkdirSync(path.join(fakeHome, '.codex'), { recursive: true });
   if (userConfig !== undefined) {

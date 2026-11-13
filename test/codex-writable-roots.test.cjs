@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
+const { codexTestBase } = require('./codex-test-home.cjs');
 
 const { withCodexWritableRoots } = loadTs('src/shared/codexWritableRoots.ts');
 const { HiveManager } = loadTs('src/main/hive.ts');
@@ -83,7 +84,7 @@ test('a dotted key of the same name inside another table is not mistaken for our
 });
 
 test('codex spawn prep writes the agent folder and hive root into its own config', async (t) => {
-  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mdcw-')));
+  const home = codexTestBase(t, 'mdcw-');
   const fakeHome = path.join(home, 'h');
   fs.mkdirSync(path.join(fakeHome, '.codex'), { recursive: true });
   const realHome = process.env.HOME;

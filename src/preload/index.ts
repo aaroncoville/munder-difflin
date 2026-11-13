@@ -6,6 +6,7 @@ import type { IntegrationRecord, IntegrationTemplate } from '../shared/integrati
 export type { IntegrationRecord, IntegrationTemplate } from '../shared/integrations';
 import type { UpdateStatus } from '../shared/updateState';
 export type { UpdateStatus } from '../shared/updateState';
+import { whenFeedOn } from '../shared/updateFeed';
 import type { PanelPalette } from '../shared/panelPalette';
 import type { ToolStatus } from '../shared/toolCatalog';
 export type { ToolStatus } from '../shared/toolCatalog';
@@ -1437,19 +1438,20 @@ const api = {
    *  already emitted, so it pulls the current state instead of waiting 6h. */
   updateCurrent: (): Promise<UpdateStatus> => ipcRenderer.invoke('update:current'),
   /** Quit and install the downloaded update — only ever called from an explicit
-   *  "restart to update" click. */
-  updateRestartAndInstall: (): Promise<{ ok: boolean; error?: string }> =>
-    ipcRenderer.invoke('update:restartAndInstall'),
+   *  "restart to update" click. This and the three calls below refuse while the
+   *  build has no update feed of its own (whenFeedOn), as main's handlers do. */
+  updateRestartAndInstall: whenFeedOn((): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('update:restartAndInstall')),
   /** Manual re-check. */
-  updateCheckNow: (): Promise<{ ok: boolean; error?: string }> =>
-    ipcRenderer.invoke('update:checkNow'),
+  updateCheckNow: whenFeedOn((): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('update:checkNow')),
   /** Start the download for an already-detected update (autoDownload normally
    *  beats the user to it; this is the explicit one-click path). */
-  updateDownload: (): Promise<{ ok: boolean; error?: string }> =>
-    ipcRenderer.invoke('update:download'),
+  updateDownload: whenFeedOn((): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('update:download')),
   /** Open the project's releases page for a notify-only update. */
-  updateOpenRelease: (url?: string): Promise<{ ok: boolean }> =>
-    ipcRenderer.invoke('update:openRelease', url),
+  updateOpenRelease: whenFeedOn((url?: string): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('update:openRelease', url)),
   /** Which OS this window runs on, for platform-specific copy. */
   platform: process.platform as string,
   arch: process.arch as string,

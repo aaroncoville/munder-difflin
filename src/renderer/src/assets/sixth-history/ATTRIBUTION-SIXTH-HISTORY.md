@@ -12,13 +12,21 @@ dress this app in the idiom of the Secret Histories at all.
 
 ## The obligations, and where each one is discharged
 
-1. **Say it is unofficial.** The licence's own suggested wording is rendered by
-   `components/SixthHistoryCredit.tsx`, which mounts in the Settings footer
-   whenever the occult theme is active. The sentence it renders, verbatim from
-   the licence page:
+1. **Say it is unofficial.** The app's name, Hush House, draws on the Secret
+   Histories setting, so the notice names the product as a whole, not only the
+   theme. `UNOFFICIAL_NOTICE` in `src/shared/productName.ts` holds it, and
+   `components/SixthHistoryCredit.tsx` renders it beside the logo wherever the
+   name is shown large: the About card at the top of Settings, the first
+   onboarding step and the Settings footer. The macOS About panel carries the
+   same sentence. It follows the licence's two suggested forms, the
+   "unofficial content based on [the IP]" sentence and the "independent work …
+   not affiliated with Weather Factory Ltd" sentence:
 
-   > "[Product] is unofficial content based on [the IP] by Weather Factory Ltd.
-   > You can find out more and support [the IP] at [www.weatherfactory.biz]."
+   > "Hush House is an unofficial fan work set in Weather Factory's Sixth
+   > History. It is not affiliated with or endorsed by Weather Factory Ltd, and
+   > is published under Weather Factory's Sixth History Community Licence. You
+   > can find out more and support the Secret Histories at
+   > www.weatherfactory.biz."
 
 2. **Display the Sixth History logo** on any content created under the licence.
    Recolouring and resizing are permitted; substantial alteration is not. The

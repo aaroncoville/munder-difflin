@@ -17,7 +17,7 @@ const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 
-const GENERATED_NOTICE_PREFIX = '<!-- Generated and managed by Munder Difflin.';
+const GENERATED_NOTICE_PREFIX = '<!-- Generated and managed by Hush House.';
 const GENERATED_DOCS = [
   { filename: 'PROTOCOL.md', sentinel: 'PROTOCOL_SENTINEL\n', heading: '# Hive protocol' },
   { filename: 'COMMANDS.md', sentinel: 'COMMANDS_SENTINEL\n', heading: '# Claude Code commands' }

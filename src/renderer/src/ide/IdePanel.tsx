@@ -10,6 +10,7 @@ import { MarkdownPreview } from '@/markdown/MarkdownPreview';
 import { HistoryPane, ComparePane } from './GitPanes';
 import { isImageDiskPath, isSvgDiskPath } from '@shared/imageTypes';
 import { ideBarStyle, ideIconBtn as iconBtn, ideTextBtn as textBtn } from './chrome';
+import { PRODUCT_WORDMARK } from '@shared/productName';
 
 // v0.3.4 markdown preview: per-md-tab view mode, defaulted from the last choice.
 type MdView = 'code' | 'split' | 'preview';
@@ -375,7 +376,7 @@ export function IdePanel() {
         <span style={{
           fontFamily: 'var(--cth-font-display)', fontSize: 12, lineHeight: '20px', color: 'var(--cth-ink-900)'
         }}>
-          MUNDER DIFFLIN · IDE
+          {PRODUCT_WORDMARK} · IDE
         </span>
         {/* WHOSE workspace this is. The folder name alone was ambiguous the
             moment two agents shared a repo (worktrees named for the branch, not

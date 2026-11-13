@@ -71,7 +71,7 @@ src/
     scene/study/             the Study floor: FloorHost, StudyScene, painted portraits
     store/ · hooks/          zustand store, event loop, PTY parser, typewriter
     assets/                  fonts and the Sixth History logo (see ATTRIBUTION.md)
-docs/                        `logo.png`, `banner.png`, landing page (GitHub Pages → munderdiffl.in)
+docs/                        `logo.png`, `banner.png`, the one-page site (not published yet)
 docs/media/                  `og.png` (social previews) + rendered Remotion clips
 landing-remotion/            Remotion project that renders the landing page's "how it works" clips
 HIVE.md · SPEC.md · DESIGN.md   multi-agent · terminal/event · visual design

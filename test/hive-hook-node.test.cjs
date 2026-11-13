@@ -23,6 +23,9 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const loadTs = require('./load-ts.cjs');
 const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
+const { codexTestBase, jailHome } = require('./codex-test-home.cjs');
+// Where a Codex agent's home is: computed from its folder, outside the hive.
+const { codexShortHomePath } = loadTs('src/shared/codexRemote.ts');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 
@@ -167,7 +170,7 @@ test('every hook installer routes through the launcher — none left on bare nod
   hive.installAgyHooks();
   hive.installGrokHooks();
   hive.installGeminiHooks(path.join(home, 'hive/agents/a1'));
-  hive.installCodexHooks(path.join(home, 'hive/agents/a1'), home, 'a1');
+  hive.installCodexHooks(path.join(home, 'hive/agents/a1'), path.join(home, 'hive'), 'a1');
 
   const launcher = launcherIn(home);
   const commands = hookCommandsUnder(home);
@@ -194,7 +197,7 @@ test('Codex hook commands survive a hive path containing spaces', { skip: !POSIX
   const rtDir = `${isolated.harness}-rt space`;
   const { launcher, shim } = runtimeFor(t, hive, rtDir);
   const agentDir = path.join(harness, 'hive', 'agents', 'a1');
-  const codexHome = hive.installCodexHooks(agentDir, 'a1');
+  const codexHome = hive.installCodexHooks(agentDir, harness, 'a1');
   const config = fs.readFileSync(path.join(codexHome, 'config.toml'), 'utf8');
   const commands = [...config.matchAll(/^command\s*=\s*(.+)$/gm)].map((m) => {
     const literal = m[1].trim();
@@ -292,7 +295,7 @@ test('Codex rollouts remain isolated and are visible under the standard scan roo
   const hive = new HiveManager(() => harness);
   hive.ensureHive();
   const agentDir = path.join(harness, 'hive', 'agents', 'a1');
-  const codexHome = path.join(agentDir, '.codex');
+  const codexHome = codexShortHomePath(path.join(agentDir, '.codex'), 'a1');
   const files = {
     sessions: path.join('2026', '08', '21', 'rollout-live.jsonl'),
     archived_sessions: 'rollout-archived.jsonl'
@@ -329,9 +332,10 @@ test('bootstrap exposes archived Codex agents without respawning them', (t) => {
   const { home, harness } = isolatedHomes(t);
   const root = path.join(harness, 'hive');
   const agentDir = path.join(root, 'agents', 'a1');
-  const sessions = path.join(agentDir, '.codex', 'sessions');
+  const sessions = path.join(codexShortHomePath(path.join(agentDir, '.codex'), 'a1'), 'sessions');
   fs.mkdirSync(sessions, { recursive: true });
   fs.writeFileSync(path.join(sessions, 'rollout-old.jsonl'), 'old\n', 'utf8');
+  fs.mkdirSync(agentDir, { recursive: true });
   fs.writeFileSync(path.join(root, 'registry.json'), JSON.stringify({
     godId: null,
     agents: { a1: { id: 'a1', name: 'A', provider: 'codex', cwd: harness, archived: true } }
@@ -352,7 +356,7 @@ test('a missing exposed directory is repaired on the next spawn', (t) => {
   const hive = new HiveManager(() => harness);
   hive.ensureHive();
   const agentDir = path.join(harness, 'hive', 'agents', 'a1');
-  const sessions = path.join(agentDir, '.codex', 'sessions');
+  const sessions = path.join(codexShortHomePath(path.join(agentDir, '.codex'), 'a1'), 'sessions');
   const staleTarget = path.join(home, '.codex', 'sessions', 'munder-difflin', 'stale', 'a1');
   fs.mkdirSync(staleTarget, { recursive: true });
   fs.mkdirSync(path.dirname(sessions), { recursive: true });
@@ -386,8 +390,9 @@ test('reset cleanup removes only exposed Munder rollouts', (t) => {
   const hive = new HiveManager(() => harness);
   hive.ensureHive();
   const agentDir = path.join(harness, 'hive', 'agents', 'a1');
-  const isolated = path.join(agentDir, '.codex', 'sessions');
+  const isolated = path.join(codexShortHomePath(path.join(agentDir, '.codex'), 'a1'), 'sessions');
   fs.mkdirSync(isolated, { recursive: true });
+  fs.mkdirSync(agentDir, { recursive: true });
   fs.writeFileSync(path.join(isolated, 'rollout-munder.jsonl'), 'munder\n', 'utf8');
   const personal = path.join(home, '.codex', 'sessions', '2026', '08', '21', 'rollout-personal.jsonl');
   fs.mkdirSync(path.dirname(personal), { recursive: true });
@@ -404,6 +409,8 @@ test('reset cleanup removes only exposed Munder rollouts', (t) => {
 test('Gemini gets isolated lifecycle settings and an interactive protocol seed', async (t) => {
   const home = tmpHome();
   t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
+  // A HOME of its own, with no Codex agents' homes: Gemini is not sandboxed by the app and cannot start beside one.
+  jailHome(t, codexTestBase(t, 'mdgm-'));
   const hive = new HiveManager(() => home);
   const injection = await hive.ensureAgent({
     id: 'gemini-1',

@@ -16,6 +16,7 @@ const path = require('node:path');
 const ts = require('typescript');
 const loadTs = require('./load-ts.cjs');
 const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
+const { codexTestBase } = require('./codex-test-home.cjs');
 
 const { CodexThreads, newThreadWrites, typeWrites } = loadTs('src/main/codexThread.ts');
 const { HiveManager } = loadTs('src/main/hive.ts');
@@ -217,7 +218,7 @@ test('the writes go out in order, and a failed one stops the rest', () => {
 });
 
 test('a Codex spawn keeps the brief it was started with', async (t) => {
-  const home = fs.realpathSync(fs.mkdtempSync('/tmp/mdth-'));
+  const home = codexTestBase(t, 'mdth-');
   const fakeHome = path.join(home, 'h');
   fs.mkdirSync(path.join(fakeHome, '.codex'), { recursive: true });
   const realHome = process.env.HOME;

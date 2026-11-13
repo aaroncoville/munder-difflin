@@ -5,6 +5,7 @@
  * and generated hive command guide can render provider-native commands.
  */
 import type { CmdGroup } from './claudeCommands';
+import { PRODUCT_NAME } from './productName';
 
 export const GROK_COMMAND_GROUPS: CmdGroup[] = [
   {
@@ -22,7 +23,7 @@ export const GROK_COMMAND_GROUPS: CmdGroup[] = [
       { cmd: '/model', kind: 'slash', desc: 'Switch the model used by the current session.' },
       { cmd: 'grok --model grok-4.6', kind: 'cli', desc: 'Launch Grok with the Grok 4.6 coding model (the CLI default).' },
       { cmd: '/always-approve', kind: 'slash', desc: 'Toggle automatic approval of tool executions.' },
-      { cmd: 'grok --permission-mode bypassPermissions', kind: 'cli', desc: 'Launch in always-approve mode. Munder uses this when Auto Mode is on.' }
+      { cmd: 'grok --permission-mode bypassPermissions', kind: 'cli', desc: `Launch in always-approve mode. ${PRODUCT_NAME} uses this when Auto Mode is on.` }
     ]
   },
   {

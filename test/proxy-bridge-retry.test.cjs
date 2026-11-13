@@ -12,6 +12,8 @@ const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
+// No Codex agents' homes in HOME: agents the app does not sandbox cannot start beside one.
+require('./codex-test-home.cjs').isolateHomeForFile('md-nohomes-');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 

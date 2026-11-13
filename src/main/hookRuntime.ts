@@ -61,7 +61,7 @@ export function overlaps(a: string, b: string): boolean {
   return within(x, y) || within(y, x);
 }
 
-function writeNoFollow(dir: string, f: RuntimeFile): void {
+export function writeNoFollow(dir: string, f: RuntimeFile): void {
   const tmp = join(dir, `.${f.name}.${process.pid}.${randomBytes(6).toString('hex')}`);
   const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0);
   const fd = openSync(tmp, flags, f.mode);
@@ -77,6 +77,22 @@ function writeNoFollow(dir: string, f: RuntimeFile): void {
   try { chmodSync(tmp, f.mode); renameSync(tmp, join(dir, f.name)); } catch (e) { rmSync(tmp, { force: true }); throw e; }
 }
 
+/** Make (or check) a folder only this user can write and no agent's hive folder reaches: absolute, outside the hive,
+ *  created 0700, not a link, owned by this user, and set back to 0700. Throws HookRuntimeUnavailable with the reason.
+ *  Main reads authority (a hook command, a helper session's --settings) only from such a folder, never from a place an
+ *  agent can write. */
+export function ensurePrivateDir(dir: string, hiveRoot: string | null): void {
+  const fail = (why: string): never => { throw new HookRuntimeUnavailable(why); };
+  if (typeof dir !== 'string' || !isAbsolute(dir)) fail('its folder is not an absolute path');
+  if (!hiveRoot) fail('the hive folder is not known yet, so the folder cannot be shown to be outside it');
+  if (overlaps(dir, hiveRoot as string)) fail('its folder overlaps the hive folder, which every agent can write');
+  try { mkdirSync(dir, { recursive: true, mode: 0o700 }); } catch (e) { fail(`its folder could not be created (${(e as Error).message})`); }
+  const st = lstatSync(dir);
+  if (st.isSymbolicLink() || !st.isDirectory()) fail('its folder is a link or not a folder');
+  if (typeof process.getuid === 'function' && st.uid !== process.getuid()) fail('its folder belongs to another user');
+  try { chmodSync(dir, 0o700); } catch (e) { fail(`its folder could not be made private (${(e as Error).message})`); }
+}
+
 /** Stage the launcher and shim; throws HookRuntimeUnavailable with the reason. */
 export function stageHookRuntime(o: {
   dir: string; hiveRoot: string | null; platform: string; launcher: RuntimeFile; shim: RuntimeFile;
@@ -86,13 +102,8 @@ export function stageHookRuntime(o: {
   const unsafe = unsafePathReason(o.dir, o.platform);
   if (unsafe) fail(unsafe);
   if (!o.hiveRoot) fail('the hive folder is not known yet, so the runtime cannot be shown to be outside it');
-  if (overlaps(o.dir, o.hiveRoot as string)) fail('its folder overlaps the hive folder, which every agent can write');
-  try { mkdirSync(o.dir, { recursive: true, mode: 0o700 }); } catch (e) { fail(`its folder could not be created (${(e as Error).message})`); }
-  const st = lstatSync(o.dir);
-  if (st.isSymbolicLink() || !st.isDirectory()) fail('its folder is a link or not a folder');
-  if (typeof process.getuid === 'function' && st.uid !== process.getuid()) fail('its folder belongs to another user');
+  ensurePrivateDir(o.dir, o.hiveRoot);
   try {
-    chmodSync(o.dir, 0o700);
     writeNoFollow(o.dir, o.launcher);
     writeNoFollow(o.dir, o.shim);
   } catch (e) { fail(`its files could not be written (${(e as Error).message})`); }

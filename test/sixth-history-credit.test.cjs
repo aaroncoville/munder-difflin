@@ -18,8 +18,8 @@ function creditUnder(theme) {
 test('the credit carries the licence wording and the logo under occult', () => {
   const inst = creditUnder('occult');
   const rendered = text(inst.tree).join(' ');
-  assert.match(rendered, /unofficial content/i);
-  assert.match(rendered, /Weather Factory Ltd/);
+  assert.match(rendered, /unofficial fan work/i);
+  assert.match(rendered, /not affiliated with or endorsed by Weather Factory Ltd/);
   assert.match(rendered, /weatherfactory\.biz/);
   // The src has to be the URL itself, not something that merely CONTAINS it:
   // a default import that resolves to a module object stringifies past a
@@ -34,7 +34,7 @@ test('the credit renders whatever theme an older build saved', () => {
   // Not cosmetic: the theme triggers the licence obligation and it is the only
   // theme there is, so a stale saved choice must not be able to hide it.
   for (const theme of ['light', 'dark']) {
-    assert.match(text(creditUnder(theme).tree).join(' '), /unofficial content/i,
+    assert.match(text(creditUnder(theme).tree).join(' '), /unofficial fan work/i,
       `credit missing after a saved ${theme}`);
   }
 });

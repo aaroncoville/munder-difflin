@@ -19,6 +19,7 @@ const vm = require('node:vm');
 const ts = require('typescript');
 const loadTs = require('./load-ts.cjs');
 const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
+const { codexTestBase, jailHome } = require('./codex-test-home.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { RefusedRosterId, RegistryUnreadable } = loadTs('src/main/messageTarget.ts');
@@ -57,7 +58,7 @@ async function setup(t, overrides = {}) {
   let removal = async () => ({ ok: true });
   const context = {
     console: { error: (...a) => errors.push(a.join(' ')), warn() {}, log() {} },
-    hive: { enabled: () => true, ensureAgent: (...a) => real.ensureAgent(...a), appendLog: (row) => real.appendLog(row), markHookProvisioned: (id) => real.markHookProvisioned(id), hookProvisioningFailed: (id, e) => real.hookProvisioningFailed(id, e), ...overrides },
+    hive: { enabled: () => true, ensureAgent: (...a) => real.ensureAgent(...a), appendLog: (row) => real.appendLog(row), markHookProvisioned: (id) => real.markHookProvisioned(id), hookProvisioningFailed: (id, e) => real.hookProvisioningFailed(id, e), withdrawRefusedSpawn: (...a) => real.withdrawRefusedSpawn(...a), ...overrides },
     memory: { active: () => false, env: () => ({}) },
     knowledge: { active: () => false, env: () => ({}) },
     readConfig: () => ({}), skillsResourceDir: () => '', breakerToast() {},
@@ -65,12 +66,12 @@ async function setup(t, overrides = {}) {
     worktreePaths, worktreeOrigins,
     removeWorktree: (origin, wt) => { removed.push([origin, wt]); return removal(); },
     relocationEnv: loadTs('src/main/launchLine.ts').relocationEnv, buildPtyEnv: loadTs('src/main/ptyEnv.ts').buildPtyEnv, process,
-    RefusedRosterId, RegistryUnreadable, HookRuntimeUnavailable: loadTs('src/main/hookRuntime.ts').HookRuntimeUnavailable, shortTarget: loadTs('src/main/messageTarget.ts').shortTarget
+    RefusedRosterId, RegistryUnreadable, HookRuntimeUnavailable: loadTs('src/main/hookRuntime.ts').HookRuntimeUnavailable, CodexHomeRefused: loadTs('src/main/codexSeatHome.ts').CodexHomeRefused, shortTarget: loadTs('src/main/messageTarget.ts').shortTarget
   };
   const run = vm.runInNewContext(liveProvisioning(), context);
   const spawn = (id) => run({ id: `pty-${id}`, cwd: home, hive: { id, name: 'x' } }, 'claude');
   const removalDoes = (fn) => { removal = fn; };
-  return { real, home, events, removed, errors, worktreePaths, worktreeOrigins, spawn, removalDoes };
+  return { real, home, events, removed, errors, worktreePaths, worktreeOrigins, spawn, run, removalDoes };
 }
 
 const rows = (hive) => hive.logTail(500).filter((e) => e.kind === 'spawn-refused');
@@ -169,4 +170,25 @@ test('an acceptable id provisions and goes on to start', async (t) => {
   assert.equal(await f.spawn('worker-9'), 'started a process');
   assert.equal(Object.hasOwn(f.real.registry().agents, 'worker-9'), true);
   assert.deepEqual(rows(f.real), []);
+});
+
+test('a Codex spawn refused after provisioning wrote its registry row leaves no row behind', async (t) => {
+  const base = codexTestBase(t, 'mdsr-');
+  jailHome(t, base);
+  const f = await setup(t);
+  const rt = fs.realpathSync(fs.mkdtempSync('/tmp/mdsrr-'));
+  t.after(() => fs.rmSync(rt, { recursive: true, force: true }));
+  f.real.setHookRuntime(rt);
+  // Its computed home is a link, which is refused while the home is prepared: after the row was written.
+  const { codexSeatHome } = loadTs('src/main/codexSeatHome.ts');
+  const id = 'cx1';
+  const home = codexSeatHome(path.join(f.real.root(), 'agents', id), id);
+  fs.mkdirSync(path.dirname(home), { recursive: true });
+  fs.mkdirSync(path.join(base, 'elsewhere'));
+  fs.symlinkSync(path.join(base, 'elsewhere'), home);
+  const result = await f.run({ id: `pty-${id}`, cwd: f.home, command: 'codex -a never -s workspace-write', args: [], hive: { id, name: 'x' } }, 'codex');
+  assert.equal(result.ok, false);
+  assert.match(result.error, /is a link/);
+  assert.equal(Object.hasOwn(f.real.registry().agents, id), false, 'the row this spawn added is gone');
+  assert.ok(f.real.logTail(500).some((r) => r.kind === 'spawn-rolled-back' && r.agentId === id && r.rowRemoved === true));
 });

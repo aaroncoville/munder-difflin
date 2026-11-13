@@ -5,7 +5,7 @@
  * the other thing: a page the release author designs, shown once, at the size the
  * work deserves.
  *
- * The chrome follows the landing site (docs/DESIGN.md), not the app's pixel
+ * The chrome follows the original landing site's look, not the app's pixel
  * idiom and not a generic rounded sheet: warm paper, square corners, a thick
  * ink border, a hard offset shadow with no blur, and a dark mono title bar with
  * three square dots. It is the `.win` window from munderdiffl.in, so the moment
@@ -35,6 +35,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import { buildDropSrcDoc } from '../../../shared/releaseDrop';
+import { PRODUCT_NAME } from '@shared/productName';
 
 export interface ReleaseDropProps {
   version: string;
@@ -43,7 +44,7 @@ export interface ReleaseDropProps {
   onDismiss: () => void;
 }
 
-// Landing site palette (docs/DESIGN.md §2). The values live in tokens.css as
+// The original landing site's palette. The values live in tokens.css as
 // the --cth-drop-* family, which resolves to exactly these hexes in light and
 // dark; a theme that wants to re-dress the window overrides them there. They
 // stay named here because the frame's own copy in shared/releaseDrop.ts is a
@@ -113,7 +114,7 @@ export function ReleaseDrop({ version, html, onDismiss }: ReleaseDropProps) {
     >
       <div
         role="dialog"
-        aria-label={`What's new in Munder Difflin ${version}`}
+        aria-label={`What's new in ${PRODUCT_NAME} ${version}`}
         onClick={(e) => e.stopPropagation()}
         style={{
           margin: 'auto',
@@ -151,7 +152,7 @@ export function ReleaseDrop({ version, html, onDismiss }: ReleaseDropProps) {
             textTransform: 'uppercase', whiteSpace: 'nowrap', overflow: 'hidden',
             textOverflow: 'ellipsis'
           }}>
-            Munder Difflin <span style={{ color: YELLOW }}>v{version.replace(/^v/, '')}</span>
+            {PRODUCT_NAME} <span style={{ color: YELLOW }}>v{version.replace(/^v/, '')}</span>
             <span style={{ color: INK_FAINT, fontWeight: 500, marginLeft: 10, letterSpacing: '.12em' }}>
               / release notes
             </span>

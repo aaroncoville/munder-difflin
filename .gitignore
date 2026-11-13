@@ -26,8 +26,6 @@ docs/media/*.mov
 # raw demo screen recordings — only the compressed docs/media/demo/*.mp4 are deployed
 docs/media/MunderDifflin*.mp4
 
-# blog theme previews (local only)
-docs/blog-preview-*/
 
 # stray built bundles at the repo root (a 12 MB one skewed GitHub's language stats)
 /index-*.js

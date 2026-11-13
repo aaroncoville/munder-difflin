@@ -249,9 +249,10 @@ let CATALOG: ModelCatalog = BAKED;
  *
  *  Per PROVIDER, not per model: a provider present in the remote copy replaces
  *  that provider's list outright, and a provider the remote copy does not
- *  mention keeps the list this build shipped with. That means docs/model-catalog
- *  .json can carry only the providers being changed, and a provider dropped from
- *  it degrades to the built-in list rather than to an empty picker.
+ *  mention keeps the list this build shipped with. So a remote copy can carry only
+ *  the providers being changed, and a provider dropped from it degrades to the
+ *  built-in list rather than to an empty picker. This build fetches no remote
+ *  copy (the main process answers null), so the built-in list is what shows.
  *
  *  Returns whether anything actually changed, so the caller can skip a pointless
  *  event on the overwhelmingly common "nothing new" path. */
