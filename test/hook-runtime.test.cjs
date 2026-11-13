@@ -775,3 +775,30 @@ test('round 7 (M): any date, time or non-finite value anywhere is not understood
   fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\nhistory_date = 2020-02-30\n');
   assert.match(await refused(hive.ensureAgent({ id: 'd1', name: 'd', provider: 'codex', cwd: home }, { launch: { argv: ['codex'], env: {} } })), /history_date is a value the app does not read/);
 });
+
+test('round 8 (N1): any sandbox/permission/profile/writable_roots key the decoder does not read refuses — Codex permission profiles included', async (t) => {
+  const { home, rt, hive } = floor(t);
+  hive.setHookRuntime(rt);
+  const cfg = path.join(home, '.codex', 'config.toml');
+  fs.mkdirSync(path.dirname(cfg), { recursive: true });
+  let n = 0;
+  const spawn = (argv) => hive.ensureAgent({ id: `p${n++}`, name: 'p', provider: 'codex', cwd: home }, { launch: { argv, env: {} } });
+  // Her probes: the config selects a permission profile that outranks sandbox_mode.
+  fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\ndefault_permissions = ":danger-full-access"\n');
+  assert.match(await refused(spawn(['codex'])), /default_permissions \(a key that may decide the sandbox/);
+  assert.match(await refused(spawn(['codex -s workspace-write'])), /default_permissions/, 'with or without -s');
+  fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\n[permissions.wide.filesystem]\nwrite = ["/"]\n');
+  assert.match(await refused(spawn(['codex'])), /permissions \(a key/);
+  fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\n');
+  assert.match(await refused(spawn(['codex', '-c', 'default_permissions=":danger-full-access"'])), /option the app does not model: -c default_permissions/);
+  // A made-up future key in the family is refused too.
+  fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\npermissions_v2 = { mode = "open" }\n');
+  assert.match(await refused(spawn(['codex'])), /permissions_v2/);
+  fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\n[[hooks.Stop]]\npermission_mode = "open"\n');
+  assert.match(await refused(spawn(['codex'])), /hooks\.Stop\.permission_mode/, 'inside an array of tables too');
+  fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\n[profiles.x]\ndefault_permissions = ":read-only"\n');
+  assert.match(await refused(spawn(['codex'])), /profiles\.x\.default_permissions/);
+  // Names that are identifiers (a project path, a server, a profile name) are not policy keys.
+  fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\n[projects."/Users/me/profile"]\ntrust_level = "trusted"\n[mcp_servers.profiler]\ncommand = "p"\n[profiles.sandboxed]\nmodel = "m"\n[sandbox_workspace_write]\nnetwork_access = true\n');
+  await spawn(['codex']);
+});
