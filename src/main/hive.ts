@@ -1633,7 +1633,7 @@ export class HiveManager {
       if (!reg || JSON.stringify(this.readableRegistry()) !== asRead) {
         if (archived && hasExactFolder(this.agentsDir(), id)) {
           writeFileSync(join(this.agentDir(id), ARCHIVE_PENDING), '');
-          this.appendLog({ kind: 'archive-pending', agentId: shortTarget(id) });
+          this.appendLog({ kind: 'archive-pending', agentId: isFolderName(id) ? id : shortTarget(id) });
         }
         return;
       }
@@ -2675,7 +2675,7 @@ export class HiveManager {
   }
 
   private refuseRegistryWrite(agentId: unknown): never {
-    this.appendLog({ kind: 'registry-write-refused', agentId: shortTarget(agentId) });
+    this.appendLog({ kind: 'registry-write-refused', agentId: typeof agentId === 'string' && isFolderName(agentId) ? agentId : shortTarget(agentId) });
     throw new RegistryUnreadable('The agent registry could not be read, or changed while this agent was being added, so it was not added.');
   }
 

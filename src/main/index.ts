@@ -86,7 +86,7 @@ import * as integrations from './integrations';
 import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
-import { RefusedRosterId, RegistryUnreadable, shortTarget } from './messageTarget';
+import { isFolderName, RefusedRosterId, RegistryUnreadable, shortTarget } from './messageTarget';
 import { HookRuntimeUnavailable } from './hookRuntime';
 import { relocationEnv } from './launchLine';
 import { buildPtyEnv } from './ptyEnv';
@@ -2795,7 +2795,8 @@ function spawnFailReason(error?: string): SpawnFailReason {
  *  roster entry. Its worktree goes too, since no process will ever tear it down. One
  *  that cannot be removed is logged and stays tracked, because it is still on disk. */
 async function refuseSpawn(ptyId: string, agentId: string, provider: string, refusal: RefusedRosterId | RegistryUnreadable | HookRuntimeUnavailable | CodexHomeRefused): Promise<{ ok: false; error: string }> {
-  hive.appendLog({ kind: 'spawn-refused', agentId: shortTarget(agentId), reason: refusal.message });
+  // An ordinary id as it is; only one that is not a plain folder name is quoted and cut short.
+  hive.appendLog({ kind: 'spawn-refused', agentId: isFolderName(agentId) ? agentId : shortTarget(agentId), reason: refusal.message });
   // Whatever ensureAgent already did for this spawn (a new agent's registry row) is rolled back.
   try { hive.withdrawRefusedSpawn(ptyId, refusal.message); } catch (e) { console.error('[hive] rollback of a refused spawn failed:', e); }
   analytics.track('agent_spawn_failed', { provider, reason: 'spawn_error' });
