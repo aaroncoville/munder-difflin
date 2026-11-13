@@ -813,6 +813,8 @@ test('prep r7: the key-family test applies only where Codex reads policy; her fa
     'include_permissions_instructions = true\n', '[mcp_servers.x.env]\nAWS_PROFILE = "a"\n', '[shell_environment_policy.set]\nAWS_PROFILE = "a"\n',
     '[mcp_servers.x.tools.get_user_profile]\nenabled = true\n', '[mcp_servers.x.http_headers]\n"X-Profile" = "v"\n', '[agents.profile-reviewer]\ndescription = "d"\n',
     '[plugins."permission-helper@m"]\nenabled = true\n', '[apps.sandbox_app]\nenabled = true\n', '[[hooks.Stop]]\npermission_mode = "x"\n',
+    // Jannings' R6 names: Codex accepts identifier maps agents.* and plugins.* (each fixture loads under codex 0.167.0 --strict-config).
+    '[agents.sandbox_auditor]\ndescription = "d"\n', '[plugins.profiler]\nenabled = true\n',
   ];
   for (const f of fine) { fs.writeFileSync(cfg, base + f); await spawn(['codex']); }
   const bad = [
