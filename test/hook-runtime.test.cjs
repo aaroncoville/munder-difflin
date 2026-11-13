@@ -794,11 +794,41 @@ test('round 8 (N1): any sandbox/permission/profile/writable_roots key the decode
   // A made-up future key in the family is refused too.
   fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\npermissions_v2 = { mode = "open" }\n');
   assert.match(await refused(spawn(['codex'])), /permissions_v2/);
-  fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\n[[hooks.Stop]]\npermission_mode = "open"\n');
-  assert.match(await refused(spawn(['codex'])), /hooks\.Stop\.permission_mode/, 'inside an array of tables too');
   fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\n[profiles.x]\ndefault_permissions = ":read-only"\n');
   assert.match(await refused(spawn(['codex'])), /profiles\.x\.default_permissions/);
   // Names that are identifiers (a project path, a server, a profile name) are not policy keys.
   fs.writeFileSync(cfg, 'sandbox_mode = "workspace-write"\n[projects."/Users/me/profile"]\ntrust_level = "trusted"\n[mcp_servers.profiler]\ncommand = "p"\n[profiles.sandboxed]\nmodel = "m"\n[sandbox_workspace_write]\nnetwork_access = true\n');
   await spawn(['codex']);
+});
+
+test('prep r7: the key-family test applies only where Codex reads policy; her false refusals start, every policy form still refuses', async (t) => {
+  const { home, rt, hive } = floor(t);
+  hive.setHookRuntime(rt);
+  const cfg = path.join(home, '.codex', 'config.toml');
+  fs.mkdirSync(path.dirname(cfg), { recursive: true });
+  let n = 0;
+  const spawn = (argv) => hive.ensureAgent({ id: `q${n++}`, name: 'q', provider: 'codex', cwd: home }, { launch: { argv, env: {} } });
+  const base = 'sandbox_mode = "workspace-write"\n';
+  const fine = [
+    'include_permissions_instructions = true\n', '[mcp_servers.x.env]\nAWS_PROFILE = "a"\n', '[shell_environment_policy.set]\nAWS_PROFILE = "a"\n',
+    '[mcp_servers.x.tools.get_user_profile]\nenabled = true\n', '[mcp_servers.x.http_headers]\n"X-Profile" = "v"\n', '[agents.profile-reviewer]\ndescription = "d"\n',
+    '[plugins."permission-helper@m"]\nenabled = true\n', '[apps.sandbox_app]\nenabled = true\n', '[[hooks.Stop]]\npermission_mode = "x"\n',
+  ];
+  for (const f of fine) { fs.writeFileSync(cfg, base + f); await spawn(['codex']); }
+  const bad = [
+    ['default_permissions = ":danger-full-access"\n', /default_permissions/], ['permissions_v2 = 1\n', /permissions_v2/], ['[permissions.wide.filesystem]\nwrite = ["/"]\n', /permissions/],
+    ['[profiles.x]\ndefault_permissions = "r"\n', /profiles\.x\.default_permissions/], ['[projects."/x"]\nsandbox_mode = "danger-full-access"\n', /projects\.\/x\.sandbox_mode/],
+    ['[windows]\nsandbox = "elevated"\n', /windows\.sandbox/], ['[agents.a]\nconfig_file = "other.toml"\n', /agents\.a\.config_file \(a config the app does not follow\)/],
+  ];
+  for (const [f, why] of bad) { fs.writeFileSync(cfg, base + f); assert.match(await refused(spawn(['codex'])), why, f); }
+  // -c at the same positions only.
+  fs.writeFileSync(cfg, base);
+  for (const k of ['default_permissions=":danger-full-access"', 'projects."/x".sandbox_mode="danger-full-access"', 'agents.a.config_file="x"', 'windows.sandbox="x"']) assert.match(await refused(spawn(['codex', '-c', k])), /option the app does not model: -c/, k);
+  for (const k of ['mcp_servers.x.env.AWS_PROFILE="a"', 'include_permissions_instructions=true']) await spawn(['codex', '-c', k]);
+  // Memory and knowledge settings are read outside the hook provisioning try.
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.ts'), 'utf8');
+  const tryAt = main.indexOf('const inj = await hive.ensureAgent(');
+  const block = main.slice(tryAt, main.indexOf('hive.markHookProvisioned(opts.id);', tryAt));
+  assert.doesNotMatch(block, /memory\.env\(\)|knowledge\.env\(\)/, 'no env() call inside the provisioning try');
+  assert.match(main.slice(main.lastIndexOf('if (opts.hive && hive.enabled()) {', tryAt), tryAt), /try \{ memEnv = memory\.env\(\); \} catch[\s\S]*try \{ kgEnv = knowledge\.env\(\); \} catch/);
 });

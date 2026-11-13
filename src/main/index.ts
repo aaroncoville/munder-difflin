@@ -2974,6 +2974,12 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // result so the renderer types it through the per-pty write-chain. (ondev-b)
   let seedPrompt: string | undefined;
   if (opts.hive && hive.enabled()) {
+    // Memory and knowledge settings are best-effort and not hook provisioning: read them outside the try below, so a
+    // failure here never refuses the spawn and never reads as a hook provisioning error.
+    let memEnv: Record<string, string> = {};
+    let kgEnv: Record<string, string> = {};
+    try { memEnv = memory.env(); } catch (e) { console.error('[hive] memory env failed:', e); }
+    try { kgEnv = knowledge.env(); } catch (e) { console.error('[hive] knowledge env failed:', e); }
     try {
       const inj = await hive.ensureAgent(
         { ...opts.hive, cwd: opts.cwd, provider },
@@ -2984,7 +2990,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
           // to spell it `$KG_CLI`, which is POSIX-only: under cmd.exe/PowerShell it
           // expands to nothing, so every knowledge-graph instruction was dead on a
           // Windows floor. Empty when the KG is off (the line isn't emitted then).
-          kgCliPath: knowledge.env().KG_CLI,
+          kgCliPath: kgEnv.KG_CLI,
           // The app's one theme paints every terminal on a dark ground, so the
           // agent's own TUI is told to match it.
           theme: 'dark',
@@ -2997,7 +3003,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
           spawnId: opts.id,
           // The shared palace is mutated by the agent's own `mempalace` calls, so
           // the OS sandbox must let it through (empty when memory is off).
-          extraWritableDirs: [memory.env().MEMPALACE_PALACE_PATH].filter((p): p is string => !!p)
+          extraWritableDirs: [memEnv.MEMPALACE_PALACE_PATH].filter((p): p is string => !!p)
         }
       );
       opts.args = [...(opts.args ?? []), ...inj.args];
@@ -3008,7 +3014,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       if (inj.degraded) breakerToast('Agent running degraded', inj.degraded);
       // Point the agent's mempalace CLI at the shared palace + the `kg` CLI at the
       // enterprise knowledge store (both no-ops / empty when their flags are off).
-      opts.env = { ...(opts.env ?? {}), ...inj.env, ...memory.env(), ...knowledge.env() };
+      opts.env = { ...(opts.env ?? {}), ...inj.env, ...memEnv, ...kgEnv };
       // Only now, with the injection applied, can the hook runtime decision be confirmed.
       hive.markHookProvisioned(opts.id);
     } catch (e) {
