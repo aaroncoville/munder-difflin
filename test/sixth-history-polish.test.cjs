@@ -18,7 +18,7 @@ test('visible application chrome carries the Sixth History identity', () => {
   assert.match(app, /alt="Sixth History"/);
   assert.match(focus, /SIXTH HISTORY · FOCUS MODE/);
   assert.match(html, /<title>Hush House<\/title>/);
-  assert.match(main, /Sixth History — Floor/);
+  assert.match(main, /title: isFloor \? `\$\{PRODUCT_NAME\} — Floor` : PRODUCT_NAME,/);
 });
 
 test('the Librarian and terminal use the scene darks instead of paper surfaces', () => {

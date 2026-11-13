@@ -2530,7 +2530,7 @@ function createWindow(opts: { floor?: boolean } = {}): BrowserWindow {
     ...(geom && geom.x !== undefined && geom.y !== undefined ? { x: geom.x, y: geom.y } : {}),
     minWidth: MIN_WIN.width,
     minHeight: MIN_WIN.height,
-    title: isFloor ? 'Sixth History — Floor' : 'Sixth History',
+    title: isFloor ? `${PRODUCT_NAME} — Floor` : PRODUCT_NAME,
     backgroundColor: APP_GROUND,
     titleBarStyle: 'hiddenInset',
     show: false,
