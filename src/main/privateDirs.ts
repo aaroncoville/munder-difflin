@@ -40,8 +40,11 @@ export class PrivateDirRefused extends Error {
 }
 
 /** Why these roots reach a private folder (contain it, equal it or lie inside it, compared resolved), naming the
- *  folder, the root and where the root came from; null when none does. */
+ *  folder, the root and where the root came from; null when none does. A root that could not be read or understood
+ *  may reach any folder, so it refuses on its own, whatever other check runs before this one. */
 export function privateDirsReach(roots: WriteRoot[]): string | null {
+  const unread = roots.find((r) => r.path === null);
+  if (unread) return `a write root in ${unread.from} could not be read or understood, so it may reach a folder the app keeps for itself`;
   for (const d of privateDirs()) {
     for (const r of roots) {
       if (r.path && overlaps(d.path, r.path)) {

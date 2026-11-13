@@ -107,3 +107,13 @@ test('the app registers its data folder at start', () => {
   const src = sa.activeSource('src/main/index.ts');
   assert.match(src, /registerPrivateDir\(app\.getPath\('userData'\),/);
 });
+
+test('a root that could not be read is refused by the private-folder check on its own', () => {
+  const { registerPrivateDir, privateDirsReach } = needRegistry();
+  const off = registerPrivateDir('/nonexistent/app-data', 'a test folder');
+  try {
+    // No other check runs here: an unreadable root may reach any folder, so it is refused, naming where it came from.
+    const why = privateDirsReach([{ path: null, from: '/w/.codex/config.toml' }]);
+    assert.ok(why && why.includes('/w/.codex/config.toml'), String(why));
+  } finally { off(); }
+});
