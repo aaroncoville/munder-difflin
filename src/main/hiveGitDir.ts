@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
 import { constants, cpSync, existsSync, realpathSync, writeFileSync } from 'node:fs';
-import { access, cp, lstat, mkdir, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { access, cp, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { GitRunner } from './hiveCommit';
+import { HIVE_MAINTENANCE_TIMEOUT_MS } from './hiveCommit';
 
 /**
  * Where the hive repository's git directory lives: in the app's data folder, never inside the hive.
@@ -34,7 +35,7 @@ export function writeMarker(gitDir: string, source: string | null): void {
 }
 
 export type SettleResult =
-  | { ok: true; action: 'none' | 'moved' | 'finished' | 'set-aside' | 'not-adopted'; note?: string }
+  | { ok: true; action: 'none' | 'moved' | 'set-aside' | 'not-adopted' | 'refused-import'; note?: string }
   | { ok: false; error: string };
 
 const exists = async (p: string): Promise<boolean> => access(p, constants.F_OK).then(() => true, () => false);
@@ -54,54 +55,83 @@ async function listing(dir: string): Promise<string> {
   return out.sort().join('\n');
 }
 
-/**
- * Everything in a git directory that decides what git runs or where it looks, apart from objects and refs. A git
- * directory imported from where an agent could write it keeps none of these: the history stays, and the app writes the
- * rest itself.
- * - `config` (with any include/includeIf), `config.worktree`: settings that name programs. The old config is kept,
- *   inert, as `config.before-move` for whoever reverses the move; git never reads that name.
- * - `hooks/`: programs.
- * - `commondir`, `gitdir`: send git to another directory, and with it another config.
- * - `modules/`: the git directories of submodules, each with a config of its own that git reads when it looks inside
- *   them.
- * - `info/attributes`: can route files through filters and other drivers. `info/exclude` changes what is recorded;
- *   the hive keeps its rules in .gitignore.
- * - `objects/info/alternates`, `objects/info/http-alternates`: make git read objects from elsewhere. History that
- *   really lives there would be lost by removing them, so the objects are first copied in (see sanitizeGitDir).
- * The fresh config `git init` writes has no include or includeIf, so nothing the old config pulled in survives.
- */
-const IMPORTED_SETTINGS = ['config.worktree', 'hooks', 'commondir', 'gitdir', 'modules', 'info/attributes', 'info/exclude'];
-const ALTERNATES = ['objects/info/alternates', 'objects/info/http-alternates'];
+/** The first symlink anywhere under `dir` (or `dir` itself), or null. Never follows one. */
+async function findSymlink(dir: string): Promise<string | null> {
+  const st = await lstat(dir).catch(() => null);
+  if (!st) return null;
+  if (st.isSymbolicLink()) return dir;
+  if (!st.isDirectory()) return null;
+  for (const e of await readdir(dir, { withFileTypes: true })) {
+    const found = e.isSymbolicLink() ? join(dir, e.name) : e.isDirectory() ? await findSymlink(join(dir, e.name)) : null;
+    if (found) return found;
+  }
+  return null;
+}
 
-/** Replace what git executes or follows in `gitDir` with what the app writes. Objects, refs and history stay. Safe to
- *  run again. */
-export async function sanitizeGitDir(gitDir: string, hiveRoot: string, git: GitRunner): Promise<{ ok: boolean; error?: string }> {
-  try {
-    // Kept once, for whoever reverses the move; a repeated run must not replace it with the app's config.
-    if (!(await exists(join(gitDir, 'config.before-move'))) && await exists(join(gitDir, 'config'))) {
-      await rename(join(gitDir, 'config'), join(gitDir, 'config.before-move'));
-    } else {
-      await rm(join(gitDir, 'config'), { force: true });
+/**
+ * What a git directory imported from the hive may bring: its history, and nothing else. Everything not named here
+ * (config, hooks, info/, modules/, commondir, MERGE_HEAD and the other in-progress operations, shallow, and anything a
+ * later git adds) comes fresh from `git init --template=` or not at all. An allowlist answers "is anything missing?"
+ * by construction, where a list of what to remove cannot.
+ * - `HEAD`, only if it is a branch name or a commit id.
+ * - `refs/` and `packed-refs`, without `refs/replace/` (replace refs swap one object for another when read).
+ * - `objects/`, after the objects it borrowed through alternates are copied in; then without the alternates.
+ * - `index`, so the first commit does not see every file as new; `logs/`, the reflog.
+ * Nothing in it may be a symlink: a link would leave part of the directory where an agent can write it.
+ */
+const IMPORTED = ['HEAD', 'refs', 'packed-refs', 'objects', 'index', 'logs'];
+const HEAD_FORMAT = /^(ref: refs\/heads\/[^\s]+|[0-9a-f]{40}|[0-9a-f]{64})\s*$/;
+
+/**
+ * Why the git directory being imported cannot be, or null. It is checked as it stands: what is still in the holding
+ * folder, plus whatever an interrupted import already moved into the partial (HEAD among it).
+ */
+async function refusal(holding: string, partial: string): Promise<string | null> {
+  for (const dir of [holding, partial]) {
+    const link = await findSymlink(dir);
+    if (link) return `it holds a symlink (${link})`;
+  }
+  if (await exists(join(holding, 'shallow'))) return 'it is a shallow repository, so its history is incomplete';
+  const head = (await readFile(join(holding, 'HEAD'), 'utf8').catch(() => null)) ?? (await readFile(join(partial, 'HEAD'), 'utf8').catch(() => null));
+  if (head === null || !HEAD_FORMAT.test(head)) return 'its HEAD is not a branch or a commit';
+  return null;
+}
+
+/**
+ * Build `partial` from what `source` may bring (IMPORTED). Entries are renamed across, so on one volume this is
+ * instant; every step can be repeated after an interruption.
+ */
+async function importInto(source: string, partial: string, hiveRoot: string, git: GitRunner): Promise<{ ok: boolean; error?: string }> {
+  if (!(await exists(partial))) {
+    const init = await git([`--git-dir=${partial}`, `--work-tree=${hiveRoot}`, 'init', '-q', '--template='], hiveRoot);
+    if (!init.ok) return { ok: false, error: `git init failed: ${(init.err || init.out).trim()}` };
+  }
+  for (const name of IMPORTED) {
+    if (!(await exists(join(source, name)))) continue;
+    await rm(join(partial, name), { recursive: true, force: true });
+    await rename(join(source, name), join(partial, name));
+  }
+  await rm(join(partial, 'refs', 'replace'), { recursive: true, force: true });
+  const packed = await readFile(join(partial, 'packed-refs'), 'utf8').catch(() => null);
+  if (packed !== null) {
+    // A peeled line (`^<id>`) belongs to the ref above it, so it goes with it.
+    const kept: string[] = [];
+    let dropping = false;
+    for (const line of packed.split('\n')) {
+      if (line.startsWith('^')) { if (!dropping) kept.push(line); continue; }
+      dropping = / refs\/replace\//.test(line);
+      if (!dropping) kept.push(line);
     }
-    for (const name of IMPORTED_SETTINGS) await rm(join(gitDir, name), { recursive: true, force: true });
-  } catch (e) {
-    return { ok: false, error: `could not clear the imported repository's settings: ${(e as Error).message}` };
+    await writeFile(join(partial, 'packed-refs'), kept.join('\n'), 'utf8');
   }
-  // A fresh config, and no templates: nothing from the owner's template folder either.
-  const init = await git([`--git-dir=${gitDir}`, `--work-tree=${hiveRoot}`, 'init', '-q', '--template='], hiveRoot);
-  if (!init.ok) return { ok: false, error: `git init on the imported repository failed: ${(init.err || init.out).trim()}` };
-  // Objects borrowed through alternates are copied in before the alternates go, under the config just written, so no
-  // history is lost. Objects are data: nothing here runs a program the imported directory named. If the copy fails,
-  // the alternates stay and the move stops; it is tried again on the next launch.
-  if (await exists(join(gitDir, ALTERNATES[0]))) {
-    const repack = await git([`--git-dir=${gitDir}`, `--work-tree=${hiveRoot}`, 'repack', '-a', '-d', '-q'], hiveRoot);
-    if (!repack.ok) return { ok: false, error: `could not copy in the objects the imported repository borrowed: ${(repack.err || repack.out).trim()}` };
+  // Objects borrowed through alternates are copied in before the alternates go, so no history is lost. Objects are
+  // data: nothing here runs a program the imported directory named. A large repository can take a while, so this gets
+  // the maintenance limit rather than a commit's.
+  if (await exists(join(partial, 'objects', 'info', 'alternates'))) {
+    const repack = await git([`--git-dir=${partial}`, `--work-tree=${hiveRoot}`, 'repack', '-a', '-d', '-q'], hiveRoot, HIVE_MAINTENANCE_TIMEOUT_MS);
+    if (!repack.ok) return { ok: false, error: `could not copy in the objects the old repository borrowed: ${(repack.err || repack.out).trim()}` };
   }
-  try {
-    for (const name of ALTERNATES) await rm(join(gitDir, name), { force: true });
-  } catch (e) {
-    return { ok: false, error: `could not remove the imported repository's alternates: ${(e as Error).message}` };
-  }
+  for (const name of ['objects/info/alternates', 'objects/info/http-alternates']) await rm(join(partial, name), { force: true });
   return { ok: true };
 }
 
@@ -112,21 +142,31 @@ export async function writeGitfile(hiveRoot: string, target: string): Promise<vo
 /** The name a `hive/.git` folder that appeared after the move is renamed to. The hive's .gitignore excludes it. */
 export const SET_ASIDE_PREFIX = '.git.set-aside-';
 
+/** A free name next to `path` for keeping something aside. */
+async function asideName(path: string, label: string): Promise<string> {
+  let name = `${path}.${label}`;
+  if (await exists(name)) name = `${name}-${Date.now()}`;
+  return name;
+}
+
 /**
  * Bring the hive's repository to `target`, the git directory in the app data folder. Every step is safe to interrupt
- * and repeat; nothing that holds history is deleted, only renamed or copied.
+ * and repeat; nothing that holds history is deleted, only renamed, copied or kept aside.
  *
  * - `target` exists: it wins, always. A `hive/.git` folder next to it was put there after the move, and an agent could
  *   have: it is renamed aside inside the hive, never read and never adopted. The gitfile is rewritten.
- * - `hive/.git` is a folder and `target` does not exist: the first move. It is renamed to `target` (copied, checked
- *   and then removed across volumes), what it carried that git executes or follows is replaced (sanitizeGitDir), and
- *   the marker is written before the final rename.
- * - `target.partial` is left from an interrupted rename: finish it.
+ * - `hive/.git` is a folder and `target` does not exist: the first move. The folder is renamed to `<target>.import`
+ *   (copied and checked across volumes), refused if it holds a symlink, is shallow or has a HEAD that is not a branch
+ *   or a commit, and otherwise only what IMPORTED names goes into a fresh `<target>.partial`, which becomes `target`.
+ *   What is left of the old directory (its config, hooks and the rest) is kept, unread, as `<target>.before-move`, and
+ *   a refused one as `<target>.refused`.
+ * - `<target>.import` is left from an interrupted move: carry on from there.
  * - Otherwise there is no history the app may take: the caller starts a new repository. A gitfile pointing elsewhere is
  *   not followed.
  */
 export async function settleHiveGitDir(hiveRoot: string, base: string, target: string, git: GitRunner): Promise<SettleResult> {
   const dotGit = join(hiveRoot, '.git');
+  const holding = `${target}.import`;
   const partial = `${target}.partial`;
   try {
     await mkdir(base, { recursive: true, mode: 0o700 });
@@ -134,6 +174,8 @@ export async function settleHiveGitDir(hiveRoot: string, base: string, target: s
     const isFolder = !!st && st.isDirectory() && !st.isSymbolicLink();
 
     if (await exists(target)) {
+      // Finish an interrupted move's last step, then hold to the target.
+      if (await exists(holding)) await rename(holding, await asideName(target, 'before-move'));
       let note: string | undefined;
       if (isFolder) {
         const aside = join(hiveRoot, `${SET_ASIDE_PREFIX}${Date.now()}`);
@@ -147,36 +189,39 @@ export async function settleHiveGitDir(hiveRoot: string, base: string, target: s
     }
 
     if (isFolder) {
+      // A fresh start: whatever an earlier attempt left came from this same folder, which is still whole.
       await rm(partial, { recursive: true, force: true });
-      let copied = false;
+      await rm(holding, { recursive: true, force: true });
       try {
-        await rename(dotGit, partial);
+        await rename(dotGit, holding);
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code !== 'EXDEV') throw e;
-        await cp(dotGit, partial, { recursive: true, errorOnExist: true, force: false, verbatimSymlinks: true });
-        if ((await listing(partial)) !== (await listing(dotGit))) return { ok: false, error: `the copy of ${dotGit} does not match it; nothing was moved` };
-        copied = true;
+        await cp(dotGit, holding, { recursive: true, errorOnExist: true, force: false, verbatimSymlinks: true });
+        if ((await listing(holding)) !== (await listing(dotGit))) return { ok: false, error: `the copy of ${dotGit} does not match it; nothing was moved` };
+        await rm(dotGit, { recursive: true, force: true });
       }
-      const clean = await sanitizeGitDir(partial, hiveRoot, git);
-      if (!clean.ok) return { ok: false, error: clean.error! };
+    }
+
+    if (await exists(holding)) {
+      // Checked on what is still in the holding folder and on what an interrupted import already moved across.
+      const why = await refusal(holding, partial);
+      if (why) {
+        const kept = await asideName(target, 'refused');
+        await rename(holding, kept);
+        if (await exists(partial)) await rename(partial, `${kept}.partial`);
+        return { ok: true, action: 'refused-import', note: `the repository in ${dotGit} was not imported because ${why}; it is kept, unread, at ${kept}, and a new history starts` };
+      }
+      const imported = await importInto(holding, partial, hiveRoot, git);
+      if (!imported.ok) return { ok: false, error: imported.error! };
       writeMarker(partial, dotGit);
       await rename(partial, target);
-      if (copied) await rm(dotGit, { recursive: true, force: true });
+      await rename(holding, await asideName(target, 'before-move'));
       await writeGitfile(hiveRoot, target);
       return { ok: true, action: 'moved' };
     }
 
-    if (!st && await exists(partial)) {
-      // Interrupted between the two renames: the history is all in the partial, and nothing else holds it.
-      const clean = await sanitizeGitDir(partial, hiveRoot, git);
-      if (!clean.ok) return { ok: false, error: clean.error! };
-      writeMarker(partial, dotGit);
-      await rename(partial, target);
-      await writeGitfile(hiveRoot, target);
-      return { ok: true, action: 'finished' };
-    }
-
-    // A gitfile (or anything else) and no target: never followed. The caller starts a new repository.
+    // No history the app may take. A partial with no holding folder has no source to finish from.
+    await rm(partial, { recursive: true, force: true });
     if (st) {
       await rm(dotGit, { recursive: true, force: true });
       return { ok: true, action: 'not-adopted', note: `${dotGit} was not a folder and no repository exists for this hive in the app's folder; a new history starts` };

@@ -8,7 +8,7 @@ export interface GitResult {
   /** What failed, when it was not the commit itself (for example creating the repository). */
   failed?: string;
 }
-export type GitRunner = (args: string[], cwd: string) => Promise<GitResult>;
+export type GitRunner = (args: string[], cwd: string, timeoutMs?: number) => Promise<GitResult>;
 
 /**
  * Identity and gc settings for every hive git command.

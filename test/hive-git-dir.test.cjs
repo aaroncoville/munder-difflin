@@ -142,7 +142,7 @@ test('the first commit moves the history into the app data folder and leaves a g
   assert.equal(fs.readFileSync(path.join(root, '.git'), 'utf8'), `gitdir: ${gitDir}\n`);
   assert.equal(git(root, '--git-dir', gitDir, 'rev-parse', 'HEAD~1').stdout.trim(), oldHead, 'the old history is kept');
   assert.equal(git(root, 'rev-parse', 'HEAD').stdout.trim(), git(root, '--git-dir', gitDir, 'rev-parse', 'HEAD').stdout.trim(), 'git in the hive reads the moved repository');
-  assert.equal(fs.existsSync(path.join(gitDir, 'config.before-move')), true);
+  assert.equal(fs.existsSync(path.join(`${gitDir}.before-move`, 'config')), true, 'the old config is not kept aside for a reversal');
   for (const gone of ['hooks', 'modules', 'info/attributes', 'objects/info/alternates']) assert.equal(fs.existsSync(path.join(gitDir, gone)), false, `${gone} came along`);
   assert.doesNotMatch(fs.readFileSync(path.join(gitDir, 'config'), 'utf8'), /include/);
   const markerFile = JSON.parse(fs.readFileSync(path.join(gitDir, 'hive-git.json'), 'utf8'));
@@ -159,7 +159,8 @@ test('a move interrupted between its two renames finishes on the next run', asyn
   const oldHead = git(root, 'rev-parse', 'HEAD').stdout.trim();
   const gitDir = hiveGitDirFor(base, root);
   fs.mkdirSync(base, { recursive: true });
-  fs.renameSync(path.join(root, '.git'), `${gitDir}.partial`);
+  // As if the app stopped right after the first rename.
+  fs.renameSync(path.join(root, '.git'), `${gitDir}.import`);
 
   const hive = new HiveManager(() => dir);
   hive.setGitDirBase(base);
@@ -167,6 +168,7 @@ test('a move interrupted between its two renames finishes on the next run', asyn
   hive.commit('hive: after the interruption');
   await hive.commitsSettled();
 
+  assert.equal(fs.existsSync(`${gitDir}.import`), false);
   assert.equal(fs.existsSync(`${gitDir}.partial`), false);
   assert.equal(git(root, '--git-dir', gitDir, 'rev-parse', 'HEAD~1').stdout.trim(), oldHead);
 });
@@ -441,4 +443,78 @@ test('nested repositories the old repository had recorded are dropped at the mov
 
   assert.equal(fs.existsSync(marker), false, 'a carried nested repository\'s filter ran');
   assert.deepEqual(gitlinks(root, target(base, root)), []);
+});
+
+/** An existing hive from before this change: its repository inside the hive, with a commit. */
+async function legacyHive(dir) {
+  const legacy = new HiveManager(() => dir);
+  await legacy.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: dir, isGod: true });
+  await legacy.commitsSettled();
+  return legacy.root();
+}
+
+function symlinksUnder(d) {
+  const out = [];
+  const walk = (p) => {
+    const st = fs.lstatSync(p);
+    if (st.isSymbolicLink()) { out.push(p); return; }
+    if (st.isDirectory()) for (const n of fs.readdirSync(p)) walk(path.join(p, n));
+  };
+  walk(d);
+  return out;
+}
+
+for (const entry of ['objects', 'objects/info', 'refs', 'info']) {
+  test(`a symlink at ${entry}/ in the old repository never reaches the app's, and nothing an agent writes through it is served`, async (t) => {
+    const { dir, base } = scratch(t);
+    const root = await legacyHive(dir);
+    // The agent moves that part of the repository into its own folder and leaves a link behind.
+    const seat = path.join(root, 'agents', 'god-1', 'scratch', entry.replace('/', '-'));
+    const inRepo = path.join(root, '.git', entry);
+    fs.mkdirSync(inRepo, { recursive: true });
+    fs.mkdirSync(path.dirname(seat), { recursive: true });
+    fs.cpSync(inRepo, seat, { recursive: true });
+    fs.rmSync(inRepo, { recursive: true, force: true });
+    fs.symlinkSync(seat, inRepo);
+
+    const hive = new HiveManager(() => dir);
+    hive.setGitDirBase?.(base);
+    hive.ensureHive();
+    hive.commit('hive: first commit of the new build');
+    await hive.commitsSettled();
+
+    const gitDir = target(base, root);
+    assert.deepEqual(symlinksUnder(gitDir), [], 'a symlink came into the app\'s repository');
+    // After the move the agent points alternates, from wherever it can, at an object store of its own.
+    const store = path.join(dir, 'agent-store');
+    git(dir, 'init', '-q', store);
+    const planted = git(store, 'hash-object', '-w', '--stdin').stdout.trim() || spawnSync(REAL_GIT, ['hash-object', '-w', '--stdin'], { cwd: store, input: 'planted-by-seat', encoding: 'utf8' }).stdout.trim();
+    const objectsInfo = entry === 'objects' ? path.join(seat, 'info') : entry === 'objects/info' ? seat : null;
+    if (objectsInfo) {
+      fs.mkdirSync(objectsInfo, { recursive: true });
+      fs.writeFileSync(path.join(objectsInfo, 'alternates'), `${path.join(store, '.git', 'objects')}\n`);
+    }
+    assert.notEqual(git(root, '--git-dir', gitDir, 'cat-file', '-e', planted).status, 0, 'the app\'s git served an object from the agent\'s store');
+    assert.equal(hive.logTail(50).some((e) => e.kind === 'hive-git-dir' && e.action === 'refused-import'), true);
+    assert.equal(fs.existsSync(`${gitDir}.refused`), true, 'the refused repository was not kept aside');
+  });
+}
+
+test('an in-progress merge the old repository carried never makes the app\'s first commit a merge', async (t) => {
+  const { dir, base } = scratch(t);
+  const root = await legacyHive(dir);
+  const tree = git(root, 'rev-parse', 'HEAD^{tree}').stdout.trim();
+  const seatCommit = spawnSync(REAL_GIT, ['-c', 'user.name=s', '-c', 'user.email=s@s', 'commit-tree', tree, '-m', 'made by an agent'], { cwd: root, encoding: 'utf8' }).stdout.trim();
+  fs.writeFileSync(path.join(root, '.git', 'MERGE_HEAD'), `${seatCommit}\n`);
+
+  const hive = new HiveManager(() => dir);
+  hive.setGitDirBase?.(base);
+  hive.ensureHive();
+  fs.writeFileSync(path.join(root, 'board.md'), '# after the move\n');
+  hive.commit('hive: first commit of the new build');
+  await hive.commitsSettled();
+
+  const gitDir = target(base, root);
+  assert.equal(git(root, '--git-dir', gitDir, 'rev-list', '--parents', '-n', '1', 'HEAD').stdout.trim().split(' ').length, 2, 'the first commit is a merge');
+  assert.notEqual(git(root, '--git-dir', gitDir, 'merge-base', '--is-ancestor', seatCommit, 'HEAD').status, 0, 'the agent\'s commit is in the hive history');
 });

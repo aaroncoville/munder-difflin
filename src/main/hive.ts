@@ -4016,8 +4016,8 @@ export class HiveManager {
 
   private async commitNow(root: string, message: string): Promise<GitResult> {
     // Once quitting has begun, no further git starts: the one already running is all there is to stop.
-    const git = (args: string[], cwd: string): Promise<GitResult> =>
-      (this.commitsStopped ? Promise.resolve({ ok: false, out: '', err: 'the app is quitting' }) : runGit(args, cwd));
+    const git = (args: string[], cwd: string, timeoutMs?: number): Promise<GitResult> =>
+      (this.commitsStopped ? Promise.resolve({ ok: false, out: '', err: 'the app is quitting' }) : runGit(args, cwd, timeoutMs));
     // Checked again here: commits may have been turned off since this one was requested.
     if (this._gitCommitsDisabled) return { ok: true, out: '', err: '' };
     const gitDir = this.hiveGitDir(root)!;
