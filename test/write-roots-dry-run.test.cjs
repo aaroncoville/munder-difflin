@@ -9,8 +9,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
-const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
-const { codexTestBase } = require('./codex-test-home.cjs');
+const { codexTestBase, removeDir } = require('./codex-test-home.cjs');
 
 const W = loadTs('src/main/writeRoots.ts');
 const { UsageLog, sanitize } = loadTs('src/main/usageLog.ts');
@@ -276,7 +275,7 @@ test('the usage log takes the dry-run events with fixed lists only: no path, no 
   assert.equal(sanitize({ kind: 'write-observed', agentId: 'a1', tool: 'Bash', shape: 'cmd-array', count: 3 }, known).count, 3);
   assert.equal(sanitize({ kind: 'write-observed', agentId: 'a1', tool: 'Bash', shape: 'weird', count: 3 }, known), null);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-usage-'));
-  t.after(async () => { await allCommitsIdle(); fs.rmSync(dir, { recursive: true, force: true }); });
+  t.after(async () => { await removeDir(dir); });
   const log = new UsageLog({ dir: () => dir, enabled: () => true, isAgent: (id) => id === 'a1' });
   assert.equal(log.record(ok), true);
   assert.match(fs.readFileSync(path.join(dir, fs.readdirSync(dir)[0]), 'utf8'), /"pathClass":"tasks.json"/);

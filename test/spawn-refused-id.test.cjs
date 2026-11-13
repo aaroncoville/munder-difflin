@@ -18,8 +18,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const ts = require('typescript');
 const loadTs = require('./load-ts.cjs');
-const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
-const { codexTestBase, jailHome } = require('./codex-test-home.cjs');
+const { codexTestBase, jailHome, removeDir } = require('./codex-test-home.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { RefusedRosterId, RegistryUnreadable } = loadTs('src/main/messageTarget.ts');
@@ -46,7 +45,7 @@ function liveProvisioning() {
 
 async function setup(t, overrides = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-spawn-refused-'));
-  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
+  t.after(async () => { await removeDir(home); });
   const real = new HiveManager(() => home);
   await real.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: home, isGod: true });
   await real.ensureAgent({ id: 'Taken', name: 'Taken', provider: 'claude', cwd: home });
@@ -177,7 +176,7 @@ test('a Codex spawn refused after provisioning wrote its registry row leaves no 
   jailHome(t, base);
   const f = await setup(t);
   const rt = fs.realpathSync(fs.mkdtempSync('/tmp/mdsrr-'));
-  t.after(() => fs.rmSync(rt, { recursive: true, force: true }));
+  t.after(async () => removeDir(rt));
   f.real.setHookRuntime(rt);
   // Its computed home is a link, which is refused while the home is prepared: after the row was written.
   const { codexSeatHome } = loadTs('src/main/codexSeatHome.ts');

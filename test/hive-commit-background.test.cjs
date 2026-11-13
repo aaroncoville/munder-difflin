@@ -14,7 +14,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
-const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
+const { removeDir } = require('./codex-test-home.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { CommitQueue, combineMessages } = loadTs('src/main/hiveCommit.ts');
@@ -23,7 +23,7 @@ const REAL_GIT = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' })
 
 function home(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-hive-commit-'));
-  t.after(async () => { await allCommitsIdle(); fs.rmSync(dir, { recursive: true, force: true }); });
+  t.after(async () => { await removeDir(dir); });
   return dir;
 }
 

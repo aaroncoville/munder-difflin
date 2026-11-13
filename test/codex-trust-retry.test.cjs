@@ -10,7 +10,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
-const { codexTestBase } = require('./codex-test-home.cjs');
+const { codexTestBase, removeDir } = require('./codex-test-home.cjs');
 
 const T = loadTs('src/main/codexHookTrust.ts');
 const POSIX = process.platform !== 'win32';
@@ -127,7 +127,7 @@ test('a restore refused after provisioning leaves the agent\'s registry row exac
   for (const d of [home, work]) fs.mkdirSync(d, { recursive: true });
   jailHome(t, home);
   const rt = fs.realpathSync(fs.mkdtempSync('/tmp/mdrrt-'));
-  t.after(() => fs.rmSync(rt, { recursive: true, force: true }));
+  t.after(async () => removeDir(rt));
   const hive = new HiveManager(() => path.join(base, 'h'));
   hive.setHookRuntime(rt);
   const launch = { argv: ['codex -a never -s workspace-write'], env: {} };
@@ -196,7 +196,7 @@ async function existingAgent(t) {
   for (const d of [home, work]) fs.mkdirSync(d, { recursive: true });
   jailHome(t, home);
   const rt = fs.realpathSync(fs.mkdtempSync('/tmp/mdrft-'));
-  t.after(() => fs.rmSync(rt, { recursive: true, force: true }));
+  t.after(async () => removeDir(rt));
   const hive = new HiveManager(() => path.join(base, 'h'));
   hive.setHookRuntime(rt);
   const launch = { argv: ['codex -a never -s workspace-write'], env: {} };

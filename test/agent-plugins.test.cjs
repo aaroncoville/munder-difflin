@@ -7,12 +7,12 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
-const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
+const { removeDir } = require('./codex-test-home.cjs');
 const P = loadTs('src/main/agentPlugins.ts');
 
 function claudeDir(t) {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-plugins-'));
-  t.after(async () => { await allCommitsIdle(); fs.rmSync(d, { recursive: true, force: true }); });
+  t.after(async () => { await removeDir(d); });
   fs.mkdirSync(path.join(d, 'plugins', 'synced', 'org_x', 'engineering~g3', '.claude-plugin'), { recursive: true });
   fs.writeFileSync(path.join(d, 'settings.json'), JSON.stringify({ enabledPlugins: { 'terraform@claude-plugins-official': true, 'superpowers@claude-plugins-official': true, 'warp@claude-code-warp': true } }));
   fs.writeFileSync(path.join(d, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'github@claude-plugins-official': [], 'aws-core@claude-plugins-official': [] } }));
@@ -40,7 +40,7 @@ test('the default keep-list is the six named plugins; built-ins are left to the 
 
 test('missing or broken sources read as no plugins, never a throw', (t) => {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-plugins-'));
-  t.after(async () => { await allCommitsIdle(); fs.rmSync(d, { recursive: true, force: true }); });
+  t.after(async () => { await removeDir(d); });
   assert.deepEqual(P.knownPluginIds(d), []);
   fs.writeFileSync(path.join(d, 'settings.json'), '{not json');
   fs.mkdirSync(path.join(d, 'plugins'));
@@ -54,7 +54,7 @@ test('a Claude agent\'s generated settings carry the map: kept plugins on, every
   require.cache[electron] = { id: electron, filename: electron, loaded: true, exports: { Notification: class { show() {} static isSupported() { return false; } } } };
   const { HiveManager } = loadTs('src/main/hive.ts');
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-plugins-home-'));
-  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
+  t.after(async () => { await removeDir(home); });
   const prev = process.env.CLAUDE_CONFIG_DIR;
   process.env.CLAUDE_CONFIG_DIR = d; // the owner's Claude folder, as the app reads it
   t.after(() => { if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prev; });
@@ -101,7 +101,7 @@ test('a hand-edited setting never makes ensureAgent throw', async (t) => {
   require.cache[electron] = { id: electron, filename: electron, loaded: true, exports: { Notification: class { show() {} static isSupported() { return false; } } } };
   const { HiveManager } = loadTs('src/main/hive.ts');
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-plugins-home-'));
-  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
+  t.after(async () => { await removeDir(home); });
   const hive = new HiveManager(() => home);
   for (const bad of [{ github: true }, 'github', [1, 2]]) {
     const inj = await hive.ensureAgent({ id: `h${Math.random().toString(36).slice(2, 7)}`, name: 'h', provider: 'claude', cwd: home }, { agentPlugins: bad });

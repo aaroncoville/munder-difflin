@@ -18,10 +18,28 @@ const loadTs = require('./load-ts.cjs');
 // fails with ENOTEMPTY, so every cleanup here waits for commits to finish first.
 const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
+/**
+ * Remove a test's folder from a cleanup, without ever throwing.
+ *
+ * Cleanups run in the order they were registered, and one that throws skips every cleanup after it. A removal that
+ * failed used to skip the HOME or TMPDIR restore registered after it, so every later test in the file ran with the
+ * wrong environment. A failure here is reported, and fails the file through its exit code, after every other cleanup
+ * has run.
+ */
+async function removeDir(dir) {
+  await allCommitsIdle();
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch (e) {
+    console.error(`could not remove ${dir}: ${e && e.message ? e.message : e}`);
+    process.exitCode = 1;
+  }
+}
+
 function codexTestBase(t, prefix = 'md-') {
   if (process.platform !== 'win32' && fs.existsSync('/var/tmp')) {
     const base = fs.realpathSync(fs.mkdtempSync(path.join('/var/tmp', prefix)));
-    t.after(async () => { await allCommitsIdle(); fs.rmSync(base, { recursive: true, force: true }); });
+    t.after(() => removeDir(base));
     return base;
   }
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
@@ -30,9 +48,8 @@ function codexTestBase(t, prefix = 'md-') {
   for (const k of Object.keys(saved)) process.env[k] = tmp;
   t.after(async () => {
     for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
-    await allCommitsIdle();
-    fs.rmSync(base, { recursive: true, force: true });
-    fs.rmSync(tmp, { recursive: true, force: true });
+    await removeDir(base);
+    await removeDir(tmp);
   });
   return base;
 }
@@ -56,10 +73,9 @@ function isolateHomeForFile(prefix = 'md-') {
   process.env.HOME = home;
   after(async () => {
     if (real === undefined) delete process.env.HOME; else process.env.HOME = real;
-    await allCommitsIdle();
-    fs.rmSync(home, { recursive: true, force: true });
+    await removeDir(home);
   });
   return home;
 }
 
-module.exports = { codexTestBase, jailHome, isolateHomeForFile };
+module.exports = { codexTestBase, jailHome, isolateHomeForFile, removeDir };

@@ -8,8 +8,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
-const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
-const { codexTestBase } = require('./codex-test-home.cjs');
+const { codexTestBase, removeDir } = require('./codex-test-home.cjs');
 
 const electron = require.resolve('electron');
 require.cache[electron] = {
@@ -43,7 +42,7 @@ async function bridge(t, ctx, provider, load, options = {}) {
   const generated = findFile(provider === 'pi' ? injection.env.PI_CODING_AGENT_DIR : ctx.home, 'hive-bridge.js');
   assert.ok(generated, `${provider} bridge installed`);
   const short = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-'));
-  t.after(() => fs.rmSync(short, { recursive: true, force: true }));
+  t.after(async () => removeDir(short));
   const frames = [];
   const handle = ctx.hooks.handle.bind(ctx.hooks);
   ctx.hooks.handle = (p) => { if (p.agent_id === id) frames.push(p); return handle(p); };
@@ -98,8 +97,7 @@ async function server(t, limit = 1) {
   const hive = new HiveManager(() => home);
   t.after(async () => {
     if (previous === undefined) delete process.env.HOME; else process.env.HOME = previous;
-    await allCommitsIdle();
-    fs.rmSync(home, { recursive: true, force: true });
+    await removeDir(home);
   });
   for (const id of ['a1', 'a2']) await hive.ensureAgent({ id, name: id, provider: 'claude', cwd: home });
   const control = { takeSteer: () => null, shouldHalt: () => false, toolDecision: () => ({ deny: false }) };
