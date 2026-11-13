@@ -17,6 +17,7 @@
  */
 import { appendFileSync, chmodSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { LOG_TOOLS, PATH_CLASSES, PROVIDERS, SHAPES, START_SOURCES, VIAS } from './writeRoots';
 
 export const RETENTION_DAYS = 90;
 const SCHEMA = 1;
@@ -48,7 +49,7 @@ export const VIEWS = [
   'settings', 'memory', 'task-detail', 'terminal-fullscreen'
 ];
 
-type FieldType = 'view' | 'id' | 'agent' | 'card' | 'askKey' | 'count' | 'bool' | { oneOf: readonly string[] };
+type FieldType = 'view' | 'id' | 'agent' | 'card' | 'askKey' | 'count' | 'bool' | 'classes' | { oneOf: readonly string[] };
 
 /** The harness's own sets: a renderer-supplied agent or card id is written only
  *  when one of these holds it. */
@@ -69,12 +70,26 @@ const EVENTS: Record<string, Record<string, FieldType>> = {
     answerShape: { oneOf: ['done-ack', 'option', 'short', 'sentence', 'long'] },
     surface: { oneOf: ['ask-me'] }
   },
-  'app-focus': { state: { oneOf: ['focus', 'blur'] } }
+  'app-focus': { state: { oneOf: ['focus', 'blur'] } },
+  // The scoped-write-roots dry run (writeRoots.ts): path classes only, never a path.
+  'write-roots': {
+    agentId: 'agent', provider: { oneOf: PROVIDERS }, role: { oneOf: ['god', 'agent'] },
+    source: { oneOf: ['claude-settings-files', 'codex-config', 'none'] }, start: { oneOf: START_SOURCES }, ordinal: 'count', coalesced: 'count',
+    effective: 'classes', excess: 'classes', unknownWhy: { oneOf: ['app-hooks-differ', 'app-config-differs'] }
+  },
+  'write-would-refuse': { agentId: 'agent', tool: { oneOf: LOG_TOOLS }, via: { oneOf: VIAS }, pathClass: { oneOf: PATH_CLASSES } },
+  'write-own-settings': { agentId: 'agent', tool: { oneOf: LOG_TOOLS }, via: { oneOf: VIAS } },
+  'write-observed': { agentId: 'agent', tool: { oneOf: LOG_TOOLS }, shape: { oneOf: SHAPES }, count: 'count' },
+  'write-incomplete': { agentId: 'agent', state: { oneOf: ['incomplete'] }, reason: { oneOf: ['queue', 'cap', 'session-start-flood', 'quit', 'log-refused', 'no-agent'] }, shed: 'count', burst: 'bool' }
 };
 /** Fields a kind cannot be written without. */
 const REQUIRED: Record<string, string[]> = {
   'ui-view': ['view'], 'ui-view-end': ['view', 'dwellMs'], 'ask-shown': ['askKey', 'surface'],
-  'ask-submitted': ['askKey', 'surface', 'answerLen', 'answerShape'], 'app-focus': ['state']
+  'ask-submitted': ['askKey', 'surface', 'answerLen', 'answerShape'], 'app-focus': ['state'],
+  'write-roots': ['agentId', 'provider', 'role', 'source', 'effective', 'excess'],
+  'write-would-refuse': ['agentId', 'tool', 'via', 'pathClass'], 'write-own-settings': ['agentId', 'tool', 'via'],
+  'write-observed': ['agentId', 'tool', 'shape', 'count'],
+  'write-incomplete': ['agentId', 'state', 'reason', 'shed', 'burst']
 };
 
 function valid(type: FieldType, v: unknown, known: KnownIds): boolean {
@@ -90,6 +105,7 @@ function valid(type: FieldType, v: unknown, known: KnownIds): boolean {
   if (type === 'id') return typeof v === 'string' && ID.test(v);
   if (type === 'count') return Number.isSafeInteger(v) && (v as number) >= 0;
   if (type === 'bool') return typeof v === 'boolean';
+  if (type === 'classes') return Array.isArray(v) && v.length <= PATH_CLASSES.length && v.every((x) => typeof x === 'string' && (PATH_CLASSES as readonly string[]).includes(x));
   return typeof v === 'string' && type.oneOf.includes(v);
 }
 
@@ -121,6 +137,9 @@ export interface UsageLogDeps {
   isAgent?: (id: string) => boolean;
   /** True for a card id in the current tasks.json. */
   isCard?: (id: string) => boolean;
+  /** For the write-roots dry run's rows (kinds starting write-): true for an id the app itself spawned, held in memory.
+   *  Those rows never depend on registry.json, which every agent can write. */
+  isWriteAgent?: (id: string) => boolean;
 }
 
 export class UsageLog {
@@ -145,7 +164,9 @@ export class UsageLog {
   private write(event: Record<string, unknown>): boolean {
     if (!event || typeof event !== 'object' || Array.isArray(event)) return false;
     if (!this.d.enabled()) return false;
-    const clean = sanitize(event, { isAgent: (id) => this.d.isAgent?.(id) ?? false, isCard: (id) => this.d.isCard?.(id) ?? false });
+    const writeRow = typeof event.kind === 'string' && event.kind.startsWith('write-') && this.d.isWriteAgent !== undefined;
+    const isAgent = writeRow ? (id: string) => this.d.isWriteAgent!(id) : (id: string) => this.d.isAgent?.(id) ?? false;
+    const clean = sanitize(event, { isAgent, isCard: (id) => this.d.isCard?.(id) ?? false });
     if (!clean) return false;
     const dir = this.dir(true);
     if (!dir) return false;

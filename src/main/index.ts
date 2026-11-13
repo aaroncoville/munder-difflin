@@ -38,6 +38,7 @@ import { runCanaries, memoryCanary } from './canaries';
 import { TurnTracker, diffTasks, type UsageIds } from './usageEvents';
 import { loadUsageSecret, usageRef } from './usageRef';
 import { UsageLog, recordFromRenderer } from './usageLog';
+import { WriteRootsDryRun, spawnLaunchFacts, type SpawnRecord } from './writeRoots';
 import { writeWeeklyDigest } from './usageDigest';
 import { HookServer } from './hooks';
 import { HeavyJobLock, heavyLimit, heavySlotNotice, probeProcesses } from './heavyJob';
@@ -153,7 +154,9 @@ const usageLog = new UsageLog({
   // The app's own data folder, never the hive (agents can write there).
   dir: () => join(app.getPath('userData'), 'usage'), enabled: () => readConfig().usageLog !== false,
   // Checked when an event arrives, after start-up has defined usageIds.
-  isAgent: (id) => usageIds.isAgent(id), isCard: (id) => usageIds.isCard(id)
+  isAgent: (id) => usageIds.isAgent(id), isCard: (id) => usageIds.isCard(id),
+  // The write-roots dry run's rows: an agent the app spawned this run, never registry.json (agents can write it).
+  isWriteAgent: (id) => spawnRoots.has(id)
 });
 const usageSession = randomUUID();
 ipcMain.on('usage:event', (e, event: unknown) => {
@@ -406,6 +409,32 @@ const heavyLock = new HeavyJobLock({
   }
 });
 hookServer.setHeavyLock(heavyLock);
+// Dry run of per-agent write roots: the real sandbox settings are unchanged; writes the scoped
+// roots would refuse are recorded in the usage log as path classes (see writeRoots.ts).
+// What the app itself spawned each agent with, kept in memory: registry.json is in the hive,
+// which agents can write, so a cwd or role read from it could be planted.
+const spawnRoots = new Map<string, SpawnRecord & { cwd: string; provider: string; isGod: boolean; gen: number }>();
+let spawnGeneration = 0;
+const writeRootsDryRun = new WriteRootsDryRun({
+  agent: (agentId) => {
+    const root = hive.root();
+    const spawned = spawnRoots.get(agentId);
+    if (!root || !spawned) return null;
+    return {
+      ctx: { root, agentId, isGod: spawned.isGod, cwd: spawned.cwd },
+      provider: spawned.provider,
+      agentDir: join(root, 'agents', agentId),
+      launch: spawnLaunchFacts(spawned, process.platform, hive.codexAppHooks()),
+      gen: spawned.gen
+    };
+  },
+  known: (agentId) => spawnRoots.has(agentId),
+  generation: (agentId) => spawnRoots.get(agentId)?.gen ?? 0,
+  // With the usage log switched off nothing is written by the owner's choice: that is not a refused row.
+  record: (event) => (readConfig().usageLog === false ? undefined : usageLog.record(event)),
+  logFallback: (row) => { try { hive.appendLog(row); } catch { /* nothing further */ } }
+});
+hookServer.setWriteObserver((agentId, event, p) => writeRootsDryRun.onHook(agentId, event, p));
 const memory = new MemoryManager(
   () => readConfig().harnessHome,
   () => migrateMemorySettings(readConfig())
@@ -568,6 +597,8 @@ function teardownPty(id: string): void {
   // 1) Archive the agent — retained + flagged; only live-PTY agents are active.
   const agentId = ptyToAgent.get(id);
   if (agentId) {
+    // The write-roots dry run writes what this agent left counted or incomplete: no later turn end will.
+    try { writeRootsDryRun.agentGone(agentId); } catch { /* best-effort */ }
     ptyToAgent.delete(id);
     // Drop watchdog state so a dead agent can't get nudged or leak its grace.
     try { workerWake.forget(agentId, id); } catch { /* best-effort */ }
@@ -2978,6 +3009,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // A hooked Codex seat's launch always names its sandbox: every builder's line (the GUI's, a worker's, a stored command)
   // passes here, and with none stated gets the configs' own mode, or workspace-write when none is set.
   if (opts.hive && provider === 'codex' && hive.enabled()) opts.args = hive.withCodexSandboxStance(opts.args ?? [], opts.cwd);
+  let codexHomeFromApp = false;
   if (opts.hive && hive.enabled()) {
     // Memory and knowledge settings are best-effort and not hook provisioning: read them outside the try below, so a
     // failure here never refuses the spawn and never reads as a hook provisioning error.
@@ -3022,6 +3054,9 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       opts.env = { ...(opts.env ?? {}), ...inj.env, ...memEnv, ...kgEnv };
       // Only now, with the injection applied, can the hook runtime decision be confirmed.
       hive.markHookProvisioned(opts.id);
+      // The app chose this seat's Codex home (its generated config); later rewrites (the short home, a resume in the home
+      // that owns the session) are the app's too. Recorded with the spawn, so the config's kind never comes from a path.
+      if (inj.env?.CODEX_HOME !== undefined) codexHomeFromApp = true;
     } catch (e) {
       if (e instanceof RefusedRosterId || e instanceof RegistryUnreadable || e instanceof HookRuntimeUnavailable) return refuseSpawn(opts.id, opts.hive.id, provider, e);
       // Hive provisioning is otherwise best-effort, but not for a hooked provider: the late check refuses, naming this.
@@ -3175,6 +3210,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // live terminal means active — ensureAgent above already cleared `archived`.
   if (opts.hive?.id) {
     ptyToAgent.set(opts.id, opts.hive.id);
+    spawnRoots.set(opts.hive.id, { cwd: opts.cwd, provider, isGod: opts.hive.isGod === true, args: [opts.command, ...(opts.args ?? [])], codexHomeFromApp, gen: ++spawnGeneration });
     // Where this worker's Codex rollouts will be written, now that any resume
     // has settled its CODEX_HOME.
     codexHomes.recordSpawn(opts.hive.id, opts.env?.CODEX_HOME, codexResumedSession);
@@ -3279,6 +3315,9 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     try { hive.confirmSpawn(opts.id, { id: opts.hive.id, provider }, [opts.command, ...(opts.args ?? [])], relocationEnv(buildPtyEnv(process.env, '', opts.env))); }
     catch (e) { if (e instanceof HookRuntimeUnavailable) return refuseSpawn(opts.id, opts.hive.id, provider, e); throw e; }
   }
+  // The launch line as it is really spawned, after any remote rewrite.
+  // The environment too, built exactly as the PTY will build it, keeping only the variables that move config.
+  if (opts.hive?.id) { const sr = spawnRoots.get(opts.hive.id); if (sr) { sr.args = [opts.command, ...(opts.args ?? [])]; sr.env = relocationEnv(buildPtyEnv(process.env, '', opts.env)); } }
   const res = ptyManager.spawn(opts, owner);
   if (res.ok) analytics.track('agent_spawned', { provider });
   else analytics.track('agent_spawn_failed', { provider, reason: spawnFailReason(res.error) });
@@ -6098,6 +6137,7 @@ app.on('window-all-closed', () => {
 // exactly what's left to do.
 let analyticsFlushed = false;
 app.on('will-quit', (e) => {
+  try { writeRootsDryRun.flushAll(); } catch { /* best-effort */ }
   if (analyticsFlushed) return;
   analyticsFlushed = true;
   e.preventDefault();
