@@ -1061,7 +1061,8 @@
     "installFailed": "install failed",
     "removeFailed": "could not remove it",
     "uninstallFailed": "uninstall failed",
-    "catalogUnreachable": "could not reach the catalog"
+    "catalogUnreachable": "could not reach the catalog",
+    "catalogSource": "This list comes from github.com/{{repo}}, a third-party collection, fetched when you open Browse and kept for a day. Installing a skill downloads it from its own repository."
   },
   "workersTab": {
     "stopping": "stopping",
