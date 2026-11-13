@@ -350,6 +350,8 @@ export interface MemoryStatus {
   location: string | null;
   model: 'minilm' | 'embeddinggemma';
   bin: string | null;
+  /** Why the backend is on but cannot save memories (for Hindsight, an unusable retain ledger), or null. */
+  problem: string | null;
 }
 
 /** What a Hindsight endpoint probe found, echoing back what it reached. */

@@ -451,6 +451,8 @@ const memory = new MemoryManager(
   () => migrateMemorySettings(readConfig()),
   undefined,
   // What Hindsight already holds is the app's record, kept where no agent can write it.
+  // TODO(#111): register this folder with registerPrivateDir (src/main/privateDirs.ts) once
+  // #111 merges, so spawn admission refuses any agent whose write roots reach it.
   join(app.getPath('userData'), 'hindsight-ledger')
 );
 // Enterprise Knowledge Graph — file-backed store + agent CLI (default OFF).

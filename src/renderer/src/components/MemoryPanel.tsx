@@ -16,6 +16,7 @@ interface MemoryStatus {
   location: string | null;
   model: 'minilm' | 'embeddinggemma' | null;
   bin: string | null;
+  problem?: string | null;
 }
 
 /** What the endpoint probe reported, exactly as main returned it. */
@@ -151,6 +152,13 @@ export function MemoryPanel() {
       ) : (
         <PixelPanel variant="dialog" title={t('memoryPanel.title')} noPadding>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: 14 }}>
+
+            {/* On, but nothing can be saved: say why, plainly. */}
+            {status?.enabled && status.problem && (
+              <div role="alert" style={{ fontSize: 12, color: 'var(--cth-ink-900)', background: 'var(--cth-coral-light)', boxShadow: 'inset 0 0 0 1.5px var(--cth-coral)', padding: '6px 8px', lineHeight: 1.5 }}>
+                {t('memoryPanel.notSaving', { reason: status.problem })}
+              </div>
+            )}
 
             {/* What this is — one plain line. */}
             <div style={{ fontSize: 12, color: 'var(--cth-ink-700)', lineHeight: 1.5 }}>

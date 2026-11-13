@@ -25,7 +25,7 @@ function ensureMineIgnore(agentDir: string): void {
   try { writeFileSync(path, prefix + missing.join('\n') + '\n', 'utf8'); } catch { /* best-effort */ }
 }
 
-export interface MemoryStatus { available: boolean; enabled: boolean; active: boolean; initialized: boolean; palacePath: string | null; backend: BackendId; location: string | null; model: EmbeddingModel | null; bin: string | null; }
+export interface MemoryStatus { available: boolean; enabled: boolean; active: boolean; initialized: boolean; palacePath: string | null; backend: BackendId; location: string | null; model: EmbeddingModel | null; bin: string | null; problem: string | null; }
 
 export class MemoryManager {
   private mineTimer: NodeJS.Timeout | null = null;
@@ -73,7 +73,8 @@ export class MemoryManager {
       // a server URL dressed up as one.
       palacePath: status.backend === 'mempalace' ? status.location : null,
       backend: status.backend, location: status.location,
-      model: status.model === null ? null : status.model === 'embeddinggemma' ? 'embeddinggemma' : 'minilm', bin: status.bin
+      model: status.model === null ? null : status.model === 'embeddinggemma' ? 'embeddinggemma' : 'minilm', bin: status.bin,
+      problem: status.problem ?? null
     };
   }
   env(): Record<string, string> { return this.active() ? this.backend.agentEnv() : {}; }
