@@ -2826,6 +2826,8 @@ function spawnFailReason(error?: string): SpawnFailReason {
  *  that cannot be removed is logged and stays tracked, because it is still on disk. */
 async function refuseSpawn(ptyId: string, agentId: string, provider: string, refusal: RefusedRosterId | RegistryUnreadable | HookRuntimeUnavailable | CodexHomeRefused): Promise<{ ok: false; error: string }> {
   hive.appendLog({ kind: 'spawn-refused', agentId: shortTarget(agentId), reason: refusal.message });
+  // Whatever ensureAgent already did for this spawn (a new agent's registry row) is rolled back.
+  try { hive.withdrawRefusedSpawn(ptyId, refusal.message); } catch (e) { console.error('[hive] rollback of a refused spawn failed:', e); }
   analytics.track('agent_spawn_failed', { provider, reason: 'spawn_error' });
   const wtPath = worktreePaths.get(ptyId);
   if (wtPath) {
@@ -3212,19 +3214,6 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       ...(resumeNotFound ? { resumeNotFound: true } : {})
     };
   }
-  // Remember which agent owns this PTY so closing the tab can archive it. A
-  // live terminal means active — ensureAgent above already cleared `archived`.
-  if (opts.hive?.id) {
-    ptyToAgent.set(opts.id, opts.hive.id);
-    // Where this worker's Codex rollouts will be written, now that any resume
-    // has settled its CODEX_HOME.
-    codexHomes.recordSpawn(opts.hive.id, opts.env?.CODEX_HOME, codexResumedSession);
-    // A new Codex process starts its own thread; a resumed one keeps its record.
-    if (provider === 'codex') codexThreads.spawned(opts.hive.id, didResume);
-    // Worker inbox-wake watchdog (#151): boot grace starts at spawn so the
-    // initial orientation prompt is never mistaken for an idle agent.
-    workerWake.noteSpawn(opts.id);
-  }
   // Pre-accept Claude Code's bypass-mode warning + folder-trust dialog so the
   // agent (spawned with --permission-mode bypassPermissions) doesn't stall on an
   // interactive prompt it can't answer and exit code 1. Best-effort, never blocks.
@@ -3341,10 +3330,22 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     try { hive.confirmSpawn(opts.id, { id: opts.hive.id, provider }, [opts.command, ...(opts.args ?? [])], relocationEnv(buildPtyEnv(process.env, '', opts.env))); }
     catch (e) { if (e instanceof HookRuntimeUnavailable) return refuseSpawn(opts.id, opts.hive.id, provider, e); throw e; }
   }
-  // Recorded only once the late check has passed, so a refused spawn leaves no record: the launch line as it is really
-  // spawned, after any remote rewrite, and the environment built exactly as the PTY will build it (relocation only).
+  // Remember which agent owns this PTY so closing the tab can archive it, and
+  // record the launch as it is really spawned (after any remote rewrite, with the
+  // environment built exactly as the PTY will build it, relocation only). Only
+  // now, past every point that can refuse the spawn, so a refused spawn leaves
+  // none of this behind.
   if (opts.hive?.id) {
+    ptyToAgent.set(opts.id, opts.hive.id);
     spawnRoots.set(opts.hive.id, { cwd: opts.cwd, provider, isGod: opts.hive.isGod === true, args: [opts.command, ...(opts.args ?? [])], env: relocationEnv(buildPtyEnv(process.env, '', opts.env)), codexHomeFromApp, gen: ++spawnGeneration });
+    // Where this worker's Codex rollouts will be written, now that any resume
+    // has settled its CODEX_HOME.
+    codexHomes.recordSpawn(opts.hive.id, opts.env?.CODEX_HOME, codexResumedSession);
+    // A new Codex process starts its own thread; a resumed one keeps its record.
+    if (provider === 'codex') codexThreads.spawned(opts.hive.id, didResume);
+    // Worker inbox-wake watchdog (#151): boot grace starts at spawn so the
+    // initial orientation prompt is never mistaken for an idle agent.
+    workerWake.noteSpawn(opts.id);
   }
   const res = ptyManager.spawn(opts, owner);
   if (res.ok) analytics.track('agent_spawned', { provider });

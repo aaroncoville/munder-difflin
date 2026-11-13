@@ -855,6 +855,13 @@ export class HiveManager {
       if (!p || !checked.has(resolvePath(p))) fail(`its final launch line adds a write root that was not checked: ${d}`);
     }
   }
+  /** A spawn refused after ensureAgent made its decision (while preparing the agent, at the Codex trust step, or at
+   *  the launch): undo what ensureAgent did for it, by the same compare-and-remove rule as the late check. A spawn
+   *  with no decision on record (refused before anything was created, or already rolled back) is left as it is. */
+  withdrawRefusedSpawn(spawnId: string, why: string): void {
+    const v = this.takeHookVerdict(spawnId);
+    if (v) this.rollbackSpawn(v, why);
+  }
   /** Undo what ensureAgent did for this spawn: only the registry row this call added. Main never deletes under the hive
    *  root or an agent folder, so no folder is removed, ever; one this call created is left in place and named in the log. */
   private rollbackSpawn(v: HookVerdict, why: string): void {
