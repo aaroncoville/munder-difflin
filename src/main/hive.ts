@@ -53,7 +53,7 @@ import { preferredAgentRole } from '../shared/agentRole';
 import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde } from './fs';
 import { refreshMineIgnoresOnce } from './hiveMineIgnore';
-import { CommitQueue, HIVE_GIT_CONFIG, runGit, type GitResult } from './hiveCommit';
+import { AGENT_ALLOWLIST_IGNORE_LINES, CommitQueue, HIVE_GIT_CONFIG, runGit, untrackIgnored, type GitResult } from './hiveCommit';
 import { agentFolderId, hasExactFolder, isAppSender, isFolderName, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, RegistryUnreadable, rosterIdFor, shortTarget } from './messageTarget';
 import { nodeLauncherScript } from './nodeLauncher';
 import { codexTrustEntry } from '../shared/codexTrust';
@@ -1100,7 +1100,8 @@ export class HiveManager {
     // log.jsonl gets the structured, non-sensitive fields; the dump stays local.
     // `usage/`: the owner's usage log lives in the app's data folder, not here;
     // ignored anyway so a stray usage file can never enter the hive's history.
-    const want = ['fleet.json', 'hooks.sock', 'cost-ledger.jsonl', 'crashes/', '.DS_Store', 'usage/'];
+    // AGENT_ALLOWLIST_IGNORE_LINES: inside an agent's folder only its memory, identity and ignore file are hive state.
+    const want = ['fleet.json', 'hooks.sock', 'cost-ledger.jsonl', 'crashes/', '.DS_Store', 'usage/', ...AGENT_ALLOWLIST_IGNORE_LINES];
     let lines: string[] = [];
     if (existsSync(gitignore)) { try { lines = readFileSync(gitignore, 'utf8').split('\n'); } catch { lines = []; } }
     const missing = want.filter((w) => !lines.includes(w));
@@ -3716,65 +3717,8 @@ export class HiveManager {
     return { ok: res.status === 0, out: res.stdout ?? '', err: res.stderr ?? '' };
   }
 
-  /** Has the one-time cost-ledger untrack pass run in this process yet? */
-  private untrackedCostLedger = false;
-
-  /**
-   * Stop versioning the cost ledger.
-   *
-   * `cost-ledger.jsonl` is append-only and gains a row per usage sample, so a
-   * repo that tracks it stores a fresh copy of the WHOLE file on every hive
-   * commit — and the hive commits constantly. A quarter-gigabyte ledger with a
-   * few thousand commits behind it is several hundred gigabytes of blob that
-   * git has to walk, which is what turns a routine `gc` into a multi-gigabyte
-   * `pack-objects` run. The ignore line in ensureHive keeps new copies out;
-   * this drops the one already in the index, because git keeps recording a
-   * file it is already tracking no matter what .gitignore says — so the ignore
-   * line alone reads as a fix while the repo goes on growing. The ledger stays
-   * on disk, so the cost history the app reads is untouched.
-   */
-  private untrackCostLedger(root: string): void {
-    if (this.untrackedCostLedger) return;
-    this.untrackedCostLedger = true;
-    // Probe before mutating: `rm --cached` on a repo that never tracked it
-    // would still rewrite the index on every launch, inside the retry path.
-    const tracked = this.git(['ls-files', '--', 'cost-ledger.jsonl'], root);
-    if (!tracked.ok || !tracked.out.trim()) return;
-    this.git(['rm', '--cached', '-q', '--ignore-unmatch', '--', 'cost-ledger.jsonl'], root);
-    console.warn('[hive] untracked the cost ledger from the hive repo');
-  }
-
-  /** Has the one-time Codex-home untrack pass run in this process yet? */
-  private untrackedCodexHomes = false;
-
-  /**
-   * Stop versioning Codex worker homes that are ALREADY in the index.
-   *
-   * Adding `.codex/` to each agent's .gitignore only keeps NEW paths out; git
-   * happily keeps recording a file it is already tracking, so a hive that
-   * predates that ignore line goes on committing every SQLite and transcript
-   * revision exactly as before — the .gitignore reads as a fix while the repo
-   * keeps growing. This closes that: once per process, refresh every agent's
-   * ignore file (agents that are not running never pass through spawn, and the
-   * mine loop only reaches them if mempalace is installed) and drop any tracked
-   * `.codex` path from the index. The files stay on disk, so `codex --resume`
-   * is unaffected; only their history stops.
-   */
-  private untrackCodexHomes(root: string): void {
-    if (this.untrackedCodexHomes) return;
-    this.untrackedCodexHomes = true;
-    const agentsDir = join(root, 'agents');
-    if (!existsSync(agentsDir)) return;
-    try {
-      for (const id of readdirSync(agentsDir)) ensureMineIgnore(join(agentsDir, id));
-    } catch { /* best-effort */ }
-    // Probe before mutating: `rm --cached` on a clean repo would still rewrite
-    // the index on every launch, and this runs inside the commit retry path.
-    const tracked = this.git(['ls-files', '--', 'agents/*/.codex'], root);
-    if (!tracked.ok || !tracked.out.trim()) return;
-    this.git(['rm', '-r', '--cached', '-q', '--ignore-unmatch', '--', 'agents/*/.codex'], root);
-    console.warn('[hive] untracked previously-committed Codex homes from the hive repo');
-  }
+  /** Repositories whose already-tracked, now-ignored paths have been dropped from the index in this process. */
+  private readonly untrackedRoots = new Set<string>();
 
   private readonly commits = new CommitQueue((root, message) => this.commitNow(root, message), {
     onFailing: (failures, error) => this.appendLog({ kind: 'hive-commit-failing', failures, error: error.slice(0, 2000) }),
@@ -3798,8 +3742,11 @@ export class HiveManager {
   private async commitNow(root: string, message: string): Promise<GitResult> {
     // Checked again here: commits may have been turned off since this one was requested.
     if (this._gitCommitsDisabled || !existsSync(join(root, '.git'))) return { ok: true, out: '', err: '' };
-    this.untrackCostLedger(root);
-    this.untrackCodexHomes(root);
+    if (!this.untrackedRoots.has(root)) {
+      this.untrackedRoots.add(root);
+      const dropped = await untrackIgnored(root, runGit);
+      if (dropped > 0) console.warn(`[hive] stopped tracking ${dropped} ignored path(s) in the hive repo; the files stay on disk`);
+    }
     this.clearStaleLock(root);
     const add = await runGit(['add', '-A'], root);
     if (!add.ok) return add;

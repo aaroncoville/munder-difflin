@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Hive commits run in the background, one at a time.
+ * Hive commits run in the background, one at a time, and only record hive state inside agent folders.
  *
  * A slow git is simulated with a `git` on PATH that sleeps before running the real one, so these tests measure what a
  * caller waits for, and what reaches the repository, without needing gigabytes of files.
@@ -101,6 +101,47 @@ test('twenty commits requested while git is slow run as at most two', async (t) 
   assert.ok(shim.commits() - already <= 2, `ran ${shim.commits() - already} commits`);
   assert.equal(git(root, ['show', 'HEAD:board.md']), '# board 19', 'the last change is committed');
   assert.equal(git(root, ['status', '--porcelain', '--', 'board.md']), '');
+});
+
+test('inside an agent folder only memory, identity and the ignore file are committed', async (t) => {
+  const dir = home(t);
+  const hive = await floor(t, dir);
+  const root = path.join(dir, 'hive');
+  const agent = path.join(root, 'agents', 'worker-1');
+  fs.mkdirSync(path.join(agent, 'c35-probe', 'nested'), { recursive: true });
+  fs.writeFileSync(path.join(agent, 'c35-probe', 'nested', 'blob.bin'), 'x');
+  fs.writeFileSync(path.join(agent, 'notes.txt'), 'scratch');
+  fs.writeFileSync(path.join(agent, 'memory.md'), '# remembered\n');
+  fs.writeFileSync(path.join(root, 'board.md'), '# board changed\n');
+
+  hive.commit('hive: test');
+  await hive.commitsSettled();
+
+  const tracked = git(root, ['ls-files']).split('\n');
+  const inAgent = tracked.filter((p) => p.startsWith('agents/worker-1/')).sort();
+  assert.deepEqual(inAgent, ['agents/worker-1/.gitignore', 'agents/worker-1/identity.md', 'agents/worker-1/memory.md']);
+  assert.equal(git(root, ['show', 'HEAD:agents/worker-1/memory.md']), '# remembered');
+  assert.equal(git(root, ['show', 'HEAD:board.md']), '# board changed');
+});
+
+test('agent files committed before the allowlist stop being tracked and stay on disk', async (t) => {
+  const dir = home(t);
+  await floor(t, dir);
+  const root = path.join(dir, 'hive');
+  const junk = path.join(root, 'agents', 'worker-1', '.nuget', 'packages', 'pkg.nupkg');
+  fs.mkdirSync(path.dirname(junk), { recursive: true });
+  fs.writeFileSync(junk, 'package');
+  git(root, ['add', '-f', '--', 'agents/worker-1/.nuget']);
+  git(root, ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'old build tracked this']);
+
+  const hive = new HiveManager(() => dir);
+  hive.ensureHive();
+  hive.commit('hive: next');
+  await hive.commitsSettled();
+
+  assert.equal(git(root, ['ls-files', '--', 'agents/worker-1/.nuget']), '');
+  assert.equal(fs.readFileSync(junk, 'utf8'), 'package');
+  assert.notEqual(git(root, ['ls-files', '--', 'agents/worker-1/memory.md']), '');
 });
 
 function deferred() {

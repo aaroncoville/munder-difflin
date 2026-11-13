@@ -49,6 +49,35 @@ export function runGit(args: string[], cwd: string, timeoutMs = HIVE_GIT_TIMEOUT
   });
 }
 
+/**
+ * What the hive repository records inside each agent's folder: these files and nothing else.
+ *
+ * An agent's folder is also its working directory, so it fills with whatever the agent makes there: provider homes,
+ * package caches, scratch checkouts, test fixtures. `git add -A` hashed all of it, and a couple of gigabytes of scratch
+ * folders made every commit time out. Their names are the agent's choice, so no list of known heavy folders can keep
+ * up; the hive state in there is these few files. Written as ignore rules, git never even walks the rest.
+ */
+export const AGENT_TRACKED_FILES = ['memory.md', 'identity.md', '.gitignore'];
+export const AGENT_ALLOWLIST_IGNORE_LINES = ['agents/*/*', ...AGENT_TRACKED_FILES.map((f) => `!agents/*/${f}`)];
+
+/**
+ * Drop from the index every path under `agents/` and the cost ledger that the ignore rules now exclude. git keeps
+ * recording a file it already tracks whatever .gitignore says, so without this a hive that predates a rule goes on
+ * committing everything the rule was meant to keep out. The files stay on disk; only their history stops.
+ */
+export async function untrackIgnored(root: string, git: GitRunner): Promise<number> {
+  const listed = await git(['ls-files', '-z', '--cached', '--ignored', '--exclude-standard', '--', 'agents', 'cost-ledger.jsonl'], root);
+  if (!listed.ok) return 0;
+  const paths = listed.out.split('\0').filter(Boolean);
+  if (paths.length === 0) return 0;
+  // In batches, so a large backlog never runs into the command-line length limit.
+  for (let i = 0; i < paths.length; i += 500) {
+    const removed = await git(['rm', '--cached', '-q', '--ignore-unmatch', '--', ...paths.slice(i, i + 500).map((p) => `:(literal)${p}`)], root);
+    if (!removed.ok) return i;
+  }
+  return paths.length;
+}
+
 /** Every commit queue's running drain in this process. */
 const draining = new Set<Promise<void>>();
 
