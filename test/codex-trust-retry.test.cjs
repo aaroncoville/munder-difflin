@@ -35,6 +35,11 @@ function fakeCli(t, mode) {
         setTimeout(() => process.stdout.write(JSON.stringify({ id: m.id, result }) + '\\n'), m.method === 'initialize' ? 8000 : 0); });`,
     // Exits a little after it starts, every time: a server that keeps dying late.
     dies: `setTimeout(() => process.exit(0), 400);`,
+    // Answers with a line that is not JSON.
+    garbage: `process.stdout.write('not json at all\\n'); setInterval(() => {}, 1000);`,
+    // Answers the handshake, then whatever is asked.
+    answers: `const rl = require('readline').createInterface({ input: process.stdin });
+      rl.on('line', (l) => { const m = JSON.parse(l); process.stdout.write(JSON.stringify({ id: m.id, result: {} }) + '\\n'); });`,
     // Answers, and lists a hook the app did not write.
     foreign: `const rl = require('readline').createInterface({ input: process.stdin });
       rl.on('line', (l) => { const m = JSON.parse(l);
@@ -159,6 +164,26 @@ test('the answer budget covers every start: a server that keeps dying late is re
   assert.equal(ok, false);
   assert.ok(took < 1150, `took ${took} ms with a 1000 ms budget`);
   assert.match(reasons[0], /did not answer within 1 s/);
+});
+
+test('an unreadable answer is named as such and not retried', { skip: !POSIX }, async (t) => {
+  const f = fakeCli(t, 'garbage');
+  const reasons = [];
+  const ok = await T.seedCodexHookTrust(f.ctx, 2000, (r) => reasons.push(r), { attempts: 3, backoffMs: [10, 10] });
+  assert.equal(ok, false);
+  assert.equal(f.starts().filter((s) => s[1] === 'start').length, 1, 'one start');
+  assert.match(reasons[0], /unreadable answer/);
+});
+
+test('a failure in the app itself is named as such and not retried', { skip: !POSIX }, async (t) => {
+  const f = fakeCli(t, 'answers');
+  // The home's config cannot be read: the failure is the app's, not the server's.
+  fs.rmSync(path.join(f.ctx.home, 'config.toml'));
+  const reasons = [];
+  const ok = await T.seedCodexHookTrust(f.ctx, 2000, (r) => reasons.push(r), { attempts: 3, backoffMs: [10, 10] });
+  assert.equal(ok, false);
+  assert.equal(f.starts().filter((s) => s[1] === 'start').length, 1, 'one start');
+  assert.match(reasons[0], /trust preparation failed: /);
 });
 
 /** An agent that already ran: provisioned, confirmed and started once. */
