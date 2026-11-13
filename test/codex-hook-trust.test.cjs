@@ -15,7 +15,7 @@ async function fixture(t, ownerToml) {
   t.after(() => { process.env.HOME = oldHome; fs.rmSync(root, { recursive: true, force: true }); });
   if (ownerToml !== undefined) {
     fs.mkdirSync(path.join(root, '.codex'));
-    fs.writeFileSync(path.join(root, '.codex', 'config.toml'), ownerToml);
+    fs.writeFileSync(path.join(root, '.codex', 'config.toml'), typeof ownerToml === 'function' ? ownerToml(root) : ownerToml);
   }
   const hive = new HiveManager(() => root);
   const runtime = fs.realpathSync(fs.mkdtempSync('/tmp/mdcr-'));
@@ -45,7 +45,8 @@ async function fixture(t, ownerToml) {
     }
     return { status: 'ok' };
   };
-  return { root, ctx: { home, cwd: root }, hooks, writes, rpc };
+  // What the app wrote for this spawn, as it holds it in memory: the trust step's only authority.
+  return { root, ctx: { home, cwd: root, written: hive.codexConfigWritten(home) }, hooks, writes, rpc };
 }
 
 test('fresh writer hooks get exact persisted trust before remote startup; repeat is idempotent', async t => {
@@ -96,11 +97,8 @@ const ownerListed = (f, extra = {}) => ({ ...f.hooks[2], key: `${f.ctx.home}/con
 
 test('the owner\'s own hooks, trusted in their own config, are allowed and keep that trust', async t => {
   const hash = `sha256:${'a'.repeat(64)}`;
-  const f = await fixture(t, OWNER_HOOK);
   // The trust the owner gave it in ~/.codex/config.toml, keyed by that file.
-  const ownerKey = `${path.join(f.root, '.codex', 'config.toml')}:stop:0:0`;
-  const cfg = path.join(f.ctx.home, 'config.toml');
-  fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8').replace('# --- munder-hive', `[hooks.state.${JSON.stringify(ownerKey)}]\ntrusted_hash = "${hash}"\n\n# --- munder-hive`));
+  const f = await fixture(t, (root) => `${OWNER_HOOK}[hooks.state.${JSON.stringify(`${path.join(root, '.codex', 'config.toml')}:stop:0:0`)}]\ntrusted_hash = "${hash}"\n`);
   f.hooks.push(ownerListed(f));
   let why = '';
   assert.equal(await prepareCodexHookTrust(f.ctx, f.rpc, (r) => { why = r; }), true, why);
@@ -151,4 +149,17 @@ test('an unresponsive CLI is terminated within the preparation budget', { skip: 
   const start = Date.now();
   assert.equal(await seedCodexHookTrust({ ...f.ctx, executable, env: process.env }, 100), false);
   assert.ok(Date.now() - start < 2000);
+});
+
+test('generated hooks rewritten in the home after it was written are not the app\'s, even when consistent', async t => {
+  const f = await fixture(t);
+  // Every generated command replaced with the same foreign one, in the file and so in the listing.
+  const cfg = path.join(f.ctx.home, 'config.toml');
+  const evil = '/bin/sh -c "printf owned"';
+  fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8').replace(/^command = .+$/gm, `command = ${JSON.stringify(evil)}`));
+  for (const h of f.hooks) h.command = evil;
+  let why = '';
+  assert.equal(await prepareCodexHookTrust(f.ctx, f.rpc, (r) => { why = r; }), false);
+  assert.match(why, /did not list every generated hook|did not write/);
+  assert.deepEqual(f.writes, [], 'no trust is written for it');
 });

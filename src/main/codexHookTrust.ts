@@ -8,11 +8,13 @@ import { tomlBasicString } from '../shared/codexTrust';
 import { isPlainObject } from './launchLine';
 
 type Rpc = (method: string, params: unknown) => Promise<any>;
-interface Context { home: string; cwd: string }
-const EVENTS = ['preToolUse', 'postToolUse', 'stop', 'subagentStop',
-  'sessionStart', 'userPromptSubmit', 'preCompact', 'postCompact'];
-
-const MARKER = '# --- munder-hive lifecycle hooks (auto-generated; do not edit) ---\n';
+/** `written` is what the app wrote into the home's config.toml for this spawn, held in memory: the hooks it generated
+ *  and the owner's config it copied. It is the only authority for what may run; the file itself is never read for it. */
+interface Context {
+  home: string;
+  cwd: string;
+  written: { hooks: { events: readonly string[]; command: string; timeout: number } | null; ownerToml: string } | undefined;
+}
 
 interface OwnerHook { eventName: string; command: unknown; matcher: string | null }
 
@@ -61,13 +63,13 @@ function ownerHooks(text: string): { hooks: OwnerHook[]; state: Record<string, s
  * On refusal this returns false and says why through `why`. */
 export async function prepareCodexHookTrust(ctx: Context, rpc: Rpc, why: (reason: string) => void = () => {}): Promise<boolean> {
   const filePath = join(realpathSync(ctx.home), 'config.toml');
+  const expected = ctx.written?.hooks;
+  if (!expected) { why(`the app has no record of the hooks it wrote into ${filePath}`); return false; }
+  const EVENTS = expected.events.map(e => e.charAt(0).toLowerCase() + e.slice(1));
+  // Read only to notice a change while hooks are listed, never for what is allowed.
   const config = readFileSync(filePath, 'utf8');
-  const [ownerPart, generated] = config.split(MARKER);
-  if (!generated) { why('the generated hook block is missing from config.toml'); return false; }
-  const commands = [...generated.matchAll(/^command = (.+)$/gm)].map(m => JSON.parse(m[1]));
-  if (commands.length !== EVENTS.length || commands.some(c => c !== commands[0])) { why('the generated hook block was changed'); return false; }
-  const owner = ownerHooks(ownerPart);
-  if (!owner) { why(`the owner's Codex config copied into ${filePath} could not be read`); return false; }
+  const owner = ownerHooks(ctx.written!.ownerToml);
+  if (!owner) { why(`the owner's Codex config the app copied into ${filePath} could not be read`); return false; }
   const ownerFile = join(homedir(), '.codex', 'config.toml');
   let ownerReal = ownerFile;
   try { ownerReal = realpathSync(ownerFile); } catch { /* none: no owner trust to carry */ }
@@ -78,8 +80,8 @@ export async function prepareCodexHookTrust(ctx: Context, rpc: Rpc, why: (reason
     return entry.hooks;
   };
   const isGenerated = (h: any): boolean => h.sourcePath === filePath && h.source === 'user'
-    && h.handlerType === 'command' && h.command === commands[0]
-    && h.async === false && h.matcher === null && h.timeoutSec === 30
+    && h.handlerType === 'command' && h.command === expected.command
+    && h.async === false && h.matcher === null && h.timeoutSec === expected.timeout
     && EVENTS.includes(h.eventName) && h.enabled === true
     && typeof h.key === 'string' && h.key.startsWith(`${filePath}:`)
     && /^sha256:[a-f0-9]{64}$/.test(h.currentHash);
@@ -96,7 +98,7 @@ export async function prepareCodexHookTrust(ctx: Context, rpc: Rpc, why: (reason
   const hooks = await list();
   if (!hooks) { why('Codex could not list the hooks'); return false; }
   const owned = hooks.filter(isGenerated);
-  if (EVENTS.some(event => !owned.some(h => h.eventName === event))) { why('Codex did not list every generated hook'); return false; }
+  if (EVENTS.some(event => owned.filter(h => h.eventName === event).length !== 1)) { why('Codex did not list every generated hook, once'); return false; }
   const others = hooks.filter(h => !isGenerated(h) && !isOwners(h));
   if (others.length) {
     why(`a hook the app did not write is listed for this agent: ${named(others)}`);

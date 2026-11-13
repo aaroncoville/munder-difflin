@@ -426,6 +426,10 @@ function pruneCrashLogs(dir: string): void {
   } catch { /* unreadable directory is not worth failing an exit path over */ }
 }
 
+/** A generated Codex config as the app wrote it: its lifecycle hooks (null when there is no hook runtime) and the
+ *  owner's own config text it was built from. */
+export interface CodexConfigWritten { hooks: { events: string[]; command: string; timeout: number } | null; ownerToml: string }
+
 export class HiveManager {
   /**
    * @param getHome  Lazily resolve harnessHome so the hive follows config changes.
@@ -542,6 +546,8 @@ export class HiveManager {
   private warnedNoRuntime = false;
   /** The verdict ensureAgent reached for each agent, for the late check before its terminal starts. */
   private hookVerdicts = new Map<string, HookVerdict>();
+  /** Per Codex home, what the app last wrote into its config.toml (writeCodexConfig). */
+  private codexConfigsWritten = new Map<string, CodexConfigWritten>();
   /** The spawn that last passed the late check, per agent. */
   private confirmedSpawn = new Map<string, string>();
   /** The verdict for an agent's current spawn, removed as it is taken. */
@@ -3201,8 +3207,9 @@ export class HiveManager {
   private writeCodexConfig(home: string, cwd: string, writableRoots: string[]): void {
     const userHome = join(homedir(), '.codex');
     const app = this.codexAppHooks();
-    let config = existsSync(join(userHome, 'config.toml'))
+    const ownerToml = existsSync(join(userHome, 'config.toml'))
       ? readFileSync(join(userHome, 'config.toml'), 'utf8') : '';
+    let config = ownerToml;
     if (app) {
       config += '\n# --- munder-hive lifecycle hooks (auto-generated; do not edit) ---\n';
       for (const ev of app.events) {
@@ -3232,6 +3239,14 @@ export class HiveManager {
     writeFileSync(configTmp, config, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
     try { renameSync(configTmp, join(home, 'config.toml')); }
     catch (e) { rmSync(configTmp, { force: true }); throw e; }
+    // What was written, kept in memory: the trust step compares what Codex lists against this, never against the file.
+    this.codexConfigsWritten.set(resolvePath(home), { hooks: app, ownerToml });
+  }
+
+  /** The hooks the app last wrote into this home's config.toml, and the owner's config it copied there, as held in
+   *  memory when it wrote them; undefined when it has written none this run. */
+  codexConfigWritten(home: string): CodexConfigWritten | undefined {
+    return this.codexConfigsWritten.get(resolvePath(home));
   }
 
   private exposeCodexDataDirs(home: string, userHome: string, agentId: string): void {

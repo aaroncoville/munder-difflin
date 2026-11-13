@@ -74,6 +74,7 @@ function setup(t) {
       lastSession: (id) => lastSession[id],
       appendLog: (row) => rows.push(row),
       prepareResumedCodexHome: (agentId, c, home) => calls.push(['prepare', agentId, home]),
+      codexConfigWritten: () => ({ hooks: null, ownerToml: '' }),
     },
     memory: { env: () => ({}) },
     seedCodexHookTrust: async (ctx, _ms, why) => { calls.push(['trust', ctx.home]); if (!trust.ok) why(trust.why); return trust.ok; },

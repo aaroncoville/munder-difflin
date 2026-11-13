@@ -3313,7 +3313,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     const env: NodeJS.ProcessEnv = { ...process.env, ...(opts.env ?? {}) };
     const started = Date.now();
     const trusted = await seedCodexHookTrust(
-      { home, cwd: opts.cwd, executable: resolveCliCommand(opts.command), env },
+      { home, cwd: opts.cwd, executable: resolveCliCommand(opts.command), env, written: hive.codexConfigWritten(home) },
       undefined,
       (why) => { reason = why; }
     );

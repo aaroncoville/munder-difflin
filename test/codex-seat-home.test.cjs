@@ -377,7 +377,7 @@ test('with the real CLI: generated hooks get trusted, a planted project hook ref
   fs.mkdirSync(path.join(f.agentDir('c'), '.codex'), { recursive: true });
   fs.writeFileSync(path.join(f.agentDir('c'), '.codex', 'hooks.json'), '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"planted"}]}]}}');
   const inj = await f.spawn('c');
-  const ctx = { home: inj.env.CODEX_HOME, cwd: f.cwd, executable: codex, env: { ...process.env, ...inj.env } };
+  const ctx = { home: inj.env.CODEX_HOME, cwd: f.cwd, executable: codex, env: { ...process.env, ...inj.env }, written: f.hive.codexConfigWritten(inj.env.CODEX_HOME) };
   assert.equal(await seedCodexHookTrust(ctx, 15_000), true);
 
   // A hook in the (trusted) working folder's project layer: never trusted by us,
@@ -403,7 +403,7 @@ test('with the real CLI: a planted hook whose hash is already trusted in the hom
   const { seedCodexHookTrust } = loadTs('src/main/codexHookTrust.ts');
   const f = fixture(t);
   const inj = await f.spawn('pre');
-  const ctx = { home: inj.env.CODEX_HOME, cwd: f.cwd, executable: codex, env: { ...process.env, ...inj.env } };
+  const ctx = { home: inj.env.CODEX_HOME, cwd: f.cwd, executable: codex, env: { ...process.env, ...inj.env }, written: f.hive.codexConfigWritten(inj.env.CODEX_HOME) };
   fs.mkdirSync(path.join(f.cwd, '.codex'), { recursive: true });
   fs.writeFileSync(path.join(f.cwd, '.codex', 'hooks.json'), '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"planted"}]}]}}');
   const planted = (await listHooks(ctx)).find((h) => h.source === 'project');
@@ -416,6 +416,19 @@ test('with the real CLI: a planted hook whose hash is already trusted in the hom
   assert.match(why, /did not write.*\.codex\/hooks\.json/);
 });
 
+test('with the real CLI: generated commands replaced in the home after it was written are not trusted', { skip: !codex && 'codex CLI not installed', timeout: 30_000 }, async (t) => {
+  const { seedCodexHookTrust } = loadTs('src/main/codexHookTrust.ts');
+  const f = fixture(t);
+  const inj = await f.spawn('swap');
+  const ctx = { home: inj.env.CODEX_HOME, cwd: f.cwd, executable: codex, env: { ...process.env, ...inj.env }, written: f.hive.codexConfigWritten(inj.env.CODEX_HOME) };
+  const cfg = path.join(fs.realpathSync(ctx.home), 'config.toml');
+  fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8').replace(/^command = .+$/gm, `command = ${JSON.stringify('/bin/sh -c "printf owned"')}`));
+  let why = '';
+  assert.equal(await seedCodexHookTrust(ctx, 15_000, (r) => { why = r; }), false);
+  assert.match(why, /generated hook|did not write/);
+  assert.doesNotMatch(fs.readFileSync(cfg, 'utf8'), /trusted_hash/, 'no trust was recorded');
+});
+
 test('with the real CLI: the owner\'s own trusted hooks are allowed, an untrusted one refuses', { skip: !codex && 'codex CLI not installed', timeout: 60_000 }, async (t) => {
   const { seedCodexHookTrust } = loadTs('src/main/codexHookTrust.ts');
   const f = fixture(t);
@@ -425,7 +438,7 @@ test('with the real CLI: the owner\'s own trusted hooks are allowed, an untruste
   fs.writeFileSync(ownerCfg, '[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "echo owner"\n');
   const spawnAndSeed = async (id) => {
     const inj = await f.spawn(id);
-    const ctx = { home: inj.env.CODEX_HOME, cwd: f.cwd, executable: codex, env: { ...process.env, ...inj.env } };
+    const ctx = { home: inj.env.CODEX_HOME, cwd: f.cwd, executable: codex, env: { ...process.env, ...inj.env }, written: f.hive.codexConfigWritten(inj.env.CODEX_HOME) };
     let why = '';
     const ok = await seedCodexHookTrust(ctx, 15_000, (r) => { why = r; });
     return { ok, why, ctx };
