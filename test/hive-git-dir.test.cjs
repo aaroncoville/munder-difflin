@@ -518,3 +518,60 @@ test('an in-progress merge the old repository carried never makes the app\'s fir
   assert.equal(git(root, '--git-dir', gitDir, 'rev-list', '--parents', '-n', '1', 'HEAD').stdout.trim().split(' ').length, 2, 'the first commit is a merge');
   assert.notEqual(git(root, '--git-dir', gitDir, 'merge-base', '--is-ancestor', seatCommit, 'HEAD').status, 0, 'the agent\'s commit is in the hive history');
 });
+
+test('a move that fails is said once and not tried again on every commit; the next launch finishes it', async (t) => {
+  const { dir, base } = scratch(t);
+  const root = await legacyHive(dir);
+  const oldHead = git(root, 'rev-parse', 'HEAD').stdout.trim();
+  // Objects borrowed through alternates make the move repack, and this git cannot.
+  const lender = path.join(dir, 'lender');
+  git(dir, 'init', '-q', lender);
+  fs.writeFileSync(path.join(root, '.git', 'objects', 'info', 'alternates'), `${path.join(lender, '.git', 'objects')}\n`);
+  const bin = path.join(dir, 'fake-bin');
+  const calls = path.join(dir, 'repack-calls');
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh\ncase " $* " in *" repack "*) echo x >> '${calls}'; echo cannot >&2; exit 1 ;; esac\nexec '${REAL_GIT}' "$@"\n`, { mode: 0o755 });
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${bin}${path.delimiter}${savedPath}`;
+  t.after(() => { process.env.PATH = savedPath; });
+
+  const hive = new HiveManager(() => dir);
+  hive.setGitDirBase(base);
+  hive.ensureHive();
+  for (let i = 0; i < 3; i++) {
+    fs.writeFileSync(path.join(root, 'board.md'), `# ${i}\n`);
+    hive.commit(`hive: ${i}`);
+    await hive.commitsSettled();
+  }
+  assert.equal(fs.readFileSync(calls, 'utf8').split('\n').filter(Boolean).length, 1, 'the move was tried again on a later commit');
+  assert.equal(hive.logTail(50).filter((e) => e.kind === 'hive-git-dir' && e.action === 'failed').length, 1);
+
+  process.env.PATH = savedPath;
+  const relaunched = new HiveManager(() => dir);
+  relaunched.setGitDirBase(base);
+  relaunched.ensureHive(); // as a launch does
+  relaunched.commit('hive: after the relaunch');
+  await relaunched.commitsSettled();
+  const gitDir = hiveGitDirFor(base, root);
+  assert.equal(git(root, '--git-dir', gitDir, 'merge-base', '--is-ancestor', oldHead, 'HEAD').status, 0, 'the old history was lost');
+});
+
+test('a move that fails while the old repository is still in place is tried once per launch, not on every commit', async (t) => {
+  const { dir } = scratch(t);
+  const root = await legacyHive(dir);
+  // A data folder the move cannot use: a file where its folder should be.
+  const blocked = path.join(dir, 'blocked-base');
+  fs.writeFileSync(blocked, 'not a folder');
+
+  const hive = new HiveManager(() => dir);
+  hive.setGitDirBase(blocked);
+  hive.ensureHive();
+  for (let i = 0; i < 3; i++) {
+    fs.writeFileSync(path.join(root, 'board.md'), `# ${i}\n`);
+    hive.commit(`hive: ${i}`);
+    await hive.commitsSettled();
+  }
+
+  assert.equal(hive.logTail(50).filter((e) => e.kind === 'hive-git-dir' && e.action === 'failed').length, 1, 'the move was tried on every commit');
+  assert.equal(fs.statSync(path.join(root, '.git')).isDirectory(), true, 'the old repository was touched');
+});

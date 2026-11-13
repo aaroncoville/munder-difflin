@@ -3885,6 +3885,8 @@ export class HiveManager {
   private gitDirBase: string | null = null;
   /** Hive folders whose git directory has been brought to the app data folder in this process. */
   private readonly settledGitDirs = new Set<string>();
+  /** Hive folders whose move failed in this process: their commits wait for the next launch. */
+  private readonly gitDirMoveFailed = new Set<string>();
 
   /** The folder in the app data folder that holds the hives' git directories. Unset (tests, embedders), the git
    *  directory stays inside the hive as it always was. */
@@ -4025,8 +4027,16 @@ export class HiveManager {
     // (and with it which config) git uses.
     const inRepo = (args: string[]): Promise<GitResult> => git([`--git-dir=${gitDir}`, `--work-tree=${root}`, ...args], root);
     if (this.gitDirBase && !this.settledGitDirs.has(root)) {
+      // A move that failed is not tried again on every commit (a large copy or repack could fail the same way each
+      // time): it is said once, commits for this hive wait, and the next launch carries on from where it stopped.
+      if (this.gitDirMoveFailed.has(root)) return { ok: true, out: '', err: '' };
       const settled = await settleHiveGitDir(root, this.gitDirBase, gitDir, git);
-      if (!settled.ok) return { ok: false, out: '', err: settled.error, failed: 'could not move the hive repository into the app data folder' };
+      if (!settled.ok) {
+        this.gitDirMoveFailed.add(root);
+        console.warn(`[hive] could not move the hive repository into the app data folder; commits wait until the next launch, which tries again: ${settled.error}`);
+        this.appendLog({ kind: 'hive-git-dir', action: 'failed', gitDir, error: settled.error.slice(0, 2000), state: 'commits paused until the next launch' });
+        return { ok: true, out: '', err: '' };
+      }
       this.settledGitDirs.add(root);
       if (settled.action !== 'none') {
         console.warn(`[hive] hive repository: ${settled.action}${settled.note ? ` (${settled.note})` : ''}`);
