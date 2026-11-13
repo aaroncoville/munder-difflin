@@ -203,6 +203,52 @@ test('write roots from the owner\'s Codex config and from a project config are c
   await assert.rejects(f.spawn('p1'), (e) => refusedHome(f.root)(e) && e.message.includes(project));
 });
 
+test('a computed home that is a link or not a folder refuses the start, naming it, and nothing is written through it', async (t) => {
+  const f = fixture(t);
+  const homeOf = (id) => codexShortHomePath(path.join(f.agentDir(id), '.codex'), id);
+  const outside = path.join(f.root, 'outside');
+  fs.mkdirSync(outside);
+  const cases = [
+    ['a link to a folder', (h) => fs.symlinkSync(outside, h)],
+    ['a dangling link', (h) => fs.symlinkSync(path.join(f.root, 'gone'), h)],
+    ['a file', (h) => fs.writeFileSync(h, 'x')],
+  ];
+  for (const [label, make] of cases) {
+    const id = `l-${cases.findIndex((c) => c[0] === label)}`;
+    const home = homeOf(id);
+    fs.mkdirSync(path.dirname(home), { recursive: true });
+    make(home);
+    await assert.rejects(f.spawn(id), (e) => e.name === 'CodexHomeRefused' && e.message.includes(home), label);
+    assert.deepEqual(fs.readdirSync(outside), [], `${label}: nothing written through it`);
+    assert.equal(fs.existsSync(path.join(f.root, 'gone')), false, `${label}: no folder made at the link's target`);
+  }
+});
+
+test('a home whose rollout folders cannot be linked refuses the start instead of starting without them', async (t) => {
+  const f = fixture(t);
+  const home = (await f.spawn('lk')).env.CODEX_HOME;
+  // The home's sessions folder holds data and so does its target under ~/.codex: neither can win.
+  const target = fs.realpathSync(path.join(home, 'sessions'));
+  fs.rmSync(path.join(home, 'sessions'));
+  fs.mkdirSync(path.join(home, 'sessions'));
+  fs.writeFileSync(path.join(home, 'sessions', 'a.jsonl'), '{}\n');
+  fs.writeFileSync(path.join(target, 'b.jsonl'), '{}\n');
+  await assert.rejects(f.spawn('lk'), (e) => /could not be written|could not be prepared/.test(e.message) && e.message.includes('both contain data'));
+});
+
+test('a stale config.toml in the home is replaced, never written through', async (t) => {
+  const f = fixture(t);
+  const home = (await f.spawn('st')).env.CODEX_HOME;
+  const elsewhere = path.join(f.root, 'elsewhere.toml');
+  fs.writeFileSync(elsewhere, 'model = "keep"\n');
+  fs.rmSync(path.join(home, 'config.toml'));
+  fs.symlinkSync(elsewhere, path.join(home, 'config.toml'));
+  await f.spawn('st');
+  assert.equal(fs.readFileSync(elsewhere, 'utf8'), 'model = "keep"\n', 'the link target is untouched');
+  assert.ok(fs.lstatSync(path.join(home, 'config.toml')).isFile(), 'the home holds a fresh regular file');
+  assert.equal(generatedCommands(fs.readFileSync(path.join(home, 'config.toml'), 'utf8')).length, 8);
+});
+
 test('an agent with an old in-tree home keeps its history, and only that is copied', async (t) => {
   const f = fixture(t);
   const legacy = path.join(f.agentDir('m'), '.codex');

@@ -1097,8 +1097,12 @@ export class HiveManager {
     const userCodexHome = join(homedir(), '.codex');
     for (const [id, agent] of Object.entries(this.registry().agents)) {
       const codexHome = codexSeatHome(join(root, 'agents', id), id);
-      if (agent.provider === 'codex' && existsSync(codexHome)) {
-        this.exposeCodexDataDirs(codexHome, userCodexHome, id);
+      // A real folder only: existsSync follows a link, and a home that is a link is never written through.
+      const isHome = lstatSync(codexHome, { throwIfNoEntry: false });
+      if (agent.provider === 'codex' && isHome?.isDirectory()) {
+        // Best-effort here: the agent's own next spawn refuses, naming the problem.
+        try { this.exposeCodexDataDirs(codexHome, userCodexHome, id); }
+        catch (e) { console.error(`[hive] exposeCodexDataDirs(${id}) failed:`, e); }
       }
     }
     const board = join(root, 'board.md');
@@ -3093,7 +3097,17 @@ export class HiveManager {
     // roots reach it was refused before anything was created (hookVerdict).
     const home = codexSeatHome(dir, agentId);
     try {
+      // The home must be a real folder: a link (dangling or not) would send every
+      // write below somewhere the app did not choose. Checked before any write.
+      const realFolder = (): void => {
+        const st = lstatSync(home, { throwIfNoEntry: false });
+        if (st && (st.isSymbolicLink() || !st.isDirectory())) {
+          throw new CodexHomeRefused(`Codex home ${home} is ${st.isSymbolicLink() ? 'a link' : 'not a folder'}; it must be a real folder the app made`);
+        }
+      };
+      realFolder();
       mkdirSync(home, { recursive: true, mode: 0o700 });
+      realFolder();
       // An agent that ran before homes moved out of the agent folder keeps its
       // history: an allowlist of files is copied once, as data. The old folder
       // is left exactly as it was; the owner removes it.
@@ -3175,25 +3189,31 @@ export class HiveManager {
       try { trusted = realpathSync(cwd); } catch { /* not on disk yet — best spelling we have */ }
       config += codexTrustEntry(trusted);
       config = withCodexWritableRoots(config, writableRoots);
-      writeFileSync(join(home, 'config.toml'), config, 'utf8');
+      // Always a whole new file, renamed into place: a stale config.toml (or a
+      // link standing in for it) is replaced, never written through or kept.
+      const configTmp = join(home, `.config.toml.${process.pid}.${shortRand()}`);
+      writeFileSync(configTmp, config, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+      try { renameSync(configTmp, join(home, 'config.toml')); }
+      catch (e) { rmSync(configTmp, { force: true }); throw e; }
 
       // Keep each worker's CODEX_HOME isolated while putting its rollout data
       // below Codex's standard scan roots. External usage tools can then discover
       // the sessions without understanding the hive's private directory layout.
       this.exposeCodexDataDirs(home, userHome, agentId);
     } catch (e) {
+      if (e instanceof CodexHomeRefused) throw e;
       // With a hook runtime set, a Codex seat without its generated hook config would start unhooked: not best-effort.
       if (this.hookRuntimeDir) throw new HookRuntimeUnavailable(`the Codex hook config could not be written (${(e as Error)?.message ?? e})`);
-      console.error('[hive] installCodexHooks failed:', e);
+      // Without one no hooks are generated, but a home left half-prepared (or holding an older config) is still not launched.
+      throw new CodexHomeRefused(`Codex home ${home} could not be prepared (${(e as Error)?.message ?? e})`);
     }
     return home;
   }
 
   private exposeCodexDataDirs(home: string, userHome: string, agentId: string): void {
-    for (const kind of ['sessions', 'archived_sessions'] as const) {
-      try { this.exposeCodexDataDir(home, userHome, agentId, kind); }
-      catch (e) { console.error(`[hive] exposeCodexDataDir(${kind}) failed:`, e); }
-    }
+    // A failure refuses the spawn (installCodexHooks): a home without its rollout
+    // links would start a session whose history nothing else can find.
+    for (const kind of ['sessions', 'archived_sessions'] as const) this.exposeCodexDataDir(home, userHome, agentId, kind);
   }
 
   private moveCodexDataDir(from: string, to: string): void {
