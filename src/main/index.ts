@@ -38,6 +38,7 @@ import {
 import { linkWorktreeDeps, unlinkWorktreeDeps } from './worktreeDeps';
 import { saveAskAttachment } from './askAttachments';
 import { HiveManager, type AgentMeta, type HiveMessage, type HiveTask } from './hive';
+import { archiveOrphanedAgents as archiveOrphans } from './orphanSweep';
 import { runCanaries, memoryCanary } from './canaries';
 import { TurnTracker, diffTasks, type UsageIds } from './usageEvents';
 import { loadUsageSecret, usageRef } from './usageRef';
@@ -88,6 +89,7 @@ import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
 import { isFolderName, RefusedRosterId, RegistryUnreadable, shortTarget } from './messageTarget';
 import { HookRuntimeUnavailable } from './hookRuntime';
+import { PrivateDirRefused, registerPrivateDir } from './privateDirs';
 import { relocationEnv } from './launchLine';
 import { buildPtyEnv } from './ptyEnv';
 import { ControlRegistry } from './control';
@@ -291,6 +293,9 @@ hive.setProxyBridgeScript(bundledResourcePath('hive-proxy.cjs', {
 // the hive folder or a source checkout an agent may write. On Windows the Codex command cannot
 // carry quotes, so the folder must have no space: Local AppData usually has none, where the
 // roaming app-data folder of this app does.
+// The app's own data folder is one no agent may reach (privateDirs.ts); the folders inside it that the app chooses
+// register themselves as well, and so does any private folder kept elsewhere.
+registerPrivateDir(app.getPath('userData'), 'the app data folder');
 hive.setHookRuntime(process.platform === 'win32'
   ? join(process.env.LOCALAPPDATA || app.getPath('userData'), 'munder-difflin-hooks')
   : join(app.getPath('userData'), 'hook-runtime'));
@@ -1061,29 +1066,12 @@ function syncContextTriggers(): void {
   }
 }
 
-/** Startup migration (#57/#58): archive every agent entry that is `archived:false`
- *  but has NO live PTY. This runs in bootstrapHiveServices, BEFORE the renderer can
- *  respawn anything, so at this point NO agent owns a PTY — every `archived:false`
- *  entry is therefore a stale carry-over from a prior session that quit/crashed
- *  WITHOUT archiving (e.g. the pre-acc13a3 'assistant' Dwight entry). Left as-is
- *  they have no live PTY, so the breaker beat steers them and the steer bounces to
- *  GOD as a requires_reply GOD can't clear → inbox flood.
- *
- *  "No live PTY" = ptyForAgent(id) === undefined (ptyToAgent is populated only at
- *  spawn and pruned on teardown). God is never archived. A user's real agents are
- *  unaffected: the "restore team" flow respawns them through ensureAgent, which
- *  re-clears `archived` — restorability does not depend on the archived flag. */
+/** Startup migration (#57/#58), in orphanSweep.ts: archive every archived:false agent with no live PTY. Runs before
+ *  the window exists, so it must never wait on git (see orphanSweep.ts). */
 function archiveOrphanedAgents(): void {
-  if (!hive.enabled()) return;
   try {
-    const reg = hive.registry();
-    for (const [id, a] of Object.entries(reg.agents)) {
-      if (a.archived) continue;
-      if (id === reg.godId) continue;        // god is never archived
-      if (ptyForAgent(id)) continue;         // has a live PTY → genuinely active
-      hive.setArchived(id, true);            // stale archived:false orphan → archive
-      console.log('[migration] archived orphaned agent (no live PTY):', id);
-    }
+    // Logged as each one is archived, so an error mid-sweep loses no line for the ones already done.
+    archiveOrphans(hive, (id) => !!ptyForAgent(id), (id) => console.log('[migration] archived orphaned agent (no live PTY):', id));
   } catch (e) {
     console.error('[migration] archiveOrphanedAgents failed:', e);
   }
@@ -2797,7 +2785,7 @@ function spawnFailReason(error?: string): SpawnFailReason {
 /** A refused id must not start as a process with no prompt, environment, hooks or
  *  roster entry. Its worktree goes too, since no process will ever tear it down. One
  *  that cannot be removed is logged and stays tracked, because it is still on disk. */
-async function refuseSpawn(ptyId: string, agentId: string, provider: string, refusal: RefusedRosterId | RegistryUnreadable | HookRuntimeUnavailable | CodexHomeRefused): Promise<{ ok: false; error: string }> {
+async function refuseSpawn(ptyId: string, agentId: string, provider: string, refusal: RefusedRosterId | RegistryUnreadable | HookRuntimeUnavailable | CodexHomeRefused | PrivateDirRefused): Promise<{ ok: false; error: string }> {
   // An ordinary id as it is; only one that is not a plain folder name is quoted and cut short.
   hive.appendLog({ kind: 'spawn-refused', agentId: isFolderName(agentId) ? agentId : shortTarget(agentId), reason: refusal.message });
   // Whatever ensureAgent already did for this spawn (a new agent's registry row) is rolled back.
@@ -3045,7 +3033,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       // that owns the session) are the app's too. Recorded with the spawn, so the config's kind never comes from a path.
       if (inj.env?.CODEX_HOME !== undefined) codexHomeFromApp = true;
     } catch (e) {
-      if (e instanceof RefusedRosterId || e instanceof RegistryUnreadable || e instanceof HookRuntimeUnavailable || e instanceof CodexHomeRefused) return refuseSpawn(opts.id, opts.hive.id, provider, e);
+      if (e instanceof RefusedRosterId || e instanceof RegistryUnreadable || e instanceof HookRuntimeUnavailable || e instanceof CodexHomeRefused || e instanceof PrivateDirRefused) return refuseSpawn(opts.id, opts.hive.id, provider, e);
       // Hive provisioning is otherwise best-effort, but not for a hooked provider: the late check refuses, naming this.
       hive.hookProvisioningFailed(opts.id, e);
       console.error('[hive] ensureAgent failed:', e);

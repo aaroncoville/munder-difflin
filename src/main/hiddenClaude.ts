@@ -3,6 +3,7 @@ import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import path from 'node:path';
 import { agentEnabledPlugins, claudeUserDir, knownPluginIds } from './agentPlugins';
 import { ensurePrivateDir, writeNoFollow } from './hookRuntime';
+import { registerPrivateDir } from './privateDirs';
 import { resolveCommand, userShellPath } from './shellEnv';
 import { expandTilde } from './fs';
 import { projectDir } from './transcript';
@@ -57,11 +58,17 @@ export interface HiddenClaudeOptions {
  *  the hive folder it must stay outside. Never the temp folder: Codex seats can write $TMPDIR, and a settings file is
  *  authority (a `hooks` entry there runs as the owner, outside any sandbox). Unset, no helper runs. */
 let helperSettings: { dir: string; hiveRoot: () => string | null; log: (event: Record<string, unknown>) => void } | null = null;
+/** Removes the folder's registration as one of the app's private folders. */
+let unregisterHelperDir: (() => void) | null = null;
 /** A per-call folder's name: `helper-` plus mkdtemp's six characters. Only these are ever swept. */
 const HELPER_FOLDER = /^helper-[A-Za-z0-9]{6}$/;
 export function setHelperSettingsDir(dir: string | null, hiveRoot: () => string | null, log: (event: Record<string, unknown>) => void = () => {}): void {
   helperSettings = dir ? { dir, hiveRoot, log } : null;
+  unregisterHelperDir?.();
+  unregisterHelperDir = null;
   if (!helperSettings) return;
+  // No agent's write roots may reach it (privateDirs.ts): a settings file planted there would be a helper's settings.
+  unregisterHelperDir = registerPrivateDir(helperSettings.dir, 'the helper sessions folder');
   // Sweep what a crashed run left: only per-call folders by their exact name shape, never through a link, and only
   // once the parent passes the private-folder checks. A folder that will not go is logged with its path.
   try {

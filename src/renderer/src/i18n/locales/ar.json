@@ -1009,6 +1009,7 @@
     "notSetUp": "غير مُعدّة",
     "onReady": "مفعّلة · جاهزة",
     "onGettingReady": "مفعّلة · تستعد…",
+    "notSaving": "لا تُحفظ الذكريات: {{reason}}",
     "turnOff": "إيقاف",
     "turnOn": "تشغيل",
     "notInstalled": "البحث بالمعنى غير مثبّت بعد.",

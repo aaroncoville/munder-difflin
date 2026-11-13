@@ -3,6 +3,7 @@ import { existsSync, statSync, readdirSync, readFileSync, writeFileSync } from '
 import { join } from 'node:path';
 import { MemPalaceAdapter } from './memPalaceAdapter';
 import { HindsightAdapter } from './hindsightAdapter';
+import { registerPrivateDir } from './privateDirs';
 import type { BackendId, MemoryBackend, MemorySettings } from './memoryBackend';
 import { MINE_INTERVAL_MS } from './memoryBackend';
 export type { MemorySettings } from './memoryBackend';
@@ -25,7 +26,7 @@ function ensureMineIgnore(agentDir: string): void {
   try { writeFileSync(path, prefix + missing.join('\n') + '\n', 'utf8'); } catch { /* best-effort */ }
 }
 
-export interface MemoryStatus { available: boolean; enabled: boolean; active: boolean; initialized: boolean; palacePath: string | null; backend: BackendId; location: string | null; model: EmbeddingModel | null; bin: string | null; }
+export interface MemoryStatus { available: boolean; enabled: boolean; active: boolean; initialized: boolean; palacePath: string | null; backend: BackendId; location: string | null; model: EmbeddingModel | null; bin: string | null; problem: string | null; }
 
 export class MemoryManager {
   private mineTimer: NodeJS.Timeout | null = null;
@@ -48,6 +49,8 @@ export class MemoryManager {
     /** A folder of the app's own (never the hive) for the Hindsight retain ledger. */
     private hindsightLedgerDir: string | null = null
   ) {
+    // The ledger records what Hindsight already holds; a forged one would resend or skip memories. No agent may reach it.
+    if (hindsightLedgerDir) registerPrivateDir(hindsightLedgerDir, 'the Hindsight ledger folder');
     this.backend = this.makeBackend(this.getSettings().backend);
     this.backendKey = this.settingsKey();
   }
@@ -73,7 +76,8 @@ export class MemoryManager {
       // a server URL dressed up as one.
       palacePath: status.backend === 'mempalace' ? status.location : null,
       backend: status.backend, location: status.location,
-      model: status.model === null ? null : status.model === 'embeddinggemma' ? 'embeddinggemma' : 'minilm', bin: status.bin
+      model: status.model === null ? null : status.model === 'embeddinggemma' ? 'embeddinggemma' : 'minilm', bin: status.bin,
+      problem: status.problem ?? null
     };
   }
   env(): Record<string, string> { return this.active() ? this.backend.agentEnv() : {}; }

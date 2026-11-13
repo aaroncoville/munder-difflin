@@ -37,6 +37,10 @@ export interface RetainClaim {
   idle: number;
   /** When a poll was last answered (any HTTP response). */
   answeredAt: number;
+  /** Since when the server has given no usable answer (none at all, or an error). Absent
+   *  while answers are usable, so a ledger with no failure in progress is still readable
+   *  by #104's parser, which accepts only the fields it knew. */
+  unusableSince?: number;
 }
 export interface LedgerState {
   v: 1;
@@ -61,7 +65,8 @@ export const MAX_KEY_LENGTH = 1024;
 /** The longest section text a claim may carry; the miner leaves longer sections out. */
 export const CLAIM_ITEM_MAX_CHARS = 256 * 1024;
 const MAX_SEEN_LENGTH = 256;
-const MAX_REASON_LENGTH = 512;
+/** The longest reason a set-aside claim may carry. */
+export const MAX_REASON_LENGTH = 512;
 
 export const emptyLedger = (server: string): LedgerState => ({ v: 1, server, busyUntil: 0, sections: {}, claim: null, aside: null });
 
@@ -100,7 +105,8 @@ export function parseLedger(text: string, server: string): LedgerState | string 
 
 /** A claim if every field checks out, else why not. */
 function parseClaim(c: unknown): RetainClaim | string {
-  if (!isRecord(c) || !hasOnly(c, ['op', 'since', 'items', 'acked', 'seen', 'idle', 'answeredAt'])) return 'the claim is malformed';
+  if (!isRecord(c) || !hasOnly(c, ['op', 'since', 'items', 'acked', 'seen', 'idle', 'answeredAt', 'unusableSince'])) return 'the claim is malformed';
+  if ('unusableSince' in c && c.unusableSince !== null && !isTime(c.unusableSince)) return 'the claim is malformed'; // null: absent
   if (typeof c.op !== 'string' || !UUID.test(c.op) || !isTime(c.since) || !isTime(c.idle) || !isTime(c.answeredAt)) return 'the claim is malformed';
   if (typeof c.acked !== 'boolean' || typeof c.seen !== 'string' || c.seen.length > MAX_SEEN_LENGTH) return 'the claim is malformed';
   if (!Array.isArray(c.items) || c.items.length < 1 || c.items.length > CLAIM_MAX_ITEMS) return 'the claim is malformed';
@@ -112,11 +118,16 @@ function parseClaim(c: unknown): RetainClaim | string {
     // The text must be the text the hash names, or a resend would carry something else.
     if (createHash('sha256').update(it.content).digest('hex') !== it.hash) return 'a claim item does not match its hash';
   }
-  return { op: c.op, since: c.since, items: c.items as ClaimItem[], acked: c.acked, seen: c.seen, idle: c.idle, answeredAt: c.answeredAt };
+  return {
+    op: c.op, since: c.since, items: c.items as ClaimItem[], acked: c.acked, seen: c.seen, idle: c.idle, answeredAt: c.answeredAt,
+    ...(isTime(c.unusableSince) ? { unusableSince: c.unusableSince } : {})
+  };
 }
 
 export class RetainLedger {
   private warned = new Set<string>();
+  /** Why the ledger cannot be written right now, for the memory status; null when the last write worked. */
+  private trouble: string | null = null;
 
   constructor(private dir: string) {}
 
@@ -126,23 +137,28 @@ export class RetainLedger {
     console.error(`[memory] hindsight retain ledger: ${why}`);
   }
 
+  /** Why nothing can be retained because the ledger cannot be written, or null. */
+  problem(): string | null {
+    return this.trouble;
+  }
+
   private file(server: string): string {
     return join(this.dir, `retained-${createHash('sha256').update(server).digest('hex').slice(0, 24)}.json`);
   }
 
   /** The folder, made if missing, or null when it is a link, not a folder, or someone else's. */
   private async folder(): Promise<string | null> {
-    if (!isAbsolute(this.dir)) { this.warnOnce(`its folder ${this.dir} is not an absolute path`); return null; }
+    const refuse = (why: string): null => { this.warnOnce(why); this.trouble = `the retain ledger ${why}`; return null; };
+    if (!isAbsolute(this.dir)) return refuse(`folder ${this.dir} is not an absolute path`);
     try {
       await mkdir(this.dir, { recursive: true, mode: 0o700 });
       const st = await lstat(this.dir);
-      if (st.isSymbolicLink() || !st.isDirectory()) { this.warnOnce(`its folder ${this.dir} is a link or not a folder`); return null; }
-      if (typeof process.getuid === 'function' && st.uid !== process.getuid()) { this.warnOnce(`its folder ${this.dir} belongs to another user`); return null; }
+      if (st.isSymbolicLink() || !st.isDirectory()) return refuse(`folder ${this.dir} is a link or not a folder`);
+      if (typeof process.getuid === 'function' && st.uid !== process.getuid()) return refuse(`folder ${this.dir} belongs to another user`);
       if ((st.mode & 0o077) !== 0) await chmod(this.dir, 0o700);
       return this.dir;
     } catch (e) {
-      this.warnOnce(`its folder ${this.dir} is unusable (${(e as Error).message})`);
-      return null;
+      return refuse(`folder ${this.dir} is unusable (${(e as Error).message})`);
     }
   }
 
@@ -204,11 +220,11 @@ export class RetainLedger {
   async save(state: LedgerState): Promise<boolean> {
     if (!(await this.folder())) return false;
     const text = JSON.stringify(state);
-    if (Buffer.byteLength(text) > LEDGER_MAX_BYTES) { this.warnOnce(`the ledger would exceed ${LEDGER_MAX_BYTES} bytes; not saved`); return false; }
+    if (Buffer.byteLength(text) > LEDGER_MAX_BYTES) { this.warnOnce(`the ledger would exceed ${LEDGER_MAX_BYTES} bytes; not saved`); this.trouble = `the retain ledger would exceed ${LEDGER_MAX_BYTES} bytes`; return false; }
     // Never write what load would refuse: a refused ledger reads as empty, which would
     // free a claim the server may still be working on. The previous file stays.
     const refused = parseLedger(text, state.server);
-    if (typeof refused === 'string') { console.error(`[memory] hindsight retain ledger not saved: ${refused}`); return false; }
+    if (typeof refused === 'string') { console.error(`[memory] hindsight retain ledger not saved: ${refused}`); this.trouble = `the retain ledger was not saved: ${refused}`; return false; }
     const path = this.file(state.server);
     const temp = join(this.dir, `.${randomUUID()}.tmp`);
     try {
@@ -222,9 +238,11 @@ export class RetainLedger {
       const target = await lstat(path).catch(() => null);
       if (target && !target.isFile()) throw new Error('the ledger path is a link or not a file');
       await rename(temp, path);
+      this.trouble = null;
       return true;
     } catch (e) {
       console.error(`[memory] hindsight retain ledger not saved: ${(e as Error).message}`);
+      this.trouble = `the retain ledger was not saved: ${(e as Error).message}`;
       await unlink(temp).catch(() => undefined);
       return false;
     }
