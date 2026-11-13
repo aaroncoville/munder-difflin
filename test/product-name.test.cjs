@@ -70,3 +70,7 @@ test('no app source shows the old name, in full or short form', () => {
   for (const dir of ['src/main', 'src/preload', 'src/shared', 'src/renderer/src']) walk(dir);
   assert.deepEqual(offenders, []);
 });
+
+test('the window title is the product name', () => {
+  assert.match(read('src/renderer/index.html'), new RegExp(`<title>${PRODUCT_NAME}</title>`));
+});
