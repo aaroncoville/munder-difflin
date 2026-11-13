@@ -10,7 +10,7 @@
  *   - there is no POST for creating a bank — PUT .../banks/<id> upserts one.
  */
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BackendStatus, MemoryBackend, MineResult, TextResult } from './memoryBackend';
 
@@ -19,6 +19,20 @@ const HEALTH_TTL_MS = 30_000;
 /** Matches the mempalace adapter's mine timeout, so a wedged server cannot
  *  stall the mine loop for longer than a local miner would. */
 const MINE_TIMEOUT_MS = 10 * 60_000;
+/** Retain is the expensive call: the server runs an LLM fact extraction over
+ *  every new chunk it is handed. The miner keeps one retain in flight at a time
+ *  and then leaves the server idle at least as long as that retain kept it busy. */
+const RETAIN_MIN_GAP_MS = 30_000;
+/** A retain that outlives MINE_TIMEOUT_MS is still extracting on the server
+ *  after we hang up, so the miner sends nothing else for this long. */
+const RETAIN_BUSY_BACKOFF_MS = 30 * 60_000;
+/** The most sections one retain may carry, so a backlog drains over several passes. */
+const RETAIN_MAX_ITEMS = 8;
+/** A memory.md written this recently is probably still being appended to. */
+const QUIET_MS = 2 * 60_000;
+/** Which section text the bank already holds, kept beside the agents so an app
+ *  restart does not resend every memory.md from scratch. */
+const RETAIN_STATE_FILE = '.hindsight-retained.json';
 const RECALL_TIMEOUT_MS = 120_000;
 const PROBE_TIMEOUT_MS = 5_000;
 /** Recall budgets in tokens, so a caller's "N results" becomes a token
@@ -67,6 +81,15 @@ export function memorySections(markdown: string): { heading: string; body: strin
   return sections.filter((s) => s.body.length > 0);
 }
 
+interface RetainState {
+  /** No retain may start before this time, even from a freshly restarted app. */
+  busyUntil: number;
+  /** `agent\nheading\noccurrence` → the document id it is retained under and a hash of the body last sent. */
+  sections: Record<string, { id: string; hash: string }>;
+}
+
+const sha = (text: string, length = 64): string => createHash('sha256').update(text).digest('hex').slice(0, length);
+
 export class HindsightAdapter implements MemoryBackend {
   readonly id = 'hindsight' as const;
   /** `available()` can only answer after /health has been asked, and asking is
@@ -76,12 +99,47 @@ export class HindsightAdapter implements MemoryBackend {
   private healthCheckedAt = -Infinity;
   private inFlightProbe: Promise<boolean> | null = null;
   private bankReady = false;
+  private retainState: RetainState | null = null;
 
   constructor(
     private cfg: () => { url: string; bank: string },
     private getHome: () => string | null,
-    private now: () => number = Date.now
+    private now: () => number = Date.now,
+    private mineTimeoutMs: number = MINE_TIMEOUT_MS
   ) {}
+
+  /** The state file lives in the hive folder, and only when there is one. */
+  private retainStatePath(): string | null {
+    const home = this.getHome();
+    if (!home || !existsSync(join(home, 'hive', 'agents'))) return null;
+    return join(home, 'hive', RETAIN_STATE_FILE);
+  }
+
+  private loadRetainState(): RetainState {
+    if (this.retainState) return this.retainState;
+    let state: RetainState = { busyUntil: 0, sections: {} };
+    const path = this.retainStatePath();
+    if (path && existsSync(path)) {
+      try {
+        const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<RetainState>;
+        state = { busyUntil: Number(parsed.busyUntil) || 0, sections: parsed.sections ?? {} };
+      } catch {
+        // A torn or hand-edited file costs one resend, which the server answers as a no-op delta.
+      }
+    }
+    return (this.retainState = state);
+  }
+
+  private saveRetainState(): void {
+    const path = this.retainStatePath();
+    if (!path || !this.retainState) return;
+    try {
+      writeFileSync(`${path}.tmp`, JSON.stringify(this.retainState), 'utf8');
+      renameSync(`${path}.tmp`, path);
+    } catch (error) {
+      console.error(`[memory] hindsight retain state not saved: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
 
   private base(): string {
     const { url, bank } = this.cfg();
@@ -170,39 +228,90 @@ export class HindsightAdapter implements MemoryBackend {
     }
   }
 
+  /**
+   * Retain the sections of an agent's memory.md that changed since the bank last
+   * saw them. One call sends at most RETAIN_MAX_ITEMS sections; `ok: false` asks
+   * the manager to come back next pass, either for the rest or because the server
+   * is still cooling down from the previous retain.
+   */
   async mineAgent(agentDir: string, agentId: string): Promise<MineResult> {
     const path = join(agentDir, 'memory.md');
     if (!existsSync(path)) return { ok: false };
+    const state = this.loadRetainState();
+    if (this.now() < state.busyUntil) return { ok: false };
     let markdown: string;
     try {
+      if (this.now() - statSync(path).mtimeMs < QUIET_MS) return { ok: false };
       markdown = readFileSync(path, 'utf8');
     } catch {
       return { ok: false };
     }
-    const items = memorySections(markdown).map(({ heading, body }) => ({
-      // Stable across passes so re-mining an unchanged section updates the same
-      // document instead of stacking a duplicate copy of it in the bank.
-      document_id: createHash('sha256').update(`${agentId}\n${heading}\n${body}`).digest('hex').slice(0, 32),
+    const occurrences = new Map<string, number>();
+    const present = new Set<string>();
+    const pending: { key: string; id: string; hash: string; heading: string; body: string }[] = [];
+    for (const { heading, body } of memorySections(markdown)) {
+      const n = occurrences.get(heading) ?? 0;
+      occurrences.set(heading, n + 1);
+      const key = `${agentId}\n${heading}\n${n}`;
+      present.add(key);
+      const hash = sha(body);
+      const known = state.sections[key];
+      if (known?.hash === hash) continue;
+      // A section seen for the first time keeps the id earlier builds gave it, so a
+      // bank they filled is updated rather than duplicated. After that the id stays
+      // fixed, and an edit is a delta re-retain of the changed chunks only.
+      pending.push({ key, id: known?.id ?? sha(`${agentId}\n${heading}\n${body}`, 32), hash, heading, body });
+    }
+    for (const key of Object.keys(state.sections)) {
+      if (key.startsWith(`${agentId}\n`) && !present.has(key)) delete state.sections[key];
+    }
+    if (!pending.length) {
+      this.saveRetainState();
+      return { ok: true };
+    }
+    const batch = pending.slice(0, RETAIN_MAX_ITEMS);
+    const items = batch.map(({ id, heading, body }) => ({
+      document_id: id,
       content: body,
       // Metadata values must be strings — the API rejects anything else.
       metadata: { agent: agentId, source: 'memory.md', heading },
       tags: [`owner:${agentId}`]
     }));
-    if (!items.length) return { ok: true };
+    const record = (): void => {
+      for (const { key, id, hash } of batch) state.sections[key] = { id, hash };
+    };
+    // Claim the server before sending, so an app restarted mid-retain waits it out.
+    state.busyUntil = this.now() + this.mineTimeoutMs + RETAIN_MIN_GAP_MS;
+    this.saveRetainState();
+    const started = this.now();
     try {
       const res = await this.request(`${this.base()}/memories`, {
         method: 'POST',
         body: { items, async: false },
-        timeoutMs: MINE_TIMEOUT_MS
+        timeoutMs: this.mineTimeoutMs
       });
       if (!res.ok) {
         console.error(`[memory] hindsight mine ${agentId} failed: HTTP ${res.status}`);
+        state.busyUntil = this.now() + RETAIN_MIN_GAP_MS;
         return { ok: false };
       }
-      return { ok: true };
+      record();
+      state.busyUntil = this.now() + Math.max(RETAIN_MIN_GAP_MS, this.now() - started);
+      return { ok: batch.length === pending.length };
     } catch (error) {
-      console.error(`[memory] hindsight mine ${agentId} failed: ${error instanceof Error ? error.message : String(error)}`);
+      if (error instanceof Error && error.name === 'AbortError') {
+        // The server keeps extracting after we hang up. Sending this batch again
+        // would stack a second extraction on top of it, so count it as retained.
+        console.error(`[memory] hindsight mine ${agentId} timed out; leaving the server alone for ${RETAIN_BUSY_BACKOFF_MS / 60_000} min`);
+        record();
+        state.busyUntil = this.now() + RETAIN_BUSY_BACKOFF_MS;
+      } else {
+        console.error(`[memory] hindsight mine ${agentId} failed: ${error instanceof Error ? error.message : String(error)}`);
+        state.busyUntil = this.now() + RETAIN_MIN_GAP_MS;
+      }
       return { ok: false };
+    } finally {
+      this.saveRetainState();
     }
   }
 
