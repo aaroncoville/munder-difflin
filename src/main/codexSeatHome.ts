@@ -87,8 +87,12 @@ export function assertComputedCodexHome(home: string, base: string = codexShortH
  * folder, and resume by id or --last works without them (codex-cli 0.167);
  * only thread names set with /rename are lost. */
 const MIGRATED = /^(history\.jsonl|hive-thread\.json)$/;
-/** No single file of these is legitimately larger. */
-export const MIGRATE_MAX_BYTES = 1024 * 1024 * 1024;
+/** Size caps, checked before anything is read. The copy runs synchronously in
+ *  the app's main process, once per agent, so they are kept small: a prompt
+ *  history past this is not worth stalling the app for, and a thread record is
+ *  a few kilobytes. A file over its cap is skipped and named. */
+export const MIGRATE_HISTORY_MAX_BYTES = 32 * 1024 * 1024;
+const CAPS: Record<string, number> = { 'history.jsonl': MIGRATE_HISTORY_MAX_BYTES, 'hive-thread.json': 1024 * 1024 };
 const MARKER = '.migrated-from-agent-folder.json';
 const TEMP = '.migrating-';
 
@@ -165,10 +169,10 @@ function copyRegular(from: string, to: string, cap: number, check?: (bytes: Buff
  * ends the migration is written last, once every allowlisted file is in place
  * or deliberately skipped. A file that changed while it was copied is not a
  * skip: no marker is written, and the next start copies it again (a file
- * already in place is kept).
+ * already in place is kept). `cap` lowers every file's own cap (tests).
  * Returns what happened, or null when there was nothing to do.
  */
-export function migrateSeatHome(agentDir: string, home: string, cap = MIGRATE_MAX_BYTES): SeatMigration | null {
+export function migrateSeatHome(agentDir: string, home: string, cap = Number.MAX_SAFE_INTEGER): SeatMigration | null {
   const legacy = join(agentDir, '.codex');
   const st = lstatSync(legacy, { throwIfNoEntry: false });
   if (!st || !st.isDirectory()) return null;
@@ -182,7 +186,7 @@ export function migrateSeatHome(agentDir: string, home: string, cap = MIGRATE_MA
   for (const entry of readdirSync(legacy, { withFileTypes: true })) {
     if (!MIGRATED.test(entry.name)) continue;
     if (existsSync(join(home, entry.name))) { skipped.push(`${entry.name} (already present)`); continue; }
-    const r = copyRegular(join(legacy, entry.name), join(home, entry.name), cap, CHECKS[entry.name]);
+    const r = copyRegular(join(legacy, entry.name), join(home, entry.name), Math.min(cap, CAPS[entry.name]), CHECKS[entry.name]);
     if (!r) copied.push(entry.name);
     else if ('skip' in r) skipped.push(`${entry.name} (${r.skip})`);
     else { finished = false; skipped.push(`${entry.name} (${r.retry}; copied again at the next start)`); }

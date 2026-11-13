@@ -511,3 +511,21 @@ test('a source that changes while it is copied leaves no marker, and the next st
   assert.ok(again && again.copied.includes('history.jsonl'), JSON.stringify(again));
   assert.equal(fs.readFileSync(path.join(home, 'history.jsonl'), 'utf8'), 'one\ntwo\n');
 });
+
+test('history over a sane size is a named skip, and the migration still finishes', (t) => {
+  const { migrateSeatHome, MIGRATE_HISTORY_MAX_BYTES } = loadTs('src/main/codexSeatHome.ts');
+  assert.ok(MIGRATE_HISTORY_MAX_BYTES <= 64 * 1024 * 1024, `history cap ${MIGRATE_HISTORY_MAX_BYTES}`);
+  const root = codexTestBase(t, 'mdsb-');
+  const agent = path.join(root, 'agent');
+  const legacy = path.join(agent, '.codex');
+  fs.mkdirSync(legacy, { recursive: true });
+  // Sparse: the size is what counts, and an over-cap file is never read.
+  fs.closeSync(fs.openSync(path.join(legacy, 'history.jsonl'), 'w'));
+  fs.truncateSync(path.join(legacy, 'history.jsonl'), MIGRATE_HISTORY_MAX_BYTES + 1);
+  fs.writeFileSync(path.join(legacy, 'hive-thread.json'), '{"fresh":true,"ids":[]}');
+  const home = path.join(root, 'home');
+  const res = migrateSeatHome(agent, home);
+  assert.deepEqual(res.copied, ['hive-thread.json']);
+  assert.ok(res.skipped.some((s) => /^history\.jsonl \(larger than \d+ bytes\)$/.test(s)), JSON.stringify(res.skipped));
+  assert.equal(migrateSeatHome(agent, home), null, 'finished');
+});
