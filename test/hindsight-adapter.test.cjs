@@ -495,6 +495,76 @@ test('the backlog says how many sections are still waiting', async (t) => {
   assert.equal((await adapter.mineAgent(agentDirWith(MEMORY_MD), 'jim')).backlog, 2);
 });
 
+// ─── What the ledger writes, it can read back ───────────────────────────────
+
+const LIMIT = 256 * 1024;
+
+test('a section over the claim limit is left out and logged once; the rest still go', async (t) => {
+  const warn = t.mock.method(console, 'warn', () => {});
+  const s = await stub(t, server());
+  const now = clock();
+  const adapter = make(s.url, 'b1', '/tmp/home', now);
+  const dir = agentDirWith(`## Huge\n\n${'x'.repeat(LIMIT + 1)}\n\n## Small\n\nA fact.\n`);
+  await adapter.mineAgent(dir, 'pam');
+  fs.appendFileSync(path.join(dir, 'memory.md'), 'Another fact.\n');
+  now.advance(PASS);
+  await adapter.mineAgent(dir, 'pam');
+
+  const sent = retains(s).flatMap((r) => r.body.items.map((i) => i.metadata.heading));
+  assert.deepEqual(sent, ['Small', 'Small']);
+  const said = warn.mock.calls.map((c) => c.arguments[0]).filter((m) => /Huge/.test(m));
+  assert.equal(said.length, 1);
+  assert.match(said[0], /pam/);
+  assert.match(said[0], new RegExp(String(LIMIT + 1)));
+});
+
+test('a restart during the claim of a section at the limit reads the claim back and does not resend', async (t) => {
+  const s = await stub(t, server('processing'));
+  const now = clock();
+  const dir = ledgerDir();
+  const agent = agentDirWith(`## Big\n\n${'y'.repeat(LIMIT)}\n`);
+  await make(s.url, 'b1', '/tmp/home', now, dir).mineAgent(agent, 'pam');
+  now.advance(PASS);
+  assert.deepEqual(brief(await make(s.url, 'b1', '/tmp/home', now, dir).mineAgent(agent, 'pam')), { ok: false });
+  assert.equal(retains(s).length, 1);
+});
+
+test('save never writes a ledger that load would refuse, and keeps the previous file', async () => {
+  const { RetainLedger, emptyLedger } = loadTs('src/main/hindsightLedger.ts');
+  const dir = ledgerDir();
+  const ledger = new RetainLedger(dir);
+  const server = 'http://h\nb1';
+  const sha = (x) => require('node:crypto').createHash('sha256').update(x).digest('hex');
+  const item = (content, heading = 'h') => ({ key: `pam\n${heading}\n0`, id: 'a'.repeat(32), hash: sha(content), agent: 'pam', heading, content });
+  const claim = (items) => ({ op: '6f1c1a8e-1b2c-4d3e-8f90-123456789abc', since: 1, items, acked: false, seen: '', changedAt: 1 });
+  const good = [
+    emptyLedger(server),
+    { ...emptyLedger(server), sections: { 'pam\nh\n0': { id: 'b'.repeat(32), hash: 'c'.repeat(64) } } },
+    { ...emptyLedger(server), claim: claim([item('z'.repeat(LIMIT))]) },
+    { ...emptyLedger(server), claim: claim([item('q', 'k'.repeat(1024 - 'pam\n\n0'.length))]) }
+  ];
+  for (const state of good) {
+    assert.equal(await ledger.save(state), true);
+    assert.deepEqual(await ledger.load(server), state, 'what save wrote, load reads back unchanged');
+  }
+  const file = path.join(dir, fs.readdirSync(dir).find((f) => f.startsWith('retained-')));
+  const before = fs.readFileSync(file, 'utf8');
+  const err = console.error;
+  console.error = () => {};
+  try {
+    const bad = [
+      { ...emptyLedger(server), claim: claim([item('z'.repeat(LIMIT + 1))]) },
+      { ...emptyLedger(server), claim: claim([{ ...item('q'), hash: 'd'.repeat(64) }]) },
+      { ...emptyLedger(server), sections: { ['k'.repeat(1025)]: { id: 'b'.repeat(32), hash: 'c'.repeat(64) } } },
+      { ...emptyLedger(server), claim: { ...claim([item('q')]), seen: 's'.repeat(257) } }
+    ];
+    for (const state of bad) assert.equal(await ledger.save(state), false);
+  } finally {
+    console.error = err;
+  }
+  assert.equal(fs.readFileSync(file, 'utf8'), before, 'the previous ledger is kept');
+});
+
 test('the retain path does no synchronous file I/O', () => {
   for (const file of ['src/main/hindsightLedger.ts', 'src/main/hindsightAdapter.ts']) {
     const text = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');

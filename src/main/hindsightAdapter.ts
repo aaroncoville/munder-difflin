@@ -12,7 +12,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { CLAIM_MAX_ITEMS, RetainLedger, type LedgerState, type RetainClaim } from './hindsightLedger';
+import { CLAIM_ITEM_MAX_CHARS, CLAIM_MAX_ITEMS, MAX_KEY_LENGTH, RetainLedger, type LedgerState, type RetainClaim } from './hindsightLedger';
 import type { BackendStatus, MemoryBackend, MineResult, TextResult } from './memoryBackend';
 
 /** How long a /health answer is trusted before the next call re-probes. */
@@ -107,6 +107,8 @@ export class HindsightAdapter implements MemoryBackend {
   private lastClaimPoll = -Infinity;
   /** The HTTP status the server last refused a retain with, and how many times in a row. */
   private refusal: { status: number; count: number } | null = null;
+  /** Oversized sections already reported, so each is logged once. */
+  private reportedOversize = new Set<string>();
 
   constructor(
     private cfg: () => { url: string; bank: string },
@@ -256,6 +258,14 @@ export class HindsightAdapter implements MemoryBackend {
       const key = `${agentId}\n${heading}\n${n}`;
       present.add(key);
       const hash = sha(body);
+      // Left out rather than claimed: the ledger refuses a claim it could not read back.
+      if (body.length > CLAIM_ITEM_MAX_CHARS || key.length > MAX_KEY_LENGTH) {
+        if (!this.reportedOversize.has(`${key}\n${hash}`)) {
+          this.reportedOversize.add(`${key}\n${hash}`);
+          console.warn(`[memory] hindsight: ${agentId} section "${heading.slice(0, 80)}" is ${body.length} chars (heading ${heading.length}), over what a retain may carry (${CLAIM_ITEM_MAX_CHARS} chars, key ${MAX_KEY_LENGTH}); it is left out`);
+        }
+        continue;
+      }
       const known = state.sections[key];
       if (known?.hash === hash) continue;
       // A section seen for the first time keeps the id earlier builds gave it, so a

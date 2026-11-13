@@ -48,8 +48,10 @@ export interface LedgerState {
 const HEX32 = /^[0-9a-f]{32}$/;
 const HEX64 = /^[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const MAX_KEY_LENGTH = 1024;
-const MAX_CONTENT_LENGTH = 256 * 1024;
+/** The longest section key (`agent\nheading\noccurrence`) a ledger may hold. */
+export const MAX_KEY_LENGTH = 1024;
+/** The longest section text a claim may carry; the miner leaves longer sections out. */
+export const CLAIM_ITEM_MAX_CHARS = 256 * 1024;
 const MAX_SEEN_LENGTH = 256;
 
 export const emptyLedger = (server: string): LedgerState => ({ v: 1, server, busyUntil: 0, sections: {}, claim: null });
@@ -84,7 +86,7 @@ export function parseLedger(text: string, server: string): LedgerState | string 
       if (!isRecord(it) || !hasOnly(it, ['key', 'id', 'hash', 'agent', 'heading', 'content'])) return 'a claim item is malformed';
       if (!isKey(it.key) || !isSection({ id: it.id, hash: it.hash })) return 'a claim item is malformed';
       if (typeof it.agent !== 'string' || typeof it.heading !== 'string' || typeof it.content !== 'string') return 'a claim item is malformed';
-      if (!it.key.startsWith(`${it.agent}\n${it.heading}\n`) || it.content.length > MAX_CONTENT_LENGTH) return 'a claim item is malformed';
+      if (!it.key.startsWith(`${it.agent}\n${it.heading}\n`) || it.content.length > CLAIM_ITEM_MAX_CHARS) return 'a claim item is malformed';
       // The text must be the text the hash names, or a resend would carry something else.
       if (createHash('sha256').update(it.content).digest('hex') !== it.hash) return 'a claim item does not match its hash';
     }
@@ -156,6 +158,10 @@ export class RetainLedger {
     if (!(await this.folder())) return false;
     const text = JSON.stringify(state);
     if (Buffer.byteLength(text) > LEDGER_MAX_BYTES) { this.warnOnce(`the ledger would exceed ${LEDGER_MAX_BYTES} bytes; not saved`); return false; }
+    // Never write what load would refuse: a refused ledger reads as empty, which would
+    // free a claim the server may still be working on. The previous file stays.
+    const refused = parseLedger(text, state.server);
+    if (typeof refused === 'string') { console.error(`[memory] hindsight retain ledger not saved: ${refused}`); return false; }
     const path = this.file(state.server);
     const temp = join(this.dir, `.${randomUUID()}.tmp`);
     try {
