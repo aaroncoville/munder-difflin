@@ -40,7 +40,7 @@ import { summarizeReleaseNotes } from '@shared/releaseNotes';
 import { extractDropHtml } from '@shared/releaseDrop';
 import { ReleaseDrop } from '@/components/ReleaseDrop';
 import type { UpdateStatus } from '@shared/updateState';
-import { PRODUCT_NAME } from '@shared/productName';
+import { PRODUCT_NAME, PRODUCT_REPO_URL } from '@shared/productName';
 
 /** The toast is the LOUD half — it only interrupts for the two states a user has
  *  to act on. Everything else (checking, available, download progress, errors)
@@ -51,7 +51,7 @@ function toastable(s: UpdateStatus): ToastStatus | null {
   return s.state === 'downloaded' || s.state === 'available-manual' || s.state === 'just-updated' ? s : null;
 }
 
-const GITHUB_REPO_URL = 'https://github.com/chaitanyagiri/munder-difflin';
+const GITHUB_REPO_URL = PRODUCT_REPO_URL;
 /** Only ever the `href` — the click is handled by `updateOpenRelease`, which
  *  resolves `undefined` to this same page in main. */
 const GITHUB_RELEASES_URL = `${GITHUB_REPO_URL}/releases/latest`;

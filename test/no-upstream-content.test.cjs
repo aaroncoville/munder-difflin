@@ -60,3 +60,28 @@ test('contributor and security paths lead to this repository', () => {
 test('the illustration skill writes nowhere the removed blog used to be', () => {
   assert.doesNotMatch(fs.readFileSync(path.join(root, '.claude/skills/ian-xiaohei-illustrations/SKILL.md'), 'utf8'), /blog\/src\//);
 });
+
+test("nothing in the repository drives the original project's Discord bot or review routing", () => {
+  assert.equal(fs.existsSync(path.join(root, '.github/workflows/contributor-role.yml')), false);
+  assert.doesNotMatch(fs.readFileSync(path.join(root, '.github/PULL_REQUEST_TEMPLATE.md'), 'utf8'), /discord/i);
+  const owners = fs.readFileSync(path.join(root, '.github/CODEOWNERS'), 'utf8');
+  assert.doesNotMatch(owners, /@chaitanyagiri/);
+  assert.match(owners, /^\* @aaroncoville$/m);
+});
+
+test('the unmounted update toast links this repository', () => {
+  const toast = code('src/renderer/src/components/UpdateToast.tsx');
+  assert.match(toast, /^const GITHUB_REPO_URL = PRODUCT_REPO_URL;$/m);
+  assert.doesNotMatch(toast, /github\.com\/chaitanyagiri/);
+});
+
+test('the Skills tab names the third-party source of its catalog, from the URL main fetches', () => {
+  const { SKILL_CATALOG_REPO, SKILL_CATALOG_URL } = require('./load-ts.cjs')('src/shared/skillCatalogSource.ts');
+  assert.ok(SKILL_CATALOG_URL.includes(`/${SKILL_CATALOG_REPO}/`));
+  assert.match(code('src/main/skills.ts'), /^const CATALOG_URL = SKILL_CATALOG_URL;$/m);
+  assert.match(code('src/renderer/src/components/SkillsTab.tsx'), /t\('skillsTab\.catalogSource', \{ repo: SKILL_CATALOG_REPO \}\)/);
+  for (const l of ['en', 'ar', 'zh-CN']) {
+    const loc = JSON.parse(fs.readFileSync(path.join(root, `src/renderer/src/i18n/locales/${l}.json`), 'utf8'));
+    assert.match(loc.skillsTab.catalogSource, /github\.com\/\{\{repo\}\}/, `${l} does not name the source`);
+  }
+});

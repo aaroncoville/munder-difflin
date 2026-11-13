@@ -24,6 +24,7 @@ import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, mkdirSy
 import { join, basename, dirname, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { getText } from './fetchText';
+import { SKILL_CATALOG_URL } from '../shared/skillCatalogSource';
 
 export interface LocalSkill {
   id: string;
@@ -151,8 +152,7 @@ export function listLocalSkills(opts: { cwds: string[]; bundledDir: string | nul
   return [...best.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-const CATALOG_URL =
-  'https://raw.githubusercontent.com/abubakarsiddik31/claude-skills-collection/main/README.md';
+const CATALOG_URL = SKILL_CATALOG_URL;
 /** A curated list changes on a human timescale; a day-old copy is fine and keeps
  *  the tab instant on every open after the first. */
 const CATALOG_TTL_MS = 24 * 60 * 60 * 1000;
