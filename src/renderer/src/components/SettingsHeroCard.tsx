@@ -158,7 +158,7 @@ export function SettingsHeroCard() {
         }}>
           <div style={{
             fontFamily: MONO, fontSize: 30, fontWeight: 700, lineHeight: 0.9,
-            letterSpacing: '-.05em', color: 'var(--cth-lemon)', textAlign: 'center', flexShrink: 0
+            letterSpacing: '-.05em', color: 'var(--cth-cream-50)', textAlign: 'center', flexShrink: 0
           }}>
             50<span style={{
               display: 'block', fontSize: 8, letterSpacing: '.2em', fontWeight: 500,

@@ -38,60 +38,66 @@
 
 All colors specified in `#RRGGBB`. Token names use a `--cth-<category>-<weight>` pattern (CSS variables) and a parallel TypeScript `tokens.colors.<category>.<weight>` (objects).
 
-### 3.1 Base (panels, floors, surfaces)
+The chrome's colors are the **panel palette**: one set of tokens at the top of `src/renderer/src/design/tokens.css`, defaulting to the open, MIT-licensed Dracula palette, with a few ground and ink steps derived from it. Each token's derivation, the measured contrast, and how a user overrides the palette locally with `panel-palette.json` are in [`docs/panel-palette.md`](docs/panel-palette.md). The painted Study is artwork and does not take these colors.
+
+### 3.1 Base (panels, surfaces)
+
+Darkest is deepest.
 
 | Token | Hex | Use |
 |---|---|---|
-| `cream-50` | `#FFFDF5` | Lightest highlight, dialog box innermost |
-| `cream-100` | `#FFF8E7` | Default panel fill |
-| `cream-200` | `#F4E9C7` | Inset / alt row |
-| `cream-300` | `#E8D9A0` | Disabled fill |
-| `paper-100` | `#FCFAF0` | Terminal background |
-| `paper-200` | `#F0EAD2` | Subtle panel variant |
+| `cream-50` | `#282A36` | App ground (Dracula background) |
+| `cream-100` | `#232530` | Default panel fill |
+| `cream-200` | `#1E2029` | Inset / alt row |
+| `cream-300` | `#1A1B23` | Deepest well; terminal and editor ground |
+| `paper-100` | `#323443` | Raised: cards, inputs |
+| `paper-200` | `#21222C` | Recessed gutters |
 
 ### 3.2 Ink (text, outlines)
 
 | Token | Hex | Use |
 |---|---|---|
-| `ink-900` | `#1A1320` | Body text, outer borders. **Never use `#000`.** |
-| `ink-700` | `#3D2E4A` | Secondary text, middle border layer |
-| `ink-500` | `#6B5878` | Tertiary text, disabled borders |
-| `ink-300` | `#A899B5` | Placeholder, hairline dividers |
-| `ink-100` | `#D9CFE0` | Subtle separators |
+| `ink-900` | `#F8F8F2` | Body text (Dracula foreground) |
+| `ink-700` | `#C4C9D7` | Secondary text |
+| `ink-500` | `#9EA8C3` | Tertiary text, hints |
+| `ink-300` | `#808DB4` | Structural borders; must stay ≥ 3:1 on every surface |
+| `ink-100` | `#44475A` | Subtle separators, selection (Dracula current line) |
 
-### 3.3 Agent accents (vibrant, character colors)
+### 3.3 Agent accents (character colors)
 
-Saturated and warm. Each avatar gets one — the strip badge, the agent's chat selection highlight, their nameplate.
+Each avatar gets one — the strip badge, the agent's chat selection highlight, their nameplate. Each `-light` is the accent 80% of the way to the ground: a deep chip fill that `ink-900` reads on.
 
-| Token | Hex | Mnemonic |
+| Token | Hex | Dracula |
 |---|---|---|
-| `coral` | `#FF6B6B` | Mario red |
-| `coral-light` | `#FFB4B4` | |
-| `mint` | `#6BCF7F` | 1UP green |
-| `mint-light` | `#B4E5BD` | |
-| `sky` | `#4ECDC4` | Wind Waker ocean |
-| `sky-light` | `#A8E6E0` | |
-| `lemon` | `#FFD93D` | Pikachu |
-| `lemon-light` | `#FFEC99` | |
-| `lilac` | `#B197FC` | Psychic-type |
-| `lilac-light` | `#D6C5FF` | |
-| `peach` | `#FFA07A` | Princess Peach |
-| `peach-light` | `#FFD0B5` | |
+| `coral` | `#FF5555` | red |
+| `coral-light` | `#53333C` | |
+| `mint` | `#50FA7B` | green |
+| `mint-light` | `#305444` | |
+| `sky` | `#8BE9FD` | cyan |
+| `sky-light` | `#3C505E` | |
+| `lemon` | `#F1FA8C` | yellow |
+| `lemon-light` | `#505447` | |
+| `lilac` | `#BD93F9` | purple |
+| `lilac-light` | `#463F5D` | |
+| `peach` | `#FFB86C` | orange |
+| `peach-light` | `#534641` | |
+
+Text on a filled accent is `on-accent` (the ground), never `ink-900`.
 
 ### 3.4 Status (system semantics)
 
 | Token | Hex | Means |
 |---|---|---|
-| `status-idle` | `#A899B5` | Agent at desk, awaiting |
-| `status-thinking` | `#4ECDC4` | Reasoning + en route to a station |
-| `status-working` | `#FFD93D` | At a station, using a tool |
-| `status-waiting` | `#6C8EF5` | Worker stalled on god or another agent |
-| `status-blocked` | `#FF6B6B` | Notification fired, needs user |
-| `status-success` | `#6BCF7F` | Just finished |
-| `status-ghost` | `#D9CFE0` | Pane closed, fading out |
-| `status-compacting` | `#9B7EDE` | Boxing up context (PreCompact/PostCompact) |
-| `status-looping` | `#FF9F43` | Circuit breaker armed — runaway |
-| `status-typing` | `#E8A33D` | **Not an agent state.** *You* have unsent text on that agent's prompt, which is holding its message queue |
+| `status-idle` | `#808DB4` | Agent at desk, awaiting |
+| `status-thinking` | `#8BE9FD` | Reasoning + en route to a station |
+| `status-working` | `#F1FA8C` | At a station, using a tool |
+| `status-waiting` | `#BD93F9` | Worker stalled on god or another agent |
+| `status-blocked` | `#FF5555` | Notification fired, needs user |
+| `status-success` | `#50FA7B` | Just finished |
+| `status-ghost` | `#6272A4` | Pane closed, fading out |
+| `status-compacting` | `#FF79C6` | Boxing up context (PreCompact/PostCompact) |
+| `status-looping` | `#FFB86C` | Circuit breaker armed — runaway |
+| `status-typing` | `#F1FA8C` | **Not an agent state.** *You* have unsent text on that agent's prompt, which is holding its message queue |
 
 ### 3.5 World (the floor itself)
 
@@ -548,35 +554,9 @@ Icons live as inline SVG `<svg viewBox="0 0 16 16">` components, all paths drawn
 
 ## 11. Terminal (xterm.js) theme
 
-```ts
-{
-  background: '#FCFAF0',
-  foreground: '#1A1320',
-  cursor: '#FF6B6B',
-  cursorAccent: '#FCFAF0',
-  selectionBackground: '#FFEC99',
-  selectionForeground: '#1A1320',
+`occultTerminalTheme` in `src/renderer/src/design/occult/occultTerminal.ts`. The ground is `cream-300` and the text `ink-900` (both follow a local `panel-palette.json`); the cursor is the foreground, the selection is `#44475A`, and the sixteen ANSI slots are the published Dracula set, except `white`, which is `ink-500` so plain output stays distinguishable from the foreground. The editor (Monaco) uses the same ground, ink and hues.
 
-  black:        '#1A1320',
-  red:          '#FF6B6B',
-  green:        '#6BCF7F',
-  yellow:       '#FFD93D',
-  blue:         '#4ECDC4',  // we use sky as our blue
-  magenta:      '#B197FC',
-  cyan:         '#4ECDC4',
-  white:        '#FFF8E7',
-  brightBlack:  '#6B5878',
-  brightRed:    '#FFB4B4',
-  brightGreen:  '#B4E5BD',
-  brightYellow: '#FFEC99',
-  brightBlue:   '#A8E6E0',
-  brightMagenta:'#D6C5FF',
-  brightCyan:   '#A8E6E0',
-  brightWhite:  '#FFFDF5',
-}
-```
-
-Font: `VT323`, 16 px, line-height 1.
+Font: `JetBrains Mono`.
 
 ---
 
@@ -714,7 +694,7 @@ Both files import from a single source-of-truth `tokens.json` at build time (fut
 ## 18. Open design decisions (revisit)
 
 1. Whether to commission custom sprite art vs continuing programmatic sprites long-term.
-2. Dark mode: not in v1 — pixel art with cream backgrounds is the brand. Revisit if requested.
+2. Dark mode: shipped — the chrome is dark, in the panel palette (§3).
 3. Resizable rooms vs fixed grid — currently spec'd fixed; may want to drag-resize rooms.
 4. Whether to add ambient floor decorations (flowers, rugs) — yes, low-priority polish.
 5. Custom mouse cursor (pixel-style hand) — defer.

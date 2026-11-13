@@ -466,7 +466,7 @@ function Toggle({ on, onClick, label }: { on: boolean; onClick: () => void; labe
         display: 'inline-flex', alignItems: 'center', gap: 4, padding: '3px 9px 2px', border: 'none', cursor: 'pointer',
         background: on ? 'var(--cth-lilac)' : 'var(--cth-cream-200)',
         boxShadow: on ? 'inset 0 0 0 1px var(--cth-ink-300)' : 'inset 0 0 0 1px var(--cth-ink-100)',
-        fontFamily: 'var(--cth-font-ui)', fontSize: 12, color: 'var(--cth-ink-900)'
+        fontFamily: 'var(--cth-font-ui)', fontSize: 12, color: on ? 'var(--cth-on-accent)' : 'var(--cth-ink-900)'
       }}
     >
       <Icon name={on ? 'check' : 'plus'} /> {label}

@@ -20,6 +20,7 @@
 import * as monaco from 'monaco-editor';
 import { loader } from '@monaco-editor/react';
 import { occultMonacoTheme, OCCULT_MONACO_THEME } from '@/design/occult/occultTerminal';
+import { paletteMonacoTheme } from '@/design/panelPalette';
 
 import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
 import JsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker';
@@ -56,7 +57,7 @@ let themesDefined = false;
 function defineThemes(m: typeof monaco): void {
   if (themesDefined) return;
   themesDefined = true;
-  m.editor.defineTheme(OCCULT_MONACO_THEME, occultMonacoTheme);
+  m.editor.defineTheme(OCCULT_MONACO_THEME, paletteMonacoTheme(occultMonacoTheme));
 }
 
 let configured = false;

@@ -5,10 +5,10 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 
-/* The app is a fixed cream/light design. Without declaring it, Chromium on a
-   dark-mode OS styles form controls with the DARK UA scheme — most visibly a
-   white (invisible) text caret on our cream textareas. */
-:root { color-scheme: light; }
+/* The app's chrome is dark (the panel palette in tokens.css). Declaring it
+   makes Chromium draw scrollbars, native selects and pickers for a dark page
+   rather than as pale slabs on the dark panels. */
+:root { color-scheme: dark; }
 
 html, body, #root {
   margin: 0;
@@ -22,11 +22,11 @@ html, body, #root {
 }
 
 body {
-  /* tiny diagonal cream noise — pure CSS, no images */
+  /* tiny diagonal noise in the divider ink — pure CSS, no images */
   background-image:
     repeating-linear-gradient(
       45deg,
-      rgba(232, 217, 160, 0.20) 0 1px,
+      color-mix(in srgb, var(--cth-ink-100) 35%, transparent) 0 1px,
       transparent 1px 6px
     );
 }
@@ -39,6 +39,10 @@ button, input, textarea, select {
 
 /* Belt + suspenders for the caret: follow the ink, never the UA scheme. */
 input, textarea { caret-color: var(--cth-ink-900); }
+
+/* A field's hint takes the hint ink. Left to the browser it is a fixed mid
+   grey, which reads at 2.7:1 on the input surface. */
+input::placeholder, textarea::placeholder { color: var(--cth-ink-500); opacity: 1; }
 
 /* The MOUSE text-select pointer (the I-beam) is a different beast from the
    caret: it comes from the OS cursor scheme, which `color-scheme` can't touch.
@@ -165,6 +169,7 @@ canvas, img, svg { image-rendering: pixelated; image-rendering: crisp-edges; }
 .cth-settings-btn { transition: background 80ms steps(2), box-shadow 80ms steps(2), transform 80ms steps(2); }
 .cth-settings-btn:hover {
   background: var(--cth-lemon) !important;
+  color: var(--cth-on-accent) !important;
   box-shadow: inset 0 0 0 1px var(--cth-ink-300), 2px 2px 0 0 var(--cth-ink-900) !important;
   transform: translate(-1px, -1px);
 }

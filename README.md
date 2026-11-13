@@ -443,7 +443,8 @@ both only through a typed bridge.
 [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md).** They moved out of this file so it can explain
 the product rather than the codebase. Also see [`HIVE.md`](./HIVE.md) for the multi-agent design,
 [`SPEC.md`](./SPEC.md) for the terminal and event plane, and [`DESIGN.md`](./DESIGN.md) for the
-visual system.
+visual system. The chrome's colours, and how to replace them with your own palette, are in
+[`docs/panel-palette.md`](./docs/panel-palette.md).
 
 <div align="right">(<a href="#munder-difflin">↑ back to top</a>)</div>
 

@@ -358,16 +358,16 @@ test('an empty ledger leaves an empty table, not an empty book', async () => {
 
 // ─── Readable at the size the house is actually drawn ───────────────────────
 
-/** One colour token, resolved out of the occult stylesheet. */
+/** One colour token, resolved out of the panel palette in tokens.css. */
 const occultToken = (() => {
   const fs = require('node:fs');
   const path = require('node:path');
   const css = fs.readFileSync(
-    path.resolve(__dirname, '..', 'src/renderer/src/design/occult/occult-tokens.css'), 'utf8')
+    path.resolve(__dirname, '..', 'src/renderer/src/design/tokens.css'), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '');
   return (name) => {
     const m = css.match(new RegExp(`${name}:\\s*(#[0-9A-Fa-f]{6})`));
-    assert.ok(m, `${name} is not declared in the occult theme`);
+    assert.ok(m, `${name} is not declared in the panel palette`);
     return m[1];
   };
 })();

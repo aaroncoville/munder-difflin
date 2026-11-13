@@ -55,8 +55,8 @@ function StatusBadge({ w }: { w: WorkerSnapshot }) {
     <span style={{
       fontFamily: 'var(--cth-font-mono)', fontSize: 10, padding: '1px 6px',
       textTransform: 'uppercase', letterSpacing: 0.5,
-      color: releasing ? 'var(--cth-paper-100)' : 'var(--cth-ink-900)',
-      background: releasing ? 'var(--cth-ink-700)' : 'var(--cth-green, #2f8f4e)',
+      color: releasing ? 'var(--cth-paper-100)' : 'var(--cth-on-accent)',
+      background: releasing ? 'var(--cth-ink-700)' : 'var(--cth-mint)',
       boxShadow: releasing ? 'none' : 'inset 0 0 0 1px var(--cth-ink-100)'
     }}>
       {releasing ? t('workersTab.stopping') : w.status === 'done' ? t('workersTab.done') : t('workersTab.working')}

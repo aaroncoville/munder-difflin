@@ -172,7 +172,7 @@ export function AgentCard({
             boxShadow: 'inset 0 0 0 1px var(--cth-ink-300), 1px 2px 0 rgba(26,19,32,0.18)',
             transform: 'rotate(4deg)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontFamily: 'var(--cth-font-display)', fontSize: 8, color: 'var(--cth-ink-900)',
+            fontFamily: 'var(--cth-font-display)', fontSize: 8, color: 'var(--cth-on-accent)',
             cursor: 'pointer'
           }}
         >
@@ -220,7 +220,7 @@ export function AgentCard({
                 {isGod && (
                   <span style={{
                     fontFamily: 'var(--cth-font-display)', fontSize: 7, lineHeight: '11px',
-                    background: `var(--cth-${accent})`, color: 'var(--cth-ink-900)',
+                    background: `var(--cth-${accent})`, color: 'var(--cth-on-accent)',
                     padding: '1px 4px 0', flexShrink: 0
                   }}>{t('agentCard.boss')}</span>                )}
               </span>
@@ -236,7 +236,9 @@ export function AgentCard({
               title={`${project}${action && status !== 'idle' ? ` — ${action}` : ''}`}
               style={{
                 fontSize: 11, lineHeight: '14px',
-                color: 'var(--cth-ink-500)',
+                // On the orchestrator's tinted surface the quieter inks sit too
+                // close to the tint; only the primary ink clears it.
+                color: isGod ? 'var(--cth-ink-900)' : 'var(--cth-ink-500)',
                 whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'
               }}
             >{infoLine}</div>
@@ -289,7 +291,7 @@ export function AgentCard({
                       display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                       fontSize: 10, lineHeight: 1, cursor: 'pointer',
                       // Quiet until the card is hovered — discoverable, not noisy.
-                      color: hover ? 'var(--cth-ink-500)' : 'var(--cth-ink-300)'
+                      color: isGod ? 'var(--cth-ink-700)' : hover ? 'var(--cth-ink-500)' : 'var(--cth-ink-300)'
                     }}
                   >✎</span>
                 )}

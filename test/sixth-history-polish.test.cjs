@@ -30,8 +30,8 @@ test('the Librarian and terminal use the scene darks instead of paper surfaces',
   assert.match(pty, /className="cth-cli-surface"/);
   assert.match(css, /\.cth-librarian-panel[\s\S]*--cth-paper-100:\s*var\(--cth-cream-300\)/);
   assert.match(css, /\.cth-cli-surface[\s\S]*background:\s*var\(--cth-cream-300\)/);
-  assert.match(terminal, /background:\s*'#120F1B'/);
-  assert.match(terminal, /'editor\.background':\s*'#120F1B'/);
+  assert.match(terminal, /background:\s*'#1A1B23'/);
+  assert.match(terminal, /'editor\.background':\s*'#1A1B23'/);
 });
 
 test('the occult orchestrator uses the reserved Librarian portrait', () => {

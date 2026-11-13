@@ -6,6 +6,7 @@ import type { IntegrationRecord, IntegrationTemplate } from '../shared/integrati
 export type { IntegrationRecord, IntegrationTemplate } from '../shared/integrations';
 import type { UpdateStatus } from '../shared/updateState';
 export type { UpdateStatus } from '../shared/updateState';
+import type { PanelPalette } from '../shared/panelPalette';
 import type { ToolStatus } from '../shared/toolCatalog';
 export type { ToolStatus } from '../shared/toolCatalog';
 import type { HeroPayload } from '../shared/heroPayload';
@@ -1409,6 +1410,12 @@ const api = {
    *  hive its localStorage keys belong to before it decides to trust them. */
   harnessHomeSync: (): string | null => {
     try { return ipcRenderer.sendSync('config:homeSync') ?? null; } catch { return null; }
+  },
+  /** The user's panel palette from `<userData>/panel-palette.json`, already
+   *  validated by main; `{}` means the defaults. SYNCHRONOUS for the same reason
+   *  as `rosterReadSync`: it has to be on <html> before the first render. */
+  panelPaletteSync: (): PanelPalette => {
+    try { return ipcRenderer.sendSync('panel-palette:readSync') ?? {}; } catch { return {}; }
   },
   /** Mirror the roster to disk. Debounced by the caller; main keeps the previous
    *  contents as a backup and refuses a first write that would empty a full file. */

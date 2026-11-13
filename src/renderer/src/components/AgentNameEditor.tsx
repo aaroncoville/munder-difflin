@@ -118,7 +118,9 @@ export function AgentNameEditor({
           flexShrink: 0, width: 14, height: 14, padding: 0,
           display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
           border: 'none', background: 'transparent', cursor: 'text',
-          color: 'var(--cth-ink-500)', fontFamily: 'var(--cth-font-ui)', fontSize: 9, lineHeight: 1
+          // The name's own colour, which is legible on whatever surface the
+          // name sits on; a fixed quiet ink vanished on tinted cards.
+          color: 'inherit', fontFamily: 'var(--cth-font-ui)', fontSize: 9, lineHeight: 1
         }}
       >✎</button>
     </span>

@@ -897,7 +897,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
               </div>
 
               {changeErr && (
-                <div style={{ fontSize: 12, lineHeight: '18px', color: '#6E1423' }}>{changeErr}</div>
+                <div style={{ fontSize: 12, lineHeight: '18px', color: 'var(--cth-coral)' }}>{changeErr}</div>
               )}
 
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
@@ -1499,8 +1499,8 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                                   display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                                   width: 16, height: 16, padding: 0, cursor: 'pointer',
                                   border: 'none', borderRadius: '50%',
-                                  background: showSlackHelp ? 'var(--cth-ink-700)' : 'var(--cth-ink-300)',
-                                  color: showSlackHelp ? 'var(--cth-paper-100)' : 'var(--cth-ink-900)',
+                                  background: showSlackHelp ? 'var(--cth-ink-700)' : 'var(--cth-ink-500)',
+                                  color: 'var(--cth-paper-100)',
                                   fontFamily: 'var(--cth-font-display)', fontSize: 10, lineHeight: '16px'
                                 }}
                               >i</button>
@@ -1513,7 +1513,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                             {/* Connection status: clear, always-visible. */}
                             <span style={{
                               fontSize: 12, lineHeight: '16px',
-                              color: running ? 'var(--cth-mint-700, #1f7a4d)' : 'var(--cth-ink-500)'
+                              color: running ? 'var(--cth-mint)' : 'var(--cth-ink-500)'
                             }}>
                               {running ? t('settings.connections.connected') : t('settings.connections.notConnected')}
                             </span>
@@ -1673,8 +1673,8 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                                   display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                                   width: 16, height: 16, padding: 0, cursor: 'pointer',
                                   border: 'none', borderRadius: '50%',
-                                  background: showWebhookHelp ? 'var(--cth-ink-700)' : 'var(--cth-ink-300)',
-                                  color: showWebhookHelp ? 'var(--cth-paper-100)' : 'var(--cth-ink-900)',
+                                  background: showWebhookHelp ? 'var(--cth-ink-700)' : 'var(--cth-ink-500)',
+                                  color: 'var(--cth-paper-100)',
                                   fontFamily: 'var(--cth-font-display)', fontSize: 10, lineHeight: '16px'
                                 }}
                               >i</button>
@@ -1686,7 +1686,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                             <span style={{
                               fontSize: 12, lineHeight: '16px',
-                              color: webhookRunning ? 'var(--cth-mint-700, #1f7a4d)' : 'var(--cth-ink-500)'
+                              color: webhookRunning ? 'var(--cth-mint)' : 'var(--cth-ink-500)'
                             }}>
                               {webhookRunning ? t('settings.connections.listeningOn') : t('settings.connections.notListening')}
                             </span>
@@ -1707,7 +1707,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                         )}
 
                         {/* Public surface warning. Loud, not buried. */}
-                        <span style={{ fontSize: 12, lineHeight: '16px', color: '#6E1423' }}>
+                        <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-coral)' }}>
                           {t('settings.connections.webhookWarning')}
                         </span>
 
@@ -2117,7 +2117,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
                       <div style={{
                         fontFamily: 'var(--cth-font-display)', fontSize: 10, lineHeight: '14px',
-                        color: '#6E1423'
+                        color: 'var(--cth-coral)'
                       }}>{t('settings.general.dangerZone')}</div>
                       <p style={{ margin: 0, fontSize: 13, lineHeight: '20px', color: 'var(--cth-ink-700)' }}>
                         {t('settings.general.dangerDesc', { godName })}

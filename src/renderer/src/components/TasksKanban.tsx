@@ -215,7 +215,7 @@ export function TasksKanban() {
               <div style={{
                 display: 'flex', alignItems: 'center', gap: 6, padding: '5px 8px 4px',
                 background: col.accent, boxShadow: 'inset 0 -1px 0 var(--cth-ink-900)',
-                fontFamily: 'var(--cth-font-display)', fontSize: 9, color: 'var(--cth-ink-900)'
+                fontFamily: 'var(--cth-font-display)', fontSize: 9, color: 'var(--cth-on-accent)'
               }}>
                 {t(col.labelKey)}
                 <span style={{ marginLeft: 'auto', fontSize: 11, fontFamily: 'var(--cth-font-ui)' }}>{cards.length}</span>
@@ -297,7 +297,7 @@ function TaskCard({ task, accent, assigneeName, onOpen, onDismiss }: {
           <span title={t('kanban.needsYouTitle')} style={{
             alignSelf: 'center', marginRight: 18, flexShrink: 0,
             fontFamily: 'var(--cth-font-display)', fontSize: 10, padding: '2px 5px 1px',
-            background: 'var(--cth-lilac)', color: 'var(--cth-ink-900)',
+            background: 'var(--cth-lilac)', color: 'var(--cth-on-accent)',
             boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)'
           }}>?</span>
         )}
@@ -378,7 +378,7 @@ export function TaskDetail({ task, all, assigneeName, onMove, onAssign, onClose 
               }}>{task.id}</span>
               <span style={{
                 fontFamily: 'var(--cth-font-display)', fontSize: 8, padding: '2px 6px 1px',
-                background: col.accent, color: 'var(--cth-ink-900)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)'
+                background: col.accent, color: 'var(--cth-on-accent)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)'
               }}>{t(col.labelKey)}</span>
               {assigneeName
                 ? <PixelBadge status="working" label={assigneeName} />

@@ -77,7 +77,7 @@ export function CostHud({ compact = false }: CostHudProps): React.ReactElement |
   const live = startedTs != null;
   const ratio = capUsd != null && capUsd > 0 ? usd / capUsd : 0;
   const near = capUsd != null && !overCap && ratio >= WARN_RATIO;
-  const meterColor = overCap ? 'var(--cth-danger, #c0392b)' : near ? 'var(--cth-warn, #b8860b)' : 'var(--cth-ink-900)';
+  const meterColor = overCap ? 'var(--cth-coral)' : near ? 'var(--cth-peach)' : 'var(--cth-ink-900)';
 
   // Compact: a glanceable TOKEN chip next to the voice toggle, only while a session
   // runs. Money is intentionally NOT surfaced in the agent chrome — the spend cap
@@ -137,12 +137,12 @@ export function CostHud({ compact = false }: CostHudProps): React.ReactElement |
             {t('costHud.audioTokens', { input: inputTokens.toLocaleString(), output: outputTokens.toLocaleString() })}
           </span>
           {overCap && (
-            <span style={{ color: 'var(--cth-danger, #c0392b)', fontSize: 11 }}>
+            <span style={{ color: 'var(--cth-coral)', fontSize: 11 }}>
               {t('costHud.overCap')}
             </span>
           )}
           {near && (
-            <span style={{ color: 'var(--cth-warn, #b8860b)', fontSize: 11 }}>
+            <span style={{ color: 'var(--cth-peach)', fontSize: 11 }}>
               {t('costHud.nearCap')}
             </span>
           )}

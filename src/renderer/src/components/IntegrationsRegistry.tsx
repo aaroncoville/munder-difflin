@@ -337,13 +337,13 @@ export function IntegrationsRegistry() {
           <span style={fieldLabel}>{tr('integrations.testConnection')}</span>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <PixelButton variant="secondary" size="sm" onClick={() => { void onTestCfg(); }} disabled={draft.isNew || testing}>{testing ? tr('integrations.testing') : tr('integrations.testConnection')}</PixelButton>
-            {cfgTest && <span style={{ fontSize: 12, color: cfgTest.ok ? 'var(--cth-mint-700, #1f7a4d)' : 'var(--cth-danger, #6E1423)' }}>{fmtTest(cfgTest)}</span>}
+            {cfgTest && <span style={{ fontSize: 12, color: cfgTest.ok ? 'var(--cth-mint)' : 'var(--cth-coral)' }}>{fmtTest(cfgTest)}</span>}
           </div>
           <span style={hint}>{draft.isNew ? tr('integrations.testAfterSave') : tr('integrations.testLiveDesc')}</span>
         </div>
 
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center' }}>
-          {(err || note) && <span style={{ marginRight: 'auto', fontSize: 12, color: err ? 'var(--cth-danger, #6E1423)' : 'var(--cth-ink-500)' }}>{err || note}</span>}
+          {(err || note) && <span style={{ marginRight: 'auto', fontSize: 12, color: err ? 'var(--cth-coral)' : 'var(--cth-ink-500)' }}>{err || note}</span>}
           <PixelButton variant="secondary" size="sm" onClick={goList} disabled={busy}>{tr('common.cancel')}</PixelButton>
           <PixelButton variant="primary" size="sm" onClick={() => { void onSave(); }} disabled={busy}>{busy ? '…' : draft.isNew ? tr('integrations.saveIntegration') : tr('integrations.saveChanges')}</PixelButton>
         </div>
@@ -378,8 +378,8 @@ export function IntegrationsRegistry() {
               const st = !r.enabled
                 ? { dot: '○', color: 'var(--cth-ink-500)', text: tr('integrations.disabled') }
                 : needsSecret(r.authType) && !r.hasSecret
-                  ? { dot: '▲', color: 'var(--cth-danger, #6E1423)', text: tr('integrations.needsSecretShort') }
-                  : { dot: '●', color: 'var(--cth-mint-700, #1f7a4d)', text: tr('integrations.enabled') };
+                  ? { dot: '▲', color: 'var(--cth-coral)', text: tr('integrations.needsSecretShort') }
+                  : { dot: '●', color: 'var(--cth-mint)', text: tr('integrations.enabled') };
               const rt = rowTest[r.id];
               return (
                 <div key={r.id} style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: 10, background: 'var(--cth-paper-100)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)' }}>
@@ -397,10 +397,10 @@ export function IntegrationsRegistry() {
                     </div>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                    <span style={{ ...hint, color: usable(r) ? 'var(--cth-mint-700, #1f7a4d)' : 'var(--cth-ink-500)' }}>
+                    <span style={{ ...hint, color: usable(r) ? 'var(--cth-mint)' : 'var(--cth-ink-500)' }}>
                       {usable(r) ? tr('integrations.availableToAll') : tr('integrations.notAvailableYet')}
                     </span>
-                    {rt && <span style={{ fontSize: 12, color: rt.ok ? 'var(--cth-mint-700, #1f7a4d)' : 'var(--cth-danger, #6E1423)' }}>· {fmtTest(rt)}</span>}
+                    {rt && <span style={{ fontSize: 12, color: rt.ok ? 'var(--cth-mint)' : 'var(--cth-coral)' }}>· {fmtTest(rt)}</span>}
                   </div>
                 </div>
               );

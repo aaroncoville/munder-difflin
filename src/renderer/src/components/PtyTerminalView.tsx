@@ -12,6 +12,7 @@ import {
   useTerminalFontSize
 } from './terminalFontSize';
 import { occultTerminalTheme } from '@/design/occult/occultTerminal';
+import { paletteTerminalTheme } from '@/design/panelPalette';
 
 // Zoom lives in ./terminalFontSize so anything outside the terminal (the message
 // composer) can scale with it too; these aliases keep the call sites below short.
@@ -19,10 +20,14 @@ const DEFAULT_FONT_SIZE = DEFAULT_TERMINAL_FONT_SIZE;
 const MIN_FONT_SIZE = MIN_TERMINAL_FONT_SIZE;
 const MAX_FONT_SIZE = MAX_TERMINAL_FONT_SIZE;
 
-// Every terminal wears the candlelit palette, shared with the editor. Spread
-// into a plain object because the pool takes a string map, and an interface
-// type carries no index signature to satisfy one.
-const TERMINAL_THEME = { ...occultTerminalTheme };
+// Every terminal wears the panel palette's terminal colours, shared with the
+// editor. Spread into a plain object because the pool takes a string map, and
+// an interface type carries no index signature to satisfy one. Built on first
+// use rather than at module load: this module loads before main.tsx has applied
+// the user's panel palette, which the ground and ink follow.
+let terminalThemeCache: Record<string, string> | null = null;
+const terminalTheme = (): Record<string, string> =>
+  (terminalThemeCache ??= { ...paletteTerminalTheme(occultTerminalTheme) });
 
 const zoomBtnStyle: CSSProperties = {
   width: 18,
@@ -70,8 +75,8 @@ export function PtyTerminalView({ ptyId, onStreamData, onUserPrompt, onToggleFul
   useEffect(() => {
     const container = hostRef.current;
     if (!container) return;
-    const entry = acquireTerminal(ptyId, TERMINAL_THEME, fontSizeRef.current);
-    entry.term.options.theme = TERMINAL_THEME;
+    const entry = acquireTerminal(ptyId, terminalTheme(), fontSizeRef.current);
+    entry.term.options.theme = terminalTheme();
     entry.term.options.fontSize = fontSizeRef.current;
     attachTerminal(entry, container);
     entry.onData = (chunk) => onStreamDataRef.current?.(chunk);
@@ -201,7 +206,7 @@ export function PtyTerminalView({ ptyId, onStreamData, onUserPrompt, onToggleFul
   // Apply font-size (zoom) changes to the pooled terminal and re-fit cols/rows.
   useEffect(() => {
     fontSizeRef.current = fontSize;
-    const entry = acquireTerminal(ptyId, TERMINAL_THEME, fontSize);
+    const entry = acquireTerminal(ptyId, terminalTheme(), fontSize);
     entry.term.options.fontSize = fontSize;
     try {
       entry.fit.fit();

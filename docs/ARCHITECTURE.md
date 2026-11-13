@@ -82,10 +82,12 @@ docs/message-queue.md        who may type into an agent's terminal, and when
 
 ## Design system
 
-The app has one look, Sixth History: painted rooms, gilt frames, candlelight and a parchment-and-ink
-palette. Every component derives from the design tokens ([`DESIGN.md`](../DESIGN.md),
-`src/renderer/src/design/tokens.ts` and `tokens.css`); the Sixth History values are set under
-`src/renderer/src/design/occult/`. Agents are shown as painted portraits from the pack in
+The app has one look, Sixth History: painted rooms, gilt frames and candlelight in the Study, and
+panel chrome in the open Dracula palette. Every component derives from the design tokens
+([`DESIGN.md`](../DESIGN.md), `src/renderer/src/design/tokens.ts` and `tokens.css`). The chrome's
+colours are one set of tokens at the top of `tokens.css`, which a user can override locally with a
+`panel-palette.json`; see [`panel-palette.md`](./panel-palette.md). The Sixth History shape (type,
+radius, borders, motion) is set under `src/renderer/src/design/occult/`. Agents are shown as painted portraits from the pack in
 `src/renderer/src/scene/study/assets/portraits/`, dealt by name, with a monogram where the pack has
 no portrait. The Study is drawn as DOM layers over the painted room panels, with a Pixi.js canvas for
 candlelight, dust and the hearth.

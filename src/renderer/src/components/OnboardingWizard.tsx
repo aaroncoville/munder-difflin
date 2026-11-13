@@ -459,7 +459,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
                             {p.label.toUpperCase()}
                           </span>
                           {PROVIDER_BLURB_KEYS[p.id] && (
-                            <span style={{ display: 'block', fontSize: 11, color: 'var(--cth-ink-500)' }}>
+                            <span style={{ display: 'block', fontSize: 11, color: sel ? 'var(--cth-ink-700)' : 'var(--cth-ink-500)' }}>
                               {t(PROVIDER_BLURB_KEYS[p.id]!)}
                             </span>
                           )}
@@ -483,6 +483,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
                           <span style={{
                             fontSize: 10, padding: '1px 5px', lineHeight: '16px',
                             background: 'var(--cth-lemon)',
+                            color: 'var(--cth-on-accent)',
                             boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)',
                             fontFamily: 'var(--cth-font-display)', flexShrink: 0
                           }}>{t('onboarding.orchestrator.recommended')}</span>
@@ -499,7 +500,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
                       padding: '8px 10px',
                       background: 'var(--cth-paper-100)',
                       boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)',
-                      cursor: 'not-allowed', opacity: 0.75
+                      cursor: 'not-allowed'
                     }}>
                       <input type="radio" name="godProvider" value={p.id} checked={false} disabled
                         style={{ width: 16, height: 16, flexShrink: 0 }} />

@@ -1,42 +1,83 @@
-/* Design tokens — mirrors tokens.ts. Update both together. */
+/* Design tokens. The colour families (cream, paper, ink, accents, status) are
+   mirrored in tokens.ts, both ways, held by a test. Update both together. */
 :root {
-  /* Base */
-  --cth-cream-50:  #FFFDF5;
-  --cth-cream-100: #FFF8E7;
-  --cth-cream-200: #F4E9C7;
-  --cth-cream-300: #E8D9A0;
-  --cth-paper-100: #FCFAF0;
-  --cth-paper-200: #F0EAD2;
+  /* ── Panel palette ─────────────────────────────────────────────────────────
+     Every colour the chrome is painted with: panels, the command centre,
+     settings, dialogs, cards, and (restated as literals in
+     occult/occultTerminal.ts) the terminal and the editor. This block is the
+     one place those colours are set; nothing else declares them. A user can
+     replace any of them at launch with <userData>/panel-palette.json, which
+     is validated and applied as inline properties on <html> (see
+     docs/panel-palette.md).
 
-  /* Ink */
-  --cth-ink-900: #1A1320;
-  --cth-ink-700: #3D2E4A;
-  --cth-ink-500: #6B5878;
-  --cth-ink-300: #A899B5;
-  --cth-ink-100: #D9CFE0;
+     The defaults are the open, MIT-licensed Dracula palette
+     (https://draculatheme.com, spec at /spec):
+       background #282A36   current line #44475A   foreground #F8F8F2
+       comment    #6272A4   cyan #8BE9FD   green #50FA7B   orange #FFB86C
+       pink #FF79C6   purple #BD93F9   red #FF5555   yellow #F1FA8C
+     The palette has one ground, and the elevation ramp needs six, so the
+     values marked DERIVED below are arithmetic on it — a per-channel mix of
+     two palette colours (or of the background and black) at the stated
+     fraction. No other source contributes a colour.
 
-  /* Accents — v0.3.4 recalibration: same hues, professional saturation.
-     The originals (#FFD93D, #FF6B6B, …) were full-saturation arcade tones that
-     read as noise at UI density; these sit in the calmer band that products
-     like Linear/Radix use — recognizable color, no glare. */
-  --cth-coral: #D96A62;       --cth-coral-light: #F3D3CD;
-  --cth-mint:  #5CA97A;       --cth-mint-light:  #D2E7DA;
-  --cth-sky:   #4F9FAF;       --cth-sky-light:   #CFE5E9;
-  --cth-lemon: #DCAB3C;       --cth-lemon-light: #F3E4BC;
-  --cth-lilac: #9482D3;       --cth-lilac-light: #E0DAF2;
-  --cth-peach: #D99168;       --cth-peach-light: #F3DACA;
+     Contrast, measured with WCAG relative luminance over the six surfaces
+     (cream-50..300, paper-100, paper-200):
+       ink-900 11.5-16.1:1   ink-700 7.4-10.4:1   ink-500 5.2-7.2:1
+       ink-300 / hairline 3.7-5.2:1 (the structural border floor is 3.0)
+       on-accent on each accent 4.5-12.7:1, ink-900 on each -light 7.3-10.3:1, ink-700 on each 4.7-6.7:1,
+       ink-900 on gilt-soft (selection) 8.6:1, status-ghost 3.1:1 or better on every surface, cards included.
+     test/panel-palette.test.cjs holds every one of these floors. */
 
-  /* Status — same recalibration; hue meanings unchanged */
-  --cth-status-idle:     #A199AB;
-  --cth-status-thinking: #4F9FAF;
-  --cth-status-working:  #DCAB3C;
-  --cth-status-waiting:  #6D87D6;
-  --cth-status-blocked:  #D96A62;
-  --cth-status-success:  #5CA97A;
-  --cth-status-ghost:    #D9D3DE;
-  --cth-status-compacting: #8F7CC7; /* #5C — mid-/compact, "boxing up context" */
-  --cth-status-looping:    #D6903F; /* #5C — circuit-breaker armed (runaway) */
-  --cth-status-typing:     #C89838; /* unsent text on the prompt — queue is held */
+  /* Grounds — darkest is deepest. cream-50 is the app ground and must equal
+     APP_GROUND (src/shared/appGround.ts), which paints the window before the
+     renderer does. */
+  --cth-cream-50:  #282A36;   /* Dracula background */
+  --cth-cream-100: #232530;   /* DERIVED: background 12% toward black */
+  --cth-cream-200: #1E2029;   /* DERIVED: background 24% toward black */
+  --cth-cream-300: #1A1B23;   /* DERIVED: background 36% toward black; terminal and editor ground */
+  --cth-paper-100: #323443;   /* DERIVED: background 35% toward current line; cards, inputs */
+  --cth-paper-200: #21222C;   /* Dracula ANSI black; recessed gutters */
+
+  /* Ink — text, then the structural line, then the receding divider */
+  --cth-ink-900: #F8F8F2;   /* Dracula foreground — primary text */
+  --cth-ink-700: #C4C9D7;   /* DERIVED: foreground 35% toward comment — secondary text */
+  --cth-ink-500: #9EA8C3;   /* DERIVED: foreground 60% toward comment — hints */
+  --cth-ink-300: #808DB4;   /* DERIVED: comment 20% toward foreground — BORDERS, must stay >= 3:1 */
+  --cth-ink-100: #44475A;   /* Dracula current line — dividers, meant to recede */
+
+  /* Accents — the six hue slots take the six palette hues. Each -light is the
+     DERIVED chip / selection fill: the accent 80% toward the background, deep
+     enough for ink-900 to read on top. */
+  --cth-coral: #FF5555;       --cth-coral-light: #53333C;   /* red */
+  --cth-mint:  #50FA7B;       --cth-mint-light:  #305444;   /* green */
+  --cth-sky:   #8BE9FD;       --cth-sky-light:   #3C505E;   /* cyan */
+  --cth-lemon: #F1FA8C;       --cth-lemon-light: #505447;   /* yellow */
+  --cth-lilac: #BD93F9;       --cth-lilac-light: #463F5D;   /* purple */
+  --cth-peach: #FFB86C;       --cth-peach-light: #534641;   /* orange */
+
+  /* Status — hue meanings unchanged. Ghost is the quietest mark and still has
+     to be findable, so it sits at the 3:1 floor rather than below it. */
+  --cth-status-idle:       #808DB4;   /* = ink-300 */
+  --cth-status-thinking:   #8BE9FD;   /* cyan */
+  --cth-status-working:    #F1FA8C;   /* yellow */
+  --cth-status-waiting:    #BD93F9;   /* purple */
+  --cth-status-blocked:    #FF5555;   /* red */
+  --cth-status-success:    #50FA7B;   /* green */
+  --cth-status-ghost:      #717FAC;   /* DERIVED: comment 10% toward foreground, so the
+                                          archived mark clears 3:1 on cards (paper-100) too */
+  --cth-status-compacting: #FF79C6;   /* pink — mid-/compact, "boxing up context" */
+  --cth-status-looping:    #FFB86C;   /* orange — circuit-breaker armed (runaway) */
+  --cth-status-typing:     #F1FA8C;   /* yellow — unsent text on the prompt, queue held */
+
+  /* Text that sits ON an accent fill (a selected tab, a filled chip). The
+     accents are bright, so this is the ground, not the ink. */
+  --cth-on-accent: var(--cth-cream-50);
+
+  /* The hairline that edges panels, the gilt rule that marks dialogs and the
+     focused thing, and the soft gilt that fills a selection. */
+  --cth-hairline: var(--cth-ink-300);
+  --cth-gilt: var(--cth-lilac);
+  --cth-gilt-soft: var(--cth-ink-100);
 
   /* Spacing */
   --cth-space-0: 0px;
@@ -85,30 +126,18 @@
      boxed every surface in thick chrome; structure now comes from surface
      contrast, not outlines. Dialogs keep one slightly stronger line. */
   --cth-panel-border:          inset 0 0 0 1px var(--cth-ink-300);
-  /* Text that sits ON an accent fill (a selected tab, a filled chip). The
-     accents are LIGHT surfaces in BOTH themes, so this is dark in both — using
-     ink-900 here inverts with the theme and paints near-white on a pale accent,
-     which is the one place the theme switch actively hurts legibility. */
-  --cth-on-accent: #1A1320;
-
   --cth-panel-border-inset:    inset 0 0 0 1px var(--cth-ink-100);
   --cth-panel-border-terminal: inset 0 0 0 1px var(--cth-ink-300);
   --cth-panel-border-dialog:   inset 0 0 0 1px var(--cth-ink-500);
 
   /* Theme-shape families. A theme can differ from another in more than colour:
-     corner radius, the weight and hue of a hairline, and how long a transition
-     takes are all part of a dress. These are declared here so components can
-     read them unconditionally, and they are deliberately INERT — radius 0,
-     hairline and gilt aliased to the tokens the components already used, the
-     existing durations — so light and dark render exactly as they did before
-     the families existed. Only a theme block that overrides them changes
-     anything. */
+     corner radius and how long a transition takes are part of a dress too.
+     These are declared here so components can read them unconditionally, and
+     they are INERT (radius 0, the plain durations) until the occult block
+     overrides them. The hairline and gilt colours are in the palette above. */
   --cth-radius-panel: 0px;
   --cth-radius-control: 0px;
   --cth-radius-badge: 0px;
-  --cth-hairline: var(--cth-ink-300);
-  --cth-gilt: var(--cth-lemon);
-  --cth-gilt-soft: var(--cth-lemon-light);
   --cth-dur-slow: 200ms;
   --cth-dur-drift: 1200ms;
   --cth-ease-glide: cubic-bezier(0.4, 0.0, 0.2, 1);
@@ -126,80 +155,4 @@
   --cth-drop-yellow:    #FFCA54;
   --cth-drop-sky:       #72C2DF;
   --cth-drop-maroon:    #B23A4E;
-}
-
-/* ── Dark theme ──────────────────────────────────────────────────────────────
-   One token swap darkens the WHOLE app. Shades of black with a near-white text
-   ramp, tuned for READABILITY first and measured rather than eyeballed. Stamped
-   by design/theme.ts as data-cth-theme on <html>; the terminal palette and
-   per-agent Claude session themes follow the same switch.
-
-   THE BUG THIS FIXES. Text was never the problem — ink-900 measured 11-14:1 and
-   ink-700 8-9.6:1 against every surface. `ink-300` was, at 1.73-2.09:1. That
-   token is not decoration: it is this app's entire structural language, used
-   187 times and 93 of those as `inset 0 0 0 1px` — the border on every button,
-   input, panel, card and chip. Below ~3:1 a 1px line is not perceivable, so in
-   dark mode the edges defining every control simply were not there, and the UI
-   read as flat washes of grey. ink-300 is now 3.12-3.59:1 and ink-100 stays
-   deliberately quieter (1.47-1.69:1) for dividers that should recede.
-
-   NOT BLACK, AND NOT WHITE. A first pass took the ground to #0E0E11 and text to
-   #EDECEA, which measured beautifully and read as harsh: near-black behind
-   near-white is maximum contrast, and maximum contrast is not the same as
-   comfortable. The ground now sits at luminance 0.009-0.020 (visibly lifted off
-   black, still unambiguously a dark theme) and text at 0.71 rather than 0.84 —
-   a warm off-white. Everything still clears its floor with room to spare.
-
-   Every value below is verified against WCAG contrast for the five surfaces it
-   can appear on: body text >= 4.5, structural borders >= 3.0. Accents are held
-   to a narrow luminance band (0.36-0.44) so no single hue fluoresces against
-   the black and colour never becomes the thing carrying the layout. */
-:root[data-cth-theme='dark'] {
-  /* Base surfaces — a graded elevation ramp, darkest where light mode was
-     lightest. Neutral with a whisper of the brand's violet warmth. */
-  --cth-cream-50:  #17171B;   /* app ground — dark, deliberately NOT black */
-  --cth-cream-100: #1D1D22;
-  --cth-cream-200: #26262C;
-  --cth-cream-300: #313139;
-  --cth-paper-100: #1A1A1F;   /* cards, inputs, terminals */
-  --cth-paper-200: #222229;
-
-  /* Ink → off-white text ramp (never #FFF — glare) */
-  --cth-ink-900: #DEDBD6;   /* 10.9-13.0:1 — primary text, warm off-white */
-  --cth-ink-700: #B3B0AC;   /*  7.0-8.3:1  — secondary text */
-  --cth-ink-500: #96919F;   /*  4.9-5.8:1  — tertiary / hints */
-  --cth-ink-300: #787684;   /*  3.4-4.0:1  — BORDERS. must stay >= 3.0 */
-  --cth-ink-100: #3E3D46;   /*  1.4-1.7:1  — dividers, meant to recede */
-
-  /* Accents — one step lighter/softer than the light set so they read on dark
-     without fluorescing */
-  --cth-coral: #E08C82;       --cth-mint:  #74C096;
-  --cth-sky:   #6FB3C4;       --cth-lemon: #CFAA57;
-  --cth-lilac: #A896E3;       --cth-peach: #DFA57F;
-
-  /* Accent "-light" fills double as chip/selection backgrounds — deep muted
-     versions so light text (ink-900) stays readable on top. */
-  --cth-coral-light: #3B2724;
-  --cth-mint-light:  #1E3227;
-  --cth-sky-light:   #1F3238;
-  --cth-lemon-light: #332C1D;
-  --cth-lilac-light: #2B2740;
-  --cth-peach-light: #352822;
-
-  /* Status — dark-tuned counterparts (same hue language) */
-  --cth-status-idle:     #6F6C77;
-  --cth-status-thinking: #64ACBB;
-  --cth-status-working:  #D8B052;
-  --cth-status-waiting:  #8095DC;
-  --cth-status-blocked:  #DF8078;
-  --cth-status-success:  #6FB88B;
-  /* The quietest status, but still a MARK the user must be able to find — at
-     the old #3D3C44 it measured 1.54:1 on the new ground and simply vanished. */
-  --cth-status-ghost:    #6C6A76;
-  --cth-status-compacting: #9D8BD2;
-  --cth-status-looping:    #D69A55;
-  --cth-status-typing:     #CBA24A;
-
-  /* Hard shadow reads as depth, not void */
-  --cth-shadow-hard: 4px 4px 0 rgba(0, 0, 0, 0.45);
 }

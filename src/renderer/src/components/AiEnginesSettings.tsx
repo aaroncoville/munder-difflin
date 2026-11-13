@@ -142,7 +142,7 @@ export function AiEnginesSettings({ config }: { config: HarnessConfig }) {
         {BACKENDS.map((b) => (
           <div key={b.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <label style={labelStyle}>
-              {b.label} {hasKey[b.id] ? `· ${t('aiEngines.setCheck')}` : ''} <span style={{ opacity: 0.6 }}>({b.envVar})</span>
+              {b.label} {hasKey[b.id] ? `· ${t('aiEngines.setCheck')}` : ''} <span style={{ color: 'var(--cth-ink-500)' }}>({b.envVar})</span>
             </label>
             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
               <input
