@@ -39,6 +39,7 @@ import { COMMAND_GROUPS } from '../shared/claudeCommands';
 import { ensureCodexShortHome } from '../shared/codexRemote';
 import {
   argsWithSandboxStance,
+  hasSandboxStance,
   isClaudeProvider,
   isHiveAwareProvider,
   canReceiveInbox,
@@ -704,7 +705,9 @@ export class HiveManager {
    *  (the nearest project config, else the user's) when that is workspace-write or read-only, so a seat the owner narrowed
    *  stays narrowed; workspace-write when no config sets one. When the configs choose full access or cannot be read or
    *  understood, the line is left as it is and the spawn check refuses it, saying why. Every builder's line passes here. */
-  withCodexSandboxStance(args: string[], cwd: string): string[] {
+  withCodexSandboxStance(args: string[], cwd: string, command = ''): string[] {
+    // The executable string can carry options of its own ("codex -s read-only"): a stance there is kept, never doubled.
+    if (hasSandboxStance(command.trim().split(/\s+/).slice(1), 'codex')) return args;
     const m = this.codexConfigMode(cwd);
     if ('mode' in m) return argsWithSandboxStance(args, 'codex', m.mode);
     return m.none ? argsWithSandboxStance(args, 'codex', 'workspace-write') : args;
@@ -882,6 +885,8 @@ export class HiveManager {
    *  under the hive root: every agent can write there, and the main process
    *  starts this script. Unset means no bridge is started. */
   private proxyBridgeScript: string | null = null;
+  /** Agents whose malformed plugin setting has been logged this run: one row per agent per app run, not per spawn. */
+  private readonly pluginSettingLogged = new Set<string>();
   setProxyBridgeScript(path: string | null): void {
     this.proxyBridgeScript = path;
     // A build that shipped without the helper would otherwise run every proxy-tier
@@ -1492,7 +1497,7 @@ export class HiveManager {
       const rt = verdict?.rt ?? null;
       env.HIVE_SOCK = sock;
       const settingsPath = join(dir, 'settings.json');
-      this.writeJson(settingsPath, this.hookSettings(rt ? hookCommandFor(rt, true) : null, meta.cwd, opts.mcpDefaults, opts.theme, writable, agentEnabledPlugins(knownPluginIds(claudeUserDir()), agentPluginList(opts.agentPlugins, (why) => this.appendLog({ kind: 'agent-plugins-setting', agentId: meta.id, why })))));
+      this.writeJson(settingsPath, this.hookSettings(rt ? hookCommandFor(rt, true) : null, meta.cwd, opts.mcpDefaults, opts.theme, writable, agentEnabledPlugins(knownPluginIds(claudeUserDir()), agentPluginList(opts.agentPlugins, (why) => { if (this.pluginSettingLogged.has(meta.id)) return; this.pluginSettingLogged.add(meta.id); this.appendLog({ kind: 'agent-plugins-setting', agentId: meta.id, why }); }))));
       args.push('--settings', settingsPath);
     }
     return { args, env };

@@ -106,8 +106,10 @@ test('a hand-edited setting never makes ensureAgent throw', async (t) => {
     const inj = await hive.ensureAgent({ id: `h${Math.random().toString(36).slice(2, 7)}`, name: 'h', provider: 'claude', cwd: home }, { agentPlugins: bad });
     assert.ok(inj.args.includes('--settings'));
   }
+  // The same agent spawned again with the same bad setting: still one row for it this run.
+  for (let i = 0; i < 3; i++) await hive.ensureAgent({ id: 'same', name: 'same', provider: 'claude', cwd: home }, { agentPlugins: 'github' });
   const log = fs.readFileSync(path.join(home, 'hive', 'log.jsonl'), 'utf8');
-  assert.equal((log.match(/"kind":"agent-plugins-setting"/g) ?? []).length, 3);
+  assert.equal((log.match(/"kind":"agent-plugins-setting"/g) ?? []).length, 4, 'one row per agent per run');
 });
 
 test('Settings offers Reset to default, and the hint says what an empty list and other settings files do', () => {

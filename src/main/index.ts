@@ -3008,7 +3008,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   let seedPrompt: string | undefined;
   // A hooked Codex seat's launch always names its sandbox: every builder's line (the GUI's, a worker's, a stored command)
   // passes here, and with none stated gets the configs' own mode, or workspace-write when none is set.
-  if (opts.hive && provider === 'codex' && hive.enabled()) opts.args = hive.withCodexSandboxStance(opts.args ?? [], opts.cwd);
+  if (opts.hive && provider === 'codex' && hive.enabled()) opts.args = hive.withCodexSandboxStance(opts.args ?? [], opts.cwd, opts.command);
   let codexHomeFromApp = false;
   if (opts.hive && hive.enabled()) {
     // Memory and knowledge settings are best-effort and not hook provisioning: read them outside the try below, so a
@@ -3211,7 +3211,6 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // live terminal means active — ensureAgent above already cleared `archived`.
   if (opts.hive?.id) {
     ptyToAgent.set(opts.id, opts.hive.id);
-    spawnRoots.set(opts.hive.id, { cwd: opts.cwd, provider, isGod: opts.hive.isGod === true, args: [opts.command, ...(opts.args ?? [])], codexHomeFromApp, gen: ++spawnGeneration });
     // Where this worker's Codex rollouts will be written, now that any resume
     // has settled its CODEX_HOME.
     codexHomes.recordSpawn(opts.hive.id, opts.env?.CODEX_HOME, codexResumedSession);
@@ -3316,9 +3315,11 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     try { hive.confirmSpawn(opts.id, { id: opts.hive.id, provider }, [opts.command, ...(opts.args ?? [])], relocationEnv(buildPtyEnv(process.env, '', opts.env))); }
     catch (e) { if (e instanceof HookRuntimeUnavailable) return refuseSpawn(opts.id, opts.hive.id, provider, e); throw e; }
   }
-  // The launch line as it is really spawned, after any remote rewrite.
-  // The environment too, built exactly as the PTY will build it, keeping only the variables that move config.
-  if (opts.hive?.id) { const sr = spawnRoots.get(opts.hive.id); if (sr) { sr.args = [opts.command, ...(opts.args ?? [])]; sr.env = relocationEnv(buildPtyEnv(process.env, '', opts.env)); } }
+  // Recorded only once the late check has passed, so a refused spawn leaves no record: the launch line as it is really
+  // spawned, after any remote rewrite, and the environment built exactly as the PTY will build it (relocation only).
+  if (opts.hive?.id) {
+    spawnRoots.set(opts.hive.id, { cwd: opts.cwd, provider, isGod: opts.hive.isGod === true, args: [opts.command, ...(opts.args ?? [])], env: relocationEnv(buildPtyEnv(process.env, '', opts.env)), codexHomeFromApp, gen: ++spawnGeneration });
+  }
   const res = ptyManager.spawn(opts, owner);
   if (res.ok) analytics.track('agent_spawned', { provider });
   else analytics.track('agent_spawn_failed', { provider, reason: spawnFailReason(res.error) });
