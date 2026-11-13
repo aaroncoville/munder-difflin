@@ -226,7 +226,7 @@ export function AgentDetailPanel({ agent }: AgentDetailPanelProps) {
 
       {openTerminalError && (
         <div style={{
-          fontSize: 12, color: 'var(--cth-coral)',
+          fontSize: 12, color: 'var(--cth-ink-900)',
           padding: '2px 8px',
           background: 'var(--cth-coral-light)',
           whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'

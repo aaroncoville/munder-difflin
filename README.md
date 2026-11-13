@@ -18,7 +18,7 @@
 **Free, open source and performant.** A multi-agent harness that works with the
 subscriptions you already pay for, on their hourly limits. It turns the terminal coding CLI
 you already run into a clone of you, one that keeps working while you're away and
-coordinates a whole office of agents on your own machine.
+coordinates a whole floor of agents on your own machine.
 
 Wraps [Claude Code](https://claude.com/claude-code), Antigravity (Gemini), OpenAI Codex,
 **xAI Grok**, **Kimi Code**, **Gemini CLI**, **Qwen**, **OpenCode**, **Crush**,
@@ -336,7 +336,7 @@ than sending you to a docs page.
 > **A missing CLI is a card, not an error**: install and sign in from inside the app for every
 > engine, with Set up manually when either fails. **Ask me** on every agent's Inbox, answered from
 > one box over the composer. **More than one floor**: File, New Floor (Shift+Command+N, or Control+Shift+N) runs another
-> office on its own folder, with its own agents, board and memory, and one licence covers every floor. **Send now** goes straight in, **Restart & Continue**
+> floor on its own folder, with its own agents, board and memory, and one licence covers every floor. **Send now** goes straight in, **Restart & Continue**
 > keeps the conversation for every engine, and **Opus 5.5** is the default Claude model.
 > **Settings, redesigned**: one Save for everything, inbound webhooks for GitHub, Linear, Telegram
 > and your own, each with the agent that answers it, and custom secrets stored encrypted beside
@@ -349,7 +349,7 @@ than sending you to a docs page.
 > Terminal with what it did and when, the Tasks screen filters by Today, This week, This month or
 > All time, and a card drops anywhere in a column. Hover a ticket in the sidebar for its details.
 > **The Pro sidebar** is as wide as you drag it, and one setting shows only agents and notes. With
-> more than one floor open, each window and Dock icon carries the office's number.
+> more than one floor open, each window and Dock icon carries the floor's number.
 > **Stapler fixes**: the mic stops at the click, no words are lost at a pause, Record message never
 > gets stuck, the drag follows your pointer, Reset puts it in the middle of the screen, and it never
 > ends up off screen.

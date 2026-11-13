@@ -98,7 +98,7 @@ const SLACK_CONNECT_STEPS = `Connect Munder Difflin to Slack
 2. Basic Information -> Signing Secret -> copy it into the
    "Signing secret" field here.
 3. OAuth & Permissions -> Bot Token Scopes: add
-     chat:write          (office replies in-thread)
+     chat:write          (replies in-thread)
      channels:history    (read public-channel messages)
      groups:history      (read private-channel messages)
    Install to workspace, then copy the Bot User OAuth Token

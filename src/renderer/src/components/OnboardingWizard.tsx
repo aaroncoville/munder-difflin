@@ -407,7 +407,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
                         A <strong>CLI agent</strong> is an AI coding assistant that runs on your
                         computer — popular ones are Claude Code (Anthropic), Codex (OpenAI) and
                         Antigravity (Google Gemini). <strong>Your clone</strong> is the always-on
-                        one that runs your whole office. We recommend Claude Code on Opus 4.8 (1M).
+                        one that runs your whole floor. We recommend Claude Code on Opus 4.8 (1M).
                         You can add or switch the others later.
                       </Trans>
                     ) : (
@@ -473,7 +473,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
                             <span title={a.path ?? undefined} style={{
                               fontSize: 10, padding: '1px 5px', lineHeight: '16px',
                               background: a.state === 'installed' ? 'var(--cth-mint-light)' : bad ? 'var(--cth-paper-100)' : 'var(--cth-cream-200)',
-                              color: bad ? 'var(--cth-ink-500)' : 'var(--cth-ink-900)',
+                              color: a.state === 'installed' ? 'var(--cth-ink-900)' : bad ? 'var(--cth-ink-500)' : 'var(--cth-ink-900)',
                               boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)',
                               fontFamily: 'var(--cth-font-display)', flexShrink: 0
                             }}>{badge}</span>
@@ -497,9 +497,11 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
                   {onboardingEngineChoices().workersOnly.map((p) => (
                     <label key={p.id} aria-disabled title={t('onboarding.orchestrator.workersOnlyHint')} style={{
                       display: 'flex', alignItems: 'center', gap: 10,
-                      padding: '8px 10px',
-                      background: 'var(--cth-paper-100)',
-                      boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)',
+                      padding: '7px 9px',
+                      // Disabled reads as an empty dashed slot, not a dimmed
+                      // card: dimming took its explanation under 4.5:1.
+                      background: 'transparent',
+                      border: '1px dashed var(--cth-ink-300)',
                       cursor: 'not-allowed'
                     }}>
                       <input type="radio" name="godProvider" value={p.id} checked={false} disabled

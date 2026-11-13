@@ -533,7 +533,9 @@ export function IdePanel() {
                     >
                       <span style={{
                         width: 12, textAlign: 'center', fontFamily: 'var(--cth-font-mono)',
-                        fontWeight: 'bold' as const, color: statusColor(f.code)
+                        // On the selected row's yellow tint only the inks read
+                        // (red on it is 2.5:1); the letter still says the status.
+                        fontWeight: 'bold' as const, color: active ? 'var(--cth-ink-900)' : statusColor(f.code)
                       }}>{f.code === ' ' ? '·' : f.code}</span>
                       <span style={{
                         flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',

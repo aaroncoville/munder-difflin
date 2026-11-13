@@ -27,7 +27,8 @@ export function resolveGodName(persistedName: unknown): string {
   if (typeof persistedName !== 'string') return DEFAULT_GOD_NAME;
   const line = persistedName.replace(/(?![\u200C\u200D])[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' ').replace(/\s+/g, ' ').trim();
   const capped = Array.from(line).slice(0, GOD_NAME_MAX).join('').trim();
-  return capped ? capped : DEFAULT_GOD_NAME;
+  // Joiners join something: with nothing else left there is no name to show.
+  return capped.replace(/[\u200C\u200D\s]/g, '') ? capped : DEFAULT_GOD_NAME;
 }
 
 const own = (o: unknown, k: string): unknown =>

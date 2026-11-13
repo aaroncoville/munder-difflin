@@ -59,6 +59,7 @@ Here's the whole hire flow in nineteen seconds:
 <video controls preload="none" playsinline poster="/media/demo/agents-poster.jpg" style="width:100%; border-radius:12px; margin:12px 0 24px;">
   <source src="/media/demo/agents.mp4" type="video/mp4" />
 </video>
+<p class="credit"><small>Recorded in an earlier version, when the floor was a pixel office drawn with <a href="https://limezu.itch.io/moderninteriors" target="_blank" rel="noopener">Modern Interiors by LimeZu</a> tilesets, used under the Complete Version licence (the app no longer ships them).</small></p>
 
 Copilot hires also work through voice — Realtime Michael's `spawn` action can hire one — and if you paste a raw `copilot ...` command into the custom-command field, the harness infers the binary and treats it as a Copilot engine.
 
