@@ -416,6 +416,9 @@ hookServer.setHeavyLock(heavyLock);
 // What the app itself spawned each agent with, kept in memory: registry.json is in the hive,
 // which agents can write, so a cwd or role read from it could be planted.
 const spawnRoots = new Map<string, SpawnRecord & { cwd: string; provider: string; isGod: boolean; gen: number }>();
+// The agents whose terminals are running, with their providers: the hive refuses a Codex agent while one the app
+// does not sandbox is among them. A terminal's agent with no spawn record counts as unsandboxed.
+hive.setLiveSeats(() => [...ptyToAgent.values()].map((agentId) => ({ agentId, provider: spawnRoots.get(agentId)?.provider ?? 'unknown' })));
 let spawnGeneration = 0;
 const writeRootsDryRun = new WriteRootsDryRun({
   agent: (agentId) => {
@@ -3208,6 +3211,11 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     }
   }
   if (opts.requireResume === true && !didResume) {
+    // Nothing starts: what provisioning did for this spawn is undone, as for any refusal.
+    if (opts.hive?.id) {
+      try { hive.withdrawRefusedSpawn(opts.id, 'the session could not be resumed'); }
+      catch (e) { console.error('[hive] rollback after a failed resume failed:', e); }
+    }
     return {
       ok: false,
       error: 'Existing session could not be resumed; no replacement process was started.',

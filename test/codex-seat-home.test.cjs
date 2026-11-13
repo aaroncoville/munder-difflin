@@ -137,7 +137,8 @@ const refusedHome = (folder) => (e) => {
 
 test('an agent of any provider that could write the Codex homes is refused, and nothing is created for it', async (t) => {
   const f = fixture(t);
-  for (const provider of ['claude', 'codex', 'gemini']) {
+  // Sandboxed providers, by their roots; one the app does not sandbox is covered below.
+  for (const provider of ['claude', 'codex']) {
     const id = `h-${provider}`;
     await assert.rejects(f.hive.ensureAgent({ id, name: id, provider, cwd: f.root }), refusedHome(f.root), provider);
     assert.equal(fs.existsSync(f.agentDir(id)), false, `${provider}: no agent folder`);
@@ -149,7 +150,7 @@ test('a later agent whose working folder is a running Codex agent\'s home is the
   const f = fixture(t);
   const home = (await f.spawn('first')).env.CODEX_HOME;
   const before = snapshot(home);
-  for (const provider of ['claude', 'gemini']) {
+  for (const provider of ['claude']) {
     await assert.rejects(f.hive.ensureAgent({ id: `later-${provider}`, name: 'l', provider, cwd: home }), refusedHome(home), provider);
   }
   assert.deepEqual(snapshot(home), before, 'the running agent\'s home is left alone');
@@ -541,4 +542,40 @@ test('history over a sane size is a named skip, and the migration still finishes
   assert.deepEqual(res.copied, ['hive-thread.json']);
   assert.ok(res.skipped.some((s) => /^history\.jsonl \(larger than \d+ bytes\)$/.test(s)), JSON.stringify(res.skipped));
   assert.equal(migrateSeatHome(agent, home), null, 'finished');
+});
+
+// A provider the app does not sandbox can write anywhere, so its roots say nothing: it reaches every Codex home.
+const refusedUnconfined = (provider) => (e) => {
+  assert.equal(e.name, 'CodexHomeRefused', String(e));
+  assert.ok(e.message.includes(provider), `the reason names ${provider}: ${e.message}`);
+  return true;
+};
+
+test('an agent the app does not sandbox cannot start while any Codex agent has a home', async (t) => {
+  const f = fixture(t);
+  // No Codex home yet: nothing for it to reach.
+  await f.hive.ensureAgent({ id: 'early', name: 'e', provider: 'custom', cwd: f.cwd });
+  f.hive.withdrawRefusedSpawn('early', 'test cleanup');
+  const victim = (await f.spawn('victim')).env.CODEX_HOME;
+  for (const provider of ['custom', 'gemini', 'opencode']) {
+    await assert.rejects(f.hive.ensureAgent({ id: `u-${provider}`, name: 'u', provider, cwd: f.cwd }), refusedUnconfined(provider), provider);
+    assert.equal(fs.existsSync(f.agentDir(`u-${provider}`)), false, `${provider}: nothing created`);
+  }
+  assert.ok(fs.existsSync(victim));
+});
+
+test('a Codex agent cannot start while an agent the app does not sandbox is starting or running', async (t) => {
+  const f = fixture(t);
+  // Starting: admitted, its terminal not yet up.
+  await f.hive.ensureAgent({ id: 'u1', name: 'u', provider: 'custom', cwd: f.cwd }, { spawnId: 'pty-u1' });
+  await assert.rejects(f.spawn('cx1'), refusedUnconfined('custom'));
+  // Its spawn was refused or failed: it no longer counts.
+  f.hive.withdrawRefusedSpawn('pty-u1', 'test');
+  // Running: the app reports it live.
+  let live = [{ agentId: 'u2', provider: 'gemini' }];
+  f.hive.setLiveSeats(() => live);
+  await assert.rejects(f.spawn('cx2'), (e) => refusedUnconfined('gemini')(e) && e.message.includes('u2'));
+  assert.equal(fs.existsSync(codexShortHomePath(path.join(f.agentDir('cx2'), '.codex'), 'cx2')), false, 'no home was made');
+  live = [];
+  assert.ok((await f.spawn('cx3')).env.CODEX_HOME, 'once it is gone, Codex starts');
 });

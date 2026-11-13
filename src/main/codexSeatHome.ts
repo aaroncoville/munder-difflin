@@ -59,6 +59,18 @@ export function codexHomesReach(roots: WriteRoot[], base: string = codexShortHom
   return null;
 }
 
+/** The Codex agents' homes that exist under `base`. A base that exists but
+ *  cannot be listed counts as holding some: what cannot be seen is not empty. */
+export function existingCodexHomes(base: string = codexShortHomeRoot()): string[] {
+  let names: string[];
+  try { names = readdirSync(base); }
+  catch (e) { return (e as NodeJS.ErrnoException).code === 'ENOENT' ? [] : [base]; }
+  return names.filter((n) => {
+    const st = lstatSync(join(base, n), { throwIfNoEntry: false });
+    return !!st && (st.isDirectory() || st.isSymbolicLink());
+  });
+}
+
 /** A Codex home the app computed: a real folder directly inside the folder that
  *  holds every Codex agent's home, which no agent's roots may reach (checked when
  *  any agent is provisioned). Throws CodexHomeRefused naming it otherwise. */

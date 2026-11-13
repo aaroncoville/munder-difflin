@@ -38,4 +38,21 @@ function jailHome(t, home) {
   t.after(() => { if (real === undefined) delete process.env.HOME; else process.env.HOME = real; });
 }
 
-module.exports = { codexTestBase, jailHome };
+/** A HOME of its own for every test in the calling file, with no Codex agents'
+ *  homes in it. Agents of providers the app does not sandbox cannot start while
+ *  any Codex home exists, so a test that never jails HOME would otherwise depend
+ *  on the machine it runs on (and read the real ~/.mdc). */
+function isolateHomeForFile(prefix = 'md-') {
+  const { after } = require('node:test');
+  const root = process.platform !== 'win32' && fs.existsSync('/var/tmp') ? '/var/tmp' : os.tmpdir();
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(root, prefix)));
+  const real = process.env.HOME;
+  process.env.HOME = home;
+  after(() => {
+    if (real === undefined) delete process.env.HOME; else process.env.HOME = real;
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+  return home;
+}
+
+module.exports = { codexTestBase, jailHome, isolateHomeForFile };

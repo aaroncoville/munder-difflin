@@ -36,7 +36,8 @@ import { stampSentCopy } from './sentStamp';
 import { RecentSends } from './outboxResend';
 import { setAsideUnlessFolder } from './sentFolder';
 import { COMMAND_GROUPS } from '../shared/claudeCommands';
-import { CodexHomeRefused, codexHomesReach, codexSeatHome, migrateSeatHome } from './codexSeatHome';
+import { codexShortHomeRoot } from '../shared/codexRemote';
+import { CodexHomeRefused, codexHomesReach, codexSeatHome, existingCodexHomes, migrateSeatHome } from './codexSeatHome';
 import {
   argsWithSandboxStance,
   hasSandboxStance,
@@ -548,6 +549,9 @@ export class HiveManager {
   private hookVerdicts = new Map<string, HookVerdict>();
   /** Decisions that passed the late check, until their terminal starts (spawnStarted) or fails to (withdrawRefusedSpawn). */
   private startingSpawns = new Map<string, HookVerdict>();
+  /** Spawns of agents the app does not sandbox, from their admission until their terminal starts or they are withdrawn. */
+  private unconfinedStarting = new Map<string, { agentId: string; provider: string }>();
+  private liveSeats: () => Array<{ agentId: string; provider: string }> = () => [];
   /** Per Codex home, what the app last wrote into its config.toml (writeCodexConfig). */
   private codexConfigsWritten = new Map<string, CodexConfigWritten>();
   /** The spawn that last passed the late check, per agent. */
@@ -787,11 +791,20 @@ export class HiveManager {
   private hookVerdict(meta: AgentMeta, dir: string, root: string, extra: string[] | undefined, launch: HookLaunch | undefined, isNew: boolean): HookVerdict | null {
     const kind = this.hookKind(meta);
     if (!kind) {
-      // No app hook command, but its sandbox may still write the folders it is given.
-      const plain = [{ path: meta.cwd, from: 'its working directory' },
-        ...this.sandboxWritableDirs(meta, dir, root, extra).map((p) => ({ path: p, from: 'the write roots the app gives it' }))];
-      this.refuseCodexHomesReach(plain);
+      // The app does not sandbox this provider: it can write anywhere, so no check of its roots holds it. It reaches
+      // every Codex home, and cannot start while one exists (a Codex home is made in the same step that admits its agent).
+      const homes = existingCodexHomes();
+      if (homes.length) {
+        throw new CodexHomeRefused(`${meta.provider ?? 'this provider'} runs without a sandbox the app can check, so ${shortTarget(meta.id)} could write every Codex agent's home under ${codexShortHomeRoot()}; it cannot start while a Codex agent has a home there`);
+      }
       return null;
+    }
+    if (kind === 'codex') {
+      // The other order: an unsandboxed agent starting or running could write the home this agent is about to get.
+      const unconfined = this.unconfinedSeats();
+      if (unconfined.length) {
+        throw new CodexHomeRefused(`${unconfined.map((u) => `${shortTarget(u.agentId)} (${u.provider})`).join(', ')} runs without a sandbox the app can check and could write a Codex agent's home; ${shortTarget(meta.id)} cannot start until it has stopped`);
+      }
     }
     const r = this.verdictRoots(meta, dir, root, extra, launch);
     const rt = this.runtimeFor(meta.id, 'refuse' in r ? [] : r.roots, kind === 'codex' && process.platform === 'win32', 'refuse' in r ? r.refuse : null);
@@ -838,6 +851,17 @@ export class HiveManager {
   /** The terminal for this spawn started: nothing of it is rolled back any more. */
   spawnStarted(spawnId: string): void {
     this.startingSpawns.delete(spawnId);
+    // Running now, it is reported by the live seats instead.
+    this.unconfinedStarting.delete(spawnId);
+  }
+  /** The app's running agents and their providers (the terminals it started), for the checks above. */
+  setLiveSeats(fn: () => Array<{ agentId: string; provider: string }>): void {
+    this.liveSeats = fn;
+  }
+  /** Agents the app does not sandbox that are starting or running. */
+  private unconfinedSeats(): Array<{ agentId: string; provider: string }> {
+    const live = this.liveSeats().filter((s) => !this.hookKind({ provider: s.provider } as AgentMeta));
+    return [...this.unconfinedStarting.values(), ...live];
   }
   /** The late check, just before the terminal starts: the FINAL launch line and environment must imply nothing the
    *  verdict did not check. Reads no settings files (the verdict is the snapshot). A refusal here rolls back a new agent's
@@ -873,6 +897,7 @@ export class HiveManager {
    *  the launch): undo what ensureAgent did for it, by the same compare-and-remove rule as the late check. A spawn
    *  with no decision on record (refused before anything was created, or already rolled back) is left as it is. */
   withdrawRefusedSpawn(spawnId: string, why: string): void {
+    this.unconfinedStarting.delete(spawnId);
     const v = this.takeHookVerdict(spawnId) ?? this.startingSpawns.get(spawnId);
     this.startingSpawns.delete(spawnId);
     if (!v) return;
@@ -1260,6 +1285,7 @@ export class HiveManager {
     // Keyed by this spawn, so two overlapping spawns of one agent never share a decision.
     const verdictKey = opts.spawnId ?? meta.id;
     if (verdict) this.hookVerdicts.set(verdictKey, verdict); else this.hookVerdicts.delete(verdictKey);
+    if (!this.hookKind(meta)) this.unconfinedStarting.set(verdictKey, { agentId: meta.id, provider: meta.provider ?? 'custom' });
     mkdirSync(join(dir, 'inbox', '.done'), { recursive: true });
     mkdirSync(join(dir, 'outbox', '.sent'), { recursive: true });
 

@@ -75,6 +75,7 @@ function setup(t) {
       appendLog: (row) => rows.push(row),
       prepareResumedCodexHome: (agentId, c, home) => calls.push(['prepare', agentId, home]),
       codexConfigWritten: () => ({ hooks: null, ownerToml: '' }),
+      withdrawRefusedSpawn: (id, why) => calls.push(['withdraw', id]),
     },
     memory: { env: () => ({}) },
     seedCodexHookTrust: async (ctx, _ms, why) => { calls.push(['trust', ctx.home]); if (!trust.ok) why(trust.why); return trust.ok; },
@@ -190,7 +191,7 @@ test('Restart & Continue with no session anywhere is refused, not started fresh'
   const out = await f.spawn('lost', { CODEX_HOME: mine }, { resume: true, requireResume: true, args: ['prompt'] });
   assert.equal(out.ok, false);
   assert.match(out.error, /could not be resumed/);
-  assert.deepEqual(f.calls, []);
+  assert.deepEqual(f.calls, [['withdraw', 'pty-lost']], 'nothing trusted or started; what provisioning did is withdrawn');
 });
 
 test('a spawn records itself (owner map, spawn record, Codex home, thread, wake state) only after every refusal point and a started terminal', () => {

@@ -22,6 +22,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const loadTs = require('./load-ts.cjs');
+const { codexTestBase, jailHome } = require('./codex-test-home.cjs');
 // Where a Codex agent's home is: computed from its folder, outside the hive.
 const { codexShortHomePath } = loadTs('src/shared/codexRemote.ts');
 
@@ -407,6 +408,8 @@ test('reset cleanup removes only exposed Munder rollouts', (t) => {
 test('Gemini gets isolated lifecycle settings and an interactive protocol seed', async (t) => {
   const home = tmpHome();
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  // A HOME of its own, with no Codex agents' homes: Gemini is not sandboxed by the app and cannot start beside one.
+  jailHome(t, codexTestBase(t, 'mdgm-'));
   const hive = new HiveManager(() => home);
   const injection = await hive.ensureAgent({
     id: 'gemini-1',
