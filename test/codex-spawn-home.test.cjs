@@ -128,6 +128,19 @@ test('a Codex hive spawn with no CODEX_HOME refuses, saying so', async (t) => {
   assert.deepEqual(f.calls, []);
 });
 
+test('the trust step is timed: logged when it passes, in the reason when it refuses', async (t) => {
+  const f = setup(t);
+  const home = f.homeOf('timed');
+  fs.mkdirSync(home, { recursive: true });
+  assert.equal((await f.spawn('timed', { CODEX_HOME: home })).started, true);
+  const row = f.rows.find((r) => r.kind === 'codex-hook-trust');
+  assert.ok(row && row.agentId === 'timed' && row.ok === true && Number.isInteger(row.ms) && row.ms >= 0, JSON.stringify(f.rows));
+  f.trustFails('a hook the app did not write is listed');
+  const out = await f.spawn('timed', { CODEX_HOME: home });
+  assert.equal(out.ok, false);
+  assert.match(out.error, /a hook the app did not write is listed.*\d+ ms/);
+});
+
 // The app's real callers, each with the options it sends (renderer: CommandCenterPanel, useHive, useRestoreTeam, AddAgentModal).
 for (const [caller, extra] of [
   ['Restart & Continue', { resume: true, requireResume: true }],

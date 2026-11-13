@@ -3322,15 +3322,18 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     }
     let reason = 'unknown';
     const env: NodeJS.ProcessEnv = { ...process.env, ...(opts.env ?? {}) };
+    const started = Date.now();
     const trusted = await seedCodexHookTrust(
       { home, cwd: opts.cwd, executable: resolveCliCommand(opts.command), env },
       undefined,
       (why) => { reason = why; }
     );
+    const ms = Date.now() - started;
     if (!trusted) {
       return refuseSpawn(opts.id, opts.hive.id, provider,
-        new CodexHomeRefused(`Codex hook trust could not be established for ${opts.hive.id}: ${reason}`));
+        new CodexHomeRefused(`Codex hook trust could not be established for ${opts.hive.id}: ${reason} (${ms} ms)`));
     }
+    hive.appendLog({ kind: 'codex-hook-trust', agentId: opts.hive.id, ok: true, ms });
     await enableCodexRemoteForSpawn(opts, opts.hive.id);
   }
   // The late check on the launch exactly as it will start; a refusal here rolls back what ensureAgent created.
