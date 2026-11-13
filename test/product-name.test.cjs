@@ -74,3 +74,11 @@ test('no app source shows the old name, in full or short form', () => {
 test('the window title is the product name', () => {
   assert.match(read('src/renderer/index.html'), new RegExp(`<title>${PRODUCT_NAME}</title>`));
 });
+
+test("the Settings card's star, issue and changelog links open this build's repository", () => {
+  const { PRODUCT_REPO_URL } = loadTs('src/shared/productName.ts');
+  const hero = code('src/renderer/src/components/SettingsHeroCard.tsx');
+  assert.match(hero, /^const GITHUB_REPO_URL = PRODUCT_REPO_URL;$/m);
+  assert.doesNotMatch(hero, /github\.com\/chaitanyagiri/);
+  assert.match(PRODUCT_REPO_URL, /^https:\/\/github\.com\/aaroncoville\//);
+});

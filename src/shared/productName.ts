@@ -8,6 +8,9 @@
  */
 export const PRODUCT_NAME = 'Hush House';
 
+/** Where this build's source, issues and changelog live. */
+export const PRODUCT_REPO_URL = 'https://github.com/aaroncoville/munder-difflin';
+
 /** The name set as a wordmark, for the places that letter-space it in capitals. */
 export const PRODUCT_WORDMARK = PRODUCT_NAME.toUpperCase();
 

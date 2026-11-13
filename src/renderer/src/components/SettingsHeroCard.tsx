@@ -25,12 +25,12 @@ import { useTranslation } from 'react-i18next';
 import { PixelButton } from './PixelButton';
 import { Icon } from './Icon';
 import { SixthHistoryCredit } from './SixthHistoryCredit';
-import { PRODUCT_WORDMARK } from '@shared/productName';
+import { PRODUCT_REPO_URL, PRODUCT_WORDMARK } from '@shared/productName';
 import { UPDATE_FEED_ENABLED } from '@shared/updateFeed';
 import { DEFAULT_HERO, type HeroPayload } from '@shared/heroPayload';
 import { manualDownloadUrl, pendingVersion, reduceStatus, type UpdateStatus } from '@shared/updateState';
 
-const GITHUB_REPO_URL = 'https://github.com/chaitanyagiri/munder-difflin';
+const GITHUB_REPO_URL = PRODUCT_REPO_URL;
 const DISCORD_URL = 'https://discord.gg/SEDzP5ZPk5';
 
 export function SettingsHeroCard() {
@@ -181,8 +181,8 @@ export function SettingsHeroCard() {
           >{t('settingsHero.reportProblem')}</PixelButton>
           <span style={{ flex: 1 }} />
           <a
-            href={`${GITHUB_REPO_URL}/blob/main/CHANGELOG.md`}
-            onClick={(e) => { e.preventDefault(); void window.cth.openExternal(`${GITHUB_REPO_URL}/blob/main/CHANGELOG.md`); }}
+            href={`${GITHUB_REPO_URL}/blob/theme/sixth-history/CHANGELOG.md`}
+            onClick={(e) => { e.preventDefault(); void window.cth.openExternal(`${GITHUB_REPO_URL}/blob/theme/sixth-history/CHANGELOG.md`); }}
             style={{ fontSize: 12, color: 'var(--cth-ink-500)' }}
           >{t('settingsHero.fullChangelog')}</a>
         </div>
