@@ -34,6 +34,7 @@ import {
 import { notifyArabicTerminalChangeAll } from '@/components/terminalPool';
 import { isComposingKey } from '@shared/imeGuard';
 import { LANGUAGES, setLanguage } from '@/i18n';
+import { UPDATE_FEED_ENABLED } from '@shared/updateFeed';
 
 export interface SettingsModalProps {
   config: HarnessConfig;
@@ -1163,24 +1164,30 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                             {autoCompactOn ? t('common.on') : t('common.off')}
                           </PixelButton>
                         </div>
-                        <div style={{ height: 10 }} />
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                            <span style={{ fontSize: 13, lineHeight: '20px', color: 'var(--cth-ink-900)' }}>
-                              {t('settings.general.autoUpdate')}
-                            </span>
-                            <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>
-                              {t('settings.general.autoUpdateDesc')}
-                            </span>
-                          </div>
-                          <PixelButton
-                            variant={autoUpdateOn ? 'primary' : 'secondary'}
-                            size="sm"
-                            onClick={toggleAutoUpdate}
-                          >
-                            {autoUpdateOn ? t('common.on') : t('common.off')}
-                          </PixelButton>
-                        </div>
+                        {/* Only offered when this build has an update feed of its own; a switch
+                            that changes nothing would show a choice that is not real. */}
+                        {UPDATE_FEED_ENABLED && (
+                          <>
+                            <div style={{ height: 10 }} />
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                <span style={{ fontSize: 13, lineHeight: '20px', color: 'var(--cth-ink-900)' }}>
+                                  {t('settings.general.autoUpdate')}
+                                </span>
+                                <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>
+                                  {t('settings.general.autoUpdateDesc')}
+                                </span>
+                              </div>
+                              <PixelButton
+                                variant={autoUpdateOn ? 'primary' : 'secondary'}
+                                size="sm"
+                                onClick={toggleAutoUpdate}
+                              >
+                                {autoUpdateOn ? t('common.on') : t('common.off')}
+                              </PixelButton>
+                            </div>
+                          </>
+                        )}
                         <div style={{ height: 10 }} />
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>

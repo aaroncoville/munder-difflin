@@ -5,6 +5,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path';
 import { readConfig } from './config';
 import { DEFAULT_DROP_HTML } from '../shared/releaseDrop';
+import { UPDATE_FEED_ENABLED } from '../shared/updateFeed';
 import { reduceStatus, clampPercent, isNewer, installerUrl, shouldShowReleaseDrop, type UpdateStatus } from '../shared/updateState';
 
 /**
@@ -45,6 +46,7 @@ import { reduceStatus, clampPercent, isNewer, installerUrl, shouldShowReleaseDro
  */
 
 const REPO = 'chaitanyagiri/munder-difflin';
+const UPDATES_OFF = 'updates are turned off in this build';
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6h
 const FALLBACK_CACHE_MS = 60 * 60 * 1000;     // 1h between releases/latest polls
 
@@ -393,10 +395,12 @@ export function initAutoUpdater(getWebContents: () => WebContents | null): void 
     }
   });
   ipcMain.handle('update:checkNow', async () => {
+    if (!UPDATE_FEED_ENABLED) return { ok: false, error: UPDATES_OFF };
     if (!app.isPackaged) return { ok: false, error: 'dev build — updates are only checked in packaged apps' };
     return runCheck();
   });
   ipcMain.handle('update:download', async () => {
+    if (!UPDATE_FEED_ENABLED) return { ok: false, error: UPDATES_OFF };
     if (!app.isPackaged) return { ok: false, error: 'dev build — updates are only downloaded in packaged apps' };
     return runDownload();
   });
@@ -453,7 +457,7 @@ export function initAutoUpdater(getWebContents: () => WebContents | null): void 
   // is the updater's own (analytics keeps a separate one that only exists when
   // telemetry initialised). Skipped when a preview is being forced, and the
   // fetch failing just means no page, never a broken boot.
-  if (!previewPath) {
+  if (!previewPath && UPDATE_FEED_ENABLED) {
     try {
       const stampFile = join(app.getPath('userData'), 'last-run-version');
       let previous: string | null = null;
@@ -504,7 +508,7 @@ export function initAutoUpdater(getWebContents: () => WebContents | null): void 
     return { ok: true };
   });
 
-  if (!app.isPackaged) return;
+  if (!app.isPackaged || !UPDATE_FEED_ENABLED) return;
   if (started) return;
   started = true;
 
