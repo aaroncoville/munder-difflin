@@ -27,21 +27,21 @@ function home(t) {
   return dir;
 }
 
-/** Put a `git` first on PATH that logs each call and sleeps `delay` seconds before running the real git. */
+/** Put a `git` first on PATH that logs each call and sleeps `delay` seconds before running the real git, or, when
+ *  only() names a git command, before that command alone. */
 function slowGit(t, dir) {
   const bin = path.join(dir, 'slow-bin');
   const log = path.join(dir, 'git-calls.log');
   fs.mkdirSync(bin);
-  fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh\necho "$*" >> '${log}'\nsleep "\${SLOW_GIT_DELAY:-0}"\nexec '${REAL_GIT}' "$@"\n`, { mode: 0o755 });
-  const saved = { PATH: process.env.PATH, SLOW_GIT_DELAY: process.env.SLOW_GIT_DELAY };
+  fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh\necho "$*" >> '${log}'\ncase " $* " in *" \${SLOW_GIT_ONLY:-} "*) sleep "\${SLOW_GIT_DELAY:-0}" ;; esac\nexec '${REAL_GIT}' "$@"\n`, { mode: 0o755 });
+  const saved = { PATH: process.env.PATH, SLOW_GIT_DELAY: process.env.SLOW_GIT_DELAY, SLOW_GIT_ONLY: process.env.SLOW_GIT_ONLY };
   process.env.PATH = `${bin}${path.delimiter}${process.env.PATH}`;
   t.after(() => {
-    process.env.PATH = saved.PATH;
-    if (saved.SLOW_GIT_DELAY === undefined) delete process.env.SLOW_GIT_DELAY;
-    else process.env.SLOW_GIT_DELAY = saved.SLOW_GIT_DELAY;
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   });
   return {
     setDelay(seconds) { process.env.SLOW_GIT_DELAY = String(seconds); },
+    only(command) { process.env.SLOW_GIT_ONLY = command; },
     commits() {
       if (!fs.existsSync(log)) return 0;
       return fs.readFileSync(log, 'utf8').split('\n').filter((l) => / commit -q -m /.test(` ${l}`)).length;
@@ -101,6 +101,26 @@ test('twenty commits requested while git is slow run as at most two', async (t) 
   assert.ok(shim.commits() - already <= 2, `ran ${shim.commits() - already} commits`);
   assert.equal(git(root, ['show', 'HEAD:board.md']), '# board 19', 'the last change is committed');
   assert.equal(git(root, ['status', '--porcelain', '--', 'board.md']), '');
+});
+
+test('a commit still waiting when commits are turned off does not run', async (t) => {
+  const dir = home(t);
+  const shim = slowGit(t, dir);
+  const hive = await floor(t, dir);
+  const root = path.join(dir, 'hive');
+  shim.only('commit');
+  shim.setDelay(1);
+
+  fs.writeFileSync(path.join(root, 'board.md'), '# first\n');
+  hive.commit('hive: first');
+  await new Promise((r) => setTimeout(r, 400)); // the first commit has staged its change and is inside `git commit`
+  fs.writeFileSync(path.join(root, 'board.md'), '# second\n');
+  hive.commit('hive: second');
+  hive.setGitCommitsDisabled(true);
+  await hive.commitsSettled();
+
+  assert.equal(git(root, ['show', 'HEAD:board.md']), '# first', 'the commit already running finishes');
+  assert.equal(git(root, ['status', '--porcelain', '--', 'board.md']), 'M board.md', 'the waiting one never runs');
 });
 
 test('inside an agent folder only memory, identity and the ignore file are committed', async (t) => {
