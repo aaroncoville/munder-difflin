@@ -183,6 +183,7 @@ export class HindsightAdapter implements MemoryBackend {
           // This server is configured again: settle what was set aside before sending anything.
           console.info(`[memory] hindsight: retain ${next.aside.claim.op}, set aside earlier, is being checked with ${next.server.replace('\n', ' bank ')} before anything is resent`);
           next.claim = next.aside.claim;
+          delete next.claim.unusableSince; // its clock restarts on this server
           next.aside = null;
           await this.ledger.save(next);
         }
@@ -574,7 +575,9 @@ export class HindsightAdapter implements MemoryBackend {
     const to = target.replace('\n', ' bank ');
     const minutes = Math.round((this.now() - (claim.unusableSince ?? this.now())) / 60_000);
     const reason = `${from} has given no usable answer for ${minutes} min since the settings moved to ${to}`.slice(0, MAX_REASON_LENGTH);
-    state.aside = { claim, reason, at: this.now() };
+    const stored: RetainClaim = { ...claim };
+    delete stored.unusableSince; // an aside can last indefinitely, so it keeps only fields older builds read
+    state.aside = { claim: stored, reason, at: this.now() };
     state.claim = null;
     if (!(await ledger.save(state))) {
       state.claim = claim;
