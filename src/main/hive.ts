@@ -3179,6 +3179,16 @@ export class HiveManager {
     return home;
   }
 
+  /** A resume that runs this agent in the home of the agent that owns the session: that home's config.toml is
+   *  written fresh for this spawn (its working folder, its write roots, the app's hooks) before the trust step,
+   *  as a fresh spawn's own is. The caller has checked the home is one of the computed ones. */
+  prepareResumedCodexHome(agentId: string, cwd: string, home: string, extra: string[] = []): void {
+    const root = this.root();
+    if (!root) throw new Error('the hive folder is not known');
+    const dir = this.agentDir(agentId);
+    this.writeCodexConfig(home, cwd, this.sandboxWritableDirs({ id: agentId, name: agentId, cwd } as AgentMeta, dir, root, extra));
+  }
+
   /** The generated config.toml for a Codex home: the owner's config, the app's lifecycle hooks, directory trust for
    *  `cwd` and the extra writable roots. Always a whole new file, renamed into place. */
   private writeCodexConfig(home: string, cwd: string, writableRoots: string[]): void {

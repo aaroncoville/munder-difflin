@@ -1,8 +1,8 @@
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, writeFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { codexShortHomePath, codexShortHomeRoot } from '../shared/codexRemote';
-import { overlaps, type WriteRoot } from './hookRuntime';
+import { overlaps, realish, type WriteRoot } from './hookRuntime';
 
 /**
  * Where a Codex agent's CODEX_HOME lives, and why it is not in the agent folder.
@@ -56,6 +56,19 @@ export function codexHomesReach(roots: WriteRoot[], base: string = codexShortHom
     if (r.path && overlaps(base, r.path)) return `the agent may write ${r.path} (${r.from}), which holds every Codex agent's home (${base}); it could plant hooks there`;
   }
   return null;
+}
+
+/** A Codex home the app computed: a real folder directly inside the folder that
+ *  holds every Codex agent's home, which no agent's roots may reach (checked when
+ *  any agent is provisioned). Throws CodexHomeRefused naming it otherwise. */
+export function assertComputedCodexHome(home: string, base: string = codexShortHomeRoot()): void {
+  const st = lstatSync(home, { throwIfNoEntry: false });
+  if (!st || st.isSymbolicLink() || !st.isDirectory()) {
+    throw new CodexHomeRefused(`Codex home ${home} is ${!st ? 'missing' : st.isSymbolicLink() ? 'a link' : 'not a folder'}; it must be a real folder the app made`);
+  }
+  if (realish(dirname(home)) !== realish(base)) {
+    throw new CodexHomeRefused(`Codex home ${home} is not one of the app's computed homes under ${base}`);
+  }
 }
 
 /** Files carried over from an agent's old in-tree home: its history and the

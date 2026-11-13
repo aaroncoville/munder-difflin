@@ -1,5 +1,5 @@
 import { seedCodexHookTrust } from './codexHookTrust';
-import { CodexHomeRefused, codexSeatHome } from './codexSeatHome';
+import { assertComputedCodexHome, CodexHomeRefused, codexSeatHome } from './codexSeatHome';
 import { applyGitCommitsSetting, gitCommitsDisabled } from './hiveGitSetting';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
 import { bundledResourcePath } from './resourcePaths';
@@ -3181,7 +3181,10 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       // place; otherwise point CODEX_HOME at the agent home that OWNS it (that
       // home has both the rollout and the sqlite index).
       const myHome = (opts.env ?? {}).CODEX_HOME;
-      const agentsRoot = myHome ? dirname(dirname(myHome)) : '';
+      // The hive's own agents folder, never derived from a home path: homes live
+      // outside the hive (codexSeatHome.ts), so their parent says nothing about it.
+      const hiveRoot = hive.root();
+      const agentsRoot = myHome && hiveRoot ? join(hiveRoot, 'agents') : '';
       const ownerHome = agentsRoot ? findCodexHomeForSession(sid, agentsRoot) : null;
       if (!ownerHome) {
         console.warn(`[resume] codex session "${sid}" not found in any agent CODEX_HOME - starting fresh`);
@@ -3297,8 +3300,23 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     // exact hooks the app generated. If anything else would need trust, nothing
     // starts: without the bypass flag an untrusted hook never runs, and a worker
     // must not sit in the hooks-review menu with nobody at the keyboard.
+    // The home it will really run in: after any resume redirect, not the one
+    // provisioning first chose. It must exist, and it must be one of the
+    // computed homes, a real folder, so the reach check made at provisioning
+    // covers it; a resumed home gets this spawn's config written fresh.
     const home = opts.env?.CODEX_HOME;
     if (home) {
+      try {
+        assertComputedCodexHome(home);
+        if (codexResumedSession) {
+          let extra: string[] = [];
+          try { extra = [memory.env().MEMPALACE_PALACE_PATH].filter((p): p is string => !!p); } catch { /* memory off */ }
+          hive.prepareResumedCodexHome(opts.hive.id, opts.cwd, home, extra);
+        }
+      } catch (e) {
+        const refusal = e instanceof CodexHomeRefused ? e : new CodexHomeRefused(`Codex home ${home} could not be prepared for ${opts.hive.id} (${(e as Error)?.message ?? e})`);
+        return refuseSpawn(opts.id, opts.hive.id, provider, refusal);
+      }
       let reason = 'unknown';
       const env: NodeJS.ProcessEnv = { ...process.env, ...(opts.env ?? {}) };
       const trusted = await seedCodexHookTrust(
