@@ -1,6 +1,8 @@
 import * as pty from 'node-pty';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { agentEnabledPlugins, claudeUserDir, knownPluginIds } from './agentPlugins';
 import { resolveCommand, userShellPath } from './shellEnv';
 import { expandTilde } from './fs';
 import { projectDir } from './transcript';
@@ -45,6 +47,38 @@ export interface HiddenClaudeOptions {
   timeoutMs?: number;
   /** Extra env merged over the resolved shell env (e.g. the shared MemPalace). */
   env?: Record<string, string>;
+  /** Plugins this helper loads, by name or full id. Default none: every plugin the owner has is off for the session. */
+  plugins?: string[];
+  /** MCP config files this helper loads (--mcp-config). Default none: with --strict-mcp-config no other server starts. */
+  mcpConfigs?: string[];
+}
+
+/**
+ * The settings a helper session gets with --settings. The owner's ~/.claude/settings.json enables plugins for every
+ * session, so each helper started every plugin's MCP servers (a container, for one) and carried every skill list. As
+ * for hive agents (agentPlugins.ts), a session-level enabledPlugins map outranks the owner's user-level `true` for this
+ * session only; it names every plugin the owner has, with only `keep` on.
+ */
+export function hiddenClaudeSettings(ids: readonly string[], keep: readonly string[] = []): { enabledPlugins: Record<string, boolean> } {
+  return { enabledPlugins: agentEnabledPlugins(ids, keep) };
+}
+
+/** The CLI arguments for a helper session. `settingsPath` is the file holding hiddenClaudeSettings(). Exported for the
+ *  regression test. --strict-mcp-config starts only the servers named with --mcp-config (none by default), so no user,
+ *  project or plugin server runs. --bare and --restricted are not used: --bare refuses OAuth (helpers draw on the
+ *  owner's plan) and --restricted refuses bypassPermissions. */
+export function hiddenClaudeArgs(opts: HiddenClaudeOptions, settingsPath: string): string[] {
+  const disallowed = opts.disallowedTools ?? ['Edit', 'Write', 'NotebookEdit'];
+  const addDirs = (opts.addDirs ?? []).filter((d) => d && existsSync(d));
+  const args: string[] = [
+    '--model', opts.model,
+    '--permission-mode', 'bypassPermissions',
+    '--disallowedTools', ...disallowed,
+  ];
+  for (const d of addDirs) { args.push('--add-dir', d); }
+  args.push('--settings', settingsPath, '--strict-mcp-config');
+  for (const c of opts.mcpConfigs ?? []) { if (c) args.push('--mcp-config', c); }
+  return args;
 }
 
 export interface HiddenClaudeResult {
@@ -126,15 +160,17 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
 
     const binary = (opts.command || 'claude').trim().split(/\s+/)[0] || 'claude';
     const exe = resolveCommand(binary);
-    const disallowed = opts.disallowedTools ?? ['Edit', 'Write', 'NotebookEdit'];
-    const addDirs = (opts.addDirs ?? []).filter((d) => d && existsSync(d));
-
-    const args: string[] = [
-      '--model', opts.model,
-      '--permission-mode', 'bypassPermissions',
-      '--disallowedTools', ...disallowed,
-    ];
-    for (const d of addDirs) { args.push('--add-dir', d); }
+    // A file, not inline JSON: on Windows the args pass through cmd.exe, which mangles quotes. Removed in finish().
+    let settingsDir: string;
+    try {
+      settingsDir = mkdtempSync(path.join(tmpdir(), 'munder-helper-'));
+      writeFileSync(path.join(settingsDir, 'settings.json'), JSON.stringify(hiddenClaudeSettings(knownPluginIds(claudeUserDir()), opts.plugins ?? [])));
+    } catch (e) {
+      resolve({ ok: false, error: `helper settings: ${e instanceof Error ? e.message : String(e)}` });
+      return;
+    }
+    const dropSettings = () => { try { rmSync(settingsDir, { recursive: true, force: true }); } catch { /* temp; the OS clears it */ } };
+    const args = hiddenClaudeArgs(opts, path.join(settingsDir, 'settings.json'));
 
     const bootCapMs = opts.bootCapMs ?? 7000;
     const idleMs = opts.idleMs ?? 3500;
@@ -161,6 +197,7 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
         } as Record<string, string>,
       });
     } catch (e) {
+      dropSettings();
       resolve({ ok: false, error: e instanceof Error ? e.message : String(e) });
       return;
     }
@@ -193,6 +230,7 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
       clearTimeout(bootMaxTimer);
       clearTimeout(globalTimer);
       kill();
+      dropSettings();
       resolve(r);
     };
 
