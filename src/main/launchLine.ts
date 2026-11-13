@@ -165,7 +165,19 @@ export const stringList = (x: unknown): x is string[] => Array.isArray(x) && x.e
 
 export type RootsState = 'ok' | 'unsandboxed' | 'unknown';
 
-/** Codex writable_roots and sandbox mode from a config.toml, parsed by a TOML 1.0 parser (smol-toml) and then checked
+/** The key path of the first value that is not a string, boolean, finite number, array or plain table, or null. */
+function oddValue(v: unknown, at: string): string | null {
+  if (typeof v === 'string' || typeof v === 'boolean') return null;
+  if (typeof v === 'number') return Number.isFinite(v) ? null : at || '(top)';
+  if (Array.isArray(v)) { for (let i = 0; i < v.length; i++) { const o = oddValue(v[i], `${at}[${i}]`); if (o) return o; } return null; }
+  if (v !== null && typeof v === 'object' && (Object.getPrototypeOf(v) === Object.prototype || Object.getPrototypeOf(v) === null)) {
+    for (const [k, x] of Object.entries(v)) { const o = oddValue(x, at ? `${at}.${k}` : k); if (o) return o; }
+    return null;
+  }
+  return at || '(top)';
+}
+
+/** Codex writable_roots and sandbox mode from a config.toml, parsed by smol-toml and then checked
  *  for exactly the shape read: a top-level `sandbox_mode` string, a `sandbox_workspace_write` table whose
  *  `writable_roots` is a list of strings, and no `profile` (it selects a profile) or profile that sets either key. A
  *  parse error or any other type where those keys can legally live is unknown, and `why` names the key. Escaped or
@@ -178,6 +190,10 @@ export function codexRoots(toml: string): { roots: string[]; state: RootsState; 
     return unknown(`not valid TOML${typeof line === 'number' ? ` (line ${line})` : ''}`);
   }
   if (!isPlainObject(doc)) return unknown('not a TOML table');
+  // Stricter than Codex on purpose: anything but a string, boolean, integer, finite float, array or table (a date or
+  // time, an infinity, a value the parser and Codex may read differently) makes the whole file not understood.
+  const odd = oddValue(doc, '');
+  if (odd) return unknown(`${odd} is a value the app does not read (a date, time or non-finite number)`);
   let mode: string | null = null;
   if (Object.hasOwn(doc, 'sandbox_mode')) {
     if (typeof doc.sandbox_mode !== 'string') return unknown('sandbox_mode is not text');

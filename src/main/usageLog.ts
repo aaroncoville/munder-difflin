@@ -79,8 +79,8 @@ const EVENTS: Record<string, Record<string, FieldType>> = {
   'write-would-refuse': { agentId: 'agent', tool: { oneOf: LOG_TOOLS }, via: { oneOf: VIAS }, pathClass: { oneOf: PATH_CLASSES } },
   'write-own-settings': { agentId: 'agent', tool: { oneOf: LOG_TOOLS }, via: { oneOf: VIAS } },
   'write-observed': { agentId: 'agent', tool: { oneOf: LOG_TOOLS }, shape: { oneOf: SHAPES }, count: 'count' },
-  'write-incomplete': { agentId: 'agent', state: { oneOf: ['incomplete'] }, shed: 'count', burst: 'bool' },
-  'write-duplicate-session-start': { agentId: 'agent' }
+  'write-incomplete': { agentId: 'agent', state: { oneOf: ['incomplete'] }, reason: { oneOf: ['queue', 'cap'] }, shed: 'count', burst: 'bool' },
+  'write-duplicate-session-start': { agentId: 'agent', count: 'count' }
 };
 /** Fields a kind cannot be written without. */
 const REQUIRED: Record<string, string[]> = {
@@ -89,7 +89,7 @@ const REQUIRED: Record<string, string[]> = {
   'write-roots': ['agentId', 'provider', 'role', 'source', 'effective', 'excess'],
   'write-would-refuse': ['agentId', 'tool', 'via', 'pathClass'], 'write-own-settings': ['agentId', 'tool', 'via'],
   'write-observed': ['agentId', 'tool', 'shape', 'count'],
-  'write-incomplete': ['agentId', 'state', 'shed', 'burst'], 'write-duplicate-session-start': ['agentId']
+  'write-incomplete': ['agentId', 'state', 'reason', 'shed', 'burst'], 'write-duplicate-session-start': ['agentId', 'count']
 };
 
 function valid(type: FieldType, v: unknown, known: KnownIds): boolean {

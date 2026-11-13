@@ -416,6 +416,7 @@ const writeRootsDryRun = new WriteRootsDryRun({
     };
   },
   known: (agentId) => spawnRoots.has(agentId),
+  generation: (agentId) => spawnRoots.get(agentId)?.gen ?? 0,
   record: (event) => { usageLog.record(event); }
 });
 hookServer.setWriteObserver((agentId, event, p) => writeRootsDryRun.onHook(agentId, event, p));

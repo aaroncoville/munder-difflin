@@ -262,7 +262,7 @@ function roles(words: string[], redirects: string[]): Named[] {
 }
 
 /** The hive paths a shell command names, and whether each is a write target. Deduplicated; a script for a shell is read too (two levels deep). */
-export function shellPaths(command: unknown, ctx: RootsContext, depth = 0): Array<{ path: string; write: boolean }> {
+export function shellPaths(command: unknown, ctx: RootsContext, depth = 0, cut: { truncated: boolean } = { truncated: false }): Array<{ path: string; write: boolean }> {
   const home = ctx.home ?? homedir();
   const agentDir = join(ctx.root, 'agents', ctx.agentId);
   const expand = (w: string): string => w
@@ -271,10 +271,12 @@ export function shellPaths(command: unknown, ctx: RootsContext, depth = 0): Arra
   const segments: Array<{ words: string[]; redirects: string[] }> = [];
   if (Array.isArray(command)) {
     if (!command.every((w) => typeof w === 'string')) return [];
+    if (command.some((w) => w.length > MAX_COMMAND)) cut.truncated = true;
     segments.push({ words: command.map((w) => expand(w.slice(0, MAX_COMMAND))), redirects: [] });
   } else if (typeof command === 'string') {
     let cur = { words: [] as string[], redirects: [] as string[] };
     let redirect = false;
+    if (command.length > MAX_COMMAND) cut.truncated = true;
     for (const t of lex(command.slice(0, MAX_COMMAND))) {
       if ('op' in t) {
         if (t.op === '>' || t.op === '>>') { redirect = true; continue; }
@@ -291,7 +293,8 @@ export function shellPaths(command: unknown, ctx: RootsContext, depth = 0): Arra
   for (const s of segments) {
     for (const r of roles(s.words, s.redirects)) {
       if ('script' in r) {
-        if (depth < 2) for (const x of shellPaths(r.script, ctx, depth + 1)) seen.set(x.path, (seen.get(x.path) ?? false) || x.write);
+        if (depth < 2) for (const x of shellPaths(r.script, ctx, depth + 1, cut)) seen.set(x.path, (seen.get(x.path) ?? false) || x.write);
+        else cut.truncated = true; // a script nested deeper than this is not read
         continue;
       }
       const at = bases.map((b) => r.word.indexOf(b)).filter((n) => n !== -1).sort((a, b) => a - b)[0];
@@ -302,14 +305,17 @@ export function shellPaths(command: unknown, ctx: RootsContext, depth = 0): Arra
 }
 
 /** File paths named by `*** Add File:` / `*** Update File:` / `*** Delete File:` / `*** Move to:` lines. */
-export function patchPaths(input: unknown): string[] {
+export function patchPaths(input: unknown, cut: { truncated: boolean } = { truncated: false }): string[] {
   const out: string[] = [];
   const scan = (v: unknown, depth: number): void => {
-    if (depth > 3) return;
+    if (depth > 3) { cut.truncated = true; return; }
     if (typeof v === 'string') {
+      if (v.length > MAX_COMMAND * 4) cut.truncated = true;
       for (const m of v.slice(0, MAX_COMMAND * 4).matchAll(/^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$/gm)) out.push(m[1].trim());
     } else if (v && typeof v === 'object') {
-      for (const x of Object.values(v as Record<string, unknown>).slice(0, 32)) scan(x, depth + 1);
+      const vals = Object.values(v as Record<string, unknown>);
+      if (vals.length > 32) cut.truncated = true;
+      for (const x of vals.slice(0, 32)) scan(x, depth + 1);
     }
   };
   scan(input, 0);
@@ -354,19 +360,27 @@ export function observeTool(tool: string, input: unknown, ctx: RootsContext, bud
     const out: ToolObservation[] = [];
     const agentKnown = ctx.isGod || ownFolder(ctx) !== null;
     let paths: Array<{ via: Via; path: string }> = [];
+    const cut = { truncated: false };
     if (EDIT_TOOLS.has(tool) || MCP_WRITE.test(tool)) {
-      for (const k of PATH_FIELDS) if (typeof r[k] === 'string') paths.push({ via: 'edit', path: (r[k] as string).slice(0, 4096) });
+      for (const k of PATH_FIELDS) {
+        if (typeof r[k] !== 'string') continue;
+        if ((r[k] as string).length > 4096) { cut.truncated = true; continue; } // a path this long is not classed
+        paths.push({ via: 'edit', path: r[k] as string });
+      }
     } else {
-      const patched = patchPaths(input);
+      const patched = patchPaths(input, cut);
       if (patched.length) paths = patched.map((path) => ({ via: 'patch', path }));
       else {
         const command = r.command !== undefined ? r.command : r.cmd;
-        if (command === undefined) return out;
+        if (command === undefined) {
+          if (cut.truncated) out.push({ via: 'truncated', pathClass: 'unknown', refused: true }); // a patch scan cut short found nothing
+          return out;
+        }
         if (r.dangerouslyDisableSandbox === true) out.push({ via: 'shell-unsandboxed', pathClass: 'unknown', refused: true });
-        paths = shellPaths(command, ctx).map(({ path, write }) => ({ via: write ? 'shell-write' : 'shell-named', path }));
+        paths = shellPaths(command, ctx, 0, cut).map(({ path, write }) => ({ via: write ? 'shell-write' : 'shell-named', path }));
       }
     }
-    let truncated = paths.length > MAX_PATHS;
+    let truncated = cut.truncated || paths.length > MAX_PATHS;
     for (const { via, path } of paths.slice(0, MAX_PATHS)) {
       if (now() > deadline) { truncated = true; break; }
       if (!agentKnown) { out.push({ via, pathClass: 'unknown', refused: true }); continue; }
@@ -532,6 +546,8 @@ export interface DryRunDeps {
   record(event: Record<string, unknown>): void;
   /** Cheap, in-memory (a Map.has on the spawn record): whether the app spawned this id. Checked before a call is queued. */
   known(agentId: string): boolean;
+  /** Cheap, in-memory: which spawn of this agent is current (counts session starts at admission). */
+  generation?(agentId: string): number;
   /** Runs work after the hook's answer; defaults to setImmediate. */
   defer?: (fn: () => void) => void;
   now?: () => number;
@@ -541,7 +557,8 @@ export interface DryRunDeps {
  *  only shed its own calls, never another's. Agents are drained in turn, one call per event-loop turn, so a full queue
  *  is at most 8 × 25 ms = 200 ms of main-thread work per spawned agent, in slices with hooks answered between them. */
 export const MAX_QUEUE = 8;
-const MAX_COUNTERS = 2000;
+/** Distinct tool/shape counters kept per agent per turn; past it the agent's turn is incomplete (reason: cap). */
+export const MAX_KEYS_PER_AGENT = 64;
 
 type Pending = { agentId: string; event: string; tool: unknown; input: unknown };
 
@@ -553,10 +570,13 @@ export class WriteRootsDryRun {
   private turn: string[] = [];
   private scheduled = false;
   private shed = new Map<string, number>();
-  /** The spawn generation whose session start has been recorded, per agent. */
-  private sessionGen = new Map<string, number>();
   /** Tool calls seen per spawned agent, tool and input shape since that agent's last Stop. */
-  private seen = new Map<string, number>();
+  private seen = new Map<string, Map<string, number>>();
+  /** Calls not counted because the agent's counters were full. */
+  private capped = new Map<string, number>();
+  /** Session starts admitted per agent: the generation already counted, and duplicates seen for it. */
+  private admittedGen = new Map<string, number>();
+  private dupStarts = new Map<string, number>();
 
   constructor(private readonly d: DryRunDeps) {}
 
@@ -569,9 +589,15 @@ export class WriteRootsDryRun {
       if (this.d.known(agentId) !== true) return;
       let q = this.queues.get(agentId);
       if (!q) { q = []; this.queues.set(agentId, q); this.turn.push(agentId); }
+      if (event === 'SessionStart') {
+        // Counted here, at admission and per spawn generation, before anything can be merged in the queue.
+        const gen = this.d.generation?.(agentId) ?? 0;
+        if (this.admittedGen.get(agentId) === gen) { this.dupStarts.set(agentId, (this.dupStarts.get(agentId) ?? 0) + 1); this.schedule(); return; }
+        this.admittedGen.set(agentId, gen);
+      }
       if (event === 'PreToolUse') {
         if (q.filter((j) => j.event === 'PreToolUse').length >= MAX_QUEUE) { this.shed.set(agentId, (this.shed.get(agentId) ?? 0) + 1); return; }
-      } else if (q.some((j) => j.event === event)) return; // a turn's Stop or a session start is never shed, and never waits twice
+      } else if (q.some((j) => j.event === event)) return; // a second Stop waiting is the same flush: nothing is lost by merging it
       q.push({ agentId, event, tool: p?.tool_name, input: p?.tool_input });
       this.schedule();
     } catch { /* a dry run must never disturb the hook it rides on */ }
@@ -592,6 +618,10 @@ export class WriteRootsDryRun {
     const job = q?.shift();
     if (id !== undefined && q) { if (q.length) this.turn.push(id); else this.queues.delete(id); }
     if (job) { try { this.process(job); } catch { /* never let one call stop the rest */ } }
+    for (const [agentId, count] of this.dupStarts) {
+      this.dupStarts.delete(agentId);
+      if (this.d.agent(agentId)) this.d.record({ kind: 'write-duplicate-session-start', agentId, count });
+    }
     if (this.turn.length) this.schedule();
   }
 
@@ -600,8 +630,11 @@ export class WriteRootsDryRun {
     if (!a) return; // an id the app did not spawn: nothing allocated, nothing recorded
     const now = this.d.now ?? Date.now;
     if (j.event === 'PreToolUse') {
-      const key = `${j.agentId}\u0000${toolClass(j.tool)}\u0000${inputShape(j.input)}`;
-      if (this.seen.has(key) || this.seen.size < MAX_COUNTERS) this.seen.set(key, (this.seen.get(key) ?? 0) + 1);
+      const key = `${toolClass(j.tool)}\u0000${inputShape(j.input)}`;
+      let mine = this.seen.get(j.agentId);
+      if (!mine) { mine = new Map(); this.seen.set(j.agentId, mine); }
+      if (mine.has(key) || mine.size < MAX_KEYS_PER_AGENT) mine.set(key, (mine.get(key) ?? 0) + 1);
+      else this.capped.set(j.agentId, (this.capped.get(j.agentId) ?? 0) + 1);
       if (!mayWrite(j.tool, j.input)) return;
       const tool = toolClass(j.tool);
       for (const o of observeTool(j.tool as string, j.input, a.ctx, BUDGET_MS, now)) {
@@ -611,20 +644,16 @@ export class WriteRootsDryRun {
       return;
     }
     if (j.event === 'Stop' || j.event === 'SessionEnd') { this.flush(j.agentId); return; }
-    // The first session start of a spawn wins; another for the same spawn is recorded as such, never merged.
-    const gen = a.gen ?? 0;
-    if (this.sessionGen.get(j.agentId) === gen) { this.d.record({ kind: 'write-duplicate-session-start', agentId: j.agentId }); return; }
-    this.sessionGen.set(j.agentId, gen);
+    // The first session start of a spawn is the one queued; duplicates were counted at admission.
     const eff = effectiveRoots(a.provider, a.agentDir, a.ctx.cwd, a.ctx.home, a.launch);
     this.d.record({ kind: 'write-roots', agentId: j.agentId, provider: providerClass(a.provider), role: a.ctx.isGod ? 'god' : 'agent', source: eff.source, ...rootsReport(eff, a.ctx) });
   }
 
   private flush(agentId: string): void {
-    const prefix = `${agentId}\u0000`;
-    const rows = [...this.seen].filter(([k]) => k.startsWith(prefix));
-    for (const [k] of rows) this.seen.delete(k);
-    for (const [k, count] of rows) {
-      const [, tool, shape] = k.split('\u0000');
+    const mine = this.seen.get(agentId);
+    this.seen.delete(agentId);
+    for (const [k, count] of mine ?? []) {
+      const [tool, shape] = k.split('\u0000');
       this.d.record({ kind: 'write-observed', agentId, tool, shape, count });
     }
     const shed = this.shed.get(agentId);
@@ -632,7 +661,12 @@ export class WriteRootsDryRun {
       this.shed.delete(agentId);
       this.d.record({ kind: 'write-observed', agentId, tool: 'other', shape: 'shed', count: shed });
       // An agent that lost calls is incomplete for this turn, never clean: its burst filled its queue.
-      this.d.record({ kind: 'write-incomplete', agentId, state: 'incomplete', shed, burst: true });
+      this.d.record({ kind: 'write-incomplete', agentId, state: 'incomplete', reason: 'queue', shed, burst: true });
+    }
+    const capped = this.capped.get(agentId);
+    if (capped) {
+      this.capped.delete(agentId);
+      this.d.record({ kind: 'write-incomplete', agentId, state: 'incomplete', reason: 'cap', shed: capped, burst: false });
     }
   }
 }
@@ -642,12 +676,18 @@ export class WriteRootsDryRun {
 export const READ_SITES = [
   { id: 'payload-agent-id', read: 'hook payload agent_id', writer: 'any process that reaches the hook socket', planted: 'an id the app did not spawn, thousands of them', outcome: 'never queued (checked against the spawn record before admission); nothing allocated or recorded' },
   { id: 'attribution', read: 'which agent a call is filed under', writer: 'any process that reaches the hook socket', planted: 'another spawned agent\'s id', outcome: 'filed under that id: attribution is self-reported and this dry run cannot authenticate it (an enforcement-phase item); a flood under a forged id can only shed that id\'s own calls, and shows as incomplete' },
-  { id: 'incomplete', read: 'an agent\'s shed calls', writer: 'spawned agents, or a process forging their id', planted: 'a burst past the agent\'s queue', outcome: 'a write-incomplete row (state incomplete, shed count, burst) at the turn\'s end: the agent reads incomplete, never clean' },
-  { id: 'duplicate-session-start', read: 'SessionStart', writer: 'any process that reaches the hook socket', planted: 'a second session start for the same spawn', outcome: 'the first per spawn wins; another is recorded as write-duplicate-session-start, never merged' },
+  { id: 'incomplete', read: 'an agent\'s shed calls', writer: 'spawned agents, or a process forging their id', planted: 'a burst past the agent\'s queue', outcome: 'a write-incomplete row (reason queue, shed count, burst) at the turn\'s end: the agent reads incomplete, never clean' },
+  { id: 'seen-cap', read: 'the per-agent tool/shape counters', writer: 'spawned agents, or a process forging their id', planted: 'more than 64 distinct tool/shape pairs in one turn', outcome: 'counted per agent (one agent cannot fill another\'s); calls past it give a write-incomplete row (reason cap, count)' },
+  { id: 'stop-merge', read: 'a second Stop or SessionEnd waiting in the queue', writer: 'spawned agents', planted: 'repeated turn ends', outcome: 'merged with the one waiting: they flush the same counters, so nothing is lost' },
+  { id: 'command-cap', read: 'a command or argv element over 64 KB', writer: 'the agent', planted: 'a very long command', outcome: 'read up to 64 KB, plus one truncated row' },
+  { id: 'nested-script-cap', read: 'a shell script nested more than two levels (sh -c inside sh -c inside sh -c)', writer: 'the agent', planted: 'deep nesting', outcome: 'not read past two levels, plus one truncated row' },
+  { id: 'patch-cap', read: 'a patch input larger than 256 KB, deeper than 3 levels, or with more than 32 fields', writer: 'the agent', planted: 'an oversized or deeply nested patch input', outcome: 'read up to those limits, plus one truncated row' },
+  { id: 'path-length-cap', read: 'an edit target path over 4,096 characters', writer: 'the agent', planted: 'an absurdly long path', outcome: 'not classed, plus one truncated row' },
+  { id: 'duplicate-session-start', read: 'SessionStart', writer: 'any process that reaches the hook socket', planted: 'a second session start for the same spawn', outcome: 'counted at admission per spawn generation, before any merging in the queue: the first wins, and each further one is recorded as write-duplicate-session-start (count)' },
   { id: 'claude-managed-drop-ins', read: 'managed-settings.d/*.json beside the managed file', writer: 'root only', planted: '—', outcome: 'read like the managed file' },
   { id: 'payload-tool-name', read: 'hook payload tool_name', writer: 'same', planted: 'free text, non-string', outcome: 'logged as a fixed name or other' },
   { id: 'payload-tool-input', read: 'hook payload tool_input', writer: 'same', planted: 'huge command, thousands or deep missing paths, wrong types', outcome: 'answer not delayed; at most 64 paths, 25 ms, 64 KB per call, then one truncated row; wrong types record nothing' },
-  { id: 'queue', read: 'the deferred queue, one per agent', writer: 'spawned agents, by calling tools', planted: 'one agent flooding calls', outcome: 'at most 8 tool calls waiting per agent, drained in turn; more are shed and counted for that agent only; Stop and session start are never shed' },
+  { id: 'queue', read: 'the deferred queue, one per agent', writer: 'spawned agents, by calling tools', planted: 'one agent flooding calls', outcome: 'at most 8 tool calls waiting per agent, drained in turn; more are shed and counted for that agent only (see incomplete); Stop and session start are never shed' },
   { id: 'own-folder', read: '<hive>/agents/<id>', writer: 'every agent', planted: 'a link, a file, missing, an id that is not a plain name', outcome: 'no roots; every observation and the report unknown' },
   { id: 'claude-generated-settings', read: 'agents/<id>/settings.json', writer: 'the agent itself', planted: 'link, folder, unreadable, oversized, named pipe, parent is a file, missing', outcome: 'unknown' },
   { id: 'claude-project-settings', read: '<cwd>/.claude/settings(.local).json', writer: 'agents working in that cwd', planted: 'same kinds', outcome: 'unknown; missing is skipped' },
@@ -673,7 +713,7 @@ export const READ_SITES = [
   { id: 'env-tmpdir', read: 'TMPDIR (both), CLAUDE_CODE_TMPDIR (Claude)', writer: 'the operator\'s environment, or a per-agent override', planted: 'a temp folder inside the hive', outcome: 'counted as a root (the sandbox lets the CLI write its temp folder), classed \'temp\' when outside the hive and by its hive class when inside; relative = unknown' },
   { id: 'launch-executable-name', read: 'the executable\'s name', writer: 'the spawn request', planted: 'another program installed under the name claude or codex', outcome: 'taken to be the CLI: judged by name, the path is not resolved (stated limit)' },
   { id: 'relative-roots', read: 'a relative or ~ root in settings, config or --add-dir', writer: 'whoever wrote that source', planted: 'a relative path, ~/x, a $VAR', outcome: 'resolved the way the spawned CLI resolves it: against the spawn\'s cwd and home, never the app\'s; no cwd or a variable = unknown' },
-  { id: 'strict-decoders', read: 'the JSON and TOML decoders', writer: 'whoever wrote the file', planted: 'quoted, dotted or inline keys, profiles, duplicates, wrong types, nesting, key order', outcome: 'JSON: exact shape check of the keys read, any other type = unknown; TOML: no parser, so any sandbox key not consumed in its exact plain form = unknown' },
+  { id: 'strict-decoders', read: 'the JSON and TOML decoders', writer: 'whoever wrote the file', planted: 'quoted, dotted, escaped or inline keys, profiles, wrong types, dates and times, non-finite numbers', outcome: 'JSON: JSON.parse and an exact shape check of the keys read; TOML: parsed with smol-toml, then the same exact shape check, and any date, time or non-finite value anywhere is unknown (stricter than Codex on purpose); any other type = unknown' },
   { id: 'launch-wrapper', read: 'the launch line\'s executable', writer: 'the spawn request', planted: 'a wrapper: env X=Y claude, sh -c "...", npx codex', outcome: 'unknown (not a plain provider invocation)' },
   { id: 'env-missing', read: 'the spawn\'s final environment', writer: 'held in main\'s memory from the spawn', planted: 'none recorded', outcome: 'unknown' },
   { id: 'env-home', read: 'HOME in the spawn environment', writer: 'the operator\'s environment, or a per-agent override', planted: 'another home', outcome: 'honoured: user config is read from that home' },
