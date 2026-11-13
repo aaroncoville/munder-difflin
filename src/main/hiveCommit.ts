@@ -6,15 +6,23 @@ export type GitRunner = (args: string[], cwd: string) => Promise<GitResult>;
 /**
  * Identity and gc settings for every hive git command.
  *
- * `gc.autoDetach=false` is what makes a commit finished when its command exits. A commit runs `gc --auto`, and git
+ * Nothing a hive git command starts may outlive it. That is why `gc.autoDetach=false` was added, and why a commit no
+ * longer starts automatic gc or maintenance at all (`gc.auto=0`, `maintenance.auto=false`).
+ *
+ * `gc.autoDetach=false` is what made a commit finished when its command exited. A commit runs `gc --auto`, and git
  * detaches that into a background process by default, so the caller believes the hive is quiescent while a gc it
  * cannot see is still writing into `.git/objects/`. Anything that touches the hive directory right after a commit races
  * that process: removing a hive home throws ENOTEMPTY, and a read can catch a half-written pack. It reproduces on its
  * own (create a HiveManager on a fresh temp home, call ensureAgent, then remove the home: ~3.5% of iterations throw
- * ENOTEMPTY, the leftover always `.git/objects/`); with this flag gc runs inline and 200 iterations pass clean. The gc
- * still happens; it just no longer outlives the command that triggered it.
+ * ENOTEMPTY, the leftover always `.git/objects/`); with this flag gc runs inline and 200 iterations pass clean.
+ *
+ * Inline was still not enough. Recent git runs `git maintenance run --auto` after a commit rather than `gc --auto`, as
+ * a child that shares the commit's output. On a repository of several gigabytes a due gc or repack runs for minutes:
+ * the commit cannot finish inside its time limit, and a quit has to wait for it or leave it running. So the hive's
+ * commits start neither. The repository is no longer maintained automatically; that has to be a job of its own,
+ * scheduled when the hive is idle. `gc.autoDetach=false` stays, so a gc started some other way still runs inline.
  */
-export const HIVE_GIT_CONFIG = ['-c', 'commit.gpgsign=false', '-c', 'gc.autoDetach=false', '-c', 'user.name=Hive', '-c', 'user.email=hive@local'];
+export const HIVE_GIT_CONFIG = ['-c', 'commit.gpgsign=false', '-c', 'gc.autoDetach=false', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', '-c', 'user.name=Hive', '-c', 'user.email=hive@local'];
 
 /** A git command that takes longer than this is stopped. It no longer blocks anything while it runs, so the limit only
  *  has to catch a command that will never finish. SIGTERM lets git remove its own lock files on the way out. */

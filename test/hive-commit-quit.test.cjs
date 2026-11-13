@@ -236,3 +236,32 @@ test('quitting while git waits on a child stops both, within the quit grace', as
   assert.deepEqual(shim.alive(), []);
   assert.deepEqual(shim.childrenAlive(), []);
 });
+
+test('a hive commit never starts automatic gc or maintenance', async (t) => {
+  const dir = home(t);
+  const repo = path.join(dir, 'repo');
+  fs.mkdirSync(repo);
+  const real = (...a) => spawnSync(REAL_GIT, ['-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { cwd: repo, encoding: 'utf8' });
+  real('init', '-q');
+  // The repository asks for gc and maintenance at every opportunity.
+  real('config', 'gc.auto', '1');
+  real('config', 'maintenance.auto', 'true');
+  // GIT_TRACE records every git subcommand a command starts.
+  const trace = path.join(dir, 'trace');
+  const savedTrace = process.env.GIT_TRACE;
+  process.env.GIT_TRACE = trace;
+  t.after(() => { if (savedTrace === undefined) delete process.env.GIT_TRACE; else process.env.GIT_TRACE = savedTrace; });
+  const startedAutoWork = () => /run_command: git (maintenance run|gc) /.test(fs.existsSync(trace) ? fs.readFileSync(trace, 'utf8') : '');
+  fs.writeFileSync(path.join(repo, 'f'), 'v');
+
+  assert.equal((await runGit(['add', '-A'], repo)).ok, true);
+  const commit = await runGit(['commit', '-q', '-m', 'c'], repo);
+
+  assert.equal(commit.ok, true, commit.err);
+  assert.equal(startedAutoWork(), false, 'a hive commit started automatic gc or maintenance');
+  // The same commit through plain git does start it, so the trace would have shown it.
+  fs.writeFileSync(path.join(repo, 'g'), 'x');
+  real('add', '-A');
+  real('commit', '-q', '-m', 'd');
+  assert.equal(startedAutoWork(), true, 'the control commit started nothing: the test would prove nothing');
+});
