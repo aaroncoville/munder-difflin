@@ -28,7 +28,7 @@ import { join, dirname, basename, isAbsolute, relative, resolve as resolvePath }
 import { homedir } from 'node:os';
 import { claudeLaunch, claudeRoots, codexLaunchSandbox, codexRoots, launchExecutable, launchPlaces } from './launchLine';
 import { HookRuntimeUnavailable, hookCommandFor, overlaps, rootOverlap, stageHookRuntime, unsafePathReason, verifyHookRuntime, type StagedHookRuntime, type WriteRoot } from './hookRuntime';
-import { spawnSync, spawn, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
 import type { AgentUsageSample } from './usage';
 import { archiveOutboxFile, moveWithoutReplacing, quarantineOutboxFile, reportOutboxFailure, type OutboxStage } from './outboxFailure';
@@ -54,7 +54,7 @@ import { preferredAgentRole } from '../shared/agentRole';
 import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde } from './fs';
 import { refreshMineIgnoresOnce } from './hiveMineIgnore';
-import { AGENT_ALLOWLIST_IGNORE_LINES, CommitQueue, HIVE_GIT_CONFIG, HIVE_STALE_LOCK_MS, runGit, stopRunningGits, untrackIgnored, type GitResult } from './hiveCommit';
+import { AGENT_ALLOWLIST_IGNORE_LINES, CommitQueue, HIVE_STALE_LOCK_MS, runGit, stopRunningGits, untrackIgnored, type GitResult } from './hiveCommit';
 import { agentFolderId, hasExactFolder, isAppSender, isFolderName, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, RegistryUnreadable, rosterIdFor, shortTarget } from './messageTarget';
 import { nodeLauncherScript } from './nodeLauncher';
 import { codexTrustEntry } from '../shared/codexTrust';
@@ -1199,7 +1199,8 @@ export class HiveManager {
 
     refreshMineIgnoresOnce(this, root, (dir) => { ensureMineIgnore(dir); sweepInboxLeftovers(join(dir, 'inbox')); });
     if (!this._gitCommitsDisabled && !existsSync(join(root, '.git'))) {
-      this.git(['init', '-q'], root);
+      // Created by the first commit, in the background like every other hive git: see commitNow.
+      this.uncreatedRepos.add(root);
       this.commit('hive: init');
     }
   }
@@ -3822,13 +3823,7 @@ export class HiveManager {
     renameSync(tmp, p);
   }
 
-  // — git: synchronous, for `init` only; commits run in the background through CommitQueue —
-  private git(args: string[], cwd: string): { ok: boolean; out: string; err: string } {
-    const res = spawnSync('git', [...HIVE_GIT_CONFIG, ...args], {
-      cwd, encoding: 'utf8', timeout: 8000
-    });
-    return { ok: res.status === 0, out: res.stdout ?? '', err: res.stderr ?? '' };
-  }
+  // — git: every hive git runs in the background, through CommitQueue —
 
   /** Repositories whose already-tracked, now-ignored paths have been dropped from the index in this process. */
   private readonly untrackedRoots = new Set<string>();
@@ -3843,7 +3838,7 @@ export class HiveManager {
   commit(message: string): void {
     if (this._gitCommitsDisabled || this.commitsStopped) return;
     const root = this.root();
-    if (!root || !existsSync(join(root, '.git'))) return;
+    if (!root || !(existsSync(join(root, '.git')) || this.uncreatedRepos.has(root))) return;
     this.commits.request(root, message);
   }
 
@@ -3854,6 +3849,9 @@ export class HiveManager {
 
   /** Set once the app is quitting: no new commit, and no further git step in one already running. */
   private commitsStopped = false;
+
+  /** Hive folders whose repository ensureHive asked for and the first commit has yet to create. */
+  private readonly uncreatedRepos = new Set<string>();
 
   /**
    * For quitting, so no hive git outlives the app. A git left running after quit could still hold the index lock when
@@ -3873,11 +3871,17 @@ export class HiveManager {
   }
 
   private async commitNow(root: string, message: string): Promise<GitResult> {
-    // Checked again here: commits may have been turned off since this one was requested.
-    if (this._gitCommitsDisabled || !existsSync(join(root, '.git'))) return { ok: true, out: '', err: '' };
     // Once quitting has begun, no further git starts: the one already running is all there is to stop.
     const git = (args: string[], cwd: string): Promise<GitResult> =>
       (this.commitsStopped ? Promise.resolve({ ok: false, out: '', err: 'the app is quitting' }) : runGit(args, cwd));
+    // Checked again here: commits may have been turned off since this one was requested.
+    if (this._gitCommitsDisabled) return { ok: true, out: '', err: '' };
+    if (!existsSync(join(root, '.git'))) {
+      if (!this.uncreatedRepos.has(root)) return { ok: true, out: '', err: '' };
+      const init = await git(['init', '-q'], root);
+      if (!init.ok) return init;
+    }
+    this.uncreatedRepos.delete(root);
     if (!this.untrackedRoots.has(root)) {
       this.untrackedRoots.add(root);
       const dropped = await untrackIgnored(root, git);

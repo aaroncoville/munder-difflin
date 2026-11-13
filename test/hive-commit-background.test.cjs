@@ -238,3 +238,20 @@ test('a commit job that throws counts as a failure and the queue keeps going', a
   assert.match(lines[0], /spawn git ENOENT/);
   assert.equal(queue.consecutiveFailures(), 0);
 });
+
+test('creating the hive repository does not wait for git either', async (t) => {
+  const dir = home(t);
+  const shim = slowGit(t, dir);
+  shim.only('init');
+  shim.setDelay(1);
+  const hive = new HiveManager(() => dir);
+  t.after(() => hive.commitsSettled());
+
+  const started = Date.now();
+  hive.ensureHive();
+  const waited = Date.now() - started;
+  await hive.commitsSettled();
+
+  assert.ok(waited < 500, `preparing the hive waited ${waited} ms for git init`);
+  assert.match(git(path.join(dir, 'hive'), ['log', '-1', '--format=%s']), /hive: init/);
+});
