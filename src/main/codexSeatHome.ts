@@ -1,6 +1,8 @@
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, writeFileSync, writeSync } from 'node:fs';
-import { join, relative, isAbsolute } from 'node:path';
-import { codexShortHomePath, resolvedCodexHome } from '../shared/codexRemote';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { codexShortHomePath, codexShortHomeRoot } from '../shared/codexRemote';
+import { overlaps, type WriteRoot } from './hookRuntime';
 
 /**
  * Where a Codex agent's CODEX_HOME lives, and why it is not in the agent folder.
@@ -37,32 +39,23 @@ export class CodexHomeRefused extends Error {
   }
 }
 
-function within(child: string, parent: string): boolean {
-  const rel = relative(parent, child);
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+/** Folders Codex's workspace-write sandbox lets every agent write without being
+ *  told: /tmp and $TMPDIR. */
+export function codexTempRoots(): WriteRoot[] {
+  const out: WriteRoot[] = [{ path: tmpdir(), from: 'the temp folder ($TMPDIR), which Codex lets every agent write' }];
+  if (process.platform !== 'win32') out.push({ path: '/tmp', from: '/tmp, which Codex lets every agent write' });
+  return out;
 }
 
-/** The first writable root that contains the home or lies inside it, compared
- *  on resolved paths (a link in either spelling must not hide an overlap). */
-export function overlappingRoot(home: string, roots: string[]): string | null {
-  const h = resolvedCodexHome(home);
-  for (const root of roots) {
-    if (!root) continue;
-    const r = resolvedCodexHome(root);
-    if (within(h, r) || within(r, h)) return root;
+/** Why these write roots, or the temp folders every Codex agent may write, reach
+ *  the folder that holds every Codex agent's home; null when none does. Compared
+ *  on resolved paths, so a link in either spelling does not hide an overlap. */
+export function codexHomesReach(roots: WriteRoot[], base: string = codexShortHomeRoot()): string | null {
+  for (const r of [...roots, ...codexTempRoots()]) {
+    if (r.path === null) return `a write root in ${r.from} could not be read or understood, so it may reach every Codex agent's home (${base})`;
+    if (r.path && overlaps(base, r.path)) return `the agent may write ${r.path} (${r.from}), which holds every Codex agent's home (${base}); it could plant hooks there`;
   }
   return null;
-}
-
-/** Check a computed home before anything is written into it. Throws
- *  CodexHomeRefused with the reason; the spawn is refused, never redirected. */
-export function assertCodexSeatHome(home: string, roots: string[]): void {
-  // Length is not checked here: a home too long for the control socket still
-  // runs, as a local terminal without remote control (codexRemoteSetup.ts).
-  const root = overlappingRoot(home, roots);
-  if (root) {
-    throw new CodexHomeRefused(`Codex home ${home} overlaps the writable folder ${root}; an agent could plant hooks there`);
-  }
 }
 
 /** Files carried over from an agent's old in-tree home: its history and the

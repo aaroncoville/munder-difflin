@@ -4,11 +4,12 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { codexTestBase } = require('./codex-test-home.cjs');
 const { prepareCodexHookTrust } = loadTs('src/main/codexHookTrust.ts');
 const { HiveManager } = loadTs('src/main/hive.ts');
 
 async function fixture(t) {
-  const root = fs.realpathSync(fs.mkdtempSync('/tmp/mdch-'));
+  const root = codexTestBase(t, 'mdch-');
   const oldHome = process.env.HOME;
   process.env.HOME = root;
   t.after(() => { process.env.HOME = oldHome; fs.rmSync(root, { recursive: true, force: true }); });

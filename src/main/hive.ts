@@ -36,7 +36,7 @@ import { stampSentCopy } from './sentStamp';
 import { RecentSends } from './outboxResend';
 import { setAsideUnlessFolder } from './sentFolder';
 import { COMMAND_GROUPS } from '../shared/claudeCommands';
-import { assertCodexSeatHome, CodexHomeRefused, codexSeatHome, migrateSeatHome } from './codexSeatHome';
+import { CodexHomeRefused, codexHomesReach, codexSeatHome, migrateSeatHome } from './codexSeatHome';
 import {
   argsWithSandboxStance,
   hasSandboxStance,
@@ -778,11 +778,25 @@ export class HiveManager {
    *  runtime folder is set. */
   private hookVerdict(meta: AgentMeta, dir: string, root: string, extra: string[] | undefined, launch: HookLaunch | undefined, isNew: boolean): HookVerdict | null {
     const kind = this.hookKind(meta);
-    if (!kind) return null;
+    if (!kind) {
+      // No app hook command, but its sandbox may still write the folders it is given.
+      const plain = [{ path: meta.cwd, from: 'its working directory' },
+        ...this.sandboxWritableDirs(meta, dir, root, extra).map((p) => ({ path: p, from: 'the write roots the app gives it' }))];
+      this.refuseCodexHomesReach(plain);
+      return null;
+    }
     const r = this.verdictRoots(meta, dir, root, extra, launch);
     const rt = this.runtimeFor(meta.id, 'refuse' in r ? [] : r.roots, kind === 'codex' && process.platform === 'win32', 'refuse' in r ? r.refuse : null);
+    if (!('refuse' in r)) this.refuseCodexHomesReach(r.roots);
     if (!rt || 'refuse' in r) return null;
     return { agentId: meta.id, kind, rt, rootPaths: r.roots.map((x) => x.path).filter((x): x is string => !!x), claudeUserDir: r.claudeUserDir, codexFromConfig: r.codexFromConfig, dir, cwd: meta.cwd, isNew };
+  }
+  /** Every Codex agent's home sits under one folder outside the hive (codexSeatHome.ts). An agent of any provider
+   *  whose roots reach that folder could plant hooks in any of them, and hooks run outside the sandbox, so it is refused
+   *  here, before anything for it is created. Agents already running are left alone: the one admitted later is refused. */
+  private refuseCodexHomesReach(roots: WriteRoot[]): void {
+    const why = codexHomesReach(roots);
+    if (why) throw new CodexHomeRefused(why);
   }
   /** Called once the spawn's injection has been applied: only then can its decision be confirmed. */
   markHookProvisioned(spawnId: string): void {
@@ -3075,10 +3089,9 @@ export class HiveManager {
    *  (login + model/provider/trust settings still apply).
    *  Returns the CODEX_HOME path for the caller to put in the worker's env. */
   private installCodexHooks(dir: string, cwd: string, agentId: string, writableRoots: string[] = []): string {
-    // Computed, never read from the agent folder (codexSeatHome.ts), and refused
-    // outright if this agent's own sandbox could write it.
+    // Computed, never read from the agent folder (codexSeatHome.ts). A spawn whose
+    // roots reach it was refused before anything was created (hookVerdict).
     const home = codexSeatHome(dir, agentId);
-    assertCodexSeatHome(home, [cwd, ...writableRoots]);
     try {
       mkdirSync(home, { recursive: true, mode: 0o700 });
       // An agent that ran before homes moved out of the agent folder keeps its

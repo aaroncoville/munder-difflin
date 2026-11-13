@@ -9,6 +9,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { codexTestBase } = require('./codex-test-home.cjs');
 
 const W = loadTs('src/main/writeRoots.ts');
 const { UsageLog, sanitize } = loadTs('src/main/usageLog.ts');
@@ -16,10 +17,9 @@ const { withCodexWritableRoots } = loadTs('src/shared/codexWritableRoots.ts');
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { HookServer } = loadTs('src/main/hooks.ts');
 
+/** Outside /tmp and $TMPDIR, which every Codex agent may write (codex-test-home.cjs). */
 function freshHome(t) {
-  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'md-roots-')));
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
-  return home;
+  return codexTestBase(t, 'md-roots-');
 }
 
 function jailHome(t, home) {
@@ -153,8 +153,8 @@ test('effective Claude roots come from every settings file the CLI merges; off o
   const home = freshHome(t);
   jailHome(t, home);
   const h = new HiveManager(() => home);
-  await h.ensureAgent({ id: 'g1', name: 'G', provider: 'claude', cwd: home, isGod: true });
-  await h.ensureAgent({ id: 'w1', name: 'W', provider: 'claude', cwd: home });
+  await h.ensureAgent({ id: 'g1', name: 'G', provider: 'claude', cwd: path.join(home, 'hive'), isGod: true });
+  await h.ensureAgent({ id: 'w1', name: 'W', provider: 'claude', cwd: path.join(home, 'hive') });
   const root = path.join(home, 'hive');
   const ctxOf = (id, isGod, cwd = home) => ({ root, agentId: id, isGod, cwd, home });
   const dir = path.join(root, 'agents/w1');
@@ -285,7 +285,7 @@ test('the dry run counts every call, looks an agent up only for calls that can w
   const home = freshHome(t);
   jailHome(t, home);
   const h = new HiveManager(() => home);
-  await h.ensureAgent({ id: 'w1', name: 'W', provider: 'claude', cwd: home });
+  await h.ensureAgent({ id: 'w1', name: 'W', provider: 'claude', cwd: path.join(home, 'hive') });
   const root = path.join(home, 'hive');
   const control = { takeSteer: () => null, shouldHalt: () => false, toolDecision: () => ({ deny: false }) };
   const pre = (tool_name, tool_input) => ({ agent_id: 'w1', hook_event_name: 'PreToolUse', session_id: 's', tool_name, tool_input });

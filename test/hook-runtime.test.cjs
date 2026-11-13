@@ -13,6 +13,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const loadTs = require('./load-ts.cjs');
+const { codexTestBase } = require('./codex-test-home.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 const R = loadTs('src/main/hookRuntime.ts');
@@ -20,7 +21,7 @@ const POSIX = process.platform !== 'win32';
 
 /** A short base under /tmp (socket paths are length-limited), HOME jailed into it, and an app-data folder beside the hive. */
 function floor(t, opts = {}) {
-  const base = fs.realpathSync(fs.mkdtempSync(path.join(POSIX ? '/tmp' : os.tmpdir(), 'mdhr-')));
+  const base = codexTestBase(t, 'mdhr-');
   const home = path.join(base, 'h');
   // The agents' working folder: beside HOME, never HOME itself, which holds every Codex agent's home.
   const away = path.join(base, 'a');
@@ -984,7 +985,7 @@ test('tables that name a program Codex runs outside its sandbox: allowed in the 
 });
 
 test('a Claude seat whose generated settings carry enabledPlugins passes the spawn check and the late check', async (t) => {
-  const { home, rt, hive } = floor(t);
+  const { home, away, rt, hive } = floor(t);
   hive.setHookRuntime(rt);
   // The owner's own settings enable plugins, as on the floor; the generated settings name every one of them.
   const userDir = path.join(home, '.claude');
@@ -993,7 +994,7 @@ test('a Claude seat whose generated settings carry enabledPlugins passes the spa
   const id = 'pl1';
   const dir = path.join(home, 'hive', 'agents', id);
   const argv = ['claude', '--settings', path.join(dir, 'settings.json')];
-  const inj = await hive.ensureAgent({ id, name: 'p', provider: 'claude', cwd: home }, { launch: { argv, env: {} }, spawnId: 's-pl1' });
+  const inj = await hive.ensureAgent({ id, name: 'p', provider: 'claude', cwd: away }, { launch: { argv, env: {} }, spawnId: 's-pl1' });
   const settings = JSON.parse(fs.readFileSync(inj.args[inj.args.indexOf('--settings') + 1], 'utf8'));
   assert.deepEqual(settings.enabledPlugins, { 'superpowers@claude-plugins-official': true, 'terraform@claude-plugins-official': false });
   hive.markHookProvisioned('s-pl1');

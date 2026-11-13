@@ -16,18 +16,18 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const loadTs = require('./load-ts.cjs');
+const { codexTestBase, jailHome } = require('./codex-test-home.cjs');
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { codexShortHomePath } = loadTs('src/shared/codexRemote.ts');
 
 const BYPASS = '--dangerously-bypass-hook-trust';
 
-/** A short /tmp root standing in for the user's home, so the computed home
- *  (under the home-level short root) lands inside it and fits the socket cap. */
+/** A short root standing in for the user's home, so the computed home (under
+ *  the home-level short root) lands inside it and fits the socket cap. Not under
+ *  /tmp or $TMPDIR: Codex lets every agent write those (codex-test-home.cjs). */
 function fixture(t) {
-  const root = fs.realpathSync(fs.mkdtempSync('/tmp/mdsh-'));
-  const oldHome = process.env.HOME;
-  process.env.HOME = root;
-  t.after(() => { process.env.HOME = oldHome; fs.rmSync(root, { recursive: true, force: true }); });
+  const root = codexTestBase(t, 'mdsh-');
+  jailHome(t, root);
   const hive = new HiveManager(() => root);
   // The app's own hook runtime folder, outside the hive: without one no hook command is written.
   const runtime = fs.realpathSync(fs.mkdtempSync('/tmp/mdsr-'));
@@ -125,8 +125,82 @@ test('a home inside one of the agent\'s writable folders refuses the spawn', asy
   const alias = path.join(f.root, 'alias');
   fs.symlinkSync(f.root, alias);
   for (const extra of [[f.root], [alias]]) {
-    await assert.rejects(f.spawn('o', extra), (e) => e.name === 'CodexHomeRefused' && /overlaps the writable folder/.test(e.message));
+    await assert.rejects(f.spawn('o', extra), (e) => e.name === 'CodexHomeRefused' && e.message.includes(extra[0]) && /every Codex agent's home/.test(e.message));
   }
+});
+
+const refusedHome = (folder) => (e) => {
+  assert.equal(e.name, 'CodexHomeRefused', String(e));
+  assert.ok(e.message.includes(folder), `the reason names ${folder}: ${e.message}`);
+  return true;
+};
+
+test('an agent of any provider that could write the Codex homes is refused, and nothing is created for it', async (t) => {
+  const f = fixture(t);
+  for (const provider of ['claude', 'codex', 'gemini']) {
+    const id = `h-${provider}`;
+    await assert.rejects(f.hive.ensureAgent({ id, name: id, provider, cwd: f.root }), refusedHome(f.root), provider);
+    assert.equal(fs.existsSync(f.agentDir(id)), false, `${provider}: no agent folder`);
+    assert.equal(Object.hasOwn(f.hive.registry().agents, id), false, `${provider}: no registry row`);
+  }
+});
+
+test('a later agent whose working folder is a running Codex agent\'s home is the one refused', async (t) => {
+  const f = fixture(t);
+  const home = (await f.spawn('first')).env.CODEX_HOME;
+  const before = snapshot(home);
+  for (const provider of ['claude', 'gemini']) {
+    await assert.rejects(f.hive.ensureAgent({ id: `later-${provider}`, name: 'l', provider, cwd: home }), refusedHome(home), provider);
+  }
+  assert.deepEqual(snapshot(home), before, 'the running agent\'s home is left alone');
+  assert.equal(f.hive.registry().agents.first.archived, false, 'and so is its registry row');
+});
+
+test('an agent rooted at $HOME or the homes folder is refused, whichever starts first', async (t) => {
+  // A seat that could write a victim's home could plant a hooks.json there and trust it through
+  // Codex's model-free app server; the victim's next start would run it outside any sandbox.
+  const f = fixture(t);
+  const mdc = path.join(f.root, '.mdc');
+  // The attacker first: refused; the victim then starts as usual.
+  await assert.rejects(f.hive.ensureAgent({ id: 'att0', name: 'a', provider: 'claude', cwd: mdc }), refusedHome(mdc));
+  const victim = (await f.spawn('victim')).env.CODEX_HOME;
+  assert.equal(path.dirname(victim), mdc);
+  // The victim first: every later seat that reaches its home is refused.
+  for (const [provider, root] of [['claude', f.root], ['claude', mdc], ['codex', mdc], ['claude', victim]]) {
+    await assert.rejects(f.hive.ensureAgent({ id: `att-${provider}`, name: 'a', provider, cwd: f.cwd }, { extraWritableDirs: [root] }), refusedHome(root), `${provider} given ${root}`);
+    await assert.rejects(f.hive.ensureAgent({ id: `att2-${provider}`, name: 'a', provider, cwd: root }), refusedHome(root), `${provider} rooted at ${root}`);
+  }
+});
+
+test('a Codex home under a temp folder Codex lets every agent write is refused', async (t) => {
+  // HOME under /tmp: workspace-write grants /tmp to every Codex agent.
+  const tmpRoot = fs.realpathSync(fs.mkdtempSync('/tmp/mdtt-'));
+  t.after(() => fs.rmSync(tmpRoot, { recursive: true, force: true }));
+  jailHome(t, tmpRoot);
+  const cwd = path.join(tmpRoot, 'work');
+  fs.mkdirSync(cwd);
+  const hive = new HiveManager(() => tmpRoot);
+  await assert.rejects(hive.ensureAgent({ id: 'tmp1', name: 't', provider: 'codex', cwd }), refusedHome('/tmp'));
+
+  // HOME under $TMPDIR: workspace-write grants it too.
+  const f = fixture(t);
+  const realTmp = process.env.TMPDIR;
+  process.env.TMPDIR = path.dirname(f.root);
+  t.after(() => { if (realTmp === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = realTmp; });
+  await assert.rejects(f.spawn('tmp2'), refusedHome(path.dirname(f.root)));
+});
+
+test('write roots from the owner\'s Codex config and from a project config are checked against the homes', async (t) => {
+  const f = fixture(t);
+  const user = path.join(f.root, '.codex', 'config.toml');
+  fs.mkdirSync(path.dirname(user), { recursive: true });
+  fs.writeFileSync(user, `[sandbox_workspace_write]\nwritable_roots = [${JSON.stringify(path.join(f.root, '.mdc'))}]\n`);
+  await assert.rejects(f.spawn('u1'), (e) => refusedHome(path.join(f.root, '.mdc'))(e) && e.message.includes(user));
+  fs.rmSync(user);
+  fs.mkdirSync(path.join(f.cwd, '.codex'));
+  const project = path.join(f.cwd, '.codex', 'config.toml');
+  fs.writeFileSync(project, `[sandbox_workspace_write]\nwritable_roots = ["~"]\n`);
+  await assert.rejects(f.spawn('p1'), (e) => refusedHome(f.root)(e) && e.message.includes(project));
 });
 
 test('an agent with an old in-tree home keeps its history, and only that is copied', async (t) => {
