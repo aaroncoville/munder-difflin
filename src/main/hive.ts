@@ -223,7 +223,7 @@ export interface Registry {
 /** A launch as the spawn will make it: argv[0] is the command string, then its arguments; env holds only the variables that move configuration. */
 export interface HookLaunch { argv: string[]; env: Record<string, string> }
 /** What ensureAgent decided for a Claude or Codex spawn, carried to the late check. */
-export interface HookVerdict { agentId: string; kind: 'claude' | 'codex'; rt: StagedHookRuntime; rootPaths: string[]; claudeUserDir?: string; codexFromConfig?: boolean; dir: string; cwd: string; isNew: boolean; /** True when the agent's folder did not exist before this spawn. */ dirCreated?: boolean; /** The spawn this decision is for. */ spawnId?: string; /** Set only once every provisioning step the decision depends on has succeeded. */ provisioned?: boolean; /** Why provisioning did not complete. */ failure?: string; /** An agent that existed: its registry row as it was before this spawn, put back if the spawn is refused. */ prevRow?: RegistryAgent }
+export interface HookVerdict { agentId: string; kind: 'claude' | 'codex'; rt: StagedHookRuntime; rootPaths: string[]; claudeUserDir?: string; codexFromConfig?: boolean; dir: string; cwd: string; isNew: boolean; /** True when the agent's folder did not exist before this spawn. */ dirCreated?: boolean; /** The spawn this decision is for. */ spawnId?: string; /** Set only once every provisioning step the decision depends on has succeeded. */ provisioned?: boolean; /** Why provisioning did not complete. */ failure?: string; /** An agent that existed: its registry row as it was before this spawn, put back if the spawn is refused. */ prevRow?: RegistryAgent; /** It was waiting to be archived when this spawn cleared that; put back with its row. */ archivePending?: boolean }
 
 export interface SpawnInjection {
   args: string[];
@@ -931,7 +931,11 @@ export class HiveManager {
         // A row put back needs only the row's own spawn id: every later spawn rewrites it.
         else if (v.isNew && later && later !== v.spawnId) rowKept = 'a later spawn has started';
         else if (root && reg) {
-          if (v.prevRow) { reg.agents[v.agentId] = v.prevRow; rowRestored = true; }
+          if (v.prevRow) {
+            reg.agents[v.agentId] = v.prevRow;
+            rowRestored = true;
+            if (v.archivePending) writeFileSync(join(v.dir, ARCHIVE_PENDING), '');
+          }
           else { delete reg.agents[v.agentId]; rowRemoved = true; }
           this.atomicWriteJson(join(root, 'registry.json'), reg);
         }
@@ -1354,6 +1358,8 @@ export class HiveManager {
     // The write replaces the whole file, so it must not replace a change made since the read above.
     if (JSON.stringify(this.readableRegistry()) !== asRead) this.refuseRegistryWrite(meta.id);
     this.atomicWriteJson(join(root, 'registry.json'), reg);
+    // A refused spawn puts a pending archive back with the row (rollbackSpawn).
+    if (verdict && verdict.prevRow && existsSync(join(dir, ARCHIVE_PENDING))) verdict.archivePending = true;
     rmSync(join(dir, ARCHIVE_PENDING), { force: true }); // running again, so an archive still waiting no longer applies
 
     this.appendLog({ kind: 'spawn', agentId: meta.id, name: meta.name, isGod: !!meta.isGod });

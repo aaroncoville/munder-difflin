@@ -134,11 +134,15 @@ test('a restore refused after provisioning leaves the agent\'s registry row exac
   reg.agents.cx1 = { ...reg.agents.cx1, sessionId: '01a1d072-5747-7e83-a08f-03389a2cac3f', status: 'offline', lastSeen: 1 };
   fs.writeFileSync(regFile, JSON.stringify(reg));
   const before = JSON.parse(fs.readFileSync(regFile, 'utf8')).agents.cx1;
+  // It was waiting to be archived; provisioning clears that, and a refusal must put it back.
+  const marker = path.join(base, 'h', 'hive', 'agents', 'cx1', '.archive-pending');
+  fs.writeFileSync(marker, '');
   // The restore at app start: provisioned, then refused at the trust step.
   await hive.ensureAgent({ id: 'cx1', name: 'Coder', provider: 'codex', cwd: work }, { launch, spawnId: 'pty-cx1-2' });
   hive.markHookProvisioned('pty-cx1-2');
   hive.withdrawRefusedSpawn('pty-cx1-2', 'Codex hook trust could not be established');
   assert.deepEqual(JSON.parse(fs.readFileSync(regFile, 'utf8')).agents.cx1, before);
+  assert.equal(fs.existsSync(marker), true, 'the pending archive is back');
   // And it can be started again.
   await hive.ensureAgent({ id: 'cx1', name: 'Coder', provider: 'codex', cwd: work }, { launch, spawnId: 'pty-cx1-3' });
   assert.equal(hive.registry().agents.cx1.archived, false);
