@@ -227,7 +227,9 @@ async function enableCodexRemoteForSpawn(
   const result = await setUpCodexRemote(
     { home: alias, executable, agentId },
     {
-      prepareHookTrust: () => seedCodexHookTrust({ home: alias, cwd: opts.cwd, executable, env }),
+      // Established and verified before this is called; a spawn whose hooks
+      // could not be trusted was refused there, so there is no fallback here.
+      prepareHookTrust: () => Promise.resolve(true),
       run: (args) => runCodexDaemonCommand(executable, args, env),
       socketExists: (path) => existsSync(path),
       // The hive log is the one place off this machine's terminal that both the
@@ -3290,8 +3292,25 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // the TUI to it so the thread is visible in ChatGPT mobile. Best-effort: an
   // unavailable/older Codex install still gets a normal local terminal.
   if (provider === 'codex' && opts.hive?.id) {
-    // The home is already outside the hive and short enough for the control
-    // socket (codexSeatHome.ts); nothing here may move it back.
+    // The home is already outside the hive (codexSeatHome.ts). Before either
+    // launch form, local terminal or remote, persist trust for the
+    // exact hooks the app generated. If anything else would need trust, nothing
+    // starts: without the bypass flag an untrusted hook never runs, and a worker
+    // must not sit in the hooks-review menu with nobody at the keyboard.
+    const home = opts.env?.CODEX_HOME;
+    if (home) {
+      let reason = 'unknown';
+      const env: NodeJS.ProcessEnv = { ...process.env, ...(opts.env ?? {}) };
+      const trusted = await seedCodexHookTrust(
+        { home, cwd: opts.cwd, executable: resolveCliCommand(opts.command), env },
+        undefined,
+        (why) => { reason = why; }
+      );
+      if (!trusted) {
+        return refuseSpawn(opts.id, opts.hive.id, provider,
+          new CodexHomeRefused(`Codex hook trust could not be established for ${opts.hive.id}: ${reason}`));
+      }
+    }
     await enableCodexRemoteForSpawn(opts, opts.hive.id);
   }
   // The late check on the launch exactly as it will start; a refusal here rolls back what ensureAgent created.

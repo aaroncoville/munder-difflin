@@ -54,10 +54,12 @@ test('fresh writer hooks get exact persisted trust before remote startup; repeat
   assert.equal(f.writes.length, 1);
 });
 
-test('untrusted user/project hooks force local fallback without broadening trust', async t => {
+test('an untrusted user or project hook refuses the start, says which, and broadens no trust', async t => {
   const f = await fixture(t);
-  f.hooks.push({ ...f.hooks[0], key: 'foreign', command: 'foreign-hook', source: 'project' });
-  assert.equal(await prepareCodexHookTrust(f.ctx, f.rpc), false);
+  f.hooks.push({ ...f.hooks[0], key: 'foreign', command: 'foreign-hook', source: 'project', sourcePath: '/w/.codex/hooks.json' });
+  let why = '';
+  assert.equal(await prepareCodexHookTrust(f.ctx, f.rpc, (r) => { why = r; }), false);
+  assert.match(why, /did not write would need trust: preToolUse from \/w\/\.codex\/hooks\.json/);
   assert.deepEqual(f.writes, []);
 });
 
@@ -74,7 +76,7 @@ test('persisted trust must be acknowledged by the resolver', async t => {
     method === 'config/batchWrite' ? { status: 'ok' } : f.rpc(method, params)), false);
 });
 
-test('a missing CLI returns a local fallback instead of rejecting spawn', async t => {
+test('a missing CLI reports failure instead of throwing', async t => {
   const f = await fixture(t);
   const { seedCodexHookTrust } = loadTs('src/main/codexHookTrust.ts');
   assert.equal(await seedCodexHookTrust({ ...f.ctx, executable: path.join(f.ctx.cwd, 'missing'), env: process.env }), false);

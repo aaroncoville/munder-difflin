@@ -1369,15 +1369,10 @@ export class HiveManager {
               // (withCodexRemoteArgs drops it when --remote is added).
               const writableRoots = this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs);
               env.CODEX_HOME = this.installCodexHooks(dir, meta.cwd, meta.id, writableRoots);
-              // Codex refuses to run hooks from a config dir without persisted
-              // "hook trust" (normally an interactive gate). Our hook config is
-              // hive-authored inside an isolated CODEX_HOME, so we bypass that gate
-              // for this automated spawn — the flag's documented use ("automation
-              // that already vets hook sources"). Without it the hooks silently
-              // never fire. Remote startup also persists exact generated hook hashes
-              // (codexHookTrust.ts); this flag keeps the local fallback unattended.
-              // Must precede the positional prompt.
-              preArgs.push('--dangerously-bypass-hook-trust');
+              // Codex runs a hook only once its exact hash is trusted. The spawn
+              // seeds that trust for the generated hooks alone (codexHookTrust.ts)
+              // and refuses to start if anything else would need it. There is no
+              // bypass flag: it would also run a hook planted in a project layer.
               for (const d of writableRoots) preArgs.push('--add-dir', d);
             }
             else if (desc.shim === 'pi') {

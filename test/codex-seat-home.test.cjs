@@ -13,10 +13,13 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const loadTs = require('./load-ts.cjs');
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { codexShortHomePath } = loadTs('src/shared/codexRemote.ts');
+
+const BYPASS = '--dangerously-bypass-hook-trust';
 
 /** A short /tmp root standing in for the user's home, so the computed home
  *  (under the home-level short root) lands inside it and fits the socket cap. */
@@ -110,6 +113,12 @@ test('hooks.state written into the home before a spawn does not survive into the
   assert.doesNotMatch(fs.readFileSync(path.join(home, 'config.toml'), 'utf8'), /hooks\.state|planted/);
 });
 
+test('Codex is launched without the hook-trust bypass', async (t) => {
+  const f = fixture(t);
+  const inj = await f.spawn('b');
+  assert.equal(inj.args.includes(BYPASS), false, `args: ${inj.args.join(' ')}`);
+});
+
 test('a home inside one of the agent\'s writable folders refuses the spawn', async (t) => {
   const f = fixture(t);
   // Roots that contain the short-home base, spelled directly and through a link.
@@ -193,3 +202,57 @@ test('after migration a resumed agent still finds its rollouts', async (t) => {
   assert.equal(fs.readFileSync(path.join(home, 'state_5.sqlite'), 'utf8'), 'index');
   assert.equal(fs.readFileSync(path.join(home, 'hive-thread.json'), 'utf8'), '{"thread":"t1"}');
 });
+
+// The installed Codex CLI, model-free: only `app-server` hooks/list and config writes.
+let codex = null;
+try { codex = execFileSync('/bin/sh', ['-c', 'command -v codex'], { encoding: 'utf8' }).trim() || null; } catch { /* not installed */ }
+
+test('with the real CLI: generated hooks get trusted, a planted project hook refuses the start', { skip: !codex && 'codex CLI not installed', timeout: 30_000 }, async (t) => {
+  const { seedCodexHookTrust } = loadTs('src/main/codexHookTrust.ts');
+  const f = fixture(t);
+  // Another agent's plant at the old home location: no effect on trust.
+  fs.mkdirSync(path.join(f.agentDir('c'), '.codex'), { recursive: true });
+  fs.writeFileSync(path.join(f.agentDir('c'), '.codex', 'hooks.json'), '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"planted"}]}]}}');
+  const inj = await f.spawn('c');
+  const ctx = { home: inj.env.CODEX_HOME, cwd: f.cwd, executable: codex, env: { ...process.env, ...inj.env } };
+  assert.equal(await seedCodexHookTrust(ctx, 15_000), true);
+
+  // A hook in the (trusted) working folder's project layer: never trusted by us,
+  // so nothing starts, and the reason names it.
+  fs.mkdirSync(path.join(f.cwd, '.codex'), { recursive: true });
+  fs.writeFileSync(path.join(f.cwd, '.codex', 'hooks.json'), '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"planted"}]}]}}');
+  let why = '';
+  assert.equal(await seedCodexHookTrust(ctx, 15_000, (r) => { why = r; }), false);
+  assert.match(why, /did not write.*\.codex\/hooks\.json/);
+
+  // Trust recorded for that hook's exact hash in the project layer's own
+  // config.toml grants nothing: only the home's trust counts.
+  const project = (await listHooks(ctx)).find((h) => h.source === 'project');
+  assert.ok(project, 'Codex lists the planted project hook');
+  fs.writeFileSync(path.join(f.cwd, '.codex', 'config.toml'),
+    `[hooks.state.${JSON.stringify(project.key)}]\ntrusted_hash = ${JSON.stringify(project.currentHash)}\n`);
+  const again = (await listHooks(ctx)).find((h) => h.key === project.key);
+  assert.equal(again.trustStatus, 'untrusted');
+  assert.equal(await seedCodexHookTrust(ctx, 15_000), false);
+});
+
+/** `codex app-server` → initialize → hooks/list, nothing else. */
+function listHooks({ home, cwd, executable, env }) {
+  const { spawn } = require('node:child_process');
+  return new Promise((resolve, reject) => {
+    const child = spawn(executable, ['app-server'], { env: { ...env, CODEX_HOME: home }, cwd, stdio: ['pipe', 'pipe', 'ignore'] });
+    let buf = '';
+    const send = (id, method, params) => child.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
+    const timer = setTimeout(() => { child.kill(); reject(new Error('hooks/list timed out')); }, 15_000);
+    child.stdout.on('data', (d) => {
+      buf += d;
+      for (let i; (i = buf.indexOf('\n')) >= 0;) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 1);
+        let m; try { m = JSON.parse(line); } catch { continue; }
+        if (m.id === 1) send(2, 'hooks/list', { cwds: [cwd] });
+        if (m.id === 2) { clearTimeout(timer); child.kill(); resolve(m.result?.data?.[0]?.hooks ?? []); }
+      }
+    });
+    send(1, 'initialize', { clientInfo: { name: 'test', version: '1' }, capabilities: { experimentalApi: true } });
+  });
+}

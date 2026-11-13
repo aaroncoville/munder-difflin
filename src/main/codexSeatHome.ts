@@ -28,7 +28,8 @@ export function codexSeatHome(agentDir: string, agentId: string, base?: string):
   return codexShortHomePath(join(agentDir, '.codex'), agentId, base);
 }
 
-/** A Codex agent cannot be given a home that its own sandbox could write. */
+/** A Codex agent that must not start: its home could be written by its own
+ *  sandbox, or hooks in it would run that the app did not write and trust. */
 export class CodexHomeRefused extends Error {
   constructor(message: string) {
     super(message);
