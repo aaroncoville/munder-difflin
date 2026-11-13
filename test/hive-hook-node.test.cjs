@@ -22,8 +22,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const loadTs = require('./load-ts.cjs');
-const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
-const { codexTestBase, jailHome } = require('./codex-test-home.cjs');
+const { codexTestBase, jailHome, removeDir } = require('./codex-test-home.cjs');
 // Where a Codex agent's home is: computed from its folder, outside the hive.
 const { codexShortHomePath } = loadTs('src/shared/codexRemote.ts');
 
@@ -40,7 +39,7 @@ function isolatedHomes(t, prefix, root) {
   const base = tmpHome(prefix, root);
   const home = path.join(base, 'user');
   const harness = path.join(base, 'harness');
-  t.after(async () => { await allCommitsIdle(); fs.rmSync(base, { recursive: true, force: true }); });
+  t.after(async () => { await removeDir(base); });
 
   const realHome = process.env.HOME;
   const realProfile = process.env.USERPROFILE;
@@ -88,7 +87,7 @@ function hookCommandsUnder(home) {
 /** A private hook runtime folder outside `home`, as the app gives one in its own data folder. */
 function runtimeFor(t, hive, dir) {
   const rt = dir ?? fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'md-hook-rt-')));
-  t.after(async () => { await allCommitsIdle(); fs.rmSync(rt, { recursive: true, force: true }); });
+  t.after(async () => { await removeDir(rt); });
   hive.setHookRuntime(rt);
   assert.equal(hive.hookRuntimeStatus().ok, true, JSON.stringify(hive.hookRuntimeStatus()));
   return { launcher: path.join(rt, POSIX ? 'hive-node' : 'hive-node.cmd'), shim: path.join(rt, 'cth-hook.cjs') };
@@ -120,7 +119,7 @@ async function run(cmd, env) {
 
 test('ensureHive writes an executable bundled-node launcher', async (t) => {
   const home = tmpHome();
-  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
+  t.after(async () => { await removeDir(home); });
   const hive = new HiveManager(() => home);
   await hive.ensureAgent({ id: 'a1', name: 'A', provider: 'claude', cwd: home });
 
@@ -134,7 +133,7 @@ test('ensureHive writes an executable bundled-node launcher', async (t) => {
 
 test('the claude hook + statusLine commands run through the launcher', async (t) => {
   const home = tmpHome();
-  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
+  t.after(async () => { await removeDir(home); });
   const hive = new HiveManager(() => home);
   const { launcher } = runtimeFor(t, hive);
   await hive.ensureAgent({ id: 'a1', name: 'A', provider: 'claude', cwd: home });
@@ -151,7 +150,7 @@ test('the claude hook + statusLine commands run through the launcher', async (t)
 
 test('every hook installer routes through the launcher — none left on bare node', async (t) => {
   const home = tmpHome();
-  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
+  t.after(async () => { await removeDir(home); });
   const hive = new HiveManager(() => home);
   await hive.ensureAgent({ id: 'a1', name: 'A', provider: 'claude', cwd: home });
 
@@ -238,7 +237,7 @@ test('POSIX Gemini and Antigravity hooks survive a hive path containing spaces',
   const base = fs.mkdtempSync('/tmp/md-provider-space-');
   const home = path.join(base, 'user');
   const harness = path.join(base, 'harness space');
-  t.after(async () => { await allCommitsIdle(); fs.rmSync(base, { recursive: true, force: true }); });
+  t.after(async () => { await removeDir(base); });
 
   const realHome = process.env.HOME;
   const realProfile = process.env.USERPROFILE;
@@ -408,7 +407,7 @@ test('reset cleanup removes only exposed Munder rollouts', (t) => {
 
 test('Gemini gets isolated lifecycle settings and an interactive protocol seed', async (t) => {
   const home = tmpHome();
-  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
+  t.after(async () => { await removeDir(home); });
   // A HOME of its own, with no Codex agents' homes: Gemini is not sandboxed by the app and cannot start beside one.
   jailHome(t, codexTestBase(t, 'mdgm-'));
   const hive = new HiveManager(() => home);
@@ -436,7 +435,7 @@ test('Gemini gets isolated lifecycle settings and an interactive protocol seed',
 
 test('a hook fires with NO node on PATH, and its payload reaches HIVE_SOCK', { skip: !POSIX }, async (t) => {
   const home = tmpHome();
-  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
+  t.after(async () => { await removeDir(home); });
   const hive = new HiveManager(() => home);
   runtimeFor(t, hive);
   await hive.ensureAgent({ id: 'a1', name: 'A', provider: 'claude', cwd: home });

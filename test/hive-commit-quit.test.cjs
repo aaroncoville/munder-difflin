@@ -13,6 +13,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { removeDir } = require('./codex-test-home.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 const hiveCommit = loadTs('src/main/hiveCommit.ts');
@@ -23,7 +24,7 @@ const REAL_GIT = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' })
 function home(t) {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'md-hive-quit-')));
   // Any fake git still hanging is killed first: until it exits, the commit it belongs to never settles.
-  t.after(async () => { killFakeGits(dir); await allCommitsIdle(); fs.rmSync(dir, { recursive: true, force: true }); });
+  t.after(async () => { killFakeGits(dir); await removeDir(dir); });
   return dir;
 }
 

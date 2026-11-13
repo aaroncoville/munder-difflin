@@ -6,8 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
-const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
-const { codexTestBase } = require('./codex-test-home.cjs');
+const { codexTestBase, removeDir } = require('./codex-test-home.cjs');
 
 const { withCodexWritableRoots } = loadTs('src/shared/codexWritableRoots.ts');
 const { HiveManager } = loadTs('src/main/hive.ts');
@@ -91,8 +90,7 @@ test('codex spawn prep writes the agent folder and hive root into its own config
   process.env.HOME = fakeHome;
   t.after(async () => {
     if (realHome === undefined) delete process.env.HOME; else process.env.HOME = realHome;
-    await allCommitsIdle();
-    fs.rmSync(home, { recursive: true, force: true });
+    await removeDir(home);
   });
   const repo = path.join(home, 'repo');
   fs.mkdirSync(repo, { recursive: true });
