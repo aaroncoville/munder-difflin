@@ -4,9 +4,10 @@
  * The REMOTE model catalog: the parser that guards the network payload, and the
  * overlay that merges it onto the list compiled into the build.
  *
- * The failure this file exists to prevent: a bad edit to docs/model-catalog.json
- * on main reaching every installed copy of the app and emptying a picker — or
- * worse, putting an attacker-shaped string on an agent's spawn command line. The
+ * This build fetches no remote copy (the main process answers null), but the
+ * parser and the overlay stay for one. The failure they exist to prevent: a bad
+ * remote catalog reaching every installed copy of the app and emptying a picker
+ * — or worse, putting an attacker-shaped string on an agent's spawn command line. The
  * parser is total by contract, so every case below asserts the FALLBACK, not an
  * exception.
  */
