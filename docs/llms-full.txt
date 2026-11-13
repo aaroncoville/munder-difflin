@@ -59,48 +59,20 @@ drives the CLI logins/subscriptions the user already has.
 ## Key pages
 
 - Homepage + FAQ: https://munderdiffl.in/
-- Blog index (118 articles): https://munderdiffl.in/blog/
-- v0.3.7 auto-update write-up: https://munderdiffl.in/blog/why-our-auto-update-never-ran/
-- v0.3.5 launch post: https://munderdiffl.in/blog/launching-munder-difflin-v0-3-5/
 - Changelog: https://github.com/chaitanyagiri/munder-difflin/blob/main/CHANGELOG.md
 - Message-queue delivery contract: https://github.com/chaitanyagiri/munder-difflin/blob/main/docs/message-queue.md
 
 ## Guides by topic
 
 Getting started:
-- https://munderdiffl.in/blog/how-to-install-and-use-munder-difflin/
-- https://munderdiffl.in/blog/your-first-hour-with-munder-difflin/
-- https://munderdiffl.in/blog/munder-difflin-faq/
-- https://munderdiffl.in/blog/how-to-hire-from-the-agent-gallery/
 
 Orchestration:
-- https://munderdiffl.in/blog/how-the-god-orchestrator-works/
-- https://munderdiffl.in/blog/claude-code-orchestration-guide/
-- https://munderdiffl.in/blog/how-to-run-multiple-claude-code-agents/
-- https://munderdiffl.in/blog/run-a-mixed-engine-office/
-- https://munderdiffl.in/blog/scheduling-autonomous-agent-missions/
 
 Features:
-- https://munderdiffl.in/blog/how-to-talk-to-your-orchestrator/ (voice)
-- https://munderdiffl.in/blog/how-to-use-the-built-in-monaco-ide/ (IDE)
-- https://munderdiffl.in/blog/command-center-guide/ (kanban, fleet, budgets)
-- https://munderdiffl.in/blog/give-claude-code-long-term-memory/ (memory)
-- https://munderdiffl.in/blog/trigger-ai-agents-from-slack/ (Slack)
 
 Comparisons:
-- https://munderdiffl.in/blog/qm-vs-munder-difflin/
-- https://munderdiffl.in/blog/claude-squad-vs-munder-difflin/
-- https://munderdiffl.in/blog/orca-vs-munder-difflin/
-- https://munderdiffl.in/blog/cline-vs-munder-difflin/
-- https://munderdiffl.in/blog/best-claude-code-multi-agent-tools/
-- https://munderdiffl.in/blog/claude-code-git-worktrees-vs-hive/
 
 Concepts / engineering:
-- https://munderdiffl.in/blog/what-is-a-multi-agent-harness/
-- https://munderdiffl.in/blog/what-is-harness-engineering/
-- https://munderdiffl.in/blog/building-reliable-ai-agents/
-- https://munderdiffl.in/blog/security-for-ai-coding-agents/
-- https://munderdiffl.in/blog/the-lethal-trifecta-for-coding-agents/
 
 ## License
 

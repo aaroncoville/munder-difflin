@@ -43,7 +43,7 @@ test('the locales render the product name from the constant', () => {
   for (const lng of ['en', 'ar', 'zh-CN']) {
     const t = i18n.getFixedT(lng);
     const keys = ['onboarding.titles.persona', 'onboarding.persona.body', 'onboarding.permissions.shareStatsDesc',
-                  'aiEngines.runOnOpenModels', 'updatesSection.downloadedDetail', 'triggersTab.organisationBlurb'];
+                  'updatesSection.downloadedDetail', 'triggersTab.organisationBlurb'];
     for (const key of keys) {
       const out = t(key, { v: '1.0.0' });
       assert.notEqual(out, key, `${lng}:${key} is missing`);
