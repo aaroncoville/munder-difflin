@@ -11,6 +11,8 @@ export interface BackendStatus {
   location: string | null;
   model: string | null;
   bin: string | null;
+  /** Why the backend is on but cannot save memories, or null. */
+  problem?: string | null;
 }
 
 /** `ok: false` asks for the agent again next pass. `sent` says this call started

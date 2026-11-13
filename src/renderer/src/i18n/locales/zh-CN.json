@@ -1009,6 +1009,7 @@
     "notSetUp": "未设置",
     "onReady": "开 · 就绪",
     "onGettingReady": "开 · 准备中…",
+    "notSaving": "记忆未在保存：{{reason}}",
     "turnOff": "关闭",
     "turnOn": "开启",
     "notInstalled": "语义搜索尚未安装。",

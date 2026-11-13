@@ -1009,6 +1009,7 @@
     "notSetUp": "Not set up",
     "onReady": "On · ready",
     "onGettingReady": "On · getting ready…",
+    "notSaving": "Memories are not being saved: {{reason}}",
     "turnOff": "Turn off",
     "turnOn": "Turn on",
     "notInstalled": "Meaning-based search isn't installed yet.",

@@ -12,7 +12,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { CLAIM_ITEM_MAX_CHARS, CLAIM_MAX_ITEMS, MAX_KEY_LENGTH, RetainLedger, type LedgerState, type RetainClaim } from './hindsightLedger';
+import { CLAIM_ITEM_MAX_CHARS, CLAIM_MAX_ITEMS, MAX_KEY_LENGTH, MAX_REASON_LENGTH, RetainLedger, type LedgerState, type RetainClaim } from './hindsightLedger';
 import { MINE_INTERVAL_MS, type BackendStatus, type MemoryBackend, type MineResult, type TextResult } from './memoryBackend';
 
 /** How long a /health answer is trusted before the next call re-probes. */
@@ -41,8 +41,9 @@ const REFUSAL_BACKOFF_MS = 10 * 60_000;
  *  again a mining pass, so a longer pass interval cannot switch the cancel off. A longer
  *  gap (an outage, a sleeping app) is not counted. */
 const COUNTED_POLL_GAP_MS = 1.5 * MINE_INTERVAL_MS;
-/** With the settings moved to another server, an open retain whose own server has not
- *  answered for this long is set aside, so the new server is not starved by a dead one. */
+/** With the settings moved to another server address, an open retain whose own server
+ *  has given no usable answer (none at all, or only errors) for this long is set aside,
+ *  so the new server is not starved by a dead or broken one. */
 const ABANDON_AFTER_MS = 30 * 60_000;
 /** An old open retain is logged at CLAIM_OLD_MS and then at most this often. */
 const AGE_LOG_EVERY_MS = 24 * 60 * 60_000;
@@ -100,6 +101,19 @@ export function memorySections(markdown: string): { heading: string; body: strin
   return sections.filter((s) => s.body.length > 0);
 }
 
+const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
+/** The server address part of a ledger's `url\nbank`, with the loopback names taken as one host. */
+const addressOf = (server: string): string => {
+  const url = server.slice(0, server.indexOf('\n'));
+  try {
+    const u = new URL(url);
+    const host = LOOPBACK.has(u.hostname) ? 'loopback' : u.hostname;
+    return `${u.protocol}//${host}:${u.port}${u.pathname.replace(/\/+$/, '')}`;
+  } catch {
+    return url;
+  }
+};
+
 const sha = (text: string, length = 64): string => createHash('sha256').update(text).digest('hex').slice(0, length);
 
 export class HindsightAdapter implements MemoryBackend {
@@ -116,9 +130,7 @@ export class HindsightAdapter implements MemoryBackend {
   private ledgerState: LedgerState | null = null;
   private lastClaimPoll = -Infinity;
   /** The HTTP status the server last refused a retain with, and how many times in a row. */
-  private refusal: { status: number; count: number } | null = null;
-  /** Since when the open retain's server has failed to answer at all, in this run. */
-  private unanswered: { op: string; since: number } | null = null;
+  private refusal: { status: number; count: number; loggedRest: number; loggedAt: number } | null = null;
   /** When the open retain's age was last logged. */
   private ageLogged: { op: string; at: number } | null = null;
   /** A change of server or bank waiting for an open retain to end, so it is logged once. */
@@ -403,10 +415,15 @@ export class HindsightAdapter implements MemoryBackend {
     }
     let rest = RETAIN_MIN_GAP_MS;
     if (refusedWith !== null) {
-      const count = this.refusal?.status === refusedWith ? this.refusal.count + 1 : 1;
-      if (count === 1) console.error(`[memory] hindsight refused a retain with HTTP ${refusedWith}; repeats back off and are not logged again`);
-      this.refusal = { status: refusedWith, count };
+      const same = this.refusal?.status === refusedWith ? this.refusal : null;
+      const count = same ? same.count + 1 : 1;
       rest = Math.min(REFUSAL_BACKOFF_MAX_MS, REFUSAL_BACKOFF_MS * 2 ** (count - 1));
+      // Logged at each step of the backoff, and once a day once it has reached its cap.
+      const log = !same || same.loggedRest !== rest || this.now() - same.loggedAt >= AGE_LOG_EVERY_MS;
+      if (log) console.error(`[memory] hindsight refused a retain with HTTP ${refusedWith} (${count} in a row); trying again in ${Math.round(rest / 60_000)} min`);
+      this.refusal = same && !log
+        ? { ...same, count }
+        : { status: refusedWith, count, loggedRest: rest, loggedAt: this.now() };
     }
     state.claim = null;
     state.busyUntil = this.now() + rest;
@@ -482,12 +499,21 @@ export class HindsightAdapter implements MemoryBackend {
       const log = 'problem' in op ? console.warn : console.info;
       log(`[memory] hindsight retain ${claim.op}: the server reports ${outcome}`);
     }
-    if ('problem' in op && !op.answered) {
-      if (this.unanswered?.op !== claim.op) this.unanswered = { op: claim.op, since: this.now() };
+    // Kept in the claim, so the count survives a restart of the app.
+    if ('problem' in op) {
+      if (claim.unusableSince === undefined) {
+        claim.unusableSince = this.now();
+        await ledger.save(state);
+      }
       const target = this.serverKey();
-      if (state.server !== target && this.now() - this.unanswered.since >= ABANDON_AFTER_MS) return this.setAside(ledger, state, target);
-    } else {
-      this.unanswered = null;
+      // Only a move to another address: a bank change on the same server leaves the
+      // old operation running there, so waiting is the only way to keep one retain.
+      if (addressOf(state.server) !== addressOf(target) && this.now() - claim.unusableSince >= ABANDON_AFTER_MS) {
+        return this.setAside(ledger, state, target);
+      }
+    } else if (claim.unusableSince !== undefined) {
+      delete claim.unusableSince;
+      await ledger.save(state);
     }
     if (!('problem' in op)) {
       if (op.status === 'completed') return this.releaseClaim(ledger, state, true);
@@ -546,7 +572,8 @@ export class HindsightAdapter implements MemoryBackend {
     const claim = state.claim as RetainClaim;
     const from = state.server.replace('\n', ' bank ');
     const to = target.replace('\n', ' bank ');
-    const reason = `${from} has not answered for ${Math.round((this.now() - (this.unanswered?.since ?? this.now())) / 60_000)} min since the settings moved to ${to}`;
+    const minutes = Math.round((this.now() - (claim.unusableSince ?? this.now())) / 60_000);
+    const reason = `${from} has given no usable answer for ${minutes} min since the settings moved to ${to}`.slice(0, MAX_REASON_LENGTH);
     state.aside = { claim, reason, at: this.now() };
     state.claim = null;
     if (!(await ledger.save(state))) {
@@ -554,7 +581,6 @@ export class HindsightAdapter implements MemoryBackend {
       state.aside = null;
       return 'open';
     }
-    this.unanswered = null;
     console.warn(`[memory] hindsight retain ${claim.op} set aside: ${reason}. Nothing from it is recorded; it is checked again if ${from} is configured again`);
     return 'released';
   }
@@ -608,7 +634,9 @@ export class HindsightAdapter implements MemoryBackend {
       location: `${url} · ${bank}`,
       // A remote server owns its own embedding model; there is nothing local to name.
       model: null,
-      bin: null
+      bin: null,
+      // Nothing can be retained without a ledger the app can write; say so where the panel looks.
+      problem: !this.ledgerDir() ? 'no folder is set for the retain ledger, so nothing is being saved' : this.ledger?.problem() ?? null
     };
   }
 
