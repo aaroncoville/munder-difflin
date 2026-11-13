@@ -18,6 +18,7 @@
 import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
 import { DEFAULT_GOD_NAME } from '@shared/godIdentity';
+import { PRODUCT_NAME, PRODUCT_WORDMARK } from '@shared/productName';
 import en from './locales/en.json';
 import zhCN from './locales/zh-CN.json';
 import ar from './locales/ar.json';
@@ -128,7 +129,10 @@ void i18n
     react: { useSuspense: false },
     // `defaultVariables` is what lets every {{godName}} string resolve without
     // its call site knowing god's name. setGodName() keeps it current.
-    interpolation: { escapeValue: false, defaultVariables: { godName: DEFAULT_GOD_NAME } },
+    interpolation: {
+      escapeValue: false,
+      defaultVariables: { godName: DEFAULT_GOD_NAME, productName: PRODUCT_NAME, productWordmark: PRODUCT_WORDMARK }
+    },
     returnNull: false
   });
 

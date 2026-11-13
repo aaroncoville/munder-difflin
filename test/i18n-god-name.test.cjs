@@ -102,7 +102,7 @@ test('with nothing saved the app starts in English, never the OS locale', () => 
 
 test('godName reaches i18next as a default variable, so no call site must pass it', () => {
   const src = read('src/renderer/src/i18n/index.ts');
-  assert.match(src, /defaultVariables:\s*\{\s*godName:\s*DEFAULT_GOD_NAME\s*\}/);
+  assert.match(src, /defaultVariables:\s*\{\s*godName:\s*DEFAULT_GOD_NAME\b/);
   assert.match(src, /export function setGodName/);
   // Without an event react-i18next never re-renders, so a rename would not show.
   assert.match(src, /i18n\.emit\('languageChanged'/);

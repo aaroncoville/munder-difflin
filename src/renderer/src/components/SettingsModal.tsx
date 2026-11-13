@@ -34,6 +34,7 @@ import {
 import { notifyArabicTerminalChangeAll } from '@/components/terminalPool';
 import { isComposingKey } from '@shared/imeGuard';
 import { LANGUAGES, setLanguage } from '@/i18n';
+import { PRODUCT_NAME } from '@shared/productName';
 import { UPDATE_FEED_ENABLED } from '@shared/updateFeed';
 
 export interface SettingsModalProps {
@@ -93,10 +94,10 @@ const slackLabelStyle: CSSProperties = {
 /** The exact connect walkthrough shown behind the i icon. Steps 6 & 7 spell out
  *  the both-lists requirement: subscribe to message.channels / message.groups in
  *  BOTH "Subscribe to bot events" AND "Subscribe to events on behalf of users". */
-const SLACK_CONNECT_STEPS = `Connect Munder Difflin to Slack
+const SLACK_CONNECT_STEPS = `Connect ${PRODUCT_NAME} to Slack
 
 1. api.slack.com/apps -> Create New App -> From scratch. Name it
-   "Munder Difflin" and pick your workspace.
+   "${PRODUCT_NAME}" and pick your workspace.
 2. Basic Information -> Signing Secret -> copy it into the
    "Signing secret" field here.
 3. OAuth & Permissions -> Bot Token Scopes: add
@@ -118,7 +119,7 @@ const SLACK_CONNECT_STEPS = `Connect Munder Difflin to Slack
      message.channels
      message.groups
 8. Save Changes, reinstall if Slack prompts, then invite the bot
-   to your channel:  /invite @MunderDifflin`;
+   to your channel:  /invite @${PRODUCT_NAME.replace(/\s+/g, '')}`;
 
 /** The request/response contract shown behind the webhook i icon. Every webhook
  *  shares one server and one tunnel and is told apart by its id in the path, so

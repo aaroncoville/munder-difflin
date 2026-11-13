@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { readConfig } from './config';
 import { DEFAULT_DROP_HTML } from '../shared/releaseDrop';
 import { UPDATE_FEED_ENABLED } from '../shared/updateFeed';
+import { PRODUCT_NAME } from '../shared/productName';
 import { reduceStatus, clampPercent, isNewer, installerUrl, shouldShowReleaseDrop, type UpdateStatus } from '../shared/updateState';
 
 /**
@@ -345,7 +346,7 @@ async function runDownload(): Promise<{ ok: boolean; error?: string }> {
  *  shape instead (bold lead paragraph, then `### Fixed`) it returns ONE bullet —
  *  the lead paragraph, clipped mid-sentence. Verified against the published
  *  v0.4.4-rc.1 body: this shape yields the same 3 bullets the real toast shows. */
-const SIMULATED_NOTES = `# Munder Difflin v9.9.9
+const SIMULATED_NOTES = `# ${PRODUCT_NAME} v9.9.9
 
 **A local hive of Claude Code, Antigravity, Codex, Grok & Copilot agents that run themselves** —
 messaging, routing, and remembering, coordinated by your clone, who you talk to.

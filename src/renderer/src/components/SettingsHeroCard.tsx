@@ -26,6 +26,8 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { PixelButton } from './PixelButton';
 import { Icon } from './Icon';
+import { SixthHistoryCredit } from './SixthHistoryCredit';
+import { PRODUCT_WORDMARK } from '@shared/productName';
 import { DEFAULT_HERO, type HeroPayload } from '@shared/heroPayload';
 import { manualDownloadUrl, pendingVersion, reduceStatus, type UpdateStatus } from '@shared/updateState';
 
@@ -92,7 +94,7 @@ export function SettingsHeroCard() {
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
             <span style={{
               fontFamily: 'var(--cth-font-display)', fontSize: 13, lineHeight: '20px', color: INK
-            }}>MUNDER DIFFLIN</span>
+            }}>{PRODUCT_WORDMARK}</span>
             {version && (
               <span style={{
                 fontFamily: MONO, fontSize: 15, fontWeight: 700, color: INK
@@ -119,6 +121,7 @@ export function SettingsHeroCard() {
           <div style={{ marginTop: 6, fontSize: 12.5, lineHeight: 1.5, color: 'var(--cth-ink-700)', maxWidth: '64ch' }}>
             {PLAN.blurb}
           </div>
+          <SixthHistoryCredit style={{ marginRight: 0, marginTop: 10, maxWidth: '64ch' }} />
         </div>
 
         {/* A one-line notice (an incident, a migration heads-up), when set. */}

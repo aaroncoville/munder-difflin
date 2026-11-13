@@ -25,6 +25,7 @@ import {
 import { listDir, readFileText, readFileBinary, writeFileText, statAbs, expandTilde } from './fs';
 import { normalizeWeekly, weeklyDelayMs } from '../shared/weeklySchedule';
 import { APP_GROUND } from '../shared/appGround';
+import { PRODUCT_NAME, UNOFFICIAL_NOTICE } from '../shared/productName';
 import { PANEL_PALETTE_FILE } from '../shared/panelPalette';
 import { panelPaletteSource } from './panelPalette';
 import {
@@ -2704,7 +2705,23 @@ function installAppMenu(): void {
     click: () => { openFloor(); }
   };
   const template: Electron.MenuItemConstructorOptions[] = [
-    ...(isMac ? [{ role: 'appMenu' as const }] : []),
+    // The stock app menu labels its items with app.name, which stays the package
+    // name so the settings folder and the keychain entry do not move; spell the
+    // displayed name out instead.
+    ...(isMac ? [{
+      label: PRODUCT_NAME,
+      submenu: [
+        { role: 'about' as const, label: `About ${PRODUCT_NAME}` },
+        { type: 'separator' as const },
+        { role: 'services' as const },
+        { type: 'separator' as const },
+        { role: 'hide' as const, label: `Hide ${PRODUCT_NAME}` },
+        { role: 'hideOthers' as const },
+        { role: 'unhide' as const },
+        { type: 'separator' as const },
+        { role: 'quit' as const, label: `Quit ${PRODUCT_NAME}` }
+      ]
+    }] : []),
     {
       label: 'File',
       submenu: isMac
@@ -6013,6 +6030,7 @@ function onSystemResume(reason: string): void {
 }
 
 app.whenReady().then(() => {
+  app.setAboutPanelOptions({ applicationName: PRODUCT_NAME, credits: UNOFFICIAL_NOTICE });
   // Realtime Michael mic-gate hygiene (rt-8 / Pam rt-10 nit): the voice session
   // opens the mic permission gate by persisting realtimeVoiceEnabled=true and
   // closes it on disconnect — but a hard crash/reload mid-session skips that

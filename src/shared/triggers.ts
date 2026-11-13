@@ -14,6 +14,8 @@
  * `TriggerMode` gate and both write to one `TriggerHistoryEntry` ledger.
  */
 
+import { PRODUCT_NAME } from './productName';
+
 /* ────────────────────────────── behaviour gate ───────────────────────────── */
 
 /**
@@ -214,7 +216,7 @@ export const DEFAULT_ORG_TRIGGER: OrgTriggerConfig = {
 /** Copy shown under the org key field. Kept here so Settings and Triggers agree. */
 export const CLONE_NODE_BLURB =
   'Set an organisation key and your teammates can message your clone node — the copy of '
-  + 'Munder Difflin running on your machine. Each teammate runs their own, so an org key '
+  + `${PRODUCT_NAME} running on your machine. Each teammate runs their own, so an org key `
   + 'is how two installs find each other.';
 
 /* ──────────────────────────── trigger history ────────────────────────────── */

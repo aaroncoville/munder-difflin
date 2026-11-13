@@ -1,5 +1,5 @@
 appId: in.munderdiffl.app
-productName: Munder Difflin
+productName: Hush House
 copyright: Copyright © 2026 Chaitanya Giri
 
 # Where electron-updater looks for new versions (latest*.yml + assets on GitHub
@@ -102,15 +102,15 @@ mac:
   # the privacy prompt and, for a signed app, remembers the grant — so the user
   # is asked ONCE instead of on every agent action.
   extendInfo:
-    NSDocumentsFolderUsageDescription: "Munder Difflin runs your Claude Code agents, which read and write files in the project folders you point them at."
-    NSDesktopFolderUsageDescription: "Munder Difflin's agents may work on projects located on your Desktop."
-    NSDownloadsFolderUsageDescription: "Munder Difflin's agents may work on projects located in your Downloads."
-    NSRemovableVolumesUsageDescription: "Munder Difflin's agents may work on projects located on external volumes."
-    NSNetworkVolumesUsageDescription: "Munder Difflin's agents may work on projects located on network volumes."
+    NSDocumentsFolderUsageDescription: "Hush House runs your Claude Code agents, which read and write files in the project folders you point them at."
+    NSDesktopFolderUsageDescription: "Hush House's agents may work on projects located on your Desktop."
+    NSDownloadsFolderUsageDescription: "Hush House's agents may work on projects located in your Downloads."
+    NSRemovableVolumesUsageDescription: "Hush House's agents may work on projects located on external volumes."
+    NSNetworkVolumesUsageDescription: "Hush House's agents may work on projects located on network volumes."
     # The microphone is used by two opt-in, off-by-default voice features: Free
     # Flow dictation (Groq transcription) and realtime voice (live voice chat
     # with the orchestrator via OpenAI). Mic access only happens while one is on.
-    NSMicrophoneUsageDescription: "Munder Difflin uses your microphone only for its opt-in voice features: Free Flow dictation (transcribed by Groq into the message queue) and talking to your orchestrator in real time (streamed to OpenAI). The mic is off unless you turn one of these on."
+    NSMicrophoneUsageDescription: "Hush House uses your microphone only for its opt-in voice features: Free Flow dictation (transcribed by Groq into the message queue) and talking to your orchestrator in real time (streamed to OpenAI). The mic is off unless you turn one of these on."
   # Hardened runtime + entitlements so the spawned `claude` agents inherit this
   # app's TCC responsibility (one grant covers them all) and node-pty can load.
   hardenedRuntime: true
@@ -150,7 +150,7 @@ mac:
   artifactName: Munder-Difflin-${version}-mac-${arch}.${ext}
 
 dmg:
-  title: Munder Difflin ${version}
+  title: Hush House ${version}
 
 # ---- Windows ----
 win:
@@ -166,7 +166,7 @@ nsis:
   perMachine: false
   allowToChangeInstallationDirectory: true
   artifactName: Munder-Difflin-${version}-win-x64-setup.exe
-  shortcutName: Munder Difflin
+  shortcutName: Hush House
 
 portable:
   artifactName: Munder-Difflin-${version}-win-x64-portable.exe
