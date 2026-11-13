@@ -1,6 +1,8 @@
 import * as pty from 'node-pty';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import path from 'node:path';
+import { agentEnabledPlugins, claudeUserDir, knownPluginIds } from './agentPlugins';
+import { ensurePrivateDir, writeNoFollow } from './hookRuntime';
 import { resolveCommand, userShellPath } from './shellEnv';
 import { expandTilde } from './fs';
 import { projectDir } from './transcript';
@@ -45,6 +47,79 @@ export interface HiddenClaudeOptions {
   timeoutMs?: number;
   /** Extra env merged over the resolved shell env (e.g. the shared MemPalace). */
   env?: Record<string, string>;
+  /** Plugins this helper loads, by name or full id. Default none: every plugin the owner has is off for the session. */
+  plugins?: string[];
+  /** MCP config files this helper loads (--mcp-config). Default none: with --strict-mcp-config no other server starts. */
+  mcpConfigs?: string[];
+}
+
+/** Where helper sessions' --settings files are written: an app-owned private folder (under userData), and how to find
+ *  the hive folder it must stay outside. Never the temp folder: Codex seats can write $TMPDIR, and a settings file is
+ *  authority (a `hooks` entry there runs as the owner, outside any sandbox). Unset, no helper runs. */
+let helperSettings: { dir: string; hiveRoot: () => string | null; log: (event: Record<string, unknown>) => void } | null = null;
+/** A per-call folder's name: `helper-` plus mkdtemp's six characters. Only these are ever swept. */
+const HELPER_FOLDER = /^helper-[A-Za-z0-9]{6}$/;
+export function setHelperSettingsDir(dir: string | null, hiveRoot: () => string | null, log: (event: Record<string, unknown>) => void = () => {}): void {
+  helperSettings = dir ? { dir, hiveRoot, log } : null;
+  if (!helperSettings) return;
+  // Sweep what a crashed run left: only per-call folders by their exact name shape, never through a link, and only
+  // once the parent passes the private-folder checks. A folder that will not go is logged with its path.
+  try {
+    ensurePrivateDir(helperSettings.dir, hiveRoot());
+    for (const name of readdirSync(helperSettings.dir)) {
+      if (!HELPER_FOLDER.test(name)) continue;
+      const p = path.join(helperSettings.dir, name);
+      try { if (lstatSync(p).isDirectory()) removeHelperFolder(p); } catch { /* gone meanwhile */ }
+    }
+  } catch { /* not usable yet: every helper call checks again and refuses with the reason */ }
+}
+
+/** Remove one per-call folder; if anything of it remains, log once with its path. Returns whether it is gone. */
+function removeHelperFolder(folder: string): boolean {
+  let why: string | null = null;
+  try { rmSync(folder, { recursive: true, force: true }); } catch (e) { why = e instanceof Error ? e.message : String(e); }
+  if (!why && !existsSync(folder)) return true;
+  try { helperSettings?.log({ kind: 'helper-settings-left', path: folder, why: why ?? 'still present after removal' }); } catch { /* the log is best effort */ }
+  return false;
+}
+
+/** A fresh folder for one helper's settings, inside the private folder: the parent is checked (absolute, outside the
+ *  hive, owner-only, not a link) on every call, the child is unique and 0700. Throws with the reason. */
+export function helperSettingsFolder(): string {
+  if (!helperSettings) throw new Error('no private folder is set for helper settings');
+  ensurePrivateDir(helperSettings.dir, helperSettings.hiveRoot());
+  const child = mkdtempSync(path.join(helperSettings.dir, 'helper-'));
+  const st = lstatSync(child);
+  if (st.isSymbolicLink() || !st.isDirectory()) { rmSync(child, { recursive: true, force: true }); throw new Error('its folder is a link or not a folder'); }
+  return child;
+}
+
+/**
+ * The settings a helper session gets with --settings. The owner's ~/.claude/settings.json enables plugins for every
+ * session, so each helper started every plugin's MCP servers (a container, for one) and carried every skill list. As
+ * for hive agents (agentPlugins.ts), a session-level enabledPlugins map outranks the owner's user-level `true` for this
+ * session only; it names every plugin the owner has, with only `keep` on.
+ */
+export function hiddenClaudeSettings(ids: readonly string[], keep: readonly string[] = []): { enabledPlugins: Record<string, boolean> } {
+  return { enabledPlugins: agentEnabledPlugins(ids, keep) };
+}
+
+/** The CLI arguments for a helper session. `settingsPath` is the file holding hiddenClaudeSettings(). Exported for the
+ *  regression test. --strict-mcp-config starts only the servers named with --mcp-config (none by default), so no user,
+ *  project or plugin server runs. --bare and --restricted are not used: --bare refuses OAuth (helpers draw on the
+ *  owner's plan) and --restricted refuses bypassPermissions. */
+export function hiddenClaudeArgs(opts: HiddenClaudeOptions, settingsPath: string): string[] {
+  const disallowed = opts.disallowedTools ?? ['Edit', 'Write', 'NotebookEdit'];
+  const addDirs = (opts.addDirs ?? []).filter((d) => d && existsSync(d));
+  const args: string[] = [
+    '--model', opts.model,
+    '--permission-mode', 'bypassPermissions',
+    '--disallowedTools', ...disallowed,
+  ];
+  for (const d of addDirs) { args.push('--add-dir', d); }
+  args.push('--settings', settingsPath, '--strict-mcp-config');
+  for (const c of opts.mcpConfigs ?? []) { if (c) args.push('--mcp-config', c); }
+  return args;
 }
 
 export interface HiddenClaudeResult {
@@ -126,15 +201,20 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
 
     const binary = (opts.command || 'claude').trim().split(/\s+/)[0] || 'claude';
     const exe = resolveCommand(binary);
-    const disallowed = opts.disallowedTools ?? ['Edit', 'Write', 'NotebookEdit'];
-    const addDirs = (opts.addDirs ?? []).filter((d) => d && existsSync(d));
-
-    const args: string[] = [
-      '--model', opts.model,
-      '--permission-mode', 'bypassPermissions',
-      '--disallowedTools', ...disallowed,
-    ];
-    for (const d of addDirs) { args.push('--add-dir', d); }
+    // A file, not inline JSON: on Windows the args pass through cmd.exe, which mangles quotes. In the app's private
+    // folder, never the temp folder (see setHelperSettingsDir). Removed on every exit path below.
+    // From the moment the folder exists, every exit (a failed write, a failed spawn, finish) goes through dropSettings.
+    let settingsDir: string | null = null;
+    const dropSettings = () => { if (settingsDir) { removeHelperFolder(settingsDir); settingsDir = null; } };
+    try {
+      settingsDir = helperSettingsFolder();
+      writeNoFollow(settingsDir, { name: 'settings.json', content: JSON.stringify(hiddenClaudeSettings(knownPluginIds(claudeUserDir()), opts.plugins ?? [])), mode: 0o600 });
+    } catch (e) {
+      dropSettings();
+      resolve({ ok: false, error: `helper settings: ${e instanceof Error ? e.message : String(e)}` });
+      return;
+    }
+    const args = hiddenClaudeArgs(opts, path.join(settingsDir, 'settings.json'));
 
     const bootCapMs = opts.bootCapMs ?? 7000;
     const idleMs = opts.idleMs ?? 3500;
@@ -161,6 +241,7 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
         } as Record<string, string>,
       });
     } catch (e) {
+      dropSettings();
       resolve({ ok: false, error: e instanceof Error ? e.message : String(e) });
       return;
     }
@@ -193,6 +274,7 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
       clearTimeout(bootMaxTimer);
       clearTimeout(globalTimer);
       kill();
+      dropSettings();
       resolve(r);
     };
 
