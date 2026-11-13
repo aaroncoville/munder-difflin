@@ -3305,29 +3305,31 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     // computed homes, a real folder, so the reach check made at provisioning
     // covers it; a resumed home gets this spawn's config written fresh.
     const home = opts.env?.CODEX_HOME;
-    if (home) {
-      try {
-        assertComputedCodexHome(home);
-        if (codexResumedSession) {
-          let extra: string[] = [];
-          try { extra = [memory.env().MEMPALACE_PALACE_PATH].filter((p): p is string => !!p); } catch { /* memory off */ }
-          hive.prepareResumedCodexHome(opts.hive.id, opts.cwd, home, extra);
-        }
-      } catch (e) {
-        const refusal = e instanceof CodexHomeRefused ? e : new CodexHomeRefused(`Codex home ${home} could not be prepared for ${opts.hive.id} (${(e as Error)?.message ?? e})`);
-        return refuseSpawn(opts.id, opts.hive.id, provider, refusal);
+    if (!home) {
+      return refuseSpawn(opts.id, opts.hive.id, provider,
+        new CodexHomeRefused(`Codex agent ${opts.hive.id} has no CODEX_HOME from provisioning, so it would start on the owner's own Codex home without the app's hooks`));
+    }
+    try {
+      assertComputedCodexHome(home);
+      if (codexResumedSession) {
+        let extra: string[] = [];
+        try { extra = [memory.env().MEMPALACE_PALACE_PATH].filter((p): p is string => !!p); } catch { /* memory off */ }
+        hive.prepareResumedCodexHome(opts.hive.id, opts.cwd, home, extra);
       }
-      let reason = 'unknown';
-      const env: NodeJS.ProcessEnv = { ...process.env, ...(opts.env ?? {}) };
-      const trusted = await seedCodexHookTrust(
-        { home, cwd: opts.cwd, executable: resolveCliCommand(opts.command), env },
-        undefined,
-        (why) => { reason = why; }
-      );
-      if (!trusted) {
-        return refuseSpawn(opts.id, opts.hive.id, provider,
-          new CodexHomeRefused(`Codex hook trust could not be established for ${opts.hive.id}: ${reason}`));
-      }
+    } catch (e) {
+      const refusal = e instanceof CodexHomeRefused ? e : new CodexHomeRefused(`Codex home ${home} could not be prepared for ${opts.hive.id} (${(e as Error)?.message ?? e})`);
+      return refuseSpawn(opts.id, opts.hive.id, provider, refusal);
+    }
+    let reason = 'unknown';
+    const env: NodeJS.ProcessEnv = { ...process.env, ...(opts.env ?? {}) };
+    const trusted = await seedCodexHookTrust(
+      { home, cwd: opts.cwd, executable: resolveCliCommand(opts.command), env },
+      undefined,
+      (why) => { reason = why; }
+    );
+    if (!trusted) {
+      return refuseSpawn(opts.id, opts.hive.id, provider,
+        new CodexHomeRefused(`Codex hook trust could not be established for ${opts.hive.id}: ${reason}`));
     }
     await enableCodexRemoteForSpawn(opts, opts.hive.id);
   }

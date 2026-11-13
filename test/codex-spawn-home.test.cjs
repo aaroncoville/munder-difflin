@@ -120,6 +120,14 @@ test('a final home outside the folder of computed homes, or not a real folder, r
   assert.deepEqual(f.calls, [], 'nothing was trusted or started');
 });
 
+test('a Codex hive spawn with no CODEX_HOME refuses, saying so', async (t) => {
+  const f = setup(t);
+  const out = await f.spawn('nohome', {});
+  assert.equal(out.ok, false);
+  assert.match(out.error, /CODEX_HOME/);
+  assert.deepEqual(f.calls, []);
+});
+
 // The app's real callers, each with the options it sends (renderer: CommandCenterPanel, useHive, useRestoreTeam, AddAgentModal).
 for (const [caller, extra] of [
   ['Restart & Continue', { resume: true, requireResume: true }],
