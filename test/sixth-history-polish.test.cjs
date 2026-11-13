@@ -17,7 +17,7 @@ test('visible application chrome carries the Sixth History identity', () => {
   assert.match(app, /assets\/sixth-history\/logo\.png/);
   assert.match(app, /alt="Sixth History"/);
   assert.match(focus, /SIXTH HISTORY · FOCUS MODE/);
-  assert.match(html, /<title>Sixth History<\/title>/);
+  assert.match(html, /<title>Hush House<\/title>/);
   assert.match(main, /Sixth History — Floor/);
 });
 

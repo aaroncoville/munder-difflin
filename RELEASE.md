@@ -37,14 +37,6 @@ hardened. Plus the Settings rework, an IME fix for CJK typing, and 16 community 
 - **The ASK ME card renders markdown.** Questions with emphasis, bullets, `code`, tables and links
   now render instead of showing their raw asterisks.
 
-### A note on Pro
-
-v0.5.0 launches with a Pro version alongside the community version. Community stays free, stays
-open, and keeps getting updates. Pro ships with new features and integrations, with more posted
-throughout the year, and it stays ahead of Community, for power users who want the full potential
-of coding agents and agent harnesses. The Pro roadmap also includes a mobile app. The first 100 people on the
-Founders' Wall get a month of Pro free, then 50% off the annual plan.
-
 ### Thanks
 
 16 community pull requests from 13 contributors landed in this release, one of them (#213)

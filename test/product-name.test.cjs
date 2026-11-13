@@ -43,7 +43,7 @@ test('the locales render the product name from the constant', () => {
   for (const lng of ['en', 'ar', 'zh-CN']) {
     const t = i18n.getFixedT(lng);
     const keys = ['onboarding.titles.persona', 'onboarding.persona.body', 'onboarding.permissions.shareStatsDesc',
-                  'aiEngines.runOnOpenModels', 'updatesSection.downloadedDetail', 'triggersTab.organisationBlurb'];
+                  'updatesSection.downloadedDetail', 'triggersTab.organisationBlurb'];
     for (const key of keys) {
       const out = t(key, { v: '1.0.0' });
       assert.notEqual(out, key, `${lng}:${key} is missing`);
@@ -69,4 +69,22 @@ test('no app source shows the old name, in full or short form', () => {
   };
   for (const dir of ['src/main', 'src/preload', 'src/shared', 'src/renderer/src']) walk(dir);
   assert.deepEqual(offenders, []);
+});
+
+test('the window title is the product name', () => {
+  assert.match(read('src/renderer/index.html'), new RegExp(`<title>${PRODUCT_NAME}</title>`));
+});
+
+test("the Settings card's star, issue and changelog links open this build's repository", () => {
+  const { PRODUCT_REPO_URL } = loadTs('src/shared/productName.ts');
+  const hero = code('src/renderer/src/components/SettingsHeroCard.tsx');
+  assert.match(hero, /^const GITHUB_REPO_URL = PRODUCT_REPO_URL;$/m);
+  assert.doesNotMatch(hero, /github\.com\/chaitanyagiri/);
+  assert.match(PRODUCT_REPO_URL, /^https:\/\/github\.com\/aaroncoville\//);
+});
+
+test('the hive-sync skill agents install describes itself by the product name', () => {
+  const skill = read('resources/skills/md-hive-sync/SKILL.md');
+  assert.match(skill, new RegExp(`^  ${PRODUCT_NAME} hive sync`, 'm'));
+  assert.doesNotMatch(skill, /Munder Difflin/);
 });
