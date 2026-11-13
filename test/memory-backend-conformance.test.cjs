@@ -28,7 +28,11 @@ const HIT = 'Sales sits on floor two.';
 
 function agentDir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'conformance-'));
-  fs.writeFileSync(path.join(dir, 'memory.md'), `## A fact\n\n${HIT}\n`, 'utf8');
+  const file = path.join(dir, 'memory.md');
+  fs.writeFileSync(file, `## A fact\n\n${HIT}\n`, 'utf8');
+  // Written an hour ago, so a backend that waits for a memory.md to go quiet mines it now.
+  const anHourAgo = new Date(Date.now() - 60 * 60_000);
+  fs.utimesSync(file, anHourAgo, anHourAgo);
   return dir;
 }
 
