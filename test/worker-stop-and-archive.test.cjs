@@ -22,7 +22,7 @@ const { workerExitEvent } = loadTs('src/main/workerExitLog.ts');
 const stopRetry = loadTs('src/main/workerStopRetry.ts');
 const { PtyManager } = loadTs('src/main/pty.ts');
 
-const FUNCTIONS = ['informGod', 'processSpawnRequest', 'archiveRequest', 'spawnRequestsDir', 'teardownPty', 'stopWorker', 'workerDoneAt', 'ephemeralWorkerTick'];
+const FUNCTIONS = ['informGod', 'processSpawnRequest', 'spawnAgent', 'archiveRequest', 'spawnRequestsDir', 'teardownPty', 'stopWorker', 'workerDoneAt', 'ephemeralWorkerTick'];
 
 function live() {
   const source = fs.readFileSync(path.resolve(__dirname, '..', 'src/main/index.ts'), 'utf8');

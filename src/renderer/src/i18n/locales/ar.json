@@ -1061,7 +1061,8 @@
     "installFailed": "فشل التثبيت",
     "removeFailed": "تعذّرت إزالته",
     "uninstallFailed": "فشل إلغاء التثبيت",
-    "catalogUnreachable": "تعذّر الوصول إلى الفهرس"
+    "catalogUnreachable": "تعذّر الوصول إلى الفهرس",
+    "catalogSource": "تأتي هذه القائمة من github.com/{{repo}}، وهي مجموعة يديرها طرف ثالث، وتُجلب عند فتح «تصفّح» وتُحفظ ليوم واحد. تثبيت مهارة يُنزّلها من مستودعها الخاص."
   },
   "workersTab": {
     "stopping": "يتوقّف",

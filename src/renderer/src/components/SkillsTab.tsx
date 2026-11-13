@@ -13,6 +13,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { PixelButton } from './PixelButton';
 import type { LocalSkill, CatalogSkill } from '../../../preload';
+import { SKILL_CATALOG_REPO } from '@shared/skillCatalogSource';
 
 type Mode = 'installed' | 'browse';
 
@@ -292,6 +293,9 @@ export function SkillsTab({ agentCwd }: { agentCwd?: string }) {
         ) : catalog === null ? <Muted>{t('skillsTab.loadingCatalog')}</Muted>
         : (
           <>
+            <div style={{ fontSize: 11, color: 'var(--cth-ink-500)', marginBottom: 8 }}>
+              {t('skillsTab.catalogSource', { repo: SKILL_CATALOG_REPO })}
+            </div>
             {catalogMeta?.error && (
               <div style={{
                 marginBottom: 8, padding: 8, fontSize: 12, color: 'var(--cth-ink-900)',
