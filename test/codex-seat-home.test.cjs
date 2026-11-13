@@ -330,3 +330,23 @@ function listHooks({ home, cwd, executable, env }) {
     send(1, 'initialize', { clientInfo: { name: 'test', version: '1' }, capabilities: { experimentalApi: true } });
   });
 }
+
+test('the write-roots dry run reads the computed home as the config the app generated', async (t) => {
+  const W = loadTs('src/main/writeRoots.ts');
+  const f = fixture(t);
+  const inj = await f.spawn('dr');
+  const home = inj.env.CODEX_HOME;
+  assert.ok(home.startsWith(path.join(f.root, '.mdc') + path.sep), home);
+  // What the spawn core records: the app set this CODEX_HOME (index.ts codexHomeFromApp).
+  const rec = { args: ['codex -a never -s workspace-write'], env: { HOME: f.root, CODEX_HOME: home }, codexHomeFromApp: true };
+  const read = (r) => W.effectiveRoots('codex', f.agentDir('dr'), f.cwd, f.root, W.spawnLaunchFacts(r, 'darwin', f.hive.codexAppHooks()));
+  const ok = read(rec);
+  assert.equal(ok.state, 'ok', JSON.stringify(ok));
+  // Read as generated, a hook the app did not write is caught; read as the owner's own config it would pass unread.
+  const cfg = path.join(home, 'config.toml');
+  fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8').replace(/^(command = ".*)"$/m, '$1 planted"'));
+  assert.deepEqual([read(rec).state, read(rec).why], ['unknown', 'app-hooks-differ']);
+  // Without the spawn record it is not generated, and a home that is not the owner's ~/.codex is not modelled.
+  const unset = read({ ...rec, codexHomeFromApp: false });
+  assert.deepEqual([unset.state, unset.source], ['unknown', 'codex-config'], 'only the spawn record makes it generated');
+});
