@@ -37,6 +37,9 @@ const CLAIM_OLD_MS = 60 * 60_000;
 const CLAIM_STRANDED_MS = 2 * 60 * 60_000;
 /** A refusal the server repeats is retried after this, doubling up to the cap. */
 const REFUSAL_BACKOFF_MS = 10 * 60_000;
+/** The longest gap between two answered polls that counts toward CLAIM_STRANDED_MS: a
+ *  little over one mining pass. A longer gap (an outage, a sleeping app) is not counted. */
+const COUNTED_POLL_GAP_MS = 15 * 60_000;
 const REFUSAL_BACKOFF_MAX_MS = 6 * 60 * 60_000;
 /** A memory.md written this recently is probably still being appended to. */
 const QUIET_MS = 2 * 60_000;
@@ -108,6 +111,8 @@ export class HindsightAdapter implements MemoryBackend {
   private lastClaimPoll = -Infinity;
   /** The HTTP status the server last refused a retain with, and how many times in a row. */
   private refusal: { status: number; count: number } | null = null;
+  /** A change of server or bank waiting for an open retain to end, so it is logged once. */
+  private waitingFor: string | null = null;
   /** The last answer about the open retain, so each change is logged once. */
   private lastPollOutcome: { op: string; outcome: string } | null = null;
   /** Oversized sections already reported, so each is logged once. */
@@ -127,7 +132,12 @@ export class HindsightAdapter implements MemoryBackend {
     return `${url.trim().replace(/\/+$/, '')}\n${bank}`;
   }
 
-  /** The ledger for the current server and bank, loaded once and reloaded when either changes. */
+  /**
+   * The ledger to work from: the current server and bank's, loaded once and reloaded
+   * when either changes, except that while any ledger has a retain open (this one, or
+   * one a previous run left on disk) that ledger is kept until the retain ends. A
+   * change of settings waits for it, and is logged once.
+   */
   private async currentLedger(): Promise<{ ledger: RetainLedger; state: LedgerState } | null> {
     const dir = this.ledgerDir();
     if (!dir) return null;
@@ -138,12 +148,30 @@ export class HindsightAdapter implements MemoryBackend {
     }
     const server = this.serverKey();
     if (this.ledgerState?.server !== server) {
-      this.ledgerState = await this.ledger.load(server);
-      this.lastClaimPoll = -Infinity;
-      // A rest longer than any this miner sets is not honoured.
-      this.ledgerState.busyUntil = Math.min(this.ledgerState.busyUntil, this.now() + REFUSAL_BACKOFF_MAX_MS);
+      let next = this.ledgerState?.claim ? this.ledgerState : (await this.ledger.openClaims()).find((l) => l.server !== server) ?? null;
+      if (next) {
+        if (this.waitingFor !== server) {
+          this.waitingFor = server;
+          console.info(`[memory] hindsight: the new server or bank takes effect once retain ${next.claim?.op} on ${next.server.replace('\n', ' bank ')} ends`);
+        }
+      } else {
+        this.waitingFor = null;
+        next = await this.ledger.load(server);
+      }
+      if (next !== this.ledgerState) {
+        this.ledgerState = next;
+        this.lastClaimPoll = -Infinity;
+        // A rest longer than any this miner sets is not honoured.
+        this.ledgerState.busyUntil = Math.min(this.ledgerState.busyUntil, this.now() + REFUSAL_BACKOFF_MAX_MS);
+      }
     }
-    return { ledger: this.ledger, state: this.ledgerState };
+    return { ledger: this.ledger, state: this.ledgerState as LedgerState };
+  }
+
+  /** The bank URL a ledger's `url\nbank` names. Every request about a claim goes here, never to the live settings. */
+  private baseOf(server: string): string {
+    const cut = server.indexOf('\n');
+    return `${server.slice(0, cut)}/v1/default/banks/${encodeURIComponent(server.slice(cut + 1))}`;
   }
 
   private base(): string {
@@ -287,6 +315,8 @@ export class HindsightAdapter implements MemoryBackend {
     }
     if (!pending.length) return { ok: true };
     if (this.now() < state.busyUntil) return { ok: false, backlog: pending.length };
+    // A ledger kept for another server's open retain takes no new work once that retain ends.
+    if (state.server !== this.serverKey()) return { ok: false, backlog: pending.length };
     const batch = pending.slice(0, CLAIM_MAX_ITEMS);
     const now = this.now();
     const claim: RetainClaim = {
@@ -295,7 +325,8 @@ export class HindsightAdapter implements MemoryBackend {
       items: batch.map(({ key, id, hash, heading, body }) => ({ key, id, hash, agent: agentId, heading, content: body })),
       acked: false,
       seen: '',
-      changedAt: now
+      idle: 0,
+      answeredAt: now
     };
     // Fail closed: a retain whose claim is not on disk could be sent twice after a restart.
     state.claim = claim;
@@ -330,7 +361,7 @@ export class HindsightAdapter implements MemoryBackend {
     }));
     let refusedWith: number | null = null;
     try {
-      const res = await this.request(`${this.base()}/memories`, {
+      const res = await this.request(`${this.baseOf(state.server)}/memories`, {
         method: 'POST',
         body: { items, async: true, operation_id: claim.op },
         timeoutMs: RETAIN_REQUEST_TIMEOUT_MS
@@ -338,7 +369,8 @@ export class HindsightAdapter implements MemoryBackend {
       if (res.ok) {
         this.refusal = null;
         claim.acked = true;
-        claim.changedAt = this.now();
+        claim.idle = 0;
+        claim.answeredAt = this.now();
         await ledger.save(state);
         return 'accepted';
       }
@@ -365,23 +397,29 @@ export class HindsightAdapter implements MemoryBackend {
     return 'refused';
   }
 
-  /** The operation's status and updated_at, or why the answer could not be used. */
-  private async operationStatus(op: string): Promise<{ status: string; updatedAt: string; error?: string } | { problem: string }> {
+  /** The operation's status and updated_at, or why the answer could not be used and whether the server answered at all. */
+  private async operationStatus(server: string, op: string): Promise<{ status: string; updatedAt: string; error?: string } | { problem: string; answered: boolean }> {
+    let res: Response;
     try {
-      const res = await this.request(`${this.base()}/operations/${encodeURIComponent(op)}`, { method: 'GET', timeoutMs: OPERATION_TIMEOUT_MS });
-      if (res.status === 404) return { status: 'not_found', updatedAt: '' };
-      if (!res.ok) return { problem: `HTTP ${res.status}` };
-      const body = (await res.json()) as { status?: unknown; updated_at?: unknown; error_message?: unknown };
-      if (typeof body.status !== 'string') return { problem: 'no status in the answer' };
-      if (!OPERATION_STATUSES.has(body.status)) return { problem: `unknown status "${body.status.slice(0, 40)}"` };
-      return {
-        status: body.status,
-        updatedAt: typeof body.updated_at === 'string' ? body.updated_at : '',
-        ...(body.error_message ? { error: String(body.error_message) } : {})
-      };
+      res = await this.request(`${this.baseOf(server)}/operations/${encodeURIComponent(op)}`, { method: 'GET', timeoutMs: OPERATION_TIMEOUT_MS });
     } catch (error) {
-      return { problem: error instanceof Error ? error.message : String(error) };
+      return { problem: error instanceof Error ? error.message : String(error), answered: false };
     }
+    if (res.status === 404) return { status: 'not_found', updatedAt: '' };
+    if (!res.ok) return { problem: `HTTP ${res.status}`, answered: true };
+    let body: { status?: unknown; updated_at?: unknown; error_message?: unknown };
+    try {
+      body = (await res.json()) as typeof body;
+    } catch {
+      return { problem: 'a body that is not JSON', answered: true };
+    }
+    if (typeof body?.status !== 'string') return { problem: 'no status in the answer', answered: true };
+    if (!OPERATION_STATUSES.has(body.status)) return { problem: `unknown status "${body.status.slice(0, 40)}"`, answered: true };
+    return {
+      status: body.status,
+      updatedAt: typeof body.updated_at === 'string' ? body.updated_at : '',
+      ...(body.error_message ? { error: String(body.error_message) } : {})
+    };
   }
 
   /**
@@ -389,10 +427,10 @@ export class HindsightAdapter implements MemoryBackend {
    * exists under its id with exactly the claimed text. False when any is missing,
    * differs, or cannot be read.
    */
-  private async documentsHeld(claim: RetainClaim): Promise<boolean> {
+  private async documentsHeld(server: string, claim: RetainClaim): Promise<boolean> {
     for (const { id, content } of claim.items) {
       try {
-        const res = await this.request(`${this.base()}/documents/${encodeURIComponent(id)}`, { method: 'GET', timeoutMs: OPERATION_TIMEOUT_MS });
+        const res = await this.request(`${this.baseOf(server)}/documents/${encodeURIComponent(id)}`, { method: 'GET', timeoutMs: OPERATION_TIMEOUT_MS });
         if (!res.ok) return false;
         const body = (await res.json()) as { original_text?: unknown };
         if (body.original_text !== content) return false;
@@ -420,7 +458,7 @@ export class HindsightAdapter implements MemoryBackend {
     if (!claim) return 'released';
     if (!force && this.now() - this.lastClaimPoll < CLAIM_POLL_MS) return 'open';
     this.lastClaimPoll = this.now();
-    const op = await this.operationStatus(claim.op);
+    const op = await this.operationStatus(state.server, claim.op);
     const outcome = 'problem' in op ? `unreadable (${op.problem})` : op.status;
     if (this.lastPollOutcome?.op !== claim.op || this.lastPollOutcome.outcome !== outcome) {
       this.lastPollOutcome = { op: claim.op, outcome };
@@ -435,7 +473,7 @@ export class HindsightAdapter implements MemoryBackend {
       }
       if (op.status === 'not_found') {
         // A finished operation may have been pruned while the app was away: ask about the documents first.
-        if (await this.documentsHeld(claim)) {
+        if (await this.documentsHeld(state.server, claim)) {
           console.info(`[memory] hindsight retain ${claim.op}: no record of the operation, but its documents hold the claimed text; recorded`);
           return this.releaseClaim(ledger, state, true);
         }
@@ -443,25 +481,30 @@ export class HindsightAdapter implements MemoryBackend {
         const sent = await this.postClaim(ledger, state, claim);
         return sent === 'refused' ? 'released' : 'open';
       }
-      const seen = `${op.status}|${op.updatedAt}`.slice(0, 256);
-      if (seen !== claim.seen) {
-        claim.seen = seen;
-        claim.changedAt = this.now();
-        await ledger.save(state);
-      }
+    }
+    // The no-progress clock runs only between answered polls, so an outage or a
+    // sleeping app is not counted against an operation the server is still running.
+    if (!('problem' in op) || op.answered) {
+      const seen = 'problem' in op ? claim.seen : `${op.status}|${op.updatedAt}`.slice(0, 256);
+      const gap = this.now() - claim.answeredAt;
+      if (seen !== claim.seen) claim.idle = 0;
+      else if (gap <= COUNTED_POLL_GAP_MS) claim.idle += gap;
+      claim.seen = seen;
+      claim.answeredAt = this.now();
+      await ledger.save(state);
     }
     const age = this.now() - claim.since;
     if (age >= CLAIM_OLD_MS) {
       console.warn(`[memory] hindsight retain ${claim.op} is still open (${outcome}) after ${Math.round(age / 60_000)} min; nothing else is sent until it ends`);
     }
-    if (this.now() - claim.changedAt < CLAIM_STRANDED_MS) return 'open';
-    console.warn(`[memory] hindsight retain ${claim.op} has shown no progress for ${Math.round((this.now() - claim.changedAt) / 60_000)} min; asking the server to cancel it`);
+    if (claim.idle < CLAIM_STRANDED_MS) return 'open';
+    console.warn(`[memory] hindsight retain ${claim.op} has shown no progress for ${Math.round(claim.idle / 60_000)} min of answered polls; asking the server to cancel it`);
     try {
-      await this.request(`${this.base()}/operations/${encodeURIComponent(claim.op)}`, { method: 'DELETE', timeoutMs: OPERATION_TIMEOUT_MS });
+      await this.request(`${this.baseOf(state.server)}/operations/${encodeURIComponent(claim.op)}`, { method: 'DELETE', timeoutMs: OPERATION_TIMEOUT_MS });
     } catch {
       // The status read below decides.
     }
-    const after = await this.operationStatus(claim.op);
+    const after = await this.operationStatus(state.server, claim.op);
     if ('problem' in after || (after.status !== 'cancelled' && after.status !== 'not_found')) {
       console.warn(`[memory] hindsight retain ${claim.op}: the server did not confirm the cancel; the slot stays held`);
       return 'open';

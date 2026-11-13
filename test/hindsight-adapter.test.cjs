@@ -466,6 +466,132 @@ test('a server error leaves the outcome unknown; a refused connection frees the 
   assert.deepEqual(brief(await fresh.mineAgent(agentDirWith(MEMORY_MD), 'pam')), { ok: false, sent: true }, 'never sent, so free to try again');
 });
 
+// ─── One claim, one server: settings changes wait for the open retain ──────
+
+/** Routes for one bank whose operations report `status()`. */
+const bankRoutes = (bank, status) => ({
+  [`POST /v1/default/banks/${bank}/memories`]: { json: { success: true } },
+  [`GET /v1/default/banks/${bank}/operations/*`]: () => ({ json: { status: status() } })
+});
+const postsTo = (s, bank) => s.seen.filter((r) => r.method === 'POST' && r.url === `/v1/default/banks/${bank}/memories`);
+
+test('settings read once as bank A and then as bank B never open two retains', async (t) => {
+  t.mock.method(console, 'info', () => {});
+  const s = await stub(t, { ...bankRoutes('bank-a', () => 'processing'), ...bankRoutes('bank-b', () => 'processing') });
+  let reads = 0;
+  // The reviewer's probe: the first read of the settings says bank A, every later one bank B.
+  const cfg = () => ({ url: s.url, bank: reads++ === 0 ? 'bank-a' : 'bank-b' });
+  const now = clock();
+  const ledgerFolder = ledgerDir();
+  const adapter = new HindsightAdapter(cfg, () => '/tmp/home', now, () => ledgerFolder);
+  await adapter.mineAgent(agentDirWith(MEMORY_MD), 'pam');
+  now.advance(PASS);
+  await adapter.mineAgent(agentDirWith(MEMORY_MD), 'pam');
+  now.advance(PASS);
+  await adapter.mineAgent(agentDirWith(MEMORY_MD), 'pam');
+  assert.equal(postsTo(s, 'bank-a').length + postsTo(s, 'bank-b').length, 1, 'one retain open, never two');
+});
+
+test('a bank change during a retain leaves that retain on its own bank, and the change waits for it to end', async (t) => {
+  const info = t.mock.method(console, 'info', () => {});
+  let aStatus = 'processing';
+  const cfg = { url: '', bank: 'bank-a' };
+  const s = await stub(t, {
+    // The owner switches banks while the POST is in flight.
+    'POST /v1/default/banks/bank-a/memories': () => { cfg.bank = 'bank-b'; return { json: { success: true } }; },
+    'GET /v1/default/banks/bank-a/operations/*': () => ({ json: { status: aStatus } }),
+    ...bankRoutes('bank-b', () => 'completed')
+  });
+  cfg.url = s.url;
+  const now = clock();
+  const ledgerFolder = ledgerDir();
+  const adapter = new HindsightAdapter(() => cfg, () => '/tmp/home', now, () => ledgerFolder);
+  const dir = agentDirWith(MEMORY_MD);
+  await adapter.mineAgent(dir, 'pam');
+  for (let pass = 0; pass < 3; pass++) {
+    now.advance(PASS);
+    await adapter.mineAgent(dir, 'pam');
+  }
+  assert.equal(postsTo(s, 'bank-b').length, 0, 'nothing goes to bank B while bank A has a retain open');
+  assert.ok(s.seen.filter((r) => r.url.startsWith('/v1/default/banks/bank-a/operations/')).length >= 3, 'the open retain is asked about on its own bank');
+  assert.equal(info.mock.calls.filter((c) => /takes effect once retain/.test(c.arguments[0])).length, 1, 'the waiting change is logged once');
+
+  aStatus = 'completed';
+  now.advance(PASS);
+  await adapter.mineAgent(dir, 'pam');
+  now.advance(PASS);
+  await adapter.mineAgent(dir, 'pam');
+  assert.equal(postsTo(s, 'bank-b').length, 1, 'after it ends, the new bank is served');
+});
+
+test('an app restarted with another bank first finishes the retain the last run left open', async (t) => {
+  t.mock.method(console, 'info', () => {});
+  let aStatus = 'processing';
+  const s = await stub(t, { ...bankRoutes('bank-a', () => aStatus), ...bankRoutes('bank-b', () => 'completed') });
+  const now = clock();
+  const dir = ledgerDir();
+  const agent = agentDirWith(MEMORY_MD);
+  await new HindsightAdapter(() => ({ url: s.url, bank: 'bank-a' }), () => '/tmp/home', now, () => dir).mineAgent(agent, 'pam');
+  const restarted = new HindsightAdapter(() => ({ url: s.url, bank: 'bank-b' }), () => '/tmp/home', now, () => dir);
+  now.advance(PASS);
+  await restarted.mineAgent(agent, 'pam');
+  assert.equal(postsTo(s, 'bank-b').length, 0);
+  aStatus = 'completed';
+  now.advance(PASS);
+  await restarted.mineAgent(agent, 'pam');
+  now.advance(PASS);
+  await restarted.mineAgent(agent, 'pam');
+  assert.equal(postsTo(s, 'bank-b').length, 1);
+});
+
+// ─── The no-progress clock counts only answered time ───────────────────────
+
+test('an overnight gap does not count toward the two-hour cancel', async (t) => {
+  t.mock.method(console, 'warn', () => {});
+  t.mock.method(console, 'info', () => {});
+  const s = await stub(t, strandedServer({ honoursCancel: true }).routes);
+  const now = clock();
+  const adapter = make(s.url, 'b1', '/tmp/home', now);
+  await adapter.mineAgent(agentDirWith(MEMORY_MD), 'pam');
+  now.advance(8 * 60 * 60_000); // the app slept, or the server was unreachable, all night
+  await adapter.mineAgent(agentDirWith(MEMORY_MD), 'jim');
+  assert.equal(s.seen.filter((r) => r.method === 'DELETE').length, 0, 'a healthy operation is not cancelled on first contact');
+});
+
+test('polls that get no answer do not count toward the two-hour cancel; answered ones do', async (t) => {
+  t.mock.method(console, 'warn', () => {});
+  t.mock.method(console, 'info', () => {});
+  let reachable = true;
+  const routes = strandedServer({ honoursCancel: true }).routes;
+  const answer = routes[OPERATION];
+  routes[OPERATION] = (entry, res) => {
+    if (reachable) return answer(entry);
+    res.socket.destroy();
+    return new Promise(() => {});
+  };
+  const s = await stub(t, routes);
+  const now = clock();
+  const adapter = make(s.url, 'b1', '/tmp/home', now);
+  await adapter.mineAgent(agentDirWith(MEMORY_MD), 'pam');
+  reachable = false;
+  for (let pass = 0; pass < 18; pass++) { // three hours with no answer
+    now.advance(PASS);
+    await adapter.mineAgent(agentDirWith(MEMORY_MD), 'jim');
+  }
+  assert.equal(s.seen.filter((r) => r.method === 'DELETE').length, 0);
+  reachable = true;
+  for (let pass = 0; pass < 11; pass++) { // under two hours of answers
+    now.advance(PASS);
+    await adapter.mineAgent(agentDirWith(MEMORY_MD), 'jim');
+  }
+  assert.equal(s.seen.filter((r) => r.method === 'DELETE').length, 0);
+  for (let pass = 0; pass < 2; pass++) {
+    now.advance(PASS);
+    await adapter.mineAgent(agentDirWith(MEMORY_MD), 'jim');
+  }
+  assert.equal(s.seen.filter((r) => r.method === 'DELETE').length, 1, 'two hours of answered polls without progress: cancelled');
+});
+
 // ─── The ledger is the app's, and nothing in it is taken on trust ──────────
 
 const ledgerFile = (dir) => path.join(dir, fs.readdirSync(dir).find((f) => f.startsWith('retained-')));
@@ -617,7 +743,7 @@ test('save never writes a ledger that load would refuse, and keeps the previous 
   const server = 'http://h\nb1';
   const sha = (x) => require('node:crypto').createHash('sha256').update(x).digest('hex');
   const item = (content, heading = 'h') => ({ key: `pam\n${heading}\n0`, id: 'a'.repeat(32), hash: sha(content), agent: 'pam', heading, content });
-  const claim = (items) => ({ op: '6f1c1a8e-1b2c-4d3e-8f90-123456789abc', since: 1, items, acked: false, seen: '', changedAt: 1 });
+  const claim = (items) => ({ op: '6f1c1a8e-1b2c-4d3e-8f90-123456789abc', since: 1, items, acked: false, seen: '', idle: 0, answeredAt: 1 });
   const good = [
     emptyLedger(server),
     { ...emptyLedger(server), sections: { 'pam\nh\n0': { id: 'b'.repeat(32), hash: 'c'.repeat(64) } } },

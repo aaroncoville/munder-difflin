@@ -12,7 +12,7 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { chmod, lstat, mkdir, open, rename, unlink } from 'node:fs/promises';
+import { chmod, lstat, mkdir, open, readdir, rename, unlink } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 
 /** Big enough for ~20k sections; anything larger is refused, not parsed. */
@@ -30,9 +30,13 @@ export interface RetainClaim {
   items: ClaimItem[];
   /** The server answered the POST, so it registered the operation. */
   acked: boolean;
-  /** The operation's last reported `status|updated_at`, and when that last changed. */
+  /** The operation's last reported `status|updated_at`. */
   seen: string;
-  changedAt: number;
+  /** How long the server has answered without the operation moving. Only time between
+   *  answered polls counts, so an outage or a sleeping app does not run this clock. */
+  idle: number;
+  /** When a poll was last answered (any HTTP response). */
+  answeredAt: number;
 }
 export interface LedgerState {
   v: 1;
@@ -78,8 +82,8 @@ export function parseLedger(text: string, server: string): LedgerState | string 
   let claim: RetainClaim | null = null;
   if (raw.claim !== null) {
     const c = raw.claim;
-    if (!isRecord(c) || !hasOnly(c, ['op', 'since', 'items', 'acked', 'seen', 'changedAt'])) return 'the claim is malformed';
-    if (typeof c.op !== 'string' || !UUID.test(c.op) || !isTime(c.since) || !isTime(c.changedAt)) return 'the claim is malformed';
+    if (!isRecord(c) || !hasOnly(c, ['op', 'since', 'items', 'acked', 'seen', 'idle', 'answeredAt'])) return 'the claim is malformed';
+    if (typeof c.op !== 'string' || !UUID.test(c.op) || !isTime(c.since) || !isTime(c.idle) || !isTime(c.answeredAt)) return 'the claim is malformed';
     if (typeof c.acked !== 'boolean' || typeof c.seen !== 'string' || c.seen.length > MAX_SEEN_LENGTH) return 'the claim is malformed';
     if (!Array.isArray(c.items) || c.items.length < 1 || c.items.length > CLAIM_MAX_ITEMS) return 'the claim is malformed';
     for (const it of c.items) {
@@ -90,7 +94,7 @@ export function parseLedger(text: string, server: string): LedgerState | string 
       // The text must be the text the hash names, or a resend would carry something else.
       if (createHash('sha256').update(it.content).digest('hex') !== it.hash) return 'a claim item does not match its hash';
     }
-    claim = { op: c.op, since: c.since, items: c.items as ClaimItem[], acked: c.acked, seen: c.seen, changedAt: c.changedAt };
+    claim = { op: c.op, since: c.since, items: c.items as ClaimItem[], acked: c.acked, seen: c.seen, idle: c.idle, answeredAt: c.answeredAt };
   }
   return { v: 1, server, busyUntil: raw.busyUntil, sections: raw.sections as Record<string, RetainedSection>, claim };
 }
@@ -129,25 +133,52 @@ export class RetainLedger {
   /** The ledger for this server, or an empty one when there is none or it was refused (logged once). */
   async load(server: string): Promise<LedgerState> {
     if (!(await this.folder())) return emptyLedger(server);
-    const path = this.file(server);
+    return (await this.read(this.file(server), server)) ?? emptyLedger(server);
+  }
+
+  /**
+   * Every ledger in the folder that has a retain open, whatever server it belongs to.
+   * A ledger counts only if it parses and its file name is the one its own server
+   * would get, so a file copied under another name is not taken for another server's.
+   */
+  async openClaims(): Promise<LedgerState[]> {
+    if (!(await this.folder())) return [];
+    let names: string[];
+    try { names = await readdir(this.dir); } catch { return []; }
+    const open: LedgerState[] = [];
+    for (const name of names.filter((n) => /^retained-[0-9a-f]{24}\.json$/.test(n)).slice(0, 64)) {
+      const state = await this.read(join(this.dir, name), null);
+      if (state?.claim && this.file(state.server) === join(this.dir, name)) open.push(state);
+    }
+    return open;
+  }
+
+  /** One ledger file, checked for `server` (or for the server it names itself, when null); null when absent or refused. */
+  private async read(path: string, server: string | null): Promise<LedgerState | null> {
     let handle;
     try {
       handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
       if (code !== 'ENOENT') this.warnOnce(`${path} was refused (${code === 'ELOOP' ? 'it is a link' : (e as Error).message}); starting empty`);
-      return emptyLedger(server);
+      return null;
     }
     try {
       const st = await handle.stat();
-      if (!st.isFile()) { this.warnOnce(`${path} is not a file; starting empty`); return emptyLedger(server); }
-      if (st.size > LEDGER_MAX_BYTES) { this.warnOnce(`${path} is over ${LEDGER_MAX_BYTES} bytes; starting empty`); return emptyLedger(server); }
-      const parsed = parseLedger(await handle.readFile('utf8'), server);
-      if (typeof parsed === 'string') { this.warnOnce(`${path} was refused (${parsed}); starting empty`); return emptyLedger(server); }
+      if (!st.isFile()) { this.warnOnce(`${path} is not a file; starting empty`); return null; }
+      if (st.size > LEDGER_MAX_BYTES) { this.warnOnce(`${path} is over ${LEDGER_MAX_BYTES} bytes; starting empty`); return null; }
+      const text = await handle.readFile('utf8');
+      let owner = server;
+      if (owner === null) {
+        try { const raw = JSON.parse(text) as { server?: unknown }; owner = typeof raw?.server === 'string' ? raw.server : null; } catch { owner = null; }
+        if (owner === null) { this.warnOnce(`${path} names no server; ignored`); return null; }
+      }
+      const parsed = parseLedger(text, owner);
+      if (typeof parsed === 'string') { this.warnOnce(`${path} was refused (${parsed}); starting empty`); return null; }
       return parsed;
     } catch (e) {
       this.warnOnce(`${path} could not be read (${(e as Error).message}); starting empty`);
-      return emptyLedger(server);
+      return null;
     } finally {
       await handle.close();
     }
