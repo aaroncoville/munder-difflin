@@ -144,9 +144,11 @@ function copyRegular(from: string, to: string, cap: number, check?: (bytes: Buff
   const tmp = join(dirname(to), `${TEMP}${basename(to)}.${process.pid}.${randomBytes(6).toString('hex')}`);
   let placed = false;
   try {
-    const st = fstatSync(fd);
+    // Nanosecond times: a rewrite of the same size within the same second still shows.
+    const st = fstatSync(fd, { bigint: true });
     if (!st.isFile()) return { skip: 'not a regular file' };
-    if (st.size > cap) return { skip: `larger than ${cap} bytes` };
+    const size = Number(st.size);
+    if (size > cap) return { skip: `larger than ${cap} bytes` };
     const out = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     let total = 0;
     try {
@@ -156,11 +158,17 @@ function copyRegular(from: string, to: string, cap: number, check?: (bytes: Buff
         if (n <= 0) break;
         total += n;
         // Grew past what was measured: another agent is writing it now.
-        if (total > st.size) return { retry: 'changed while it was copied' };
+        if (total > size) return { retry: 'changed while it was copied' };
         for (let off = 0; off < n;) off += writeSync(out, buf, off, n - off);
       }
     } finally { closeSync(out); }
-    if (total !== st.size) return { retry: 'changed while it was copied' };
+    if (total !== size) return { retry: 'changed while it was copied' };
+    // The same file, unchanged, from first read to last: an in-place rewrite of the same size would otherwise
+    // pass, and the copy would hold the start of one version and the end of another.
+    const end = fstatSync(fd, { bigint: true });
+    if (end.dev !== st.dev || end.ino !== st.ino || end.size !== st.size || end.mtimeNs !== st.mtimeNs || end.ctimeNs !== st.ctimeNs) {
+      return { retry: 'changed while it was copied' };
+    }
     const problem = check ? check(readFileSync(tmp)) : null;
     if (problem) return { skip: problem };
     renameSync(tmp, to);

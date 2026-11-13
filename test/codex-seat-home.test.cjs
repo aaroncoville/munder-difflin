@@ -514,7 +514,7 @@ test('a source that changes while it is copied leaves no marker, and the next st
   let grown = false;
   fs.fstatSync = function (fd, ...rest) {
     const st = realFstat.call(fs, fd, ...rest);
-    if (!grown && st.isFile() && st.size === 4) { grown = true; fs.appendFileSync(src, 'two\n'); }
+    if (!grown && st.isFile() && Number(st.size) === 4) { grown = true; fs.appendFileSync(src, 'two\n'); }
     return st;
   };
   try { migrateSeatHome(agent, home); } finally { fs.fstatSync = realFstat; }
@@ -578,4 +578,33 @@ test('a Codex agent cannot start while an agent the app does not sandbox is star
   assert.equal(fs.existsSync(codexShortHomePath(path.join(f.agentDir('cx2'), '.codex'), 'cx2')), false, 'no home was made');
   live = [];
   assert.ok((await f.spawn('cx3')).env.CODEX_HOME, 'once it is gone, Codex starts');
+});
+
+test('a source rewritten to the same size while it is copied leaves no marker, and the next start copies it whole', (t) => {
+  const { migrateSeatHome } = loadTs('src/main/codexSeatHome.ts');
+  const root = codexTestBase(t, 'mdss-');
+  const agent = path.join(root, 'agent');
+  const legacy = path.join(agent, '.codex');
+  fs.mkdirSync(legacy, { recursive: true });
+  const src = path.join(legacy, 'history.jsonl');
+  const MiB = 1024 * 1024;
+  fs.writeFileSync(src, Buffer.alloc(2 * MiB, 'A'));
+  const home = path.join(root, 'home');
+  // After the first 1 MiB is read, another writer rewrites the source in place with 2 MiB of other bytes.
+  const realRead = fs.readSync;
+  let rewritten = false;
+  fs.readSync = function (...args) {
+    const n = realRead.apply(fs, args);
+    if (!rewritten && n === MiB) { rewritten = true; fs.writeFileSync(src, Buffer.alloc(2 * MiB, 'B')); }
+    return n;
+  };
+  let first;
+  try { first = migrateSeatHome(agent, home); } finally { fs.readSync = realRead; }
+  assert.equal(rewritten, true, 'the probe ran');
+  assert.equal(first.finished, false, JSON.stringify(first));
+  assert.equal(fs.existsSync(path.join(home, 'history.jsonl')), false, 'no mixed copy published');
+  assert.equal(fs.readdirSync(home).some((n) => n.startsWith('.migrated')), false, 'no marker');
+  const again = migrateSeatHome(agent, home);
+  assert.ok(again.finished && again.copied.includes('history.jsonl'), JSON.stringify(again));
+  assert.ok(fs.readFileSync(path.join(home, 'history.jsonl')).equals(Buffer.alloc(2 * MiB, 'B')), 'the whole new file');
 });
