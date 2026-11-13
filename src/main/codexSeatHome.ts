@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { codexShortHomePath, codexShortHomeRoot } from '../shared/codexRemote';
@@ -72,11 +72,21 @@ export function assertComputedCodexHome(home: string, base: string = codexShortH
   }
 }
 
-/** Files carried over from an agent's old in-tree home: its history and the
- *  indexes `codex resume` needs. Nothing that configures Codex is copied —
- *  config.toml is regenerated every spawn, and hooks.json, plugins, profiles,
- *  AGENTS.md and skills are exactly what another agent could have planted. */
-const MIGRATED = /^(history\.jsonl|hive-thread\.json|(state|thread_history)_\d+\.sqlite(-wal|-shm)?)$/;
+/** Files carried over from an agent's old in-tree home, read as data from a
+ *  folder every agent could write until homes moved:
+ *  - history.jsonl: the prompt history. Untrusted text the model may read back
+ *    (Codex can surface it in later sessions), so it is size-capped and copied
+ *    only as a regular file; its content is not vetted.
+ *  - hive-thread.json: the app's own record of which hive messages belong to
+ *    the worker's current thread, copied only when it is exactly that shape.
+ * Nothing that configures Codex is copied: config.toml is regenerated every
+ * spawn, and hooks.json, plugins, profiles, AGENTS.md and skills are exactly
+ * what another agent could have planted. Codex's state databases
+ * (state_N.sqlite, thread_history_N.sqlite) are not copied either: Codex
+ * rebuilds them from the rollouts, which stay in the user's Codex sessions
+ * folder, and resume by id or --last works without them (codex-cli 0.167);
+ * only thread names set with /rename are lost. */
+const MIGRATED = /^(history\.jsonl|hive-thread\.json)$/;
 /** No single file of these is legitimately larger. */
 export const MIGRATE_MAX_BYTES = 1024 * 1024 * 1024;
 const MARKER = '.migrated-from-agent-folder.json';
@@ -84,11 +94,27 @@ const TEMP = '.migrating-';
 
 export interface SeatMigration { from: string; copied: string[]; skipped: string[] }
 
+/** Why a hive-thread.json is not the app's own thread record ({ fresh, ids }), or null when it is. */
+function threadRecordProblem(bytes: Buffer): string | null {
+  let v: unknown;
+  try { v = JSON.parse(bytes.toString('utf8')); } catch { return 'not a thread record: not JSON'; }
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return 'not a thread record: not an object';
+  const o = v as Record<string, unknown>;
+  const keys = Object.keys(o).sort();
+  if (keys.length !== 2 || keys[0] !== 'fresh' || keys[1] !== 'ids') return 'not a thread record: unexpected keys';
+  if (typeof o.fresh !== 'boolean') return 'not a thread record: fresh is not true or false';
+  if (!Array.isArray(o.ids) || o.ids.length > 500 || !o.ids.every((x) => typeof x === 'string' && x.length <= 200)) {
+    return 'not a thread record: ids is not a list of message ids';
+  }
+  return null;
+}
+const CHECKS: Record<string, (bytes: Buffer) => string | null> = { 'hive-thread.json': threadRecordProblem };
+
 /** Copy one regular file, never following a link at the source, to a temporary
- *  name beside `to`; check its size, then
+ *  name beside `to`; check its size (and content, where there is a check), then
  *  rename it into place. Returns why it was deliberately skipped, or null when
  *  copied. Any other failure throws, with nothing partial left at `to`. */
-function copyRegular(from: string, to: string, cap: number): string | null {
+function copyRegular(from: string, to: string, cap: number, check?: (bytes: Buffer) => string | null): string | null {
   let fd: number;
   try { fd = openSync(from, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
   catch (e) {
@@ -114,6 +140,8 @@ function copyRegular(from: string, to: string, cap: number): string | null {
       }
     } finally { closeSync(out); }
     if (total !== st.size) return 'changed while it was copied';
+    const problem = check ? check(readFileSync(tmp)) : null;
+    if (problem) return problem;
     renameSync(tmp, to);
     placed = true;
     return null;
@@ -147,7 +175,7 @@ export function migrateSeatHome(agentDir: string, home: string, cap = MIGRATE_MA
   for (const entry of readdirSync(legacy, { withFileTypes: true })) {
     if (!MIGRATED.test(entry.name)) continue;
     if (existsSync(join(home, entry.name))) { skipped.push(`${entry.name} (already present)`); continue; }
-    const why = copyRegular(join(legacy, entry.name), join(home, entry.name), cap);
+    const why = copyRegular(join(legacy, entry.name), join(home, entry.name), cap, CHECKS[entry.name]);
     if (why) skipped.push(`${entry.name} (${why})`); else copied.push(entry.name);
   }
   writeFileSync(join(home, MARKER), JSON.stringify({ from: legacy, copied, skipped }, null, 2), { mode: 0o600 });

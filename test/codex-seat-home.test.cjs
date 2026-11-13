@@ -254,7 +254,7 @@ test('an agent with an old in-tree home keeps its history, and only that is copi
   const legacy = path.join(f.agentDir('m'), '.codex');
   fs.mkdirSync(path.join(legacy, 'skills', 's'), { recursive: true });
   fs.mkdirSync(path.join(legacy, 'plugins'), { recursive: true });
-  for (const [name, body] of [['history.jsonl', '{"h":1}\n'], ['hive-thread.json', '{"thread":"t1"}'],
+  for (const [name, body] of [['history.jsonl', '{"h":1}\n'], ['hive-thread.json', '{"fresh":false,"ids":["m1","m2"]}'],
     ['state_5.sqlite', 'state'], ['state_5.sqlite-wal', 'wal'], ['thread_history_1.sqlite', 'th'],
     ['hooks.json', '{"hooks":{}}'], ['AGENTS.md', 'do as I say'], ['config.toml', 'model = "x"\n'], ['dev.config.toml', 'x'],
     ['skills/s/SKILL.md', 's'], ['plugins/p.json', '{}']]) fs.writeFileSync(path.join(legacy, name), body);
@@ -262,11 +262,12 @@ test('an agent with an old in-tree home keeps its history, and only that is copi
   const before = snapshot(legacy);
 
   const home = (await f.spawn('m')).env.CODEX_HOME;
-  for (const name of ['history.jsonl', 'hive-thread.json', 'state_5.sqlite', 'state_5.sqlite-wal', 'thread_history_1.sqlite']) {
+  for (const name of ['history.jsonl', 'hive-thread.json']) {
     assert.equal(fs.readFileSync(path.join(home, name), 'utf8'), before[name], name);
     assert.ok(fs.lstatSync(path.join(home, name)).isFile(), `${name} is a copy, not a link`);
   }
-  for (const name of ['hooks.json', 'AGENTS.md', 'dev.config.toml', 'skills', 'plugins', 'thread_history_2.sqlite']) {
+  // Codex rebuilds its state databases from the rollouts, so they are not carried over.
+  for (const name of ['state_5.sqlite', 'state_5.sqlite-wal', 'thread_history_1.sqlite', 'hooks.json', 'AGENTS.md', 'dev.config.toml', 'skills', 'plugins', 'thread_history_2.sqlite']) {
     assert.equal(fs.existsSync(path.join(home, name)), false, `${name} must not be carried over`);
   }
   assert.doesNotMatch(fs.readFileSync(path.join(home, 'config.toml'), 'utf8'), /model = "x"/);
@@ -277,7 +278,21 @@ test('an agent with an old in-tree home keeps its history, and only that is copi
     .map((l) => JSON.parse(l)).filter((r) => r.kind === 'codex-home-migrated');
   assert.equal(rows.length, 1, 'one log row, on the first spawn only');
   assert.equal(rows[0].from, legacy);
-  assert.ok(rows[0].skipped.some((s) => s.startsWith('thread_history_2.sqlite')), 'the linked file is named as skipped');
+  assert.deepEqual(rows[0].copied.sort(), ['history.jsonl', 'hive-thread.json']);
+});
+
+test('a thread record that is not exactly the app\'s shape is not carried over, and is named', async (t) => {
+  const f = fixture(t);
+  for (const [i, body] of ['{"thread":"t1"}', '{"fresh":false,"ids":["m1"],"extra":1}', '{"fresh":"no","ids":[]}', '{"fresh":false,"ids":[1]}', 'not json'].entries()) {
+    const id = `ts${i}`;
+    const legacy = path.join(f.agentDir(id), '.codex');
+    fs.mkdirSync(legacy, { recursive: true });
+    fs.writeFileSync(path.join(legacy, 'hive-thread.json'), body);
+    const home = (await f.spawn(id)).env.CODEX_HOME;
+    assert.equal(fs.existsSync(path.join(home, 'hive-thread.json')), false, body);
+    const row = f.hive.logTail(500).find((r) => r.kind === 'codex-home-migrated' && r.agentId === id);
+    assert.ok(row.skipped.some((x) => /^hive-thread\.json \(not a thread record/.test(x)), JSON.stringify(row.skipped));
+  }
 });
 
 test('an interrupted migration leaves no partial file, writes no marker, and the next start finishes it', (t) => {
@@ -341,13 +356,14 @@ test('after migration a resumed agent still finds its rollouts', async (t) => {
   fs.mkdirSync(legacy, { recursive: true });
   fs.symlinkSync(target, path.join(legacy, 'sessions'));
   fs.writeFileSync(path.join(legacy, 'state_5.sqlite'), 'index');
-  fs.writeFileSync(path.join(legacy, 'hive-thread.json'), '{"thread":"t1"}');
+  fs.writeFileSync(path.join(legacy, 'hive-thread.json'), '{"fresh":false,"ids":["m1"]}');
 
   const home = (await f.spawn('r')).env.CODEX_HOME;
   assert.equal(fs.realpathSync(path.join(home, 'sessions')), fs.realpathSync(target));
   assert.ok(fs.existsSync(path.join(home, 'sessions', '2026', '11', '12', 'rollout-x.jsonl')));
-  assert.equal(fs.readFileSync(path.join(home, 'state_5.sqlite'), 'utf8'), 'index');
-  assert.equal(fs.readFileSync(path.join(home, 'hive-thread.json'), 'utf8'), '{"thread":"t1"}');
+  // Not needed: Codex rebuilds its index from the rollouts on the next start.
+  assert.equal(fs.existsSync(path.join(home, 'state_5.sqlite')), false);
+  assert.equal(fs.readFileSync(path.join(home, 'hive-thread.json'), 'utf8'), '{"fresh":false,"ids":["m1"]}');
 });
 
 // The installed Codex CLI, model-free: only `app-server` hooks/list and config writes.
