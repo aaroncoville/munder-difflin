@@ -40,6 +40,7 @@ const REFUSAL_BACKOFF_MS = 10 * 60_000;
 const REFUSAL_BACKOFF_MAX_MS = 6 * 60 * 60_000;
 /** A memory.md written this recently is probably still being appended to. */
 const QUIET_MS = 2 * 60_000;
+const OPERATION_STATUSES = new Set(['pending', 'processing', 'completed', 'failed', 'cancelled', 'not_found']);
 /** Failures that prove the request never reached the server. */
 const NEVER_SENT = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EHOSTUNREACH', 'ENETUNREACH', 'EAI_AGAIN']);
 const RECALL_TIMEOUT_MS = 120_000;
@@ -107,6 +108,8 @@ export class HindsightAdapter implements MemoryBackend {
   private lastClaimPoll = -Infinity;
   /** The HTTP status the server last refused a retain with, and how many times in a row. */
   private refusal: { status: number; count: number } | null = null;
+  /** The last answer about the open retain, so each change is logged once. */
+  private lastPollOutcome: { op: string; outcome: string } | null = null;
   /** Oversized sections already reported, so each is logged once. */
   private reportedOversize = new Set<string>();
 
@@ -362,80 +365,118 @@ export class HindsightAdapter implements MemoryBackend {
     return 'refused';
   }
 
-  /** The operation's status and updated_at, or null when the server gave no usable answer. */
-  private async operationStatus(op: string): Promise<{ status: string; updatedAt: string; error?: string } | null> {
+  /** The operation's status and updated_at, or why the answer could not be used. */
+  private async operationStatus(op: string): Promise<{ status: string; updatedAt: string; error?: string } | { problem: string }> {
     try {
       const res = await this.request(`${this.base()}/operations/${encodeURIComponent(op)}`, { method: 'GET', timeoutMs: OPERATION_TIMEOUT_MS });
       if (res.status === 404) return { status: 'not_found', updatedAt: '' };
-      if (!res.ok) return null;
+      if (!res.ok) return { problem: `HTTP ${res.status}` };
       const body = (await res.json()) as { status?: unknown; updated_at?: unknown; error_message?: unknown };
-      if (typeof body.status !== 'string') return null;
+      if (typeof body.status !== 'string') return { problem: 'no status in the answer' };
+      if (!OPERATION_STATUSES.has(body.status)) return { problem: `unknown status "${body.status.slice(0, 40)}"` };
       return {
         status: body.status,
         updatedAt: typeof body.updated_at === 'string' ? body.updated_at : '',
         ...(body.error_message ? { error: String(body.error_message) } : {})
       };
-    } catch {
-      return null;
+    } catch (error) {
+      return { problem: error instanceof Error ? error.message : String(error) };
     }
+  }
+
+  /**
+   * Whether the server already holds every claimed section as claimed: each document
+   * exists under its id with exactly the claimed text. False when any is missing,
+   * differs, or cannot be read.
+   */
+  private async documentsHeld(claim: RetainClaim): Promise<boolean> {
+    for (const { id, content } of claim.items) {
+      try {
+        const res = await this.request(`${this.base()}/documents/${encodeURIComponent(id)}`, { method: 'GET', timeoutMs: OPERATION_TIMEOUT_MS });
+        if (!res.ok) return false;
+        const body = (await res.json()) as { original_text?: unknown };
+        if (body.original_text !== content) return false;
+      } catch {
+        return false;
+      }
+    }
+    return true;
   }
 
   /**
    * Ask the server what became of the open retain, at most every CLAIM_POLL_MS
    * unless forced. Its sections count as retained only once the server says the
-   * operation completed. Failed or cancelled frees the slot with nothing recorded,
-   * so those sections are sent again later. Not found frees it only for a POST the
-   * server answered; an unanswered one is sent again under the same operation id,
-   * which the server turns into a no-op if the first did arrive. An operation that
-   * has not moved for CLAIM_STRANDED_MS is cancelled, and the slot frees only when
-   * the server confirms it. No answer keeps the slot held.
+   * operation completed, or, when it has no record of the operation, once its
+   * documents are found holding exactly the claimed text. Otherwise not_found sends
+   * the same request again under the same operation id. Failed or cancelled frees
+   * the slot with nothing recorded. Any other answer, including one that cannot be
+   * read, keeps the slot held. Each change of answer is logged once, an open claim
+   * over an hour old is logged on every poll, and an operation with no readable
+   * progress for CLAIM_STRANDED_MS is cancelled; the slot frees only when the
+   * server confirms the cancel.
    */
   private async settleClaim(ledger: RetainLedger, state: LedgerState, force = false): Promise<'completed' | 'released' | 'open'> {
     const claim = state.claim;
     if (!claim) return 'released';
     if (!force && this.now() - this.lastClaimPoll < CLAIM_POLL_MS) return 'open';
     this.lastClaimPoll = this.now();
-    let op = await this.operationStatus(claim.op);
-    if (!op) return 'open';
-    if (op.status === 'not_found' && !claim.acked) {
-      console.info(`[memory] hindsight retain ${claim.op}: the server has no record of it; sending it again under the same id`);
-      const outcome = await this.postClaim(ledger, state, claim);
-      return outcome === 'refused' ? 'released' : 'open';
+    const op = await this.operationStatus(claim.op);
+    const outcome = 'problem' in op ? `unreadable (${op.problem})` : op.status;
+    if (this.lastPollOutcome?.op !== claim.op || this.lastPollOutcome.outcome !== outcome) {
+      this.lastPollOutcome = { op: claim.op, outcome };
+      const log = 'problem' in op ? console.warn : console.info;
+      log(`[memory] hindsight retain ${claim.op}: the server reports ${outcome}`);
     }
-    if (op.status === 'pending' || op.status === 'processing') {
+    if (!('problem' in op)) {
+      if (op.status === 'completed') return this.releaseClaim(ledger, state, true);
+      if (op.status === 'failed' || op.status === 'cancelled') {
+        if (op.status === 'failed') console.error(`[memory] hindsight retain ${claim.op} failed on the server: ${op.error ?? 'no reason given'}`);
+        return this.releaseClaim(ledger, state, false);
+      }
+      if (op.status === 'not_found') {
+        // A finished operation may have been pruned while the app was away: ask about the documents first.
+        if (await this.documentsHeld(claim)) {
+          console.info(`[memory] hindsight retain ${claim.op}: no record of the operation, but its documents hold the claimed text; recorded`);
+          return this.releaseClaim(ledger, state, true);
+        }
+        console.info(`[memory] hindsight retain ${claim.op}: no record of it and its documents do not hold the claimed text; sending it again under the same id`);
+        const sent = await this.postClaim(ledger, state, claim);
+        return sent === 'refused' ? 'released' : 'open';
+      }
       const seen = `${op.status}|${op.updatedAt}`.slice(0, 256);
       if (seen !== claim.seen) {
         claim.seen = seen;
         claim.changedAt = this.now();
         await ledger.save(state);
       }
-      const age = this.now() - claim.since;
-      if (age >= CLAIM_OLD_MS) {
-        console.warn(`[memory] hindsight retain ${claim.op} is still ${op.status} after ${Math.round(age / 60_000)} min; nothing else is sent until it ends`);
-      }
-      if (this.now() - claim.changedAt < CLAIM_STRANDED_MS) return 'open';
-      console.warn(`[memory] hindsight retain ${claim.op} has not moved for ${Math.round((this.now() - claim.changedAt) / 60_000)} min; asking the server to cancel it`);
-      try {
-        await this.request(`${this.base()}/operations/${encodeURIComponent(claim.op)}`, { method: 'DELETE', timeoutMs: OPERATION_TIMEOUT_MS });
-      } catch {
-        return 'open';
-      }
-      op = await this.operationStatus(claim.op);
-      if (!op || (op.status !== 'cancelled' && op.status !== 'not_found')) {
-        console.warn(`[memory] hindsight retain ${claim.op}: the server did not confirm the cancel; the slot stays held`);
-        return 'open';
-      }
     }
-    if (op.status === 'failed') console.error(`[memory] hindsight retain ${claim.op} failed on the server: ${op.error ?? 'no reason given'}`);
-    if (op.status === 'completed') {
-      for (const { key, id, hash } of claim.items) state.sections[key] = { id, hash };
-    } else if (op.status !== 'failed' && op.status !== 'cancelled' && op.status !== 'not_found') {
+    const age = this.now() - claim.since;
+    if (age >= CLAIM_OLD_MS) {
+      console.warn(`[memory] hindsight retain ${claim.op} is still open (${outcome}) after ${Math.round(age / 60_000)} min; nothing else is sent until it ends`);
+    }
+    if (this.now() - claim.changedAt < CLAIM_STRANDED_MS) return 'open';
+    console.warn(`[memory] hindsight retain ${claim.op} has shown no progress for ${Math.round((this.now() - claim.changedAt) / 60_000)} min; asking the server to cancel it`);
+    try {
+      await this.request(`${this.base()}/operations/${encodeURIComponent(claim.op)}`, { method: 'DELETE', timeoutMs: OPERATION_TIMEOUT_MS });
+    } catch {
+      // The status read below decides.
+    }
+    const after = await this.operationStatus(claim.op);
+    if ('problem' in after || (after.status !== 'cancelled' && after.status !== 'not_found')) {
+      console.warn(`[memory] hindsight retain ${claim.op}: the server did not confirm the cancel; the slot stays held`);
       return 'open';
     }
+    return this.releaseClaim(ledger, state, false);
+  }
+
+  /** Close the claim, recording its sections only when the server holds them, and rest. */
+  private async releaseClaim(ledger: RetainLedger, state: LedgerState, retained: boolean): Promise<'completed' | 'released'> {
+    const claim = state.claim;
+    if (claim && retained) for (const { key, id, hash } of claim.items) state.sections[key] = { id, hash };
     state.claim = null;
     state.busyUntil = this.now() + RETAIN_MIN_GAP_MS;
     await ledger.save(state);
-    return op.status === 'completed' ? 'completed' : 'released';
+    return retained ? 'completed' : 'released';
   }
 
   private async recall(query: string, resultCount: number, agentId?: string): Promise<TextResult> {

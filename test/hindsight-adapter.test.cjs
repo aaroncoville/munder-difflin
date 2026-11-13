@@ -253,9 +253,11 @@ test('a retain with no answer is held open, not recorded, until the server is as
   assert.equal(retains(s).length, 2);
 });
 
-test('an acknowledged retain the server later has no record of frees the slot, and its sections go again', async (t) => {
+const DOCUMENT = 'GET /v1/default/banks/b1/documents/*';
+
+test('an acknowledged retain the server has no record of, whose documents are missing, goes again under the same id', async (t) => {
   let operation = 'processing';
-  const s = await stub(t, { [RETAIN]: { json: { success: true } }, [OPERATION]: () => ({ json: { status: operation } }) });
+  const s = await stub(t, { [RETAIN]: { json: { success: true } }, [OPERATION]: () => ({ json: { status: operation } }), [DOCUMENT]: { status: 404, json: { detail: 'Document not found' } } });
   const now = clock();
   const adapter = make(s.url, 'b1', '/tmp/home', now);
   const dir = agentDirWith(MEMORY_MD);
@@ -263,11 +265,90 @@ test('an acknowledged retain the server later has no record of frees the slot, a
   operation = 'not_found';
   now.advance(PASS);
   assert.deepEqual(brief(await adapter.mineAgent(dir, 'pam')), { ok: false });
-  operation = 'completed';
-  now.advance(PASS);
-  assert.deepEqual(brief(await adapter.mineAgent(dir, 'pam')), { ok: true, sent: true });
   const [first, second] = retains(s);
-  assert.notEqual(second.body.operation_id, first.body.operation_id);
+  assert.equal(second.body.operation_id, first.body.operation_id);
+  assert.deepEqual(second.body.items, first.body.items);
+  assert.ok(s.seen.some((r) => r.url.startsWith('/v1/default/banks/b1/documents/')), 'the documents were asked about first');
+});
+
+test('a pruned operation whose documents hold the claimed text is recorded, not sent again', async (t) => {
+  let operation = 'processing';
+  const texts = new Map();
+  const s = await stub(t, {
+    [RETAIN]: (entry) => { for (const i of entry.body.items) texts.set(i.document_id, i.content); return { json: { success: true } }; },
+    [OPERATION]: () => ({ json: { status: operation } }),
+    [DOCUMENT]: (entry) => ({ json: { original_text: texts.get(entry.url.split('/').pop()) } })
+  });
+  const now = clock();
+  const adapter = make(s.url, 'b1', '/tmp/home', now);
+  const dir = agentDirWith(MEMORY_MD);
+  await adapter.mineAgent(dir, 'pam');
+  operation = 'not_found';
+  now.advance(PASS);
+  await adapter.mineAgent(dir, 'pam');
+  now.advance(PASS);
+  assert.deepEqual(brief(await adapter.mineAgent(dir, 'pam')), { ok: true }, 'recorded as retained');
+  assert.equal(retains(s).length, 1);
+});
+
+test('a pruned operation whose documents hold other text is sent again under the same id', async (t) => {
+  let operation = 'processing';
+  const s = await stub(t, { [RETAIN]: { json: { success: true } }, [OPERATION]: () => ({ json: { status: operation } }), [DOCUMENT]: { json: { original_text: 'older text' } } });
+  const now = clock();
+  const adapter = make(s.url, 'b1', '/tmp/home', now);
+  const dir = agentDirWith(MEMORY_MD);
+  await adapter.mineAgent(dir, 'pam');
+  operation = 'not_found';
+  now.advance(PASS);
+  await adapter.mineAgent(dir, 'pam');
+  const [first, second] = retains(s);
+  assert.equal(second.body.operation_id, first.body.operation_id);
+});
+
+test('status reads that keep failing hold the slot, are logged once, and end only in a cancel the server confirms', async (t) => {
+  const warn = t.mock.method(console, 'warn', () => {});
+  t.mock.method(console, 'info', () => {});
+  let readable = false;
+  let cancelled = false;
+  const s = await stub(t, {
+    [RETAIN]: { json: { success: true } },
+    [OPERATION]: () => (readable ? { json: { status: cancelled ? 'cancelled' : 'processing' } } : { status: 500, json: {} }),
+    'DELETE /v1/default/banks/b1/operations/*': () => { cancelled = true; return { json: {} }; }
+  });
+  const now = clock();
+  const adapter = make(s.url, 'b1', '/tmp/home', now);
+  await adapter.mineAgent(agentDirWith(MEMORY_MD), 'pam');
+  for (let pass = 0; pass < 36; pass++) { // six hours of unreadable answers
+    now.advance(PASS);
+    await adapter.mineAgent(agentDirWith(MEMORY_MD), 'jim');
+  }
+  const lines = warn.mock.calls.map((c) => c.arguments[0]);
+  assert.equal(lines.filter((m) => /reports unreadable \(HTTP 500\)/.test(m)).length, 1, 'the same poll outcome is logged once');
+  assert.ok(lines.some((m) => /still open \(unreadable \(HTTP 500\)\) after \d+ min/.test(m)), 'an old claim is logged with its age');
+  assert.ok(s.seen.some((r) => r.method === 'DELETE'), 'no progress for two hours: cancelled on the server');
+  assert.ok(lines.some((m) => /did not confirm the cancel/.test(m)));
+  assert.equal(retains(s).length, 1, 'a cancel that cannot be confirmed keeps the slot held');
+
+  readable = true;
+  now.advance(PASS);
+  await adapter.mineAgent(agentDirWith(MEMORY_MD), 'jim');
+  now.advance(PASS);
+  await adapter.mineAgent(agentDirWith(MEMORY_MD), 'jim');
+  assert.equal(retains(s).length, 2, 'once the server confirms the cancel, the slot frees');
+});
+
+test('an unknown status counts as unreadable: the slot stays held', async (t) => {
+  t.mock.method(console, 'warn', () => {});
+  t.mock.method(console, 'info', () => {});
+  const s = await stub(t, { [RETAIN]: { json: { success: true } }, [OPERATION]: { json: { status: 'mystery' } } });
+  const now = clock();
+  const adapter = make(s.url, 'b1', '/tmp/home', now);
+  await adapter.mineAgent(agentDirWith(MEMORY_MD), 'pam');
+  for (let pass = 0; pass < 6; pass++) {
+    now.advance(PASS);
+    assert.deepEqual(brief(await adapter.mineAgent(agentDirWith(MEMORY_MD), 'jim')), { ok: false });
+  }
+  assert.equal(retains(s).length, 1);
 });
 
 /** A server whose one operation stays `processing` with the same updated_at, and that may or may not honour a cancel. */
@@ -296,7 +377,7 @@ test('a stranded operation is cancelled after two hours without change, and the 
   assert.equal(retains(s).length, 1, 'a cancel the server does not confirm keeps the slot held');
   assert.ok(s.seen.some((r) => r.method === 'DELETE'), 'the stranded operation is cancelled');
   const said = warn.mock.calls.map((c) => c.arguments[0]).join('\n');
-  assert.match(said, /still processing after \d+ min/);
+  assert.match(said, /still open \(processing\) after \d+ min/);
   assert.match(said, /did not confirm the cancel/);
 });
 
