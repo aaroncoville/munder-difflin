@@ -171,6 +171,12 @@ export const HIVE_MAINTENANCE_TASKS = ['loose-objects', 'prune-packed', 'commit-
 export const HIVE_MAINTENANCE_LOOSE_BATCH = 50_000;
 /** A maintenance step gets far longer than a commit: it runs alone, while nothing else is happening. */
 export const HIVE_MAINTENANCE_TIMEOUT_MS = 30 * 60_000;
+/**
+ * A maintenance step stopped with SIGKILL (or a power loss) can leave `objects/maintenance.lock` or
+ * `packed-refs.lock`, and git then skips the work and still exits 0, so maintenance would log success daily while
+ * packing nothing. Such a lock older than the longest a step can live belongs to no running git, and is removed.
+ */
+export const HIVE_STALE_MAINTENANCE_LOCK_MS = HIVE_MAINTENANCE_TIMEOUT_MS + HIVE_GIT_KILL_GRACE_MS + 30_000;
 /** Maintenance waits until the queue has been idle this long, and runs at most once per HIVE_MAINTENANCE_EVERY_MS. */
 export const HIVE_MAINTENANCE_IDLE_MS = 10 * 60_000;
 export const HIVE_MAINTENANCE_EVERY_MS = 24 * 60 * 60_000;

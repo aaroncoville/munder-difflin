@@ -210,3 +210,31 @@ test('a full reset removes the hive\'s git directory, so a new hive at the same 
   assert.equal(fs.existsSync(gitDir), false);
   assert.equal(fs.existsSync(base), true, 'only this hive\'s directory is removed');
 });
+
+test('maintenance clears a maintenance.lock older than any step can run', async (t) => {
+  const { dir, base } = scratch(t);
+  const hive = await floor(dir, base);
+  hive.setMaintenanceTiming({ idleMs: 100, everyMs: 24 * 60 * 60 * 1000 });
+  const gitDir = hiveGitDirFor(base, hive.root());
+  const lock = path.join(gitDir, 'objects', 'maintenance.lock');
+  fs.writeFileSync(lock, '');
+  const old = new Date(Date.now() - 3 * 60 * 60 * 1000);
+  fs.utimesSync(lock, old, old);
+  fs.writeFileSync(path.join(hive.root(), 'board.md'), '# loose objects\n');
+  hive.commit('hive: something to pack');
+  await hive.commitsSettled();
+  const loose = () => Number(/^count: (\d+)/m.exec(git(hive.root(), '--git-dir', gitDir, 'count-objects', '-v').stdout)[1]);
+  const before = loose();
+
+  const end = Date.now() + 10000;
+  while (hive.logTail(200).filter((e) => e.kind === 'hive-maintenance' && e.phase === 'end').length < 4) {
+    assert.ok(Date.now() < end, 'maintenance never finished');
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  await hive.commitsSettled();
+
+  assert.equal(fs.existsSync(lock), false, 'the stale lock was left');
+  assert.ok(loose() < before, `nothing was packed: ${before} -> ${loose()}`);
+  assert.equal(fs.existsSync(path.join(gitDir, 'hive-maintenance-at')), true, 'the stamp lives in the app-owned directory');
+  assert.equal(fs.existsSync(path.join(hive.root(), '.git', 'hive-maintenance-at')), false);
+});

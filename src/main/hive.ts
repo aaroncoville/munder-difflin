@@ -56,7 +56,7 @@ import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde } from './fs';
 import { refreshMineIgnoresOnce } from './hiveMineIgnore';
 import { hiveGitDirFor, hiveRepoPresent, settleHiveGitDir, writeGitfile } from './hiveGitDir';
-import { AGENT_ALLOWLIST_IGNORE_LINES, CommitQueue, HIVE_MAINTENANCE_EVERY_MS, HIVE_MAINTENANCE_IDLE_MS, HIVE_MAINTENANCE_TASKS, HIVE_MAINTENANCE_TIMEOUT_MS, HIVE_STALE_LOCK_MS, maintenanceArgs, runGit, stopRunningGits, untrackIgnored, type GitResult } from './hiveCommit';
+import { AGENT_ALLOWLIST_IGNORE_LINES, CommitQueue, HIVE_MAINTENANCE_EVERY_MS, HIVE_MAINTENANCE_IDLE_MS, HIVE_MAINTENANCE_TASKS, HIVE_MAINTENANCE_TIMEOUT_MS, HIVE_STALE_LOCK_MS, HIVE_STALE_MAINTENANCE_LOCK_MS, maintenanceArgs, runGit, stopRunningGits, untrackIgnored, type GitResult } from './hiveCommit';
 import { agentFolderId, hasExactFolder, isAppSender, isFolderName, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, RegistryUnreadable, rosterIdFor, shortTarget } from './messageTarget';
 import { nodeLauncherScript } from './nodeLauncher';
 import { codexTrustEntry } from '../shared/codexTrust';
@@ -3949,6 +3949,7 @@ export class HiveManager {
     const started = Date.now();
     this.appendLog({ kind: 'hive-maintenance', phase: 'start', task });
     const gitDir = this.hiveGitDir(root)!;
+    this.clearStaleLocks(gitDir, ['objects/maintenance.lock', 'packed-refs.lock'], HIVE_STALE_MAINTENANCE_LOCK_MS);
     const r = await runGit([`--git-dir=${gitDir}`, `--work-tree=${root}`, ...maintenanceArgs(task)], root, HIVE_MAINTENANCE_TIMEOUT_MS);
     const durationMs = Date.now() - started;
     this.appendLog({ kind: 'hive-maintenance', phase: 'end', task, ok: r.ok, durationMs, ...(r.ok ? {} : { error: (r.err || r.out).trim().slice(0, 2000) }) });
@@ -4038,7 +4039,7 @@ export class HiveManager {
   }
 
   /** Remove locks left by a git that can no longer be running: older than the longest a hive git holding them can
-   *  live. See HIVE_STALE_LOCK_MS. */
+   *  live (HIVE_STALE_LOCK_MS for a commit, HIVE_STALE_MAINTENANCE_LOCK_MS for a maintenance step). */
   private clearStaleLocks(gitDir: string, locks: string[], olderThanMs: number): void {
     try {
       for (const lock of locks) {
