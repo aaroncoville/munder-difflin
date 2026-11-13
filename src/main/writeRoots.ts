@@ -337,7 +337,8 @@ export function inputShape(input: unknown): (typeof SHAPES)[number] {
     if (Array.isArray(r[k])) return `${k}-array`;
   }
   if (typeof r.file_path === 'string' || typeof r.notebook_path === 'string' || typeof r.path === 'string') return 'file-path';
-  return patchPaths(input).length ? 'patch' : 'other';
+  const cut = { truncated: false };
+  return patchPaths(input, cut).length || cut.truncated ? 'patch' : 'other';
 }
 
 /** Cheap check: could this call write a file at all? */
@@ -345,7 +346,10 @@ export function mayWrite(tool: unknown, input: unknown): boolean {
   if (typeof tool !== 'string') return false;
   if (EDIT_TOOLS.has(tool) || MCP_WRITE.test(tool)) return true;
   const r = rec(input);
-  return r.command !== undefined || r.cmd !== undefined || patchPaths(input).length > 0;
+  if (r.command !== undefined || r.cmd !== undefined) return true;
+  // A patch scan cut short is a possible write: it goes on to observeTool, which records it as truncated.
+  const cut = { truncated: false };
+  return patchPaths(input, cut).length > 0 || cut.truncated;
 }
 
 export interface ToolObservation { via: Via; pathClass: PathClass; refused: boolean }

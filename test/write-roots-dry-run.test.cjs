@@ -546,7 +546,16 @@ test('every row of READ_SITES has a case here, and each case holds', (t) => {
     'stop-merge': () => { const later = []; const rows = []; const d = new W.WriteRootsDryRun({ agent: (id) => ({ ctx: { ...ctx, agentId: id }, provider: 'claude', agentDir: dir }), known: () => true, record: (e) => rows.push(e), defer: (f) => later.push(f) }); d.onHook('a1', 'PreToolUse', { tool_name: 'Read', tool_input: {} }); d.onHook('a1', 'Stop', {}); d.onHook('a1', 'Stop', {}); while (later.length) later.shift()(); assert.deepEqual(rows.filter((r) => r.kind === 'write-observed').map((r) => r.count), [1], 'the call is counted once, nothing lost'); },
     'command-cap': () => { assert.equal(W.observeTool('Bash', { command: `rm ${root}/bin/x ` + 'y'.repeat(W.MAX_COMMAND) }, ctx).at(-1).via, 'truncated'); assert.equal(W.observeTool('Bash', { cmd: ['rm', 'y'.repeat(W.MAX_COMMAND + 1)] }, ctx).at(-1).via, 'truncated'); },
     'nested-script-cap': () => assert.equal(W.observeTool('Bash', { command: `sh -c 'sh -c "sh -c \\"rm ${root}/bin/x\\""'` }, ctx).at(-1).via, 'truncated'),
-    'patch-cap': () => { assert.equal(W.observeTool('apply_patch', { input: '*** Update File: x\n' + ' '.repeat(W.MAX_COMMAND * 4) }, ctx).at(-1).via, 'truncated'); const wide = {}; for (let i = 0; i < 40; i++) wide['k' + i] = 'x'; wide.p = '*** Add File: y'; assert.equal(W.observeTool('apply_patch', wide, ctx).at(-1).via, 'truncated'); },
+    'patch-cap': () => {
+      // Through the real entry (onHook), not observeTool: a cut-off patch scan still reaches a truncated row.
+      const later = []; const rows = []; const d = new W.WriteRootsDryRun({ agent: (id) => ({ ctx: { ...ctx, agentId: id }, provider: 'codex', agentDir: dir }), known: () => true, record: (e) => rows.push(e), defer: (f) => later.push(f) });
+      const wideIn = {}; for (let i = 0; i < 40; i++) wideIn['k' + i] = 'x'; wideIn.p = '*** Add File: y';
+      const deepIn = { a: { b: { c: { d: { e: '*** Add File: y' } } } } };
+      const bigIn = { input: 'x'.repeat(W.MAX_COMMAND * 4 + 1) };
+      for (const input of [wideIn, deepIn, bigIn]) d.onHook('a1', 'PreToolUse', { tool_name: 'apply_patch', tool_input: input });
+      d.onHook('a1', 'Stop', {}); while (later.length) later.shift()();
+      assert.equal(rows.filter((r) => r.kind === 'write-would-refuse' && r.via === 'truncated').length, 3, JSON.stringify(rows));
+      assert.ok(rows.every((r) => r.kind !== 'write-observed' || r.shape === 'patch'), 'counted as patches, not other'); assert.equal(W.observeTool('apply_patch', { input: '*** Update File: x\n' + ' '.repeat(W.MAX_COMMAND * 4) }, ctx).at(-1).via, 'truncated'); const wide = {}; for (let i = 0; i < 40; i++) wide['k' + i] = 'x'; wide.p = '*** Add File: y'; assert.equal(W.observeTool('apply_patch', wide, ctx).at(-1).via, 'truncated'); },
     'path-length-cap': () => assert.deepEqual(W.observeTool('Write', { file_path: '/' + 'a'.repeat(5000) }, ctx), [{ via: 'truncated', pathClass: 'unknown', refused: true }]),
     'payload-tool-name': () => assert.equal(W.toolClass('secret_text'), 'other'),
     'payload-tool-input': () => assert.equal(W.observeTool('Bash', { command: Array.from({ length: 200 }, (_, i) => `rm ${root}/bin/${i}`).join(';') }, ctx).at(-1).via, 'truncated'),
