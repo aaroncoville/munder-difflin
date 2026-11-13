@@ -21,8 +21,12 @@ export type GitRunner = (args: string[], cwd: string) => Promise<GitResult>;
  * the commit cannot finish inside its time limit, and a quit has to wait for it or leave it running. So the hive's
  * commits start neither. The repository is no longer maintained automatically; that has to be a job of its own,
  * scheduled when the hive is idle. `gc.autoDetach=false` stays, so a gc started some other way still runs inline.
+ *
+ * `core.hooksPath=/dev/null`: the hive is the app's own bookkeeping, so no hook of the owner's runs on it. A global
+ * hooksPath would otherwise run the owner's pre-commit hooks (linters, secret scanners, signing prompts) on every hive
+ * commit, slowing or failing it.
  */
-export const HIVE_GIT_CONFIG = ['-c', 'commit.gpgsign=false', '-c', 'gc.autoDetach=false', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', '-c', 'user.name=Hive', '-c', 'user.email=hive@local'];
+export const HIVE_GIT_CONFIG = ['-c', 'commit.gpgsign=false', '-c', 'gc.autoDetach=false', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', '-c', 'core.hooksPath=/dev/null', '-c', 'user.name=Hive', '-c', 'user.email=hive@local'];
 
 /** A git command that takes longer than this is stopped. It no longer blocks anything while it runs, so the limit only
  *  has to catch a command that will never finish. SIGTERM lets git remove its own lock files on the way out. */

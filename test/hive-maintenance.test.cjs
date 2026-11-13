@@ -3,6 +3,7 @@
 /**
  * The hive repository is maintained by a job of its own, never by a commit: it runs only after the commit queue has
  * been idle for a while, at most once a day, one step at a time with no commit alongside, and quitting stops it.
+ * Also here: what else a hive git must not do (run the owner's hooks), and failures it must report as what they are.
  */
 
 const test = require('node:test');
@@ -184,4 +185,31 @@ test('quitting stops a maintenance step that is running, and its git has exited'
   assert.ok(Date.now() - started < 3000);
   assert.deepEqual(shim.alive(), []);
   assert.equal(shim.calls().filter((c) => c.args.includes('maintenance run')).length, 1, 'a later step started after quit');
+});
+
+test('a hive git never runs the owner\'s own git hooks', async (t) => {
+  const dir = home(t);
+  const repo = path.join(dir, 'repo');
+  const hooks = path.join(dir, 'owner-hooks');
+  const marker = path.join(dir, 'hook-ran');
+  fs.mkdirSync(repo);
+  fs.mkdirSync(hooks);
+  fs.writeFileSync(path.join(hooks, 'pre-commit'), `#!/bin/sh\ntouch '${marker}'\n`, { mode: 0o755 });
+  const globalConfig = path.join(dir, 'gitconfig');
+  fs.writeFileSync(globalConfig, `[core]\n\thooksPath = ${hooks}\n[user]\n\tname = t\n\temail = t@t\n`);
+  const saved = process.env.GIT_CONFIG_GLOBAL;
+  process.env.GIT_CONFIG_GLOBAL = globalConfig;
+  t.after(() => { if (saved === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = saved; });
+  spawnSync(REAL_GIT, ['init', '-q'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'f'), 'v');
+
+  await runGit(['add', '-A'], repo);
+  const commit = await runGit(['commit', '-q', '-m', 'c'], repo);
+
+  assert.equal(commit.ok, true, commit.err);
+  assert.equal(fs.existsSync(marker), false, 'the owner\'s pre-commit hook ran on a hive commit');
+  fs.writeFileSync(path.join(repo, 'g'), 'x');
+  spawnSync(REAL_GIT, ['add', '-A'], { cwd: repo });
+  spawnSync(REAL_GIT, ['commit', '-q', '-m', 'd'], { cwd: repo });
+  assert.equal(fs.existsSync(marker), true, 'the control commit did not run the hook: the test would prove nothing');
 });
