@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { MemPalaceAdapter } from './memPalaceAdapter';
 import { HindsightAdapter } from './hindsightAdapter';
 import type { BackendId, MemoryBackend, MemorySettings } from './memoryBackend';
+import { MINE_INTERVAL_MS } from './memoryBackend';
 export type { MemorySettings } from './memoryBackend';
 export { mempalaceDevice, type EmbeddingModel } from './memPalaceAdapter';
 import type { EmbeddingModel } from './memPalaceAdapter';
@@ -25,7 +26,6 @@ function ensureMineIgnore(agentDir: string): void {
 }
 
 export interface MemoryStatus { available: boolean; enabled: boolean; active: boolean; initialized: boolean; palacePath: string | null; backend: BackendId; location: string | null; model: EmbeddingModel | null; bin: string | null; }
-const MINE_INTERVAL_MS = 600_000;
 
 export class MemoryManager {
   private mineTimer: NodeJS.Timeout | null = null;

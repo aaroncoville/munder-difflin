@@ -544,6 +544,103 @@ test('an app restarted with another bank first finishes the retain the last run 
   assert.equal(postsTo(s, 'bank-b').length, 1);
 });
 
+// ─── A server that stops answering after the settings moved away ───────────
+
+/** A Hindsight at one address whose operations report `status()`, or drop every connection while `down()`. */
+function server2(status, down) {
+  return {
+    [RETAIN]: { json: { success: true } },
+    [OPERATION]: (_entry, res) => {
+      if (down()) { res.socket.destroy(); return new Promise(() => {}); }
+      return { json: { status: status() } };
+    }
+  };
+}
+
+test('a retain on a server that stopped answering is set aside 30 min after the settings moved, and the new server gets the work', async (t) => {
+  const warn = t.mock.method(console, 'warn', () => {});
+  t.mock.method(console, 'info', () => {});
+  let aDown = false;
+  const a = await stub(t, server2(() => 'processing', () => aDown));
+  const b = await stub(t, server());
+  const cfg = { url: a.url, bank: 'b1' };
+  const now = clock();
+  const folder = ledgerDir();
+  const adapter = new HindsightAdapter(() => cfg, () => '/tmp/home', now, () => folder);
+  const dir = agentDirWith(MEMORY_MD);
+  await adapter.mineAgent(dir, 'pam');
+
+  aDown = true;
+  cfg.url = b.url; // the owner moved Hindsight to another address
+  let aSeenWhenMoved = null;
+  for (let pass = 0; pass < 7 * 24 * 6; pass++) { // seven days of passes
+    now.advance(PASS);
+    await adapter.mineAgent(dir, 'pam');
+    if (aSeenWhenMoved === null && retains(b).length) aSeenWhenMoved = a.seen.length;
+  }
+  assert.equal(retains(b).length, 1, 'the new server got the work');
+  assert.ok(aSeenWhenMoved !== null && aSeenWhenMoved <= 6, `the old server was asked ${aSeenWhenMoved} times first`);
+  assert.equal(a.seen.length, aSeenWhenMoved, 'the old server is asked nothing more');
+  const asides = warn.mock.calls.map((c) => c.arguments[0]).filter((m) => /set aside/.test(m));
+  assert.equal(asides.length, 1);
+  assert.ok(asides[0].includes(a.url) && asides[0].includes(b.url), 'the log names the old and the new server');
+  const file = fs.readdirSync(folder).map((f) => JSON.parse(fs.readFileSync(path.join(folder, f), 'utf8'))).find((l) => l.server.startsWith(a.url));
+  assert.ok(file.aside && file.claim === null, 'the claim is set aside in its own ledger');
+  assert.match(file.aside.reason, /has not answered/);
+  assert.deepEqual(file.sections, {}, 'nothing from it is recorded');
+});
+
+test('the configured server being down for three days holds the retain, logged once at an hour and then daily', async (t) => {
+  const warn = t.mock.method(console, 'warn', () => {});
+  t.mock.method(console, 'info', () => {});
+  let aDown = false;
+  const a = await stub(t, server2(() => 'processing', () => aDown));
+  const now = clock();
+  const adapter = make(a.url, 'b1', '/tmp/home', now);
+  await adapter.mineAgent(agentDirWith(MEMORY_MD), 'pam');
+  aDown = true;
+  const polls = a.seen.length;
+  for (let pass = 0; pass < 3 * 24 * 6; pass++) {
+    now.advance(PASS);
+    await adapter.mineAgent(agentDirWith(MEMORY_MD), 'jim');
+  }
+  assert.equal(retains(a).length, 1, 'held: nothing else is sent');
+  assert.ok(a.seen.length > polls + 400, 'it keeps asking the server it belongs to');
+  const lines = warn.mock.calls.map((c) => c.arguments[0]);
+  assert.equal(lines.filter((m) => /set aside/.test(m)).length, 0);
+  assert.equal(lines.filter((m) => /still open/.test(m)).length, 3, 'at one hour, then once a day');
+  assert.equal(lines.filter((m) => /DELETE|asking the server to cancel/.test(m)).length, 0, 'unanswered time does not run the cancel');
+});
+
+test('a set-aside retain is checked with its server, not resent, when that server is configured again', async (t) => {
+  t.mock.method(console, 'warn', () => {});
+  t.mock.method(console, 'info', () => {});
+  let aDown = false;
+  let aStatus = 'processing';
+  const a = await stub(t, server2(() => aStatus, () => aDown));
+  const b = await stub(t, server());
+  const cfg = { url: a.url, bank: 'b1' };
+  const now = clock();
+  const folder = ledgerDir();
+  const adapter = new HindsightAdapter(() => cfg, () => '/tmp/home', now, () => folder);
+  const dir = agentDirWith(MEMORY_MD);
+  await adapter.mineAgent(dir, 'pam');
+  aDown = true;
+  cfg.url = b.url;
+  for (let pass = 0; pass < 8; pass++) { now.advance(PASS); await adapter.mineAgent(dir, 'pam'); }
+  assert.equal(retains(b).length, 1);
+
+  // Back to the first server, which finished the job while it was unreachable.
+  aDown = false;
+  aStatus = 'completed';
+  cfg.url = a.url;
+  now.advance(PASS);
+  await adapter.mineAgent(dir, 'pam');
+  now.advance(PASS);
+  assert.deepEqual(brief(await adapter.mineAgent(dir, 'pam')), { ok: true }, 'recorded from the server\'s answer');
+  assert.equal(retains(a).length, 1, 'nothing was resent to it');
+});
+
 // ─── The no-progress clock counts only answered time ───────────────────────
 
 test('an overnight gap does not count toward the two-hour cancel', async (t) => {

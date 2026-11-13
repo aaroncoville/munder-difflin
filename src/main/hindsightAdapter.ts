@@ -13,7 +13,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { CLAIM_ITEM_MAX_CHARS, CLAIM_MAX_ITEMS, MAX_KEY_LENGTH, RetainLedger, type LedgerState, type RetainClaim } from './hindsightLedger';
-import type { BackendStatus, MemoryBackend, MineResult, TextResult } from './memoryBackend';
+import { MINE_INTERVAL_MS, type BackendStatus, type MemoryBackend, type MineResult, type TextResult } from './memoryBackend';
 
 /** How long a /health answer is trusted before the next call re-probes. */
 const HEALTH_TTL_MS = 30_000;
@@ -37,9 +37,15 @@ const CLAIM_OLD_MS = 60 * 60_000;
 const CLAIM_STRANDED_MS = 2 * 60 * 60_000;
 /** A refusal the server repeats is retried after this, doubling up to the cap. */
 const REFUSAL_BACKOFF_MS = 10 * 60_000;
-/** The longest gap between two answered polls that counts toward CLAIM_STRANDED_MS: a
- *  little over one mining pass. A longer gap (an outage, a sleeping app) is not counted. */
-const COUNTED_POLL_GAP_MS = 15 * 60_000;
+/** The longest gap between two answered polls that counts toward CLAIM_STRANDED_MS: half
+ *  again a mining pass, so a longer pass interval cannot switch the cancel off. A longer
+ *  gap (an outage, a sleeping app) is not counted. */
+const COUNTED_POLL_GAP_MS = 1.5 * MINE_INTERVAL_MS;
+/** With the settings moved to another server, an open retain whose own server has not
+ *  answered for this long is set aside, so the new server is not starved by a dead one. */
+const ABANDON_AFTER_MS = 30 * 60_000;
+/** An old open retain is logged at CLAIM_OLD_MS and then at most this often. */
+const AGE_LOG_EVERY_MS = 24 * 60 * 60_000;
 const REFUSAL_BACKOFF_MAX_MS = 6 * 60 * 60_000;
 /** A memory.md written this recently is probably still being appended to. */
 const QUIET_MS = 2 * 60_000;
@@ -111,6 +117,10 @@ export class HindsightAdapter implements MemoryBackend {
   private lastClaimPoll = -Infinity;
   /** The HTTP status the server last refused a retain with, and how many times in a row. */
   private refusal: { status: number; count: number } | null = null;
+  /** Since when the open retain's server has failed to answer at all, in this run. */
+  private unanswered: { op: string; since: number } | null = null;
+  /** When the open retain's age was last logged. */
+  private ageLogged: { op: string; at: number } | null = null;
   /** A change of server or bank waiting for an open retain to end, so it is logged once. */
   private waitingFor: string | null = null;
   /** The last answer about the open retain, so each change is logged once. */
@@ -157,6 +167,13 @@ export class HindsightAdapter implements MemoryBackend {
       } else {
         this.waitingFor = null;
         next = await this.ledger.load(server);
+        if (next.aside && !next.claim) {
+          // This server is configured again: settle what was set aside before sending anything.
+          console.info(`[memory] hindsight: retain ${next.aside.claim.op}, set aside earlier, is being checked with ${next.server.replace('\n', ' bank ')} before anything is resent`);
+          next.claim = next.aside.claim;
+          next.aside = null;
+          await this.ledger.save(next);
+        }
       }
       if (next !== this.ledgerState) {
         this.ledgerState = next;
@@ -465,6 +482,13 @@ export class HindsightAdapter implements MemoryBackend {
       const log = 'problem' in op ? console.warn : console.info;
       log(`[memory] hindsight retain ${claim.op}: the server reports ${outcome}`);
     }
+    if ('problem' in op && !op.answered) {
+      if (this.unanswered?.op !== claim.op) this.unanswered = { op: claim.op, since: this.now() };
+      const target = this.serverKey();
+      if (state.server !== target && this.now() - this.unanswered.since >= ABANDON_AFTER_MS) return this.setAside(ledger, state, target);
+    } else {
+      this.unanswered = null;
+    }
     if (!('problem' in op)) {
       if (op.status === 'completed') return this.releaseClaim(ledger, state, true);
       if (op.status === 'failed' || op.status === 'cancelled') {
@@ -494,7 +518,8 @@ export class HindsightAdapter implements MemoryBackend {
       await ledger.save(state);
     }
     const age = this.now() - claim.since;
-    if (age >= CLAIM_OLD_MS) {
+    if (age >= CLAIM_OLD_MS && (this.ageLogged?.op !== claim.op || this.now() - this.ageLogged.at >= AGE_LOG_EVERY_MS)) {
+      this.ageLogged = { op: claim.op, at: this.now() };
       console.warn(`[memory] hindsight retain ${claim.op} is still open (${outcome}) after ${Math.round(age / 60_000)} min; nothing else is sent until it ends`);
     }
     if (claim.idle < CLAIM_STRANDED_MS) return 'open';
@@ -510,6 +535,28 @@ export class HindsightAdapter implements MemoryBackend {
       return 'open';
     }
     return this.releaseClaim(ledger, state, false);
+  }
+
+  /**
+   * Set the open claim aside in its own ledger: its server stopped answering after the
+   * settings moved elsewhere. Nothing from it is recorded. If that cannot be written,
+   * the claim stays open.
+   */
+  private async setAside(ledger: RetainLedger, state: LedgerState, target: string): Promise<'released' | 'open'> {
+    const claim = state.claim as RetainClaim;
+    const from = state.server.replace('\n', ' bank ');
+    const to = target.replace('\n', ' bank ');
+    const reason = `${from} has not answered for ${Math.round((this.now() - (this.unanswered?.since ?? this.now())) / 60_000)} min since the settings moved to ${to}`;
+    state.aside = { claim, reason, at: this.now() };
+    state.claim = null;
+    if (!(await ledger.save(state))) {
+      state.claim = claim;
+      state.aside = null;
+      return 'open';
+    }
+    this.unanswered = null;
+    console.warn(`[memory] hindsight retain ${claim.op} set aside: ${reason}. Nothing from it is recorded; it is checked again if ${from} is configured again`);
+    return 'released';
   }
 
   /** Close the claim, recording its sections only when the server holds them, and rest. */
