@@ -3330,12 +3330,14 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     try { hive.confirmSpawn(opts.id, { id: opts.hive.id, provider }, [opts.command, ...(opts.args ?? [])], relocationEnv(buildPtyEnv(process.env, '', opts.env))); }
     catch (e) { if (e instanceof HookRuntimeUnavailable) return refuseSpawn(opts.id, opts.hive.id, provider, e); throw e; }
   }
+  const res = ptyManager.spawn(opts, owner);
   // Remember which agent owns this PTY so closing the tab can archive it, and
   // record the launch as it is really spawned (after any remote rewrite, with the
   // environment built exactly as the PTY will build it, relocation only). Only
-  // now, past every point that can refuse the spawn, so a refused spawn leaves
-  // none of this behind.
-  if (opts.hive?.id) {
+  // once the terminal has started, so a refused spawn, or one whose terminal
+  // could not start, leaves none of this behind.
+  if (res.ok && opts.hive?.id) {
+    hive.spawnStarted(opts.id);
     ptyToAgent.set(opts.id, opts.hive.id);
     spawnRoots.set(opts.hive.id, { cwd: opts.cwd, provider, isGod: opts.hive.isGod === true, args: [opts.command, ...(opts.args ?? [])], env: relocationEnv(buildPtyEnv(process.env, '', opts.env)), codexHomeFromApp, gen: ++spawnGeneration });
     // Where this worker's Codex rollouts will be written, now that any resume
@@ -3347,7 +3349,11 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     // initial orientation prompt is never mistaken for an idle agent.
     workerWake.noteSpawn(opts.id);
   }
-  const res = ptyManager.spawn(opts, owner);
+  // The terminal did not start (its id is in use, its folder is gone): undo what provisioning did for it.
+  if (!res.ok && opts.hive?.id) {
+    try { hive.withdrawRefusedSpawn(opts.id, `the terminal did not start: ${res.error ?? 'unknown error'}`); }
+    catch (e) { console.error('[hive] rollback after a failed terminal start failed:', e); }
+  }
   if (res.ok) analytics.track('agent_spawned', { provider });
   else analytics.track('agent_spawn_failed', { provider, reason: spawnFailReason(res.error) });
   syncKeepAwake(); // arm the power-save blocker while ≥1 agent PTY is alive (#18)

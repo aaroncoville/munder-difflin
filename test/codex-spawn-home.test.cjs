@@ -193,7 +193,7 @@ test('Restart & Continue with no session anywhere is refused, not started fresh'
   assert.deepEqual(f.calls, []);
 });
 
-test('a spawn records itself (owner map, spawn record, Codex home, thread, wake state) only after every refusal point', () => {
+test('a spawn records itself (owner map, spawn record, Codex home, thread, wake state) only after every refusal point and a started terminal', () => {
   const sa = require('./source-assert.cjs');
   const src = sa.activeSource('src/main/index.ts');
   const core = src.slice(src.indexOf('async function spawnAgentCore('));
@@ -202,5 +202,5 @@ test('a spawn records itself (owner map, spawn record, Codex home, thread, wake 
   for (const refusal of ['seedCodexHookTrust(', 'hive.confirmSpawn(opts.id', 'assertComputedCodexHome(home)']) {
     assert.ok(record > at(refusal), `bookkeeping comes after ${refusal}`);
   }
-  assert.ok(record < at('const res = ptyManager.spawn(opts, owner);'), 'and before the terminal starts');
+  assert.ok(record > at('const res = ptyManager.spawn(opts, owner);'), 'and only once the terminal has started');
 });

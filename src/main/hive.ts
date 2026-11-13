@@ -546,6 +546,8 @@ export class HiveManager {
   private warnedNoRuntime = false;
   /** The verdict ensureAgent reached for each agent, for the late check before its terminal starts. */
   private hookVerdicts = new Map<string, HookVerdict>();
+  /** Decisions that passed the late check, until their terminal starts (spawnStarted) or fails to (withdrawRefusedSpawn). */
+  private startingSpawns = new Map<string, HookVerdict>();
   /** Per Codex home, what the app last wrote into its config.toml (writeCodexConfig). */
   private codexConfigsWritten = new Map<string, CodexConfigWritten>();
   /** The spawn that last passed the late check, per agent. */
@@ -830,6 +832,12 @@ export class HiveManager {
     }
     this.confirmHookLaunch(v, argv, env);
     this.confirmedSpawn.set(v.agentId, v.spawnId ?? spawnId);
+    // Kept until the terminal is known to have started, so a terminal that fails to start can still be rolled back.
+    this.startingSpawns.set(spawnId, v);
+  }
+  /** The terminal for this spawn started: nothing of it is rolled back any more. */
+  spawnStarted(spawnId: string): void {
+    this.startingSpawns.delete(spawnId);
   }
   /** The late check, just before the terminal starts: the FINAL launch line and environment must imply nothing the
    *  verdict did not check. Reads no settings files (the verdict is the snapshot). A refusal here rolls back a new agent's
@@ -865,8 +873,12 @@ export class HiveManager {
    *  the launch): undo what ensureAgent did for it, by the same compare-and-remove rule as the late check. A spawn
    *  with no decision on record (refused before anything was created, or already rolled back) is left as it is. */
   withdrawRefusedSpawn(spawnId: string, why: string): void {
-    const v = this.takeHookVerdict(spawnId);
-    if (v) this.rollbackSpawn(v, why);
+    const v = this.takeHookVerdict(spawnId) ?? this.startingSpawns.get(spawnId);
+    this.startingSpawns.delete(spawnId);
+    if (!v) return;
+    this.rollbackSpawn(v, why);
+    // A spawn whose terminal never started is not the agent's latest started spawn.
+    if (this.confirmedSpawn.get(v.agentId) === (v.spawnId ?? spawnId)) this.confirmedSpawn.delete(v.agentId);
   }
   /** Undo what ensureAgent did for this spawn: only the registry row this call added. Main never deletes under the hive
    *  root or an agent folder, so no folder is removed, ever; one this call created is left in place and named in the log. */
