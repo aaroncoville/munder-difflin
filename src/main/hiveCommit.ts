@@ -1,4 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { accessSync, constants as fsConstants, statSync } from 'node:fs';
+import { devNull } from 'node:os';
+import { delimiter, isAbsolute, join } from 'node:path';
 
 export interface GitResult {
   ok: boolean;
@@ -7,7 +10,7 @@ export interface GitResult {
   /** What failed, when it was not the commit itself (for example creating the repository). */
   failed?: string;
 }
-export type GitRunner = (args: string[], cwd: string) => Promise<GitResult>;
+export type GitRunner = (args: string[], cwd: string, timeoutMs?: number) => Promise<GitResult>;
 
 /**
  * Identity and gc settings for every hive git command.
@@ -30,9 +33,11 @@ export type GitRunner = (args: string[], cwd: string) => Promise<GitResult>;
  *
  * `core.hooksPath=/dev/null`: the hive is the app's own bookkeeping, so no hook of the owner's runs on it. A global
  * hooksPath would otherwise run the owner's pre-commit hooks (linters, secret scanners, signing prompts) on every hive
- * commit, slowing or failing it.
+ * commit, slowing or failing it. `core.fsmonitor=false` likewise keeps any fsmonitor program from running. The
+ * repository's own config could set both; it lives where no agent can write it (hiveGitDir.ts), and these stay as a
+ * second line.
  */
-export const HIVE_GIT_CONFIG = ['-c', 'commit.gpgsign=false', '-c', 'gc.autoDetach=false', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', '-c', 'core.hooksPath=/dev/null', '-c', 'user.name=Hive', '-c', 'user.email=hive@local'];
+export const HIVE_GIT_CONFIG = ['-c', 'commit.gpgsign=false', '-c', 'gc.autoDetach=false', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'user.name=Hive', '-c', 'user.email=hive@local'];
 
 /** A git command that takes longer than this is stopped. It no longer blocks anything while it runs, so the limit only
  *  has to catch a command that will never finish. SIGTERM lets git remove its own lock files on the way out. */
@@ -50,6 +55,57 @@ export const HIVE_GIT_KILL_GRACE_MS = 5_000;
  * granularity.
  */
 export const HIVE_STALE_LOCK_MS = HIVE_GIT_TIMEOUT_MS + HIVE_GIT_KILL_GRACE_MS + 30_000;
+
+/**
+ * Inherited environment variables that choose which repository, config, programs or templates git uses. The app's
+ * environment is the owner's (a local build inherits the shell it was started from), never an agent's, but nothing in
+ * it should change what the hive's git reads or runs.
+ */
+const GIT_ENV_DROPPED = /^GIT_(DIR|WORK_TREE|INDEX_FILE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|COMMON_DIR|NAMESPACE|EXEC_PATH|TEMPLATE_DIR|ATTR_SOURCE|CONFIG|CONFIG_.*)$/;
+
+/**
+ * The environment every hive git runs in: the app's, without the variables above, and with neither the system nor the
+ * owner's global git config. The hive repository is the app's own bookkeeping; what it needs is on the command line
+ * (HIVE_GIT_CONFIG). Without this, the owner's global config would apply: its hooksPath, its fsmonitor, and any filter
+ * it defines (git-lfs, for one), which a `.gitattributes` an agent wrote in the hive could then name.
+ */
+export function hiveGitEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(base)) if (!GIT_ENV_DROPPED.test(k)) env[k] = v;
+  env.GIT_CONFIG_NOSYSTEM = '1';
+  env.GIT_CONFIG_GLOBAL = devNull;
+  return env;
+}
+
+/**
+ * The git program every hive git runs: an absolute path, found once in the PATH the app has.
+ *
+ * Only absolute PATH entries count. An empty or relative entry means "the current directory" to the system's own
+ * lookup, and the current directory of a hive git is the hive, which agents write; a `git` placed there would run as
+ * the owner. Found again only if PATH itself changes, which in the app it does not (tests change it).
+ */
+let gitProgram: { path: string; for: string | undefined } | null = null;
+export function hiveGitProgram(): string {
+  const pathVar = process.env.PATH;
+  if (gitProgram && gitProgram.for === pathVar) return gitProgram.path;
+  const names = process.platform === 'win32' ? ['git.exe', 'git.cmd'] : ['git'];
+  let found = '';
+  for (const dir of (pathVar ?? '').split(delimiter)) {
+    if (!dir || !isAbsolute(dir)) continue;
+    for (const name of names) {
+      const candidate = join(dir, name);
+      try {
+        if (!statSync(candidate).isFile()) continue;
+        accessSync(candidate, fsConstants.X_OK);
+        found = candidate;
+        break;
+      } catch { /* not here */ }
+    }
+    if (found) break;
+  }
+  gitProgram = { path: found || '/usr/bin/git', for: pathVar };
+  return gitProgram.path;
+}
 
 /** How long git's output has to finish arriving once git itself has exited. */
 export const HIVE_GIT_OUTPUT_WAIT_MS = 500;
@@ -111,7 +167,7 @@ export function stopRunningGits(graceMs = HIVE_GIT_KILL_GRACE_MS): Promise<void>
 export function runGit(args: string[], cwd: string, timeoutMs = HIVE_GIT_TIMEOUT_MS, killGraceMs = HIVE_GIT_KILL_GRACE_MS): Promise<GitResult> {
   let child: ChildProcess;
   try {
-    child = spawn('git', [...HIVE_GIT_CONFIG, ...args], { cwd, stdio: ['ignore', 'pipe', 'pipe'], detached: GROUPS });
+    child = spawn(hiveGitProgram(), [...HIVE_GIT_CONFIG, ...args], { cwd, stdio: ['ignore', 'pipe', 'pipe'], detached: GROUPS, env: hiveGitEnv() });
   } catch (e) {
     return Promise.resolve({ ok: false, out: '', err: e instanceof Error ? e.message : String(e) });
   }
@@ -169,6 +225,12 @@ export const HIVE_MAINTENANCE_TASKS = ['loose-objects', 'prune-packed', 'commit-
 export const HIVE_MAINTENANCE_LOOSE_BATCH = 50_000;
 /** A maintenance step gets far longer than a commit: it runs alone, while nothing else is happening. */
 export const HIVE_MAINTENANCE_TIMEOUT_MS = 30 * 60_000;
+/**
+ * A maintenance step stopped with SIGKILL (or a power loss) can leave `objects/maintenance.lock` or
+ * `packed-refs.lock`, and git then skips the work and still exits 0, so maintenance would log success daily while
+ * packing nothing. Such a lock older than the longest a step can live belongs to no running git, and is removed.
+ */
+export const HIVE_STALE_MAINTENANCE_LOCK_MS = HIVE_MAINTENANCE_TIMEOUT_MS + HIVE_GIT_KILL_GRACE_MS + 30_000;
 /** Maintenance waits until the queue has been idle this long, and runs at most once per HIVE_MAINTENANCE_EVERY_MS. */
 export const HIVE_MAINTENANCE_IDLE_MS = 10 * 60_000;
 export const HIVE_MAINTENANCE_EVERY_MS = 24 * 60 * 60_000;
@@ -196,15 +258,15 @@ export const AGENT_ALLOWLIST_IGNORE_LINES = ['agents/*/*', ...AGENT_TRACKED_FILE
  * recording a file it already tracks whatever .gitignore says, so without this a hive that predates a rule goes on
  * committing everything the rule was meant to keep out. The files stay on disk; only their history stops.
  */
-export async function untrackIgnored(root: string, git: GitRunner): Promise<{ dropped: number; complete: boolean }> {
+export async function untrackIgnored(root: string, git: GitRunner): Promise<{ dropped: number; complete: boolean; error?: string }> {
   const listed = await git(['ls-files', '-z', '--cached', '--ignored', '--exclude-standard', '--', 'agents', 'cost-ledger.jsonl'], root);
-  if (!listed.ok) return { dropped: 0, complete: false };
+  if (!listed.ok) return { dropped: 0, complete: false, error: (listed.err || listed.out).trim() };
   const paths = listed.out.split('\0').filter(Boolean);
   // In batches, so a large backlog never runs into the command-line length limit. A batch that fails ends the pass
   // incomplete, so the caller tries again with the next commit.
   for (let i = 0; i < paths.length; i += 500) {
     const removed = await git(['rm', '--cached', '-q', '--ignore-unmatch', '--', ...paths.slice(i, i + 500).map((p) => `:(literal)${p}`)], root);
-    if (!removed.ok) return { dropped: i, complete: false };
+    if (!removed.ok) return { dropped: i, complete: false, error: (removed.err || removed.out).trim() };
   }
   return { dropped: paths.length, complete: true };
 }

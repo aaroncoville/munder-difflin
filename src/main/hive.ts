@@ -55,7 +55,8 @@ import { preferredAgentRole } from '../shared/agentRole';
 import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde } from './fs';
 import { refreshMineIgnoresOnce } from './hiveMineIgnore';
-import { AGENT_ALLOWLIST_IGNORE_LINES, CommitQueue, HIVE_MAINTENANCE_EVERY_MS, HIVE_MAINTENANCE_IDLE_MS, HIVE_MAINTENANCE_TASKS, HIVE_MAINTENANCE_TIMEOUT_MS, HIVE_STALE_LOCK_MS, maintenanceArgs, runGit, stopRunningGits, untrackIgnored, type GitResult } from './hiveCommit';
+import { carryHiveGitDir, excludeLine, hiveGitDirFor, hiveRepoPresent, SET_ASIDE_PREFIX, settleHiveGitDir, writeGitfile, writeMarker } from './hiveGitDir';
+import { AGENT_ALLOWLIST_IGNORE_LINES, CommitQueue, HIVE_MAINTENANCE_EVERY_MS, HIVE_MAINTENANCE_IDLE_MS, HIVE_MAINTENANCE_TASKS, HIVE_MAINTENANCE_TIMEOUT_MS, HIVE_STALE_LOCK_MS, HIVE_STALE_MAINTENANCE_LOCK_MS, maintenanceArgs, runGit, stopRunningGits, untrackIgnored, type GitResult } from './hiveCommit';
 import { agentFolderId, hasExactFolder, isAppSender, isFolderName, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, RegistryUnreadable, rosterIdFor, shortTarget } from './messageTarget';
 import { nodeLauncherScript } from './nodeLauncher';
 import { codexTrustEntry } from '../shared/codexTrust';
@@ -1211,7 +1212,8 @@ export class HiveManager {
     // `usage/`: the owner's usage log lives in the app's data folder, not here;
     // ignored anyway so a stray usage file can never enter the hive's history.
     // AGENT_ALLOWLIST_IGNORE_LINES: inside an agent's folder only its memory, identity and ignore file are hive state.
-    const want = ['fleet.json', 'hooks.sock', 'cost-ledger.jsonl', 'crashes/', '.DS_Store', 'usage/', ...AGENT_ALLOWLIST_IGNORE_LINES];
+    // `.git.set-aside-*/`: a git folder found in the hive after its repository moved to the app data folder (hiveGitDir.ts).
+    const want = ['fleet.json', 'hooks.sock', 'cost-ledger.jsonl', 'crashes/', '.DS_Store', 'usage/', ...AGENT_ALLOWLIST_IGNORE_LINES, `${SET_ASIDE_PREFIX}*/`];
     let lines: string[] = [];
     if (existsSync(gitignore)) { try { lines = readFileSync(gitignore, 'utf8').split('\n'); } catch { lines = []; } }
     const missing = want.filter((w) => !lines.includes(w));
@@ -1233,7 +1235,7 @@ export class HiveManager {
     this.writeRuntimeShims();
 
     refreshMineIgnoresOnce(this, root, (dir) => { ensureMineIgnore(dir); sweepInboxLeftovers(join(dir, 'inbox')); });
-    if (!this._gitCommitsDisabled && !existsSync(join(root, '.git'))) {
+    if (!this._gitCommitsDisabled && !this.repoPresent(root)) {
       // Created by the first commit, in the background like every other hive git: see commitNow.
       this.uncreatedRepos.add(root);
       this.commit('hive: init');
@@ -3868,6 +3870,61 @@ export class HiveManager {
   /** Repositories whose already-tracked, now-ignored paths have been dropped from the index in this process. */
   private readonly untrackedRoots = new Set<string>();
 
+  /** Untrack passes that did not finish, per hive: how many, and when the next may run. */
+  private readonly untrackRetries = new Map<string, { attempts: number; nextAt: number }>();
+  /** The wait before the second and the third attempt. */
+  private untrackRetryDelays: [number, number] = [60_000, 300_000];
+
+  /** Shorter waits, for tests. */
+  setUntrackRetryDelays(delays: [number, number]): void {
+    this.untrackRetryDelays = delays;
+  }
+
+  // — where the hive's git directory lives (see hiveGitDir.ts) —
+
+  private gitDirBase: string | null = null;
+  /** Hive folders whose git directory has been brought to the app data folder in this process. */
+  private readonly settledGitDirs = new Set<string>();
+  /** Hive folders whose move failed in this process: their commits wait for the next launch. */
+  private readonly gitDirMoveFailed = new Set<string>();
+
+  /** The folder in the app data folder that holds the hives' git directories. Unset (tests, embedders), the git
+   *  directory stays inside the hive as it always was. */
+  setGitDirBase(dir: string | null): void {
+    this.gitDirBase = dir;
+  }
+
+  /** The hive's git directory: in the app data folder when that is set, else `<hive>/.git`. */
+  hiveGitDir(root: string | null = this.root()): string | null {
+    if (!root) return null;
+    return this.gitDirBase ? hiveGitDirFor(this.gitDirBase, root) : join(root, '.git');
+  }
+
+  private repoPresent(root: string): boolean {
+    return hiveRepoPresent(root, this.gitDirBase ? this.hiveGitDir(root) : null);
+  }
+
+  /** For a data-folder move: copy this hive's git directory to the one `newHiveRoot` keys to, from the app's own
+   *  folder (see carryHiveGitDir). Call after the hive itself has been copied there. */
+  carryGitDirTo(newHiveRoot: string): boolean {
+    const root = this.root();
+    if (!this.gitDirBase || !root) return false;
+    const { carried, note } = carryHiveGitDir(this.gitDirBase, root, newHiveRoot);
+    if (note) {
+      console.warn(`[hive] ${note}`);
+      this.appendLog({ kind: 'hive-git-dir', action: carried ? 'carried' : 'not-carried', note });
+    }
+    return carried;
+  }
+
+  /** For a full reset: the hive's git directory goes with the hive, or a new hive at the same path would take its
+   *  history. Only ever a directory inside the app's own folder for them. */
+  removeGitDir(): void {
+    const dir = this.gitDirBase ? this.hiveGitDir() : null;
+    if (!dir || resolvePath(dirname(dir)) !== resolvePath(this.gitDirBase!)) return;
+    rmSync(dir, { recursive: true, force: true });
+  }
+
   private readonly commits = new CommitQueue((root, message) => this.commitNow(root, message), {
     onFailing: (failures, error) => this.appendLog({ kind: 'hive-commit-failing', failures, error: error.slice(0, 2000) }),
     onRecovered: (failures) => this.appendLog({ kind: 'hive-commit-recovered', failures }),
@@ -3898,13 +3955,13 @@ export class HiveManager {
 
   /** When maintenance last started, kept inside .git so it is never committed or copied as hive state. */
   private maintenanceStamp(root: string): string {
-    return join(root, '.git', 'hive-maintenance-at');
+    return join(this.hiveGitDir(root)!, 'hive-maintenance-at');
   }
 
   private maybeMaintain(): void {
     const root = this.root();
     if (!root || this.commitsStopped || this._gitCommitsDisabled || this.commits.busy()) return;
-    if (!existsSync(join(root, '.git'))) return;
+    if (!existsSync(this.hiveGitDir(root)!)) return;
     let last = 0;
     try { last = Number(readFileSync(this.maintenanceStamp(root), 'utf8')) || 0; } catch { /* never ran */ }
     if (Date.now() - last < this.maintenanceEveryMs) return;
@@ -3917,7 +3974,9 @@ export class HiveManager {
     if (this.commitsStopped || this._gitCommitsDisabled) return;
     const started = Date.now();
     this.appendLog({ kind: 'hive-maintenance', phase: 'start', task });
-    const r = await runGit(maintenanceArgs(task), root, HIVE_MAINTENANCE_TIMEOUT_MS);
+    const gitDir = this.hiveGitDir(root)!;
+    this.clearStaleLocks(gitDir, ['objects/maintenance.lock', 'packed-refs.lock'], HIVE_STALE_MAINTENANCE_LOCK_MS);
+    const r = await runGit([`--git-dir=${gitDir}`, `--work-tree=${root}`, ...maintenanceArgs(task)], root, HIVE_MAINTENANCE_TIMEOUT_MS);
     const durationMs = Date.now() - started;
     this.appendLog({ kind: 'hive-maintenance', phase: 'end', task, ok: r.ok, durationMs, ...(r.ok ? {} : { error: (r.err || r.out).trim().slice(0, 2000) }) });
     if (!r.ok) console.warn(`[hive] maintenance ${task} failed after ${durationMs} ms: ${(r.err || r.out).trim()}`);
@@ -3928,7 +3987,7 @@ export class HiveManager {
   commit(message: string): void {
     if (this._gitCommitsDisabled || this.commitsStopped) return;
     const root = this.root();
-    if (!root || !(existsSync(join(root, '.git')) || this.uncreatedRepos.has(root))) return;
+    if (!root || !(this.repoPresent(root) || this.uncreatedRepos.has(root))) return;
     this.commits.request(root, message);
   }
 
@@ -3964,37 +4023,126 @@ export class HiveManager {
 
   private async commitNow(root: string, message: string): Promise<GitResult> {
     // Once quitting has begun, no further git starts: the one already running is all there is to stop.
-    const git = (args: string[], cwd: string): Promise<GitResult> =>
-      (this.commitsStopped ? Promise.resolve({ ok: false, out: '', err: 'the app is quitting' }) : runGit(args, cwd));
+    const git = (args: string[], cwd: string, timeoutMs?: number): Promise<GitResult> =>
+      (this.commitsStopped ? Promise.resolve({ ok: false, out: '', err: 'the app is quitting' }) : runGit(args, cwd, timeoutMs));
     // Checked again here: commits may have been turned off since this one was requested.
     if (this._gitCommitsDisabled) return { ok: true, out: '', err: '' };
-    if (!existsSync(join(root, '.git'))) {
-      if (!this.uncreatedRepos.has(root)) return { ok: true, out: '', err: '' };
-      const init = await git(['init', '-q'], root);
+    const gitDir = this.hiveGitDir(root)!;
+    // Every hive git names the git directory and the work tree, so nothing inside the hive decides which repository
+    // (and with it which config) git uses.
+    const inRepo = (args: string[]): Promise<GitResult> => git([`--git-dir=${gitDir}`, `--work-tree=${root}`, ...args], root);
+    if (this.gitDirBase && !this.settledGitDirs.has(root)) {
+      // A move that failed is not tried again on every commit (a large copy or repack could fail the same way each
+      // time): it is said once, commits for this hive wait, and the next launch carries on from where it stopped.
+      if (this.gitDirMoveFailed.has(root)) return { ok: true, out: '', err: '' };
+      const settled = await settleHiveGitDir(root, this.gitDirBase, gitDir, git);
+      if (!settled.ok) {
+        this.gitDirMoveFailed.add(root);
+        console.warn(`[hive] could not move the hive repository into the app data folder; commits wait until the next launch, which tries again: ${settled.error}`);
+        this.appendLog({ kind: 'hive-git-dir', action: 'failed', gitDir, error: settled.error.slice(0, 2000), state: 'commits paused until the next launch' });
+        // The same signal a run of failing commits gives, so the owner sees it and not only the log.
+        this.appendLog({ kind: 'hive-commit-failing', failures: 1, error: `the hive repository could not be moved into the app data folder; commits wait until the next launch: ${settled.error}`.slice(0, 2000) });
+        return { ok: true, out: '', err: '' };
+      }
+      this.settledGitDirs.add(root);
+      if (settled.action === 'refused-import') {
+        this.appendLog({ kind: 'hive-commit-failing', failures: 1, error: `the hive's old repository was not imported, and a new history starts: ${settled.note ?? ''}`.slice(0, 2000) });
+      }
+      if (settled.action !== 'none') {
+        console.warn(`[hive] hive repository: ${settled.action}${settled.note ? ` (${settled.note})` : ''}`);
+        this.appendLog({ kind: 'hive-git-dir', action: settled.action, gitDir, ...(settled.note ? { note: settled.note } : {}) });
+      }
+    }
+    if (!existsSync(gitDir)) {
+      // A new hive, or (with the app data folder in use) one whose history could not be adopted: start a repository.
+      if (!this.uncreatedRepos.has(root) && !this.gitDirBase) return { ok: true, out: '', err: '' };
+      const init = await inRepo(['init', '-q', ...(this.gitDirBase ? ['--template='] : [])]);
       if (!init.ok) return { ...init, failed: 'could not create the hive repository (git init)' };
+      if (this.gitDirBase) {
+        try { writeMarker(gitDir, null); await writeGitfile(root, gitDir); } catch (e) { console.warn('[hive] could not write the hive\'s .git file:', e); }
+      }
     }
     this.uncreatedRepos.delete(root);
-    if (!this.untrackedRoots.has(root)) {
-      const { dropped, complete } = await untrackIgnored(root, git);
-      // Marked done only once every batch has gone through: an incomplete pass is tried again with the next commit.
-      if (complete) this.untrackedRoots.add(root);
-      if (dropped > 0) console.warn(`[hive] stopped tracking ${dropped} ignored path(s) in the hive repo; the files stay on disk`);
-    }
-    this.clearStaleLock(root);
-    const add = await git(['add', '-A'], root);
+    await this.untrackOnce(root, (args) => inRepo(args));
+    this.clearStaleLocks(gitDir, ['index.lock', 'HEAD.lock'], HIVE_STALE_LOCK_MS);
+    // Before the add: entries a previous add, or the repository the move brought in, left behind.
+    const before = await this.dropNestedRepos(gitDir, inRepo);
+    if (!before.ok) return before;
+    const add = await inRepo(['add', '-A']);
     if (!add.ok) return add;
-    const commit = await git(['commit', '-q', '-m', message], root);
+    // After it: whatever this add just recorded, before anything else can run git over it again.
+    const after = await this.dropNestedRepos(gitDir, inRepo);
+    if (!after.ok) return after;
+    const commit = await inRepo(['commit', '-q', '-m', message]);
     if (commit.ok || /nothing to commit/i.test(commit.out + commit.err)) return { ok: true, out: commit.out, err: commit.err };
     return commit;
   }
 
-  /** Remove a lock left by a git that can no longer be running. See HIVE_STALE_LOCK_MS. */
-  private clearStaleLock(root: string): void {
-    const STALE_THRESHOLD_MS = HIVE_STALE_LOCK_MS;
+  /**
+   * Drop already-tracked, now-ignored paths from the index (untrackIgnored), until one pass gets through. A pass that
+   * does not finish is tried again with a later commit, at most three times per process: one minute, then five, after
+   * the one before. The first failure is logged with git's error, and giving up is logged once.
+   */
+  private async untrackOnce(root: string, git: (args: string[]) => Promise<GitResult>): Promise<void> {
+    if (this.untrackedRoots.has(root)) return;
+    const retry = this.untrackRetries.get(root) ?? { attempts: 0, nextAt: 0 };
+    if (retry.attempts >= 3 || Date.now() < retry.nextAt) return;
+    const { dropped, complete, error } = await untrackIgnored(root, (args) => git(args));
+    if (dropped > 0) console.warn(`[hive] stopped tracking ${dropped} ignored path(s) in the hive repo; the files stay on disk`);
+    if (complete) {
+      this.untrackedRoots.add(root);
+      this.untrackRetries.delete(root);
+      return;
+    }
+    retry.attempts += 1;
+    retry.nextAt = Date.now() + this.untrackRetryDelays[retry.attempts === 1 ? 0 : 1];
+    this.untrackRetries.set(root, retry);
+    if (retry.attempts === 1) console.warn(`[hive] could not stop tracking ignored paths in the hive repo; will retry: ${error || 'no error output'}`);
+    if (retry.attempts === 3) console.warn('[hive] gave up stopping tracking of ignored paths in the hive repo until the app restarts');
+  }
+
+  /**
+   * Keep nested repositories out of the hive's index.
+   *
+   * `git add -A` records a folder with its own `.git` (a folder or a gitfile) as one entry, a gitlink. On every later
+   * add, git checks whether that entry changed by running `git status` inside it, and that child reads the nested
+   * repository's own config: a filter it names runs, as the owner. The options this app passes do not reach it (a
+   * filter's name is free), and neither do diff.ignoreSubmodules or submodule.<name>.ignore. Traced on git 2.56: the add
+   * that first meets a nested repository records it without looking inside; only the adds after that run the child.
+   * So no gitlink may stay in the index from one git command to the next: each is dropped from the index, and its path
+   * is excluded in the app-owned info/exclude so later adds pass it by. If they cannot be dropped, the commit stops
+   * here, before any add can look inside them.
+   */
+  private async dropNestedRepos(gitDir: string, inRepo: (args: string[]) => Promise<GitResult>): Promise<GitResult> {
+    const listed = await inRepo(['ls-files', '-s', '-z']);
+    if (!listed.ok) return { ...listed, failed: 'could not list the hive index for nested repositories' };
+    const nested = listed.out.split('\0').filter((e) => e.startsWith('160000 ')).map((e) => e.slice(e.indexOf('\t') + 1));
+    if (nested.length === 0) return { ok: true, out: '', err: '' };
+    for (let i = 0; i < nested.length; i += 500) {
+      // update-index edits the index and nothing else. `rm --cached` would first compare each entry with what is on
+      // disk, and for a nested repository that means looking inside it.
+      const removed = await inRepo(['update-index', '--force-remove', '--', ...nested.slice(i, i + 500)]);
+      if (!removed.ok) return { ...removed, failed: 'could not drop nested repositories from the hive index' };
+    }
+    const lines = nested.map(excludeLine).filter((l): l is string => l !== null);
     try {
-      for (const lock of ['index.lock', 'HEAD.lock']) {
-        const path = join(root, '.git', lock);
-        if (existsSync(path) && Date.now() - statSync(path).mtimeMs > STALE_THRESHOLD_MS) rmSync(path);
+      mkdirSync(join(gitDir, 'info'), { recursive: true });
+      appendFileSync(join(gitDir, 'info', 'exclude'), lines.map((l) => `${l}\n`).join(''), 'utf8');
+    } catch (e) {
+      console.warn('[hive] could not exclude nested repositories:', e);
+    }
+    console.warn(`[hive] dropped ${nested.length} nested repositor${nested.length === 1 ? 'y' : 'ies'} from the hive index: ${nested.slice(0, 5).join(', ')}${nested.length > 5 ? ', ...' : ''}`);
+    this.appendLog({ kind: 'hive-nested-repos-dropped', count: nested.length, paths: nested.slice(0, 50) });
+    return { ok: true, out: '', err: '' };
+  }
+
+  /** Remove locks left by a git that can no longer be running: older than the longest a hive git holding them can
+   *  live (HIVE_STALE_LOCK_MS for a commit, HIVE_STALE_MAINTENANCE_LOCK_MS for a maintenance step). */
+  private clearStaleLocks(gitDir: string, locks: string[], olderThanMs: number): void {
+    try {
+      for (const lock of locks) {
+        const path = join(gitDir, lock);
+        if (existsSync(path) && Date.now() - statSync(path).mtimeMs > olderThanMs) rmSync(path);
       }
     } catch { /* noop */ }
   }

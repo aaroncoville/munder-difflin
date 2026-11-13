@@ -13,6 +13,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { removeDir } = require('./codex-test-home.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { allCommitsIdle, runGit } = loadTs('src/main/hiveCommit.ts');
@@ -38,7 +39,8 @@ function home(t) {
       }
       settled = await Promise.race([allCommitsIdle().then(() => true), new Promise((r) => setTimeout(() => r(false), 250))]);
     }
-    fs.rmSync(dir, { recursive: true, force: true });
+    // Never throws, so the PATH and FAKE_GIT_* restore registered after this still runs.
+    await removeDir(dir, { waitForCommits: false });
   });
   return dir;
 }
@@ -227,6 +229,7 @@ test('agent files a failed untrack left tracked are untracked by the next commit
   shim.set('FAKE_GIT_FAIL_ONCE', 'rm');
 
   const hive = new HiveManager(() => dir);
+  hive.setUntrackRetryDelays?.([0, 0]); // the retry is what is checked here, not its backoff
   hive.ensureHive();
   hive.commit('hive: the untrack fails');
   await hive.commitsSettled();

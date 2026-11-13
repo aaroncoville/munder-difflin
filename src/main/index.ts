@@ -296,6 +296,9 @@ hive.setProxyBridgeScript(bundledResourcePath('hive-proxy.cjs', {
 // The app's own data folder is one no agent may reach (privateDirs.ts); the folders inside it that the app chooses
 // register themselves as well, and so does any private folder kept elsewhere.
 registerPrivateDir(app.getPath('userData'), 'the app data folder');
+// The hive's git directory lives here, where no agent can write (an agent whose roots reach the app data folder is
+// refused), so no agent can decide what the app's git runs.
+hive.setGitDirBase(join(app.getPath('userData'), 'hive-git'));
 hive.setHookRuntime(process.platform === 'win32'
   ? join(process.env.LOCALAPPDATA || app.getPath('userData'), 'munder-difflin-hooks')
   : join(app.getPath('userData'), 'hook-runtime'));
@@ -3619,6 +3622,8 @@ ipcMain.handle('config:changeHome', async (_evt, payload: unknown) => {
         // the old folder stays as a safety net the user removes manually.
         cpSync(src, join(newHome, sub), { recursive: true, force: true, dereference: false });
       }
+      // The hive's history lives in the app data folder, keyed by the hive's path; the new path needs a copy of it.
+      if (existsSync(join(newHome, 'hive'))) hive.carryGitDirTo(join(newHome, 'hive'));
     } catch (e) {
       // Copy failed: recover IN PLACE against the unchanged old home (config never
       // repointed) so the user loses nothing, and surface the error — no relaunch.
@@ -4244,6 +4249,7 @@ ipcMain.handle('app:resetAll', async () => {
   try { heavyLock.agentsGone(ptyToAgent.values()); } catch { /* bulk kill skips exit callbacks */ }
   try { ptyManager.killAll(); } catch (e) { console.error('[reset] killAll:', e); }
   await stopHiveCommits(); // the hive folder is deleted below
+  try { hive.removeGitDir(); } catch (e) { console.error('[reset] removeGitDir:', e); }
   try { hive.removeExposedCodexData(); } catch (e) { console.error('[reset] removeExposedCodexData:', e); }
   // Erase the hive (Michael's + every agent's memory, inboxes, tasks, board,
   // git history) and the semantic-memory palace. Only these harness-created

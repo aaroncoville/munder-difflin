@@ -26,8 +26,9 @@ const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
  * wrong environment. A failure here is reported, and fails the file through its exit code, after every other cleanup
  * has run.
  */
-async function removeDir(dir) {
-  await allCommitsIdle();
+async function removeDir(dir, { waitForCommits = true } = {}) {
+  // waitForCommits: false is for a cleanup that has already waited in its own bounded way.
+  if (waitForCommits) await allCommitsIdle();
   try {
     fs.rmSync(dir, { recursive: true, force: true });
   } catch (e) {
