@@ -1,6 +1,7 @@
-import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, writeFileSync, writeSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { codexShortHomePath, codexShortHomeRoot } from '../shared/codexRemote';
 import { overlaps, realish, type WriteRoot } from './hookRuntime';
 
@@ -79,41 +80,59 @@ const MIGRATED = /^(history\.jsonl|hive-thread\.json|(state|thread_history)_\d+\
 /** No single file of these is legitimately larger. */
 export const MIGRATE_MAX_BYTES = 1024 * 1024 * 1024;
 const MARKER = '.migrated-from-agent-folder.json';
+const TEMP = '.migrating-';
 
 export interface SeatMigration { from: string; copied: string[]; skipped: string[] }
 
-/** Copy one regular file without following a link at the source, refusing
- *  anything that is not a regular file or is over the cap. */
+/** Copy one regular file, never following a link at the source, to a temporary
+ *  name beside `to`; check its size, then
+ *  rename it into place. Returns why it was deliberately skipped, or null when
+ *  copied. Any other failure throws, with nothing partial left at `to`. */
 function copyRegular(from: string, to: string, cap: number): string | null {
   let fd: number;
   try { fd = openSync(from, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
-  catch { return 'not a regular file'; }
+  catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ELOOP') return 'a link';
+    throw e;
+  }
+  const tmp = join(dirname(to), `${TEMP}${basename(to)}.${process.pid}.${randomBytes(6).toString('hex')}`);
+  let placed = false;
   try {
     const st = fstatSync(fd);
     if (!st.isFile()) return 'not a regular file';
     if (st.size > cap) return `larger than ${cap} bytes`;
-    const out = openSync(to, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+    const out = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    let total = 0;
     try {
       const buf = Buffer.allocUnsafe(1 << 20);
-      let total = 0;
       for (;;) {
         const n = readSync(fd, buf, 0, buf.length, null);
         if (n <= 0) break;
         total += n;
         if (total > cap) return `larger than ${cap} bytes`;
-        writeSync(out, buf, 0, n);
+        for (let off = 0; off < n;) off += writeSync(out, buf, off, n - off);
       }
     } finally { closeSync(out); }
+    if (total !== st.size) return 'changed while it was copied';
+    renameSync(tmp, to);
+    placed = true;
     return null;
-  } finally { closeSync(fd); }
+  } finally {
+    closeSync(fd);
+    if (!placed) rmSync(tmp, { force: true });
+  }
 }
 
 /**
  * Carry an agent's history from its old in-tree home into the computed one,
  * once. The old home is read as data from an untrusted place: only a real
  * directory is read (a link is never followed), only allowlisted regular files
- * are copied, each size-capped, and nothing under the agent folder is renamed,
- * moved or deleted. Returns what happened, or null when there was nothing to do.
+ * are copied, each size-capped and renamed into place only once complete, and
+ * nothing under the agent folder is renamed, moved or deleted. The marker that
+ * ends the migration is written last, once every allowlisted file is in place
+ * or deliberately skipped; a start interrupted before that finishes it (a file
+ * already in place is kept). Returns what happened, or null when there was
+ * nothing to do.
  */
 export function migrateSeatHome(agentDir: string, home: string, cap = MIGRATE_MAX_BYTES): SeatMigration | null {
   const legacy = join(agentDir, '.codex');
@@ -121,6 +140,8 @@ export function migrateSeatHome(agentDir: string, home: string, cap = MIGRATE_MA
   if (!st || !st.isDirectory()) return null;
   if (existsSync(join(home, MARKER))) return null;
   mkdirSync(home, { recursive: true, mode: 0o700 });
+  // Temporary files an interrupted copy left behind.
+  for (const name of readdirSync(home)) if (name.startsWith(TEMP)) rmSync(join(home, name), { force: true });
   const copied: string[] = [];
   const skipped: string[] = [];
   for (const entry of readdirSync(legacy, { withFileTypes: true })) {

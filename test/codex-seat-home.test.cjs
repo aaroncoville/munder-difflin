@@ -280,19 +280,46 @@ test('an agent with an old in-tree home keeps its history, and only that is copi
   assert.ok(rows[0].skipped.some((s) => s.startsWith('thread_history_2.sqlite')), 'the linked file is named as skipped');
 });
 
+test('an interrupted migration leaves no partial file, writes no marker, and the next start finishes it', (t) => {
+  const { migrateSeatHome } = loadTs('src/main/codexSeatHome.ts');
+  const root = codexTestBase(t, 'mdsi-');
+  const agent = path.join(root, 'agent');
+  const legacy = path.join(agent, '.codex');
+  fs.mkdirSync(legacy, { recursive: true });
+  fs.writeFileSync(path.join(legacy, 'hive-thread.json'), '{"fresh":true,"ids":[]}');
+  fs.writeFileSync(path.join(legacy, 'history.jsonl'), 'h\n');
+  const home = path.join(root, 'home');
+  // A temp file a crash left behind, and a source that cannot be read this time.
+  fs.mkdirSync(home);
+  fs.writeFileSync(path.join(home, '.migrating-history.jsonl.123.abc'), 'partial');
+  fs.chmodSync(path.join(legacy, 'history.jsonl'), 0o000);
+  t.after(() => { try { fs.chmodSync(path.join(legacy, 'history.jsonl'), 0o600); } catch { /* gone */ } });
+  assert.throws(() => migrateSeatHome(agent, home));
+  assert.equal(fs.existsSync(path.join(home, 'history.jsonl')), false, 'no partial copy in place');
+  assert.equal(fs.readdirSync(home).some((n) => n.startsWith('.migrated')), false, 'no marker');
+  fs.chmodSync(path.join(legacy, 'history.jsonl'), 0o600);
+  const res = migrateSeatHome(agent, home);
+  assert.ok(res.copied.includes('history.jsonl'));
+  assert.equal(fs.readFileSync(path.join(home, 'history.jsonl'), 'utf8'), 'h\n');
+  assert.equal(fs.readFileSync(path.join(home, 'hive-thread.json'), 'utf8'), '{"fresh":true,"ids":[]}');
+  assert.deepEqual(fs.readdirSync(home).filter((n) => n.startsWith('.migrating')), [], 'the leftover temp file is gone');
+  assert.equal(migrateSeatHome(agent, home), null, 'finished: a later start does nothing');
+});
+
 test('migration caps each file and never follows a link', (t) => {
   const { migrateSeatHome } = loadTs('src/main/codexSeatHome.ts');
   const root = fs.realpathSync(fs.mkdtempSync('/tmp/mdsm-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const agent = path.join(root, 'agent');
   fs.mkdirSync(path.join(agent, '.codex'), { recursive: true });
-  fs.writeFileSync(path.join(agent, '.codex', 'state_5.sqlite'), 'x'.repeat(64));
-  fs.writeFileSync(path.join(agent, '.codex', 'history.jsonl'), 'ok');
+  fs.writeFileSync(path.join(agent, '.codex', 'history.jsonl'), 'x'.repeat(64));
+  fs.writeFileSync(path.join(agent, '.codex', 'hive-thread.json'), '{"fresh":true,"ids":[]}');
   const home = path.join(root, 'home');
-  const res = migrateSeatHome(agent, home, 16);
-  assert.deepEqual(res.copied, ['history.jsonl']);
-  assert.match(res.skipped.join(), /state_5\.sqlite \(larger than 16 bytes\)/);
-  assert.equal(fs.existsSync(path.join(home, 'state_5.sqlite')), false);
+  const res = migrateSeatHome(agent, home, 32);
+  assert.deepEqual(res.copied, ['hive-thread.json']);
+  assert.match(res.skipped.join(), /history\.jsonl \(larger than 32 bytes\)/);
+  assert.equal(fs.existsSync(path.join(home, 'history.jsonl')), false);
+  assert.deepEqual(fs.readdirSync(home).filter((n) => n.startsWith('.migrating')), [], 'nothing partial is left');
 
   // An in-tree home that is itself a link is not read at all.
   const agent2 = path.join(root, 'agent2');
