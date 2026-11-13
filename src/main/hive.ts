@@ -3964,8 +3964,9 @@ export class HiveManager {
     }
     this.uncreatedRepos.delete(root);
     if (!this.untrackedRoots.has(root)) {
-      this.untrackedRoots.add(root);
-      const dropped = await untrackIgnored(root, git);
+      const { dropped, complete } = await untrackIgnored(root, git);
+      // Marked done only once every batch has gone through: an incomplete pass is tried again with the next commit.
+      if (complete) this.untrackedRoots.add(root);
       if (dropped > 0) console.warn(`[hive] stopped tracking ${dropped} ignored path(s) in the hive repo; the files stay on disk`);
     }
     this.clearStaleLock(root);

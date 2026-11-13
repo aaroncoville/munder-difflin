@@ -213,3 +213,27 @@ test('a hive git never runs the owner\'s own git hooks', async (t) => {
   spawnSync(REAL_GIT, ['commit', '-q', '-m', 'd'], { cwd: repo });
   assert.equal(fs.existsSync(marker), true, 'the control commit did not run the hook: the test would prove nothing');
 });
+
+test('agent files a failed untrack left tracked are untracked by the next commit', async (t) => {
+  const dir = home(t);
+  await floor(t, dir);
+  const root = path.join(dir, 'hive');
+  const junk = path.join(root, 'agents', 'god-1', '.nuget', 'pkg.nupkg');
+  fs.mkdirSync(path.dirname(junk), { recursive: true });
+  fs.writeFileSync(junk, 'package');
+  git(root, 'add', '-f', '--', 'agents/god-1/.nuget');
+  git(root, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'old build tracked this');
+  const shim = fakeGit(t, dir);
+  shim.set('FAKE_GIT_FAIL_ONCE', 'rm');
+
+  const hive = new HiveManager(() => dir);
+  hive.ensureHive();
+  hive.commit('hive: the untrack fails');
+  await hive.commitsSettled();
+  assert.notEqual(git(root, 'ls-files', '--', 'agents/god-1/.nuget'), '', 'the first untrack was meant to fail');
+  hive.commit('hive: next');
+  await hive.commitsSettled();
+
+  assert.equal(git(root, 'ls-files', '--', 'agents/god-1/.nuget'), '');
+  assert.equal(fs.readFileSync(junk, 'utf8'), 'package');
+});
