@@ -33,3 +33,13 @@ test('no main-process source fetches from the original project', () => {
   }
   assert.deepEqual(offenders, []);
 });
+
+test("the Settings card links no community of the original project", () => {
+  assert.doesNotMatch(code('src/renderer/src/components/SettingsHeroCard.tsx'), /discord\.gg|DISCORD_URL/);
+});
+
+test("the evidence check points contributors at this repository's guide", () => {
+  const wf = fs.readFileSync(path.join(root, '.github/workflows/pr-evidence.yml'), 'utf8');
+  assert.doesNotMatch(wf, /github\.com\/chaitanyagiri/);
+  assert.match(wf, /github\.com\/aaroncoville\/munder-difflin\/blob\/theme\/sixth-history\/CONTRIBUTING\.md#evidence-is-mandatory/);
+});

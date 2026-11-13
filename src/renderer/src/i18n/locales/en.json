@@ -164,8 +164,7 @@
     "whatsNewTitle": "Show the release notes for the update you were last told about",
     "starOnGitHub": "star on GitHub",
     "reportProblem": "report a problem",
-    "fullChangelog": "full changelog →",
-    "joinDiscord": "join Discord"
+    "fullChangelog": "full changelog →"
   },
   "settings": {
     "title": "SETTINGS",

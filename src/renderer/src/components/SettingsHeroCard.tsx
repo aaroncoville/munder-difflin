@@ -27,7 +27,6 @@ import { DEFAULT_HERO, type HeroPayload } from '@shared/heroPayload';
 import { manualDownloadUrl, pendingVersion, reduceStatus, type UpdateStatus } from '@shared/updateState';
 
 const GITHUB_REPO_URL = PRODUCT_REPO_URL;
-const DISCORD_URL = 'https://discord.gg/SEDzP5ZPk5';
 
 export function SettingsHeroCard() {
   const { t } = useTranslation();
@@ -163,11 +162,6 @@ export function SettingsHeroCard() {
           <PixelButton variant="secondary" size="sm" onClick={() => void window.cth.openExternal(GITHUB_REPO_URL)}>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
               ⭐ {t('settingsHero.starOnGitHub')}
-            </span>
-          </PixelButton>
-          <PixelButton variant="secondary" size="sm" onClick={() => void window.cth.openExternal(DISCORD_URL)}>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-              💬 {t('settingsHero.joinDiscord')}
             </span>
           </PixelButton>
           <PixelButton

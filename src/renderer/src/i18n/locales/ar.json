@@ -164,8 +164,7 @@
     "whatsNewTitle": "اعرض ملاحظات إصدار التحديث الذي أُخبرت عنه آخر مرة",
     "starOnGitHub": "ضع نجمة على GitHub",
     "reportProblem": "أبلغ عن مشكلة",
-    "fullChangelog": "سجل التغييرات الكامل ←",
-    "joinDiscord": "انضم إلى Discord"
+    "fullChangelog": "سجل التغييرات الكامل ←"
   },
   "settings": {
     "title": "الإعدادات",
