@@ -4040,9 +4040,14 @@ export class HiveManager {
         this.gitDirMoveFailed.add(root);
         console.warn(`[hive] could not move the hive repository into the app data folder; commits wait until the next launch, which tries again: ${settled.error}`);
         this.appendLog({ kind: 'hive-git-dir', action: 'failed', gitDir, error: settled.error.slice(0, 2000), state: 'commits paused until the next launch' });
+        // The same signal a run of failing commits gives, so the owner sees it and not only the log.
+        this.appendLog({ kind: 'hive-commit-failing', failures: 1, error: `the hive repository could not be moved into the app data folder; commits wait until the next launch: ${settled.error}`.slice(0, 2000) });
         return { ok: true, out: '', err: '' };
       }
       this.settledGitDirs.add(root);
+      if (settled.action === 'refused-import') {
+        this.appendLog({ kind: 'hive-commit-failing', failures: 1, error: `the hive's old repository was not imported, and a new history starts: ${settled.note ?? ''}`.slice(0, 2000) });
+      }
       if (settled.action !== 'none') {
         console.warn(`[hive] hive repository: ${settled.action}${settled.note ? ` (${settled.note})` : ''}`);
         this.appendLog({ kind: 'hive-git-dir', action: settled.action, gitDir, ...(settled.note ? { note: settled.note } : {}) });

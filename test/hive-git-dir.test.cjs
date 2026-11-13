@@ -496,6 +496,7 @@ for (const entry of ['objects', 'objects/info', 'refs', 'info']) {
     }
     assert.notEqual(git(root, '--git-dir', gitDir, 'cat-file', '-e', planted).status, 0, 'the app\'s git served an object from the agent\'s store');
     assert.equal(hive.logTail(50).some((e) => e.kind === 'hive-git-dir' && e.action === 'refused-import'), true);
+    assert.equal(hive.logTail(50).some((e) => e.kind === 'hive-commit-failing'), true, 'a refused import gave no commit-failing signal');
     assert.equal(fs.existsSync(`${gitDir}.refused`), true, 'the refused repository was not kept aside');
   });
 }
@@ -567,6 +568,7 @@ test('a move that fails is said once and not tried again on every commit; the ne
   }
   assert.equal(fs.readFileSync(calls, 'utf8').split('\n').filter(Boolean).length, 1, 'the move was tried again on a later commit');
   assert.equal(hive.logTail(50).filter((e) => e.kind === 'hive-git-dir' && e.action === 'failed').length, 1);
+  assert.equal(hive.logTail(50).filter((e) => e.kind === 'hive-commit-failing').length, 1, 'the paused move gave no commit-failing signal');
   assert.equal(git(root, 'rev-parse', 'HEAD').stdout.trim(), oldHead, 'the hive has no working .git while the move waits');
 
   process.env.PATH = savedPath;
