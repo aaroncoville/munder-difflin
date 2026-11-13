@@ -495,6 +495,9 @@ export function effectiveRoots(provider: string, agentDir: string, cwd: string, 
     // the owner's, which is the user config under the app's own home); any other home is the owner's own config.
     const ownerConfig = join(home, '.codex', 'config.toml');
     const generated = launch.codexHomeFromApp === true;
+    // A home the app did not set is read as the owner's own only when it is the owner's ~/.codex; anywhere else (an
+    // agent folder, a folder a request supplied) it is not modelled.
+    if (!generated && resolve(places.codexHome) !== resolve(join(home, '.codex'))) return unknown('codex-config');
     const app = launch.codexHooks ? { ...launch.codexHooks, stateKeys: codexHookStateKeys(join(canonical(places.codexHome), 'config.toml'), launch.codexHooks.events) } : launch.codexHooks;
     const or = generated ? readSettings(ownerConfig) : null;
     const ownerToml = or === null ? undefined : or.kind === 'text' ? or.text : or.kind === 'missing' ? null : undefined;
@@ -843,7 +846,7 @@ export const READ_SITES = [
   { id: 'env-home', read: 'HOME in the spawn environment', writer: 'the operator\'s environment, or a per-agent override', planted: 'another home', outcome: 'honoured: user config is read from that home' },
   { id: 'env-claude-config-dir', read: 'CLAUDE_CONFIG_DIR', writer: 'same', planted: 'another folder', outcome: 'honoured: Claude\'s user settings are read from there; not absolute = unknown' },
   { id: 'env-other-provider', read: 'the other provider\'s relocation variables', writer: 'the operator\'s environment', planted: 'CODEX_HOME on a Claude seat; CLAUDE_CONFIG_DIR, XDG_CONFIG_HOME or CLAUDE_CODE_* on a Codex seat', outcome: 'ignored: the launched CLI does not read them' },
-  { id: 'env-codex-home', read: 'CODEX_HOME', writer: 'the app (one per Codex agent)', planted: 'another folder', outcome: 'honoured: Codex\'s config is read from there; not absolute = unknown' },
+  { id: 'env-codex-home', read: 'CODEX_HOME', writer: 'the app (one per Codex agent)', planted: 'another folder', outcome: 'a home the app set is honoured; one it did not set is read only when it is the owner\'s ~/.codex, anywhere else unknown; not absolute = unknown' },
   { id: 'env-xdg-config-home', read: 'XDG_CONFIG_HOME (Claude)', writer: 'the operator\'s environment', planted: 'any value', outcome: 'unknown (Claude reads it; not modelled)' },
   { id: 'env-claude-unmodelled', read: 'CLAUDE_CODE_*SETTINGS/CONFIG/MANAGED/PLUGIN* variables', writer: 'a per-agent override', planted: 'any value', outcome: 'unknown' },
   { id: 'claude-unknown-option', read: 'any other Claude option, or no launch line', writer: 'the spawn request', planted: 'an option not in the grammar', outcome: 'unknown' },

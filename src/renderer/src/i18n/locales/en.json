@@ -667,7 +667,7 @@
       "autoOnPlain": "On. Agents carry out tasks without stopping to ask — the smoothest experience.",
       "autoOffPlain": "Off. Agents pause and ask you before changing files or running commands.",
       "autoOn": "On. Agents never pause — Claude runs bypassPermissions, Codex bypasses approvals + sandbox, etc.",
-      "autoOff": "Off. Each agent asks before edits / shell commands (Claude default, codex -a untrusted, …).",
+      "autoOff": "Off. Each agent asks before edits / shell commands (Claude default, codex -a untrusted, …). A Codex agent still runs sandboxed: in its config's sandbox mode, or workspace-write when no config sets one.",
       "autoNotePlain": "Best when agents work in their own projects. You can change this later, including for individual agents.",
       "autoNote": "The right default for the \"control room\" experience; a foot-gun on production repos. Override per agent in the Add Agent dialog.",
       "reliabilityHead": "KEEP THINGS RUNNING WHILE YOU'RE AWAY",

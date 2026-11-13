@@ -71,6 +71,7 @@ export const notOnList = (what: string): string => `${what} is not on the list t
  *  --add-dir: the hive spawn's extra write roots (hive.ts); collected as roots.
  *  --remote: the app's remote rewrite (codexRemote.ts); the app server's own policy is in force, so it is unknown here.
  *  --dangerously-bypass-hook-trust: the hive spawn, so its generated hooks run (hive.ts).
+ *  --enable/--disable: no builder emits them; accepted only for a feature on CODEX_FEATURES (today multi_agent).
  *  resume <session>: the resume subcommand (agentProvider.ts resumeSubcommand).
  *  Also read for what they mean, though the app no longer emits them: --full-auto (workspace-write) and
  *  --dangerously-bypass-approvals-and-sandbox / --yolo (no sandbox). */
@@ -190,14 +191,14 @@ function oddValue(v: unknown, at: string): string | null {
  *  its source: the inventory of Codex policy inputs (by section) or Codex's config schema. Any other top-level key is not
  *  understood. Being on this list says nothing more than that. */
 export const CODEX_BENIGN_KEYS: Readonly<Record<string, string>> = {
-  model: 'config reference (model name); in the owner config named by the inventory\'s conclusion',
-  model_reasoning_effort: 'config reference; in the owner config named by the inventory\'s conclusion',
-  model_provider: 'config reference (which provider entry serves the model); absent from the inventory\'s policy tables',
-  shell_environment_policy: 'config reference (environment given to commands); absent from the inventory\'s policy tables',
+  model: 'Codex config schema, properties.model (a model name); in the owner config named by the inventory\'s conclusion',
+  model_reasoning_effort: 'Codex config schema, properties.model_reasoning_effort (an effort level); in the owner config named by the inventory\'s conclusion',
+  model_provider: 'Codex config schema, properties.model_provider (the name of a provider entry); absent from the inventory\'s policy tables',
+  shell_environment_policy: 'Codex config schema, properties.shell_environment_policy (the environment given to commands); absent from the inventory\'s policy tables',
   approval_policy: 'inventory, note under "Config keys that change the sandbox": grants no path, decides later escalation',
-  history: 'config reference (transcript history); absent from the inventory\'s policy tables',
-  tui: 'config reference (terminal UI); absent from the inventory\'s policy tables',
-  include_permissions_instructions: 'config reference (prompt text only); absent from the inventory\'s policy tables'
+  history: 'Codex config schema, properties.history (max_bytes, persistence); absent from the inventory\'s policy tables',
+  tui: 'Codex config schema, properties.tui (display options and item ids; names no program); absent from the inventory\'s policy tables',
+  include_permissions_instructions: 'Codex config schema, properties.include_permissions_instructions (a boolean about prompt text); absent from the inventory\'s policy tables'
 };
 /** features.<name> entries known not to touch the sandbox, its backend, hooks or plugins (the inventory lists those:
  *  hooks, codex_hooks, plugins, prefer_mxc, use_linux_sandbox_bwrap, use_legacy_landlock). */

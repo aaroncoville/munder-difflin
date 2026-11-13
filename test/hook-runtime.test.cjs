@@ -944,8 +944,18 @@ test('auto mode off: every production builder\'s line gets the config\'s own san
   fs.writeFileSync(cfg, owner);
   assert.deepEqual(hive.withCodexSandboxStance(['resume', 'sid', 'go'], home), ['resume', 'sid', '-s', 'workspace-write', 'go']);
   assert.deepEqual(hive.withCodexSandboxStance(['--sandbox=read-only'], home), ['--sandbox=read-only']);
+  // Settings says what auto mode off now means for a Codex seat, in every shipped language.
+  for (const l of ['en', 'ar', 'zh-CN']) {
+    const t = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'i18n', 'locales', `${l}.json`), 'utf8'));
+    const off = Object.values(t).map((x) => x && x.autoOff).find((v) => typeof v === 'string' && v.includes('workspace-write'))
+      ?? JSON.stringify(t).match(/"autoOff":"([^"]*workspace-write[^"]*)"/)?.[1];
+    assert.ok(off && /Codex/.test(off), `${l}: the auto-off text names Codex's sandbox (workspace-write when no config sets one)`);
+  }
+  // A stance carried in the executable string itself is kept, never doubled.
+  for (const cmd of ['codex -s read-only', 'codex --sandbox=read-only', 'codex --full-auto']) assert.deepEqual(hive.withCodexSandboxStance(['--model', 'x'], home, cmd), ['--model', 'x'], cmd);
+  assert.deepEqual(hive.withCodexSandboxStance(['--model', 'x'], home, 'codex -a untrusted'), ['-s', 'workspace-write', '--model', 'x'], 'approvals only in the string: the sandbox is still named');
   const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.ts'), 'utf8');
-  const at = main.search(/^  if \(opts\.hive && provider === 'codex' && hive\.enabled\(\)\) opts\.args = hive\.withCodexSandboxStance\(opts\.args \?\? \[\], opts\.cwd\);$/m);
+  const at = main.search(/^  if \(opts\.hive && provider === 'codex' && hive\.enabled\(\)\) opts\.args = hive\.withCodexSandboxStance\(opts\.args \?\? \[\], opts\.cwd, opts\.command\);$/m);
   assert.ok(at > 0 && at < main.indexOf('const inj = await hive.ensureAgent('), 'the spawn core applies it, live, before the check');
 });
 

@@ -700,14 +700,19 @@ export function argsWithAutoModeFlag(args: string[], autoMode: boolean, provider
   return [...args, ...flag.trim().split(/\s+/)];
 }
 
+/** True when these words already state a sandbox for the provider (`--sandbox=x` included). */
+export function hasSandboxStance(words: string[], provider: AgentProvider): boolean {
+  const stance = new Set(providerPreset(provider).sandboxStanceTokens ?? []);
+  return words.some((a) => stance.has(a) || stance.has(a.split('=')[0]));
+}
+
 /** argv with the provider's sandbox flag set to `mode` when it states none: inserted right after the executable's own words (after
  *  a `resume <session>` subcommand), so it always comes before any positional prompt. Unchanged for a provider with no
  *  sandbox flag, or when an option already states one (`--sandbox=x` included). */
 export function argsWithSandboxStance(args: string[], provider: AgentProvider, mode: string): string[] {
   const preset = providerPreset(provider);
   if (!preset.sandboxFlag) return args;
-  const stance = new Set(preset.sandboxStanceTokens ?? []);
-  if (args.some((a) => stance.has(a) || stance.has(a.split('=')[0]))) return args;
+  if (hasSandboxStance(args, provider)) return args;
   const at = args[0] === preset.resumeSubcommand ? Math.min(2, args.length) : 0;
   return [...args.slice(0, at), preset.sandboxFlag, mode, ...args.slice(at)];
 }

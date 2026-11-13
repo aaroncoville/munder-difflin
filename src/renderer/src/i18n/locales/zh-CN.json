@@ -667,7 +667,7 @@
       "autoOnPlain": "开。智能体不停下来询问就执行任务——最顺畅的体验。",
       "autoOffPlain": "关。智能体在改文件或运行命令前会暂停并询问你。",
       "autoOn": "开。智能体从不暂停——Claude 运行 bypassPermissions，Codex 绕过批准 + 沙箱，等等。",
-      "autoOff": "关。每个智能体在编辑/执行 shell 命令前都会询问（Claude 默认，codex -a untrusted，…）。",
+      "autoOff": "关。每个智能体在编辑/执行 shell 命令前都会询问（Claude 默认，codex -a untrusted，…）。Codex 智能体仍在沙箱中运行：使用其配置的沙箱模式，若配置未设置则为 workspace-write。",
       "autoNotePlain": "智能体在自己的项目里工作时效果最好。之后可以随时更改，包括针对单个智能体。",
       "autoNote": "「控制室」体验的正确默认值；在生产仓库上是个坑。可在添加智能体对话框中按智能体覆盖。",
       "reliabilityHead": "你离开时保持一切运转",
