@@ -55,7 +55,7 @@ import { preferredAgentRole } from '../shared/agentRole';
 import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde } from './fs';
 import { refreshMineIgnoresOnce } from './hiveMineIgnore';
-import { carryHiveGitDir, hiveGitDirFor, hiveRepoPresent, SET_ASIDE_PREFIX, settleHiveGitDir, writeGitfile, writeMarker } from './hiveGitDir';
+import { carryHiveGitDir, excludeLine, hiveGitDirFor, hiveRepoPresent, SET_ASIDE_PREFIX, settleHiveGitDir, writeGitfile, writeMarker } from './hiveGitDir';
 import { AGENT_ALLOWLIST_IGNORE_LINES, CommitQueue, HIVE_MAINTENANCE_EVERY_MS, HIVE_MAINTENANCE_IDLE_MS, HIVE_MAINTENANCE_TASKS, HIVE_MAINTENANCE_TIMEOUT_MS, HIVE_STALE_LOCK_MS, HIVE_STALE_MAINTENANCE_LOCK_MS, maintenanceArgs, runGit, stopRunningGits, untrackIgnored, type GitResult } from './hiveCommit';
 import { agentFolderId, hasExactFolder, isAppSender, isFolderName, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, RegistryUnreadable, rosterIdFor, shortTarget } from './messageTarget';
 import { nodeLauncherScript } from './nodeLauncher';
@@ -4045,8 +4045,14 @@ export class HiveManager {
     this.uncreatedRepos.delete(root);
     await this.untrackOnce(root, (args) => inRepo(args));
     this.clearStaleLocks(gitDir, ['index.lock', 'HEAD.lock'], HIVE_STALE_LOCK_MS);
+    // Before the add: entries a previous add, or the repository the move brought in, left behind.
+    const before = await this.dropNestedRepos(gitDir, inRepo);
+    if (!before.ok) return before;
     const add = await inRepo(['add', '-A']);
     if (!add.ok) return add;
+    // After it: whatever this add just recorded, before anything else can run git over it again.
+    const after = await this.dropNestedRepos(gitDir, inRepo);
+    if (!after.ok) return after;
     const commit = await inRepo(['commit', '-q', '-m', message]);
     if (commit.ok || /nothing to commit/i.test(commit.out + commit.err)) return { ok: true, out: commit.out, err: commit.err };
     return commit;
@@ -4073,6 +4079,41 @@ export class HiveManager {
     this.untrackRetries.set(root, retry);
     if (retry.attempts === 1) console.warn(`[hive] could not stop tracking ignored paths in the hive repo; will retry: ${error || 'no error output'}`);
     if (retry.attempts === 3) console.warn('[hive] gave up stopping tracking of ignored paths in the hive repo until the app restarts');
+  }
+
+  /**
+   * Keep nested repositories out of the hive's index.
+   *
+   * `git add -A` records a folder with its own `.git` (a folder or a gitfile) as one entry, a gitlink. On every later
+   * add, git checks whether that entry changed by running `git status` inside it, and that child reads the nested
+   * repository's own config: a filter it names runs, as the owner. The options this app passes do not reach it (a
+   * filter's name is free), and neither do diff.ignoreSubmodules or submodule.<name>.ignore. Traced on git 2.56: the add
+   * that first meets a nested repository records it without looking inside; only the adds after that run the child.
+   * So no gitlink may stay in the index from one git command to the next: each is dropped from the index, and its path
+   * is excluded in the app-owned info/exclude so later adds pass it by. If they cannot be dropped, the commit stops
+   * here, before any add can look inside them.
+   */
+  private async dropNestedRepos(gitDir: string, inRepo: (args: string[]) => Promise<GitResult>): Promise<GitResult> {
+    const listed = await inRepo(['ls-files', '-s', '-z']);
+    if (!listed.ok) return { ...listed, failed: 'could not list the hive index for nested repositories' };
+    const nested = listed.out.split('\0').filter((e) => e.startsWith('160000 ')).map((e) => e.slice(e.indexOf('\t') + 1));
+    if (nested.length === 0) return { ok: true, out: '', err: '' };
+    for (let i = 0; i < nested.length; i += 500) {
+      // update-index edits the index and nothing else. `rm --cached` would first compare each entry with what is on
+      // disk, and for a nested repository that means looking inside it.
+      const removed = await inRepo(['update-index', '--force-remove', '--', ...nested.slice(i, i + 500)]);
+      if (!removed.ok) return { ...removed, failed: 'could not drop nested repositories from the hive index' };
+    }
+    const lines = nested.map(excludeLine).filter((l): l is string => l !== null);
+    try {
+      mkdirSync(join(gitDir, 'info'), { recursive: true });
+      appendFileSync(join(gitDir, 'info', 'exclude'), lines.map((l) => `${l}\n`).join(''), 'utf8');
+    } catch (e) {
+      console.warn('[hive] could not exclude nested repositories:', e);
+    }
+    console.warn(`[hive] dropped ${nested.length} nested repositor${nested.length === 1 ? 'y' : 'ies'} from the hive index: ${nested.slice(0, 5).join(', ')}${nested.length > 5 ? ', ...' : ''}`);
+    this.appendLog({ kind: 'hive-nested-repos-dropped', count: nested.length, paths: nested.slice(0, 50) });
+    return { ok: true, out: '', err: '' };
   }
 
   /** Remove locks left by a git that can no longer be running: older than the longest a hive git holding them can

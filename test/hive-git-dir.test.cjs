@@ -130,6 +130,8 @@ test('the first commit moves the history into the app data folder and leaves a g
   fs.writeFileSync(path.join(root, '.git', 'info', 'attributes'), '* filter=evil\n');
   fs.writeFileSync(path.join(root, '.git', 'objects', 'info', 'alternates'), `${path.join(dir, 'nowhere')}\n`);
   fs.appendFileSync(path.join(root, '.git', 'config'), `[include]\n\tpath = ${path.join(dir, 'other-config')}\n`);
+  fs.mkdirSync(path.join(root, '.git', 'modules', 'sub'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.git', 'modules', 'sub', 'config'), '[filter "evil"]\n\tclean = /bin/false\n');
 
   const hive = new HiveManager(() => dir);
   hive.setGitDirBase(base);
@@ -141,7 +143,7 @@ test('the first commit moves the history into the app data folder and leaves a g
   assert.equal(git(root, '--git-dir', gitDir, 'rev-parse', 'HEAD~1').stdout.trim(), oldHead, 'the old history is kept');
   assert.equal(git(root, 'rev-parse', 'HEAD').stdout.trim(), git(root, '--git-dir', gitDir, 'rev-parse', 'HEAD').stdout.trim(), 'git in the hive reads the moved repository');
   assert.equal(fs.existsSync(path.join(gitDir, 'config.before-move')), true);
-  for (const gone of ['hooks', 'info/attributes', 'objects/info/alternates']) assert.equal(fs.existsSync(path.join(gitDir, gone)), false, `${gone} came along`);
+  for (const gone of ['hooks', 'modules', 'info/attributes', 'objects/info/alternates']) assert.equal(fs.existsSync(path.join(gitDir, gone)), false, `${gone} came along`);
   assert.doesNotMatch(fs.readFileSync(path.join(gitDir, 'config'), 'utf8'), /include/);
   const markerFile = JSON.parse(fs.readFileSync(path.join(gitDir, 'hive-git.json'), 'utf8'));
   assert.equal(markerFile.source, path.join(root, '.git'));
@@ -360,4 +362,83 @@ test('history the old repository borrowed through alternates is copied in, not l
   const gitDir = hiveGitDirFor(base, root);
   assert.equal(fs.existsSync(path.join(gitDir, 'objects', 'info', 'alternates')), false);
   assert.equal(git(root, '--git-dir', gitDir, 'cat-file', '-p', `${borrowed}:borrowed.txt`).stdout, 'borrowed history\n', 'the borrowed history was lost');
+});
+
+/** A repository nested inside the hive, as an agent could make one: its own config names a filter that records that it
+ *  ran, and its .gitattributes routes every file through it. `kind` 'folder' gives it a .git folder; 'file' a .git
+ *  file pointing at a git directory outside the hive. */
+function nestedRepo(dir, folder, kind, marker) {
+  fs.mkdirSync(folder, { recursive: true });
+  let gitDirArgs;
+  if (kind === 'folder') {
+    git(folder, 'init', '-q');
+    gitDirArgs = ['--git-dir', path.join(folder, '.git'), '--work-tree', folder];
+  } else {
+    const elsewhere = path.join(dir, `${path.basename(folder)}-elsewhere.git`);
+    git(dir, 'init', '-q', '--bare', elsewhere);
+    git(dir, '--git-dir', elsewhere, 'config', 'core.bare', 'false');
+    fs.writeFileSync(path.join(folder, '.git'), `gitdir: ${elsewhere}\n`);
+    gitDirArgs = ['--git-dir', elsewhere, '--work-tree', folder];
+  }
+  const program = path.join(dir, `${path.basename(folder)}-filter.sh`);
+  fs.writeFileSync(program, `#!/bin/sh\ntouch '${marker}'\ncat\n`, { mode: 0o755 });
+  git(folder, ...gitDirArgs, 'config', 'filter.evil.clean', program);
+  fs.writeFileSync(path.join(folder, '.gitattributes'), '* filter=evil\n');
+  fs.writeFileSync(path.join(folder, 'f.txt'), 'aaaa\n');
+  git(folder, ...gitDirArgs, 'add', '-A');
+  git(folder, ...gitDirArgs, '-c', 'user.name=a', '-c', 'user.email=a@a', 'commit', '-q', '-m', 'nested');
+  fs.rmSync(marker, { force: true }); // making it ran the filter; only what the app runs counts
+}
+
+const gitlinks = (root, gitDir) => git(root, '--git-dir', gitDir, 'ls-files', '-s').stdout.split('\n').filter((l) => l.startsWith('160000'));
+
+for (const kind of ['folder', 'file']) {
+  test(`a program in a nested repository's own config never runs, across three commits (nested .git ${kind})`, async (t) => {
+    const { dir, base, marker } = scratch(t);
+    const hive = await floor(dir, base);
+    const root = hive.root();
+    const nested = path.join(root, 'evidence', 'notes');
+    nestedRepo(dir, nested, kind, marker);
+
+    for (const edit of ['bbbb', 'cccc', 'dddd']) {
+      // A same-size edit inside the nested repository, so a status run inside it would have something to filter.
+      fs.writeFileSync(path.join(nested, 'f.txt'), `${edit}\n`);
+      fs.writeFileSync(path.join(root, 'board.md'), `# ${edit}\n`);
+      hive.commit(`hive: ${edit}`);
+      await hive.commitsSettled();
+      // Not left in the index after any commit, not even the one whose add first met it.
+      assert.deepEqual(gitlinks(root, target(base, root)), [], `a nested repository stayed in the hive index after "${edit}"`);
+    }
+
+    assert.equal(fs.existsSync(marker), false, 'the nested repository\'s filter ran as the app');
+    const gitDir = target(base, root);
+    // Excluded once dropped, so later adds pass it by instead of recording it again.
+    assert.equal(hive.logTail(200).filter((e) => e.kind === 'hive-nested-repos-dropped').length, 1);
+    assert.match(git(root, '--git-dir', gitDir, 'show', 'HEAD:board.md').stdout, /dddd/, 'the hive\'s own changes stopped being committed');
+  });
+}
+
+test('nested repositories the old repository had recorded are dropped at the move, before any add looks inside them', async (t) => {
+  const { dir, base, marker } = scratch(t);
+  // An existing hive, from before this change, whose index already holds a nested repository.
+  const legacy = new HiveManager(() => dir);
+  await legacy.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: dir, isGod: true });
+  await legacy.commitsSettled();
+  const root = legacy.root();
+  const nested = path.join(root, 'evidence', 'notes');
+  nestedRepo(dir, nested, 'folder', marker);
+  git(root, 'add', '-A');
+  git(root, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'recorded a nested repository');
+  assert.equal(gitlinks(root, path.join(root, '.git')).length, 1);
+  fs.rmSync(marker, { force: true });
+
+  const hive = new HiveManager(() => dir);
+  hive.setGitDirBase?.(base);
+  hive.ensureHive();
+  fs.writeFileSync(path.join(nested, 'f.txt'), 'bbbb\n');
+  hive.commit('hive: first commit of the new build');
+  await hive.commitsSettled();
+
+  assert.equal(fs.existsSync(marker), false, 'a carried nested repository\'s filter ran');
+  assert.deepEqual(gitlinks(root, target(base, root)), []);
 });

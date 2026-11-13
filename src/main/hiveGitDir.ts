@@ -62,13 +62,15 @@ async function listing(dir: string): Promise<string> {
  *   inert, as `config.before-move` for whoever reverses the move; git never reads that name.
  * - `hooks/`: programs.
  * - `commondir`, `gitdir`: send git to another directory, and with it another config.
+ * - `modules/`: the git directories of submodules, each with a config of its own that git reads when it looks inside
+ *   them.
  * - `info/attributes`: can route files through filters and other drivers. `info/exclude` changes what is recorded;
  *   the hive keeps its rules in .gitignore.
  * - `objects/info/alternates`, `objects/info/http-alternates`: make git read objects from elsewhere. History that
  *   really lives there would be lost by removing them, so the objects are first copied in (see sanitizeGitDir).
  * The fresh config `git init` writes has no include or includeIf, so nothing the old config pulled in survives.
  */
-const IMPORTED_SETTINGS = ['config.worktree', 'hooks', 'commondir', 'gitdir', 'info/attributes', 'info/exclude'];
+const IMPORTED_SETTINGS = ['config.worktree', 'hooks', 'commondir', 'gitdir', 'modules', 'info/attributes', 'info/exclude'];
 const ALTERNATES = ['objects/info/alternates', 'objects/info/http-alternates'];
 
 /** Replace what git executes or follows in `gitDir` with what the app writes. Objects, refs and history stay. Safe to
@@ -202,4 +204,11 @@ export function carryHiveGitDir(base: string, oldHiveRoot: string, newHiveRoot: 
 /** Whether the hive has a repository, in either place, so a commit has somewhere to go. */
 export function hiveRepoPresent(hiveRoot: string, target: string | null): boolean {
   return (target !== null && existsSync(target)) || existsSync(join(hiveRoot, '.git'));
+}
+
+/** An info/exclude line that matches exactly the folder `path` (relative to the hive), whatever characters it has. */
+export function excludeLine(path: string): string | null {
+  if (/[\n\r]/.test(path)) return null;
+  const escaped = path.replace(/[\\*?[]/g, '\\$&').replace(/ $/, '\\ ');
+  return `/${escaped}/`;
 }
