@@ -36,9 +36,8 @@ much cheaper than finding out in review.
 
 ### Prerequisites
 
-- **macOS, Windows, or Linux** — signed/notarized macOS builds, plus Windows and
-  Linux builds, ship from the [releases page](https://github.com/chaitanyagiri/munder-difflin/releases/latest).
-  Cross-platform smoke-testing and fixes are still very welcome (see
+- **macOS, Windows, or Linux** — there are no packaged releases; the app runs
+  from source on all three. Cross-platform smoke-testing and fixes are very welcome (see
   [Good first areas](#good-first-areas)).
 - **Node.js 18+** and npm.
 - A **C/C++ toolchain** to build `node-pty`'s native addon. On macOS:
@@ -133,7 +132,7 @@ negotiate, and every one of them is cheaper to avoid than to fix in review:
 - **Wholesale reformatting** of files, or a diff where the real change is buried
   in whitespace and import reordering.
 - **A rewrite nobody asked for.** Large architectural changes need an issue or a
-  [discussion](https://github.com/chaitanyagiri/munder-difflin/discussions) with
+  [discussion](https://github.com/aaroncoville/munder-difflin/discussions) with
   agreement **before** you write the code. We would rather say no to a paragraph
   than to a week of your work.
 - **Generated or unattributed content** — art that isn't yours or compatibly

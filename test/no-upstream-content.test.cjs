@@ -43,3 +43,16 @@ test("the evidence check points contributors at this repository's guide", () => 
   assert.doesNotMatch(wf, /github\.com\/chaitanyagiri/);
   assert.match(wf, /github\.com\/aaroncoville\/munder-difflin\/blob\/theme\/sixth-history\/CONTRIBUTING\.md#evidence-is-mandatory/);
 });
+
+test('contributor and security paths lead to this repository', () => {
+  const files = ['.github/ISSUE_TEMPLATE/config.yml', '.github/ISSUE_TEMPLATE/other.yml',
+    '.github/ISSUE_TEMPLATE/feature_request.yml', 'SECURITY.md', 'CONTRIBUTING.md'];
+  for (const rel of files) {
+    const text = fs.readFileSync(path.join(root, rel), 'utf8');
+    assert.doesNotMatch(text, /github\.com\/chaitanyagiri|@gmail\.com/, `${rel} still routes to the original project`);
+  }
+  assert.match(fs.readFileSync(path.join(root, 'SECURITY.md'), 'utf8'),
+    /https:\/\/github\.com\/aaroncoville\/munder-difflin\/security\/advisories\/new/);
+  assert.doesNotMatch(fs.readFileSync(path.join(root, 'CONTRIBUTING.md'), 'utf8'), /releases page|releases\/latest/,
+    'there are no packaged releases to point at');
+});
