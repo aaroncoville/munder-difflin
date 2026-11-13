@@ -3622,6 +3622,8 @@ ipcMain.handle('config:changeHome', async (_evt, payload: unknown) => {
         // the old folder stays as a safety net the user removes manually.
         cpSync(src, join(newHome, sub), { recursive: true, force: true, dereference: false });
       }
+      // The hive's history lives in the app data folder, keyed by the hive's path; the new path needs a copy of it.
+      if (existsSync(join(newHome, 'hive'))) hive.carryGitDirTo(join(newHome, 'hive'));
     } catch (e) {
       // Copy failed: recover IN PLACE against the unchanged old home (config never
       // repointed) so the user loses nothing, and surface the error — no relaunch.

@@ -112,6 +112,10 @@ test('a git folder an agent puts in the hive after the move is ignored, and its 
 
   assert.equal(fs.existsSync(marker), false, 'a program planted in the hive ran');
   assert.ok(Number(git(root, '--git-dir', target(base, root), 'rev-list', '--count', 'HEAD').stdout.trim()) > Number(before));
+  const aside = fs.readdirSync(root).filter((n) => n.startsWith('.git.set-aside-'));
+  assert.equal(aside.length, 1, 'the planted folder was not set aside');
+  assert.equal(fs.statSync(path.join(root, '.git')).isFile(), true, 'the gitfile was not put back');
+  assert.equal(git(root, '--git-dir', target(base, root), 'ls-files', '--', aside[0]).stdout, '', 'the set-aside folder was recorded');
 });
 
 test('the first commit moves the history into the app data folder and leaves a gitfile that still reads it', async (t) => {
@@ -121,6 +125,11 @@ test('the first commit moves the history into the app data folder and leaves a g
   await legacy.commitsSettled();
   const root = legacy.root();
   const oldHead = git(root, 'rev-parse', 'HEAD').stdout.trim();
+  // What the old folder carried that git follows: none of it may come along.
+  fs.mkdirSync(path.join(root, '.git', 'info'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.git', 'info', 'attributes'), '* filter=evil\n');
+  fs.writeFileSync(path.join(root, '.git', 'objects', 'info', 'alternates'), `${path.join(dir, 'nowhere')}\n`);
+  fs.appendFileSync(path.join(root, '.git', 'config'), `[include]\n\tpath = ${path.join(dir, 'other-config')}\n`);
 
   const hive = new HiveManager(() => dir);
   hive.setGitDirBase(base);
@@ -132,6 +141,10 @@ test('the first commit moves the history into the app data folder and leaves a g
   assert.equal(git(root, '--git-dir', gitDir, 'rev-parse', 'HEAD~1').stdout.trim(), oldHead, 'the old history is kept');
   assert.equal(git(root, 'rev-parse', 'HEAD').stdout.trim(), git(root, '--git-dir', gitDir, 'rev-parse', 'HEAD').stdout.trim(), 'git in the hive reads the moved repository');
   assert.equal(fs.existsSync(path.join(gitDir, 'config.before-move')), true);
+  for (const gone of ['hooks', 'info/attributes', 'objects/info/alternates']) assert.equal(fs.existsSync(path.join(gitDir, gone)), false, `${gone} came along`);
+  assert.doesNotMatch(fs.readFileSync(path.join(gitDir, 'config'), 'utf8'), /include/);
+  const markerFile = JSON.parse(fs.readFileSync(path.join(gitDir, 'hive-git.json'), 'utf8'));
+  assert.equal(markerFile.source, path.join(root, '.git'));
   assert.equal(hive.logTail(50).some((e) => e.kind === 'hive-git-dir' && e.action === 'moved'), true);
 });
 
@@ -156,26 +169,41 @@ test('a move interrupted between its two renames finishes on the next run', asyn
   assert.equal(git(root, '--git-dir', gitDir, 'rev-parse', 'HEAD~1').stdout.trim(), oldHead);
 });
 
-test('a gitfile pointing outside the app folder is never followed; one pointing at another hive\'s repository there is copied', async (t) => {
+test('a gitfile is never followed, even into the app\'s own folder; a data-folder move carries the history from the old hive', async (t) => {
   const { dir, base, marker } = scratch(t);
   const first = await floor(dir, base);
   const firstRoot = first.root();
   const firstHead = git(firstRoot, '--git-dir', hiveGitDirFor(base, firstRoot), 'rev-parse', 'HEAD').stdout.trim();
 
-  // The data folder moved: the hive was copied, gitfile and all, to a new home.
+  // The app moves its data folder: the hive is copied, and the app carries its history from the old hive's directory.
   const moved = path.join(dir, 'new-home');
   fs.mkdirSync(moved);
+  await first.stopCommits();
   fs.cpSync(path.join(dir, 'hive'), path.join(moved, 'hive'), { recursive: true });
+  assert.equal(first.carryGitDirTo(path.join(moved, 'hive')), true);
   const second = new HiveManager(() => moved);
   second.setGitDirBase(base);
+  fs.writeFileSync(path.join(moved, 'hive', 'board.md'), '# in the new home\n');
   second.commit('hive: in the new home');
   await second.commitsSettled();
   assert.equal(git(second.root(), '--git-dir', hiveGitDirFor(base, second.root()), 'rev-parse', 'HEAD~1').stdout.trim(), firstHead, 'the history came along');
-  assert.equal(git(firstRoot, '--git-dir', hiveGitDirFor(base, firstRoot), 'rev-parse', 'HEAD').stdout.trim(), firstHead, 'the old home is untouched');
 
-  // An agent points a gitfile at a repository of its own.
-  const third = path.join(dir, 'third-home');
-  fs.mkdirSync(path.join(third, 'hive'), { recursive: true });
+  // A hive whose gitfile points at another hive's directory in the app folder, with no move by the app: not followed.
+  const copied = path.join(dir, 'copied-by-hand');
+  fs.mkdirSync(copied);
+  fs.cpSync(path.join(dir, 'hive'), path.join(copied, 'hive'), { recursive: true });
+  const third = new HiveManager(() => copied);
+  third.setGitDirBase(base);
+  third.ensureHive();
+  third.commit('hive: copied by hand');
+  await third.commitsSettled();
+  const thirdDir = hiveGitDirFor(base, third.root());
+  assert.equal(git(third.root(), '--git-dir', thirdDir, 'rev-list', '--count', 'HEAD').stdout.trim(), '1', 'the gitfile was followed');
+  assert.equal(third.logTail(50).some((e) => e.kind === 'hive-git-dir' && e.action === 'not-adopted'), true);
+
+  // And one pointing at an agent's own repository.
+  const fourth = path.join(dir, 'fourth-home');
+  fs.mkdirSync(path.join(fourth, 'hive'), { recursive: true });
   const evil = path.join(dir, 'agent-repo.git');
   git(dir, 'init', '-q', '--bare', evil);
   const agentTree = path.join(dir, 'agent-tree');
@@ -183,19 +211,18 @@ test('a gitfile pointing outside the app folder is never followed; one pointing 
   fs.writeFileSync(path.join(agentTree, 'x'), 'x');
   git(dir, '--git-dir', evil, '--work-tree', agentTree, 'add', '-A');
   git(dir, '--git-dir', evil, '--work-tree', agentTree, '-c', 'user.name=a', '-c', 'user.email=a@a', 'commit', '-q', '-m', 'agent history');
-  plantInGitDir(evil, path.join(third, 'hive'), marker);
-  fs.writeFileSync(path.join(third, 'hive', '.git'), `gitdir: ${evil}\n`);
-  const hive3 = new HiveManager(() => third);
-  hive3.setGitDirBase(base);
-  hive3.ensureHive();
-  hive3.commit('hive: third');
-  await hive3.commitsSettled();
+  plantInGitDir(evil, path.join(fourth, 'hive'), marker);
+  fs.writeFileSync(path.join(fourth, 'hive', '.git'), `gitdir: ${evil}\n`);
+  const hive4 = new HiveManager(() => fourth);
+  hive4.setGitDirBase(base);
+  hive4.ensureHive();
+  hive4.commit('hive: fourth');
+  await hive4.commitsSettled();
 
   assert.equal(fs.existsSync(marker), false, 'a program in a repository the gitfile named ran');
-  const gitDir3 = hiveGitDirFor(base, hive3.root());
-  assert.equal(git(hive3.root(), '--git-dir', gitDir3, 'log', '--format=%s', '-1').stdout.trim(), 'hive: third');
-  assert.doesNotMatch(git(hive3.root(), '--git-dir', gitDir3, 'log', '--format=%s').stdout, /agent history/, 'the agent\'s repository was adopted');
-  assert.equal(fs.readFileSync(path.join(hive3.root(), '.git'), 'utf8'), `gitdir: ${gitDir3}\n`);
+  const gitDir4 = hiveGitDirFor(base, hive4.root());
+  assert.doesNotMatch(git(hive4.root(), '--git-dir', gitDir4, 'log', '--format=%s').stdout, /agent history/, 'the agent\'s repository was adopted');
+  assert.equal(fs.readFileSync(path.join(hive4.root(), '.git'), 'utf8'), `gitdir: ${gitDir4}\n`);
 });
 
 test('a full reset removes the hive\'s git directory, so a new hive at the same path starts its own history', async (t) => {

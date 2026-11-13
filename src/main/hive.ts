@@ -55,7 +55,7 @@ import { preferredAgentRole } from '../shared/agentRole';
 import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde } from './fs';
 import { refreshMineIgnoresOnce } from './hiveMineIgnore';
-import { hiveGitDirFor, hiveRepoPresent, settleHiveGitDir, writeGitfile } from './hiveGitDir';
+import { carryHiveGitDir, hiveGitDirFor, hiveRepoPresent, SET_ASIDE_PREFIX, settleHiveGitDir, writeGitfile, writeMarker } from './hiveGitDir';
 import { AGENT_ALLOWLIST_IGNORE_LINES, CommitQueue, HIVE_MAINTENANCE_EVERY_MS, HIVE_MAINTENANCE_IDLE_MS, HIVE_MAINTENANCE_TASKS, HIVE_MAINTENANCE_TIMEOUT_MS, HIVE_STALE_LOCK_MS, HIVE_STALE_MAINTENANCE_LOCK_MS, maintenanceArgs, runGit, stopRunningGits, untrackIgnored, type GitResult } from './hiveCommit';
 import { agentFolderId, hasExactFolder, isAppSender, isFolderName, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, RegistryUnreadable, rosterIdFor, shortTarget } from './messageTarget';
 import { nodeLauncherScript } from './nodeLauncher';
@@ -1212,7 +1212,8 @@ export class HiveManager {
     // `usage/`: the owner's usage log lives in the app's data folder, not here;
     // ignored anyway so a stray usage file can never enter the hive's history.
     // AGENT_ALLOWLIST_IGNORE_LINES: inside an agent's folder only its memory, identity and ignore file are hive state.
-    const want = ['fleet.json', 'hooks.sock', 'cost-ledger.jsonl', 'crashes/', '.DS_Store', 'usage/', ...AGENT_ALLOWLIST_IGNORE_LINES];
+    // `.git.set-aside-*/`: a git folder found in the hive after its repository moved to the app data folder (hiveGitDir.ts).
+    const want = ['fleet.json', 'hooks.sock', 'cost-ledger.jsonl', 'crashes/', '.DS_Store', 'usage/', ...AGENT_ALLOWLIST_IGNORE_LINES, `${SET_ASIDE_PREFIX}*/`];
     let lines: string[] = [];
     if (existsSync(gitignore)) { try { lines = readFileSync(gitignore, 'utf8').split('\n'); } catch { lines = []; } }
     const missing = want.filter((w) => !lines.includes(w));
@@ -3901,6 +3902,14 @@ export class HiveManager {
     return hiveRepoPresent(root, this.gitDirBase ? this.hiveGitDir(root) : null);
   }
 
+  /** For a data-folder move: copy this hive's git directory to the one `newHiveRoot` keys to, from the app's own
+   *  folder (see carryHiveGitDir). Call after the hive itself has been copied there. */
+  carryGitDirTo(newHiveRoot: string): boolean {
+    const root = this.root();
+    if (!this.gitDirBase || !root) return false;
+    return carryHiveGitDir(this.gitDirBase, root, newHiveRoot);
+  }
+
   /** For a full reset: the hive's git directory goes with the hive, or a new hive at the same path would take its
    *  history. Only ever a directory inside the app's own folder for them. */
   removeGitDir(): void {
@@ -4027,10 +4036,10 @@ export class HiveManager {
     if (!existsSync(gitDir)) {
       // A new hive, or (with the app data folder in use) one whose history could not be adopted: start a repository.
       if (!this.uncreatedRepos.has(root) && !this.gitDirBase) return { ok: true, out: '', err: '' };
-      const init = await inRepo(['init', '-q']);
+      const init = await inRepo(['init', '-q', ...(this.gitDirBase ? ['--template='] : [])]);
       if (!init.ok) return { ...init, failed: 'could not create the hive repository (git init)' };
       if (this.gitDirBase) {
-        try { await writeGitfile(root, gitDir); } catch (e) { console.warn('[hive] could not write the hive\'s .git file:', e); }
+        try { writeMarker(gitDir, null); await writeGitfile(root, gitDir); } catch (e) { console.warn('[hive] could not write the hive\'s .git file:', e); }
       }
     }
     this.uncreatedRepos.delete(root);
