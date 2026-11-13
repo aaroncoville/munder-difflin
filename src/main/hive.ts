@@ -3960,7 +3960,7 @@ export class HiveManager {
     if (!existsSync(join(root, '.git'))) {
       if (!this.uncreatedRepos.has(root)) return { ok: true, out: '', err: '' };
       const init = await git(['init', '-q'], root);
-      if (!init.ok) return init;
+      if (!init.ok) return { ...init, failed: 'could not create the hive repository (git init)' };
     }
     this.uncreatedRepos.delete(root);
     if (!this.untrackedRoots.has(root)) {

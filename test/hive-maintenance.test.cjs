@@ -237,3 +237,22 @@ test('agent files a failed untrack left tracked are untracked by the next commit
   assert.equal(git(root, 'ls-files', '--', 'agents/god-1/.nuget'), '');
   assert.equal(fs.readFileSync(junk, 'utf8'), 'package');
 });
+
+test('a failed git init is reported as the hive repository not being created', async (t) => {
+  const dir = home(t);
+  const shim = fakeGit(t, dir);
+  shim.set('FAKE_GIT_FAIL_ONCE', 'init');
+  const warnings = [];
+  const warn = console.warn;
+  console.warn = (...a) => warnings.push(a.join(' '));
+  t.after(() => { console.warn = warn; });
+
+  const hive = new HiveManager(() => dir);
+  hive.ensureHive();
+  await hive.commitsSettled();
+
+  const line = warnings.find((w) => w.includes('boom'));
+  assert.ok(line, warnings.join('\n'));
+  assert.match(line, /could not create the hive repository/);
+  assert.doesNotMatch(line, /commit failed/);
+});

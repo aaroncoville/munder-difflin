@@ -1,6 +1,12 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 
-export interface GitResult { ok: boolean; out: string; err: string }
+export interface GitResult {
+  ok: boolean;
+  out: string;
+  err: string;
+  /** What failed, when it was not the commit itself (for example creating the repository). */
+  failed?: string;
+}
 export type GitRunner = (args: string[], cwd: string) => Promise<GitResult>;
 
 /**
@@ -358,7 +364,7 @@ export class CommitQueue {
     }
     this.failures += 1;
     const error = (result.err || result.out).trim() || 'git gave no error output';
-    if (this.failures === 1) this.warn(`[hive] commit failed: ${error}`);
+    if (this.failures === 1) this.warn(`[hive] ${result.failed ?? 'commit failed'}: ${error}`);
     if (this.failures === this.failingAfter) {
       this.warn(`[hive] ${this.failures} hive commits in a row have failed; changes stay on disk until one succeeds. Last error: ${error}`);
       this.opts.onFailing?.(this.failures, error);
