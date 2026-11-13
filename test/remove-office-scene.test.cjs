@@ -62,14 +62,13 @@ test('LimeZu is credited wherever media of the old office are still shown, and n
   // screenshots and video drawn with them; wherever one does, the licence
   // credit stays beside it.
   const officeMedia = /media\/floor\.png|hero\.mp4|\/media\/demo\//;
-  for (const rel of ['README.md', 'docs/index.html', 'tools/landing-halloween/base.html']) {
+  for (const rel of ['README.md', 'docs/index.html']) {
     if (!fs.existsSync(R(rel)) || !officeMedia.test(read(rel))) continue;
     assert.match(read(rel), /limezu/i, `${rel} shows office media without the LimeZu credit`);
   }
   for (const rel of ['CONTRIBUTING.md', 'src/renderer/src/assets/ATTRIBUTION.md']) {
     assert.doesNotMatch(read(rel), /limezu/i, `${rel} credits art the app no longer ships`);
   }
-  assert.doesNotMatch(read('docs/terms.html'), /assets bundled with the app[^.]*tilesets/i, 'terms still say the app bundles the tilesets');
   assert.doesNotMatch(read('.github/CODEOWNERS'), /LICENSE-ASSETS/);
   assert.equal(fs.existsSync(R('LICENSE-ASSETS')), false, 'the asset licence carve-out has nothing left to carve out');
 });

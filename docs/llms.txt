@@ -1,28 +1,17 @@
-# Munder Difflin
+# Hush House
 
-> Munder Difflin gives you clones for you and your team, working 24/7. It is a free,
-> MIT-licensed, local-first multi-agent harness for CLI coding agents that turns Claude Code,
-> OpenAI Codex, Antigravity (Gemini), GitHub Copilot CLI, xAI Grok, Kimi Code, Qwen, OpenCode,
-> Crush, Gemini CLI, Cursor Agent, and pi.dev into a coordinated "office" of agents on
-> your own computer — each agent a real CLI process in a real terminal, with shared
-> long-term memory, inter-agent messaging, your clone ("Michael") orchestrating, scheduled missions, Slack
-> and webhook triggers, realtime voice orchestration, a built-in Monaco IDE with git
-> history and branch compare, markdown previews, and auto-update. The interface runs in
-> English, Simplified Chinese and Arabic, with right to left layout when Arabic is chosen,
-> and its fonts are bundled rather than fetched from a font host. Current version: 0.4.6
-> (August 2026). Desktop app for macOS, Windows, and Linux. No vendor cloud; code never
-> leaves your machine. It covers the same jobs as YC's qm (security postures, background
-> crons/watches, Slack, shared skills) as a simpler local-first desktop app, and adds what
-> a headless harness doesn't have: watchable terminals, voice, an IDE, auto-update.
+> Hush House runs a household of AI coding agents on your own computer. It is a free, open-source,
+> local-first desktop app that runs command-line agents (Claude Code, OpenAI Codex, Gemini CLI,
+> Antigravity, GitHub Copilot CLI, Cursor Agent, xAI Grok, Kimi Code, Qwen, OpenCode, Crush and
+> pi), each as a real process in its own terminal. The agents share a memory, pass each other
+> messages through a local folder of plain files, and take work from one orchestrator, the agent
+> the user talks to. Nothing is sold. Current version: 0.5.5-sixth.1. Runs from source on macOS,
+> Windows and Linux; there are no packaged releases yet.
+>
+> Hush House is an unofficial fan work set in Weather Factory's Sixth History. It is not
+> affiliated with or endorsed by Weather Factory Ltd, and is published under Weather Factory's
+> Sixth History Community Licence.
 
 ## Product
 
-- [Homepage](https://munderdiffl.in/): features, download links, FAQ
-- [GitHub repository](https://github.com/chaitanyagiri/munder-difflin): source, issues, releases
-- [Latest release](https://github.com/chaitanyagiri/munder-difflin/releases/latest): macOS dmg, Windows setup, Linux AppImage
-- [Changelog](https://github.com/chaitanyagiri/munder-difflin/blob/main/CHANGELOG.md)
-
-## Full content
-
-- [Sitemap](https://munderdiffl.in/sitemap.xml)
-- [llms-full.txt](https://munderdiffl.in/llms-full.txt): extended version of this file
+- [Repository and README](https://github.com/aaroncoville/munder-difflin): source, how to run it, licence
