@@ -5,6 +5,8 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path';
 import { readConfig } from './config';
 import { DEFAULT_DROP_HTML } from '../shared/releaseDrop';
+import { UPDATE_FEED_ENABLED, whenFeedOn } from '../shared/updateFeed';
+import { PRODUCT_NAME } from '../shared/productName';
 import { reduceStatus, clampPercent, isNewer, installerUrl, shouldShowReleaseDrop, type UpdateStatus } from '../shared/updateState';
 
 /**
@@ -343,7 +345,7 @@ async function runDownload(): Promise<{ ok: boolean; error?: string }> {
  *  shape instead (bold lead paragraph, then `### Fixed`) it returns ONE bullet —
  *  the lead paragraph, clipped mid-sentence. Verified against the published
  *  v0.4.4-rc.1 body: this shape yields the same 3 bullets the real toast shows. */
-const SIMULATED_NOTES = `# Munder Difflin v9.9.9
+const SIMULATED_NOTES = `# ${PRODUCT_NAME} v9.9.9
 
 **A local hive of Claude Code, Antigravity, Codex, Grok & Copilot agents that run themselves** —
 messaging, routing, and remembering, coordinated by your clone, who you talk to.
@@ -367,7 +369,9 @@ export function initAutoUpdater(getWebContents: () => WebContents | null): void 
   sendTo = getWebContents;
 
   // IPC surface is registered unconditionally so the renderer can always call it.
-  ipcMain.handle('update:restartAndInstall', async () => {
+  // Every handler that acts on the feed or opens the releases page goes through
+  // whenFeedOn, which refuses while this build has no feed of its own.
+  ipcMain.handle('update:restartAndInstall', whenFeedOn(async () => {
     // Re-entry guard: a restart is already in flight. Firing quitAndInstall a
     // second time hits a native command Squirrel has already disabled and it
     // throws "The command is disabled and cannot be executed", the recurring
@@ -391,15 +395,15 @@ export function initAutoUpdater(getWebContents: () => WebContents | null): void 
       emit({ state: 'error', message: error });
       return { ok: false, error };
     }
-  });
-  ipcMain.handle('update:checkNow', async () => {
+  }));
+  ipcMain.handle('update:checkNow', whenFeedOn(async () => {
     if (!app.isPackaged) return { ok: false, error: 'dev build — updates are only checked in packaged apps' };
     return runCheck();
-  });
-  ipcMain.handle('update:download', async () => {
+  }));
+  ipcMain.handle('update:download', whenFeedOn(async () => {
     if (!app.isPackaged) return { ok: false, error: 'dev build — updates are only downloaded in packaged apps' };
     return runDownload();
-  });
+  }));
   /** Re-serve the last known status to a freshly loaded window. */
   ipcMain.handle('update:current', () => lastStatus ?? { state: 'idle' });
   /**
@@ -453,7 +457,7 @@ export function initAutoUpdater(getWebContents: () => WebContents | null): void 
   // is the updater's own (analytics keeps a separate one that only exists when
   // telemetry initialised). Skipped when a preview is being forced, and the
   // fetch failing just means no page, never a broken boot.
-  if (!previewPath) {
+  if (!previewPath && UPDATE_FEED_ENABLED) {
     try {
       const stampFile = join(app.getPath('userData'), 'last-run-version');
       let previous: string | null = null;
@@ -488,7 +492,7 @@ export function initAutoUpdater(getWebContents: () => WebContents | null): void 
       logLine(`post-update check failed: ${errText(e)}`);
     }
   }
-  ipcMain.handle('update:openRelease', (_evt, url: unknown) => {
+  ipcMain.handle('update:openRelease', whenFeedOn((_evt: unknown, url: unknown) => {
     const href = typeof url === 'string' ? url : `https://github.com/${REPO}/releases/latest`;
     // Only ever open the project's releases page — this is not a generic opener.
     if (!href.startsWith(`https://github.com/${REPO}/`)) return { ok: false };
@@ -502,9 +506,9 @@ export function initAutoUpdater(getWebContents: () => WebContents | null): void 
     if (asset) logLine(`manual download opened: ${asset[1]}`);
     void shell.openExternal(href);
     return { ok: true };
-  });
+  }));
 
-  if (!app.isPackaged) return;
+  if (!app.isPackaged || !UPDATE_FEED_ENABLED) return;
   if (started) return;
   started = true;
 

@@ -20,7 +20,8 @@ import { HivePicker } from '@/components/HivePicker';
 import { QuitWarningModal, type ClosingTimeState } from '@/components/QuitWarningModal';
 import { CompletionToast } from '@/realtime/CompletionToast';
 import { UpdateToast } from '@/components/UpdateToast';
-import { UpdateBadge } from '@/components/UpdateBadge';
+import { UpdateBadge, AppVersionLabel } from '@/components/UpdateBadge';
+import { UPDATE_FEED_ENABLED } from '@shared/updateFeed';
 import { SettingsModal, type Section as SettingsSection } from '@/components/SettingsModal';
 import { PixelPanel } from '@/components/PixelPanel';
 import { PixelButton } from '@/components/PixelButton';
@@ -276,8 +277,9 @@ export function App() {
           finished X"). Self-positions bottom-right; renders null until one arrives. */}
       <CompletionToast />
       {/* v0.3.4: background-update toast ("restart to update"); renders null until
-          main's updater pushes a status. */}
-      <UpdateToast />
+          main's updater pushes a status. Not mounted while the build has no update
+          feed: its release-notes path would open the original project's releases. */}
+      {UPDATE_FEED_ENABLED && <UpdateToast />}
       {/* Title bar */}
       <div
         className="cth-titlebar-drag"
@@ -300,7 +302,7 @@ export function App() {
         />
         {/* v0.3.7: the version is no longer inert text — it doubles as the
             update control (check / download / restart to update). */}
-        <UpdateBadge />
+        {UPDATE_FEED_ENABLED ? <UpdateBadge /> : <AppVersionLabel />}
         <span style={{
           fontFamily: 'var(--cth-font-ui)',
           fontSize: 13,

@@ -18,6 +18,17 @@ import { PixelButton } from './PixelButton';
 
 declare const __APP_VERSION__: string;
 
+/** The running version alone, for a build with no update feed: the same text the
+ *  badge shows when idle, but nothing to click. */
+export function AppVersionLabel() {
+  return (
+    <span style={{
+      padding: '2px 4px', fontFamily: 'var(--cth-font-ui)', fontSize: 13, lineHeight: '18px',
+      color: 'var(--cth-ink-500)'
+    }}>v{__APP_VERSION__}</span>
+  );
+}
+
 export function UpdateBadge() {
   const [status, setStatus] = useState<UpdateStatus | null>(null);
   const [busy, setBusy] = useState(false);

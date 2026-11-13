@@ -146,7 +146,7 @@ test('the licence credit renders whatever was saved before', () => {
   const { SixthHistoryCredit } = loadTs.fresh('src/renderer/src/components/SixthHistoryCredit.tsx');
   const tree = mount(SixthHistoryCredit, {}).tree;
   assert.ok(tree, 'the credit rendered nothing');
-  assert.match(text(tree).join(' '), /unofficial content/i);
+  assert.match(text(tree).join(' '), /unofficial fan work/i);
 });
 
 // ─── the floor ───────────────────────────────────────────────────────────────

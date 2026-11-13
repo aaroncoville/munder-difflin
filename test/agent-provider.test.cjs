@@ -18,7 +18,7 @@ const ts = require('typescript');
 
 const SHARED = path.join(__dirname, '..', 'src', 'shared');
 const out = fs.mkdtempSync(path.join(os.tmpdir(), 'agentprov-'));
-for (const name of ['claudeCommands', 'codexCommands', 'grokCommands', 'agentProvider']) {
+for (const name of ['productName', 'claudeCommands', 'codexCommands', 'grokCommands', 'agentProvider']) {
   const src = fs.readFileSync(path.join(SHARED, `${name}.ts`), 'utf8');
   const js = ts.transpileModule(src, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 }

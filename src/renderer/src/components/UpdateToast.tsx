@@ -40,6 +40,7 @@ import { summarizeReleaseNotes } from '@shared/releaseNotes';
 import { extractDropHtml } from '@shared/releaseDrop';
 import { ReleaseDrop } from '@/components/ReleaseDrop';
 import type { UpdateStatus } from '@shared/updateState';
+import { PRODUCT_NAME } from '@shared/productName';
 
 /** The toast is the LOUD half — it only interrupts for the two states a user has
  *  to act on. Everything else (checking, available, download progress, errors)
@@ -237,7 +238,7 @@ export function UpdateToast() {
       </div>
       <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-700)' }}>
         {status.state === 'downloaded'
-          ? 'Restart Munder Difflin whenever you like to apply it — nothing restarts on its own.'
+          ? `Restart ${PRODUCT_NAME} whenever you like to apply it — nothing restarts on its own.`
           : 'This install can’t update itself — grab the new build from the releases page.'}
       </span>
 

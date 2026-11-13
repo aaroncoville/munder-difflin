@@ -4,6 +4,7 @@ import { PixelPanel } from './PixelPanel';
 import { PixelButton } from './PixelButton';
 import { Icon, type IconName } from './Icon';
 import { AgentFace } from './AgentFace';
+import { SixthHistoryCredit } from './SixthHistoryCredit';
 import { ProviderLogo } from './ProviderLogo';
 import { modelsForProvider, onboardingEngineChoices, type AgentProvider, type HarnessConfig } from '@/store/config';
 import { providerPreset } from '@shared/agentProvider';
@@ -286,6 +287,8 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
                     </div>
                   </div>
                 </div>
+
+                <SixthHistoryCredit style={{ marginRight: 0 }} />
 
                 <div style={{ fontFamily: 'var(--cth-font-display)', fontSize: 10, color: 'var(--cth-ink-700)' }}>
                   {t('onboarding.persona.ask')}
