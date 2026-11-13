@@ -106,7 +106,7 @@ export function parseLedger(text: string, server: string): LedgerState | string 
 /** A claim if every field checks out, else why not. */
 function parseClaim(c: unknown): RetainClaim | string {
   if (!isRecord(c) || !hasOnly(c, ['op', 'since', 'items', 'acked', 'seen', 'idle', 'answeredAt', 'unusableSince'])) return 'the claim is malformed';
-  if ('unusableSince' in c && !isTime(c.unusableSince)) return 'the claim is malformed';
+  if ('unusableSince' in c && c.unusableSince !== null && !isTime(c.unusableSince)) return 'the claim is malformed'; // null: absent
   if (typeof c.op !== 'string' || !UUID.test(c.op) || !isTime(c.since) || !isTime(c.idle) || !isTime(c.answeredAt)) return 'the claim is malformed';
   if (typeof c.acked !== 'boolean' || typeof c.seen !== 'string' || c.seen.length > MAX_SEEN_LENGTH) return 'the claim is malformed';
   if (!Array.isArray(c.items) || c.items.length < 1 || c.items.length > CLAIM_MAX_ITEMS) return 'the claim is malformed';

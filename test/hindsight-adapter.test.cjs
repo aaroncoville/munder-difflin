@@ -819,6 +819,53 @@ test('localhost, 127.0.0.1 and ::1 are one address: a switch between them is not
   assert.equal(warn.mock.calls.filter((c) => /set aside/.test(c.arguments[0])).length, 0);
 });
 
+test('a set-aside claim keeps only the fields #104 can read, and its clock restarts when it is promoted', async (t) => {
+  const warn = t.mock.method(console, 'warn', () => {});
+  t.mock.method(console, 'info', () => {});
+  let aDown = false;
+  const a = await stub(t, server2(() => 'processing', () => aDown));
+  const b = await stub(t, server());
+  const cfg = { url: a.url, bank: 'b1' };
+  const now = clock();
+  const folder = ledgerDir();
+  const adapter = new HindsightAdapter(() => cfg, () => '/tmp/home', now, () => folder);
+  const dir = agentDirWith(MEMORY_MD);
+  const setAsides = () => warn.mock.calls.filter((c) => /set aside/.test(c.arguments[0])).length;
+  await adapter.mineAgent(dir, 'pam');
+  aDown = true;
+  cfg.url = b.url;
+  for (let pass = 0; pass < 8; pass++) { now.advance(PASS); await adapter.mineAgent(dir, 'pam'); }
+  assert.equal(setAsides(), 1);
+  const aside = fs.readdirSync(folder).map((f) => JSON.parse(fs.readFileSync(path.join(folder, f), 'utf8'))).find((l) => l.aside)?.aside;
+  for (const key of Object.keys(aside.claim)) assert.ok(CLAIM_KEYS_104.includes(key), `#104 would refuse the set-aside key ${key}`);
+
+  // The first server is configured again while still down, then the settings move away again.
+  cfg.url = a.url;
+  now.advance(PASS);
+  await adapter.mineAgent(dir, 'pam');
+  cfg.url = b.url;
+  now.advance(PASS);
+  await adapter.mineAgent(dir, 'pam');
+  assert.equal(setAsides(), 1, 'the promoted claim gets its own 30 minutes, not the old timestamp');
+});
+
+test('a claim saved with "unusableSince": null still loads, and is asked about rather than resent', async (t) => {
+  const s = await stub(t, server('processing'));
+  const folder = ledgerDir();
+  const serverKey = `${s.url}\nb1`;
+  const content = 'Budgets are set quarterly.';
+  const sha = (x) => require('node:crypto').createHash('sha256').update(x).digest('hex');
+  const op = '6f1c1a8e-1b2c-4d3e-8f90-123456789abc';
+  const saved = { v: 1, server: serverKey, busyUntil: 0, sections: {}, aside: null, claim: {
+    op, since: 1, acked: true, seen: '', idle: 0, answeredAt: 1, unusableSince: null,
+    items: [{ key: 'pam\nThe first thing\n0', id: 'a'.repeat(32), hash: sha(content), agent: 'pam', heading: 'The first thing', content }]
+  } };
+  fs.writeFileSync(path.join(folder, `retained-${sha(serverKey).slice(0, 24)}.json`), JSON.stringify(saved), { mode: 0o600 });
+  await make(s.url, 'b1', '/tmp/home', clock(), folder).mineAgent(agentDirWith(MEMORY_MD), 'pam');
+  assert.equal(retains(s).length, 0);
+  assert.ok(s.seen.some((r) => r.url.endsWith(`/operations/${op}`)));
+});
+
 // ─── The no-progress clock counts only answered time ───────────────────────
 
 test('an overnight gap does not count toward the two-hour cancel', async (t) => {
