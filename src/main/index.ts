@@ -1,3 +1,4 @@
+import './pinUserData';
 import { seedCodexHookTrust } from './codexHookTrust';
 import { assertComputedCodexHome, CodexHomeRefused, codexSeatHome } from './codexSeatHome';
 import { applyGitCommitsSetting, gitCommitsDisabled } from './hiveGitSetting';
@@ -25,6 +26,8 @@ import {
 import { listDir, readFileText, readFileBinary, writeFileText, statAbs, expandTilde } from './fs';
 import { normalizeWeekly, weeklyDelayMs } from '../shared/weeklySchedule';
 import { APP_GROUND } from '../shared/appGround';
+import { PRODUCT_NAME, UNOFFICIAL_NOTICE } from '../shared/productName';
+import { appMenuTemplate } from './appMenu';
 import { PANEL_PALETTE_FILE } from '../shared/panelPalette';
 import { panelPaletteSource } from './panelPalette';
 import {
@@ -2696,56 +2699,17 @@ function openFloor(): BrowserWindow | null {
   return createWindow({ floor: true });
 }
 
-/** Build + install the application menu. Only called when multiWindow is on, so
- *  flag-off keeps Electron's default menu (zero behavior change). Uses standard
+/** Build + install the application menu, in both window modes, so the macOS app
+ *  menu always carries the displayed name (see appMenu.ts). Uses standard
  *  role-based items so copy/paste/quit/etc. work per-platform, and adds the
- *  "New Floor" item (Cmd/Ctrl+Shift+N). */
+ *  "New Floor" item (Cmd/Ctrl+Shift+N) only when multiWindow is on. */
 function installAppMenu(): void {
-  const isMac = process.platform === 'darwin';
   const newFloorItem = {
     label: 'New Floor',
     accelerator: 'CmdOrCtrl+Shift+N',
     click: () => { openFloor(); }
   };
-  const template: Electron.MenuItemConstructorOptions[] = [
-    ...(isMac ? [{ role: 'appMenu' as const }] : []),
-    {
-      label: 'File',
-      submenu: isMac
-        ? [newFloorItem, { type: 'separator' as const }, { role: 'close' as const }]
-        : [newFloorItem, { type: 'separator' as const }, { role: 'quit' as const }]
-    },
-    // The Edit menu is spelled out rather than `{ role: 'editMenu' }` for one
-    // reason: `registerAccelerator: false` on the clipboard items.
-    //
-    // A registered accelerator is claimed by the MENU, which then replays the
-    // action through `webContents.paste()` — an async hop that runs a beat after
-    // the keystroke. Dictation tools (Muesli, Wispr Flow, …) insert text by
-    // stashing the clipboard, writing the transcript, sending the paste key, and
-    // restoring the old clipboard immediately; the menu's late paste therefore
-    // read the RESTORED clipboard and typed the user's previous copy instead of
-    // what they had just said. It hit the terminal and the composer alike,
-    // because both were downstream of the same replay.
-    //
-    // With registerAccelerator false the item still shows its shortcut, but the
-    // key is left for the focused element to handle inline — xterm's own paste
-    // handler and the textarea's native paste event both read the clipboard
-    // synchronously, inside the keystroke, before any restore can land.
-    {
-      label: 'Edit',
-      submenu: [
-        { role: 'undo' as const, registerAccelerator: false },
-        { role: 'redo' as const, registerAccelerator: false },
-        { type: 'separator' as const },
-        { role: 'cut' as const, registerAccelerator: false },
-        { role: 'copy' as const, registerAccelerator: false },
-        { role: 'paste' as const, registerAccelerator: false },
-        { role: 'selectAll' as const, registerAccelerator: false }
-      ]
-    },
-    { role: 'viewMenu' },
-    { role: 'windowMenu' }
-  ];
+  const template = appMenuTemplate(process.platform === 'darwin', readConfig().multiWindow ? newFloorItem : null);
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
@@ -6061,6 +6025,7 @@ function onSystemResume(reason: string): void {
 }
 
 app.whenReady().then(() => {
+  app.setAboutPanelOptions({ applicationName: PRODUCT_NAME, credits: UNOFFICIAL_NOTICE });
   // Realtime Michael mic-gate hygiene (rt-8 / Pam rt-10 nit): the voice session
   // opens the mic permission gate by persisting realtimeVoiceEnabled=true and
   // closes it on disconnect — but a hard crash/reload mid-session skips that
@@ -6113,9 +6078,9 @@ app.whenReady().then(() => {
   powerMonitor.on('unlock-screen', () => onSystemResume('unlock-screen'));
   powerMonitor.on('suspend', () => { lastSuspendAt = Date.now(); console.log('[power] suspend — system sleeping'); });
   powerMonitor.on('lock-screen', () => { lastSuspendAt = Date.now(); console.log('[power] lock-screen'); });
-  // Multi-window floors (opt-in): install the menu carrying "New Floor". When
-  // off, the app keeps Electron's default menu — zero behavior change.
-  if (readConfig().multiWindow) installAppMenu();
+  // Installed in both window modes: Electron's default menu would name the app
+  // from app.name. "New Floor" is added only when multiple floors are on.
+  installAppMenu();
   createWindow();
   // Auto-start the Slack webhook server when configured. Best-effort: a tunnel
   // failure (offline) is logged, not fatal. The tunnel URL is ephemeral and

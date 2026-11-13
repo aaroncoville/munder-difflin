@@ -8,6 +8,8 @@
  * and does — live here where they can be unit-tested without booting Electron.
  */
 
+import { PRODUCT_NAME } from './productName';
+
 export type UpdateStatus =
   /** Nothing known yet (fresh window, or dev build where we never check). */
   | { state: 'idle' }
@@ -280,7 +282,7 @@ export function describeUpdateSettings(
     case 'downloaded':
       return {
         headline: `v${status.version} is ready to install`,
-        detail: `Restart Munder Difflin to finish updating from v${v}.`,
+        detail: `Restart ${PRODUCT_NAME} to finish updating from v${v}.`,
         button: 'Restart to update', action: 'restart', busy: false, tone: 'ready'
       };
     case 'available-manual':
@@ -327,7 +329,7 @@ export function manualInstallSteps(platform: string): { os: string; steps: strin
     return {
       os: 'macOS',
       steps: [
-        'Open the .dmg and drag Munder Difflin onto Applications. Choose Replace when asked.',
+        `Open the .dmg and drag ${PRODUCT_NAME} onto Applications. Choose Replace when asked.`,
         'Quit this app, open the new one from Applications, and pick the same project.'
       ]
     };
@@ -337,7 +339,7 @@ export function manualInstallSteps(platform: string): { os: string; steps: strin
       os: 'Windows',
       steps: [
         'Quit this app, then run the downloaded setup .exe. It replaces the installed version.',
-        'Open Munder Difflin again and pick the same project.'
+        `Open ${PRODUCT_NAME} again and pick the same project.`
       ]
     };
   }

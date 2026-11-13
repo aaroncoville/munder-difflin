@@ -1,4 +1,6 @@
+import type { CSSProperties } from 'react';
 import logo from '@/assets/sixth-history/logo.png';
+import { UNOFFICIAL_NOTICE } from '@shared/productName';
 
 /**
  * The Sixth History Community Licence's attribution.
@@ -7,13 +9,15 @@ import logo from '@/assets/sixth-history/logo.png';
  * app in Weather Factory's Secret Histories idiom, which their community
  * licence permits on two conditions that both have to be VISIBLE: the work
  * must say it is unofficial, and it must display the Sixth History logo. The
- * theme is the only one the app has, so the credit always renders.
+ * app's name draws on the same setting, so the notice names the product, and it
+ * renders wherever the name is shown large: About, first-run onboarding and the
+ * Settings footer.
  *
- * The wording is the licence's own suggested sentence, filled in for this
+ * The wording follows the licence's suggested sentences, filled in for this
  * product. See assets/sixth-history/ATTRIBUTION-SIXTH-HISTORY.md for the full
  * obligation list and where each one is met.
  */
-export function SixthHistoryCredit() {
+export function SixthHistoryCredit({ style }: { style?: CSSProperties } = {}) {
   return (
     <div
       style={{
@@ -21,7 +25,8 @@ export function SixthHistoryCredit() {
         display: 'flex', alignItems: 'center', gap: 8,
         fontSize: 'var(--cth-text-body-sm)',
         lineHeight: 'var(--cth-lh-body-sm)',
-        color: 'var(--cth-ink-500)'
+        color: 'var(--cth-ink-500)',
+        ...style
       }}
     >
       <img
@@ -37,8 +42,7 @@ export function SixthHistoryCredit() {
         }}
       />
       <span>
-        The occult theme is unofficial content based on the Secret Histories by
-        Weather Factory Ltd. You can find out more and support the Secret
+        {UNOFFICIAL_NOTICE} You can find out more and support the Secret
         Histories at www.weatherfactory.biz.
       </span>
     </div>
