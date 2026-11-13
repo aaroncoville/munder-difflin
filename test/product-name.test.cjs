@@ -82,3 +82,9 @@ test("the Settings card's star, issue and changelog links open this build's repo
   assert.doesNotMatch(hero, /github\.com\/chaitanyagiri/);
   assert.match(PRODUCT_REPO_URL, /^https:\/\/github\.com\/aaroncoville\//);
 });
+
+test('the hive-sync skill agents install describes itself by the product name', () => {
+  const skill = read('resources/skills/md-hive-sync/SKILL.md');
+  assert.match(skill, new RegExp(`^  ${PRODUCT_NAME} hive sync`, 'm'));
+  assert.doesNotMatch(skill, /Munder Difflin/);
+});
