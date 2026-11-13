@@ -783,7 +783,7 @@ ptyManager.setExitHandler((id, exitCode, info) => {
       // grid, then re-run the normal spawn — which now finds the installed binary.
       const wc = (pending.owner && !pending.owner.isDestroyed()) ? pending.owner : liveWebContents();
       try { wc?.send(`pty:relaunch:${id}`); } catch { /* window gone */ }
-      void spawnAgentCore({ ...pending.opts, noAutoInstall: true }, pending.owner);
+      void spawnAgent({ ...pending.opts, noAutoInstall: true }, pending.owner);
       return; // an install PTY has no agent/worktree to tear down
     }
     // Non-zero exit = install failed; leave its honest manual-fix message on screen.
@@ -2853,8 +2853,16 @@ ipcMain.handle('pty:spawn', async (evt, opts: AgentSpawnOptions) => {
   // Record the spawning window as the PTY's owner so its output routes ONLY back
   // to that floor, then run the shared spawn core.
   const owner = BrowserWindow.fromWebContents(evt.sender)?.webContents ?? null;
-  return spawnAgentCore(opts, owner);
+  return spawnAgent(opts, owner);
 });
+
+/** Every agent spawn: the spawn core, and whatever it leaves marked as starting cleared however it ends. A spawn
+ *  that throws between provisioning and its terminal must not keep counting as starting (an agent the app does not
+ *  sandbox that is starting refuses every Codex agent). */
+async function spawnAgent(opts: AgentSpawnOptions, owner: Electron.WebContents | null): ReturnType<typeof spawnAgentCore> {
+  try { return await spawnAgentCore(opts, owner); }
+  finally { hive.spawnSettled(opts.id); }
+}
 
 /** Core agent-spawn logic — provider inference, the missing-CLI installer
  *  short-circuit, git-worktree isolation, hive provisioning, model/resume flags,
@@ -4913,7 +4921,7 @@ registerRealtimeActionIpc({
   },
   spawnAgent: async (opts) => {
     const o = opts as AgentSpawnOptions;
-    const res = await spawnAgentCore(o, null);
+    const res = await spawnAgent(o, null);
     // The renderer roster is only mutated by renderer-initiated hires (AddAgentModal),
     // so a MAIN-initiated spawn is invisible on the floor until we broadcast it. The
     // renderer (useHive) builds the Agent card from this descriptor; addAgent is
@@ -5215,7 +5223,7 @@ async function processSpawnRequest(filePath: string): Promise<void> {
 
   let res: { ok: boolean; error?: string; worktreePath?: string };
   try {
-    res = await spawnAgentCore(spawnOpts, liveWebContents());
+    res = await spawnAgent(spawnOpts, liveWebContents());
   } catch (e) {
     res = { ok: false, error: String(e) };
   }

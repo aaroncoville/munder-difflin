@@ -854,6 +854,11 @@ export class HiveManager {
     // Running now, it is reported by the live seats instead.
     this.unconfinedStarting.delete(spawnId);
   }
+  /** However a spawn ended (started, refused, or thrown), it no longer counts as starting. A started agent the app
+   *  does not sandbox is counted through the live seats instead. */
+  spawnSettled(spawnId: string): void {
+    this.unconfinedStarting.delete(spawnId);
+  }
   /** The app's running agents and their providers (the terminals it started), for the checks above. */
   setLiveSeats(fn: () => Array<{ agentId: string; provider: string }>): void {
     this.liveSeats = fn;

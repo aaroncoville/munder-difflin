@@ -96,3 +96,24 @@ test('when the terminal starts, the records are written', async (t) => {
   assert.ok(f.calls.some((c) => c[0] === 'workerWake'));
   assert.equal(Object.hasOwn(f.hive.registry().agents, f.id), true);
 });
+
+test('an unexpected failure between provisioning and the terminal does not keep Codex agents refused', async (t) => {
+  const base = codexTestBase(t, 'mdsx-');
+  jailHome(t, base);
+  const cwd = path.join(base, 'work');
+  fs.mkdirSync(cwd);
+  const hive = new HiveManager(() => base);
+  const source = fs.readFileSync(path.resolve(__dirname, '..', 'src/main/index.ts'), 'utf8');
+  const ast = ts.createSourceFile('index.ts', source, ts.ScriptTarget.ES2022, true);
+  const wrapper = ast.statements.find((n) => ts.isFunctionDeclaration(n) && n.name?.text === 'spawnAgent');
+  assert.ok(wrapper, 'every spawn goes through spawnAgent');
+  // The spawn core: an agent the app does not sandbox is admitted, then something throws before its terminal starts.
+  const spawnAgentCore = async (opts) => {
+    await hive.ensureAgent({ ...opts.hive, cwd, provider: 'custom' }, { spawnId: opts.id });
+    throw new Error('unexpected');
+  };
+  const run = vm.runInNewContext(`${ts.transpileModule(wrapper.getText(ast), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText}; spawnAgent`, { hive, spawnAgentCore });
+  await assert.rejects(run({ id: 'pty-u1', cwd, command: 'x', hive: { id: 'u1', name: 'u' } }, null), /unexpected/);
+  const inj = await hive.ensureAgent({ id: 'cx', name: 'cx', provider: 'codex', cwd });
+  assert.ok(inj, 'a Codex agent is admitted afterwards');
+});
