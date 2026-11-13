@@ -53,7 +53,9 @@ async function hindsightStub(t, { broken } = {}) {
     req.resume();
     req.on('end', () => {
       res.setHeader('content-type', 'application/json');
-      if (/\/memories\/recall$/.test(req.url)) {
+      if (/\/operations\//.test(req.url)) {
+        res.end(JSON.stringify({ status: 'completed' }));
+      } else if (/\/memories\/recall$/.test(req.url)) {
         res.end(JSON.stringify({ results: [{ text: HIT, scores: { final: 0.77 } }] }));
       } else {
         res.end(JSON.stringify({ success: true, bank_id: 'b1', total_nodes: 1 }));
@@ -83,7 +85,9 @@ const CASES = [
     id: 'hindsight',
     make: async (t, opts = {}) => {
       const url = await hindsightStub(t, opts);
-      const adapter = new HindsightAdapter(() => ({ url, bank: 'b1' }), () => '/tmp/home');
+      const ledger = fs.mkdtempSync(path.join(os.tmpdir(), 'conformance-ledger-'));
+      t.after(() => fs.rmSync(ledger, { recursive: true, force: true }));
+      const adapter = new HindsightAdapter(() => ({ url, bank: 'b1' }), () => '/tmp/home', Date.now, () => ledger);
       await adapter.probeHealth();
       return adapter;
     }
@@ -92,7 +96,7 @@ const CASES = [
 
 for (const { id, make } of CASES) {
   test(`${id}: a healthy backend accepts a mined memory`, async (t) => {
-    assert.deepEqual(await (await make(t)).mineAgent(agentDir(), 'pam'), { ok: true });
+    assert.equal((await (await make(t)).mineAgent(agentDir(), 'pam')).ok, true);
   });
 
   test(`${id}: a broken backend reports failure instead of throwing`, async (t) => {

@@ -19,10 +19,11 @@ async function stub(t, routes = {}) {
       const entry = { method: req.method, url: req.url, body: raw ? JSON.parse(raw) : null };
       seen.push(entry);
       const key = `${req.method} ${req.url.split('?')[0]}`;
-      const route = routes[key];
+      // A key ending in `*` matches any path that starts with it.
+      const route = routes[key] ?? Object.entries(routes).find(([k]) => k.endsWith('*') && key.startsWith(k.slice(0, -1)))?.[1];
       if (!route) { res.statusCode = 404; res.end('{}'); return; }
       // A route may answer with a promise; one that never settles plays a server that hangs.
-      void Promise.resolve(typeof route === 'function' ? route(entry) : route).then((reply) => {
+      void Promise.resolve(typeof route === 'function' ? route(entry, res) : route).then((reply) => {
         res.statusCode = reply.status ?? 200;
         res.setHeader('content-type', 'application/json');
         res.end(JSON.stringify(reply.json ?? {}));
@@ -51,143 +52,358 @@ function clock() {
   return now;
 }
 
-const make = (url, bank = 'b1', home = '/tmp/home', now = clock(), mineTimeoutMs) =>
-  new HindsightAdapter(() => ({ url, bank }), () => home, now, mineTimeoutMs);
+/** A fresh folder of the app's own for the retain ledger. */
+function ledgerDir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'hindsight-ledger-'));
+}
 
-/** Past the gap the miner leaves after any retain. */
-const GAP = 31 * 60_000;
+const make = (url, bank = 'b1', home = '/tmp/home', now = clock(), dir = ledgerDir()) =>
+  new HindsightAdapter(() => ({ url, bank }), () => home, now, () => dir);
 
-test('mining posts each memory section to the bank', async (t) => {
-  const s = await stub(t, { 'POST /v1/default/banks/b1/memories': { json: { success: true, items_count: 2 } } });
+const RETAIN = 'POST /v1/default/banks/b1/memories';
+const OPERATION = 'GET /v1/default/banks/b1/operations/*';
+/** A server that takes every retain and reports each operation as `status`. */
+const server = (status = 'completed') => ({ [RETAIN]: { json: { success: true, async: true } }, [OPERATION]: { json: { status } } });
+const retains = (s) => s.seen.filter((r) => r.method === 'POST' && r.url.endsWith('/memories'));
+/** Past the rest the miner leaves after any retain, and the status poll interval. */
+const PASS = 10 * 60_000;
+/** The verdict of a mine call, without its backlog count. */
+const brief = ({ ok, sent }) => (sent ? { ok, sent } : { ok });
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+test('mining posts each memory section to the bank as an async retain under an operation id', async (t) => {
+  const s = await stub(t, server());
   const result = await make(s.url).mineAgent(agentDirWith(MEMORY_MD), 'pam');
 
-  assert.equal(result.ok, true);
-  assert.equal(s.seen.length, 1);
-  assert.equal(s.seen[0].url, '/v1/default/banks/b1/memories');
-  assert.equal(s.seen[0].body.async, false);
-  assert.equal(s.seen[0].body.items.length, 2);
-  assert.match(s.seen[0].body.items[0].content, /Budgets are set quarterly/);
-  assert.equal(s.seen[0].body.items[0].metadata.agent, 'pam');
-  assert.equal(s.seen[0].body.items[0].metadata.heading, 'The first thing');
-  assert.deepEqual(s.seen[0].body.items[0].tags, ['owner:pam']);
+  assert.deepEqual(brief(result), { ok: true, sent: true });
+  const [post] = retains(s);
+  assert.equal(post.url, '/v1/default/banks/b1/memories');
+  assert.equal(post.body.async, true);
+  assert.match(post.body.operation_id, UUID);
+  assert.equal(post.body.items.length, 2);
+  assert.match(post.body.items[0].content, /Budgets are set quarterly/);
+  assert.equal(post.body.items[0].metadata.agent, 'pam');
+  assert.equal(post.body.items[0].metadata.heading, 'The first thing');
+  assert.deepEqual(post.body.items[0].tags, ['owner:pam']);
+  assert.equal(s.seen[1].url, `/v1/default/banks/b1/operations/${post.body.operation_id}`, 'the outcome is asked for, not assumed');
 });
 
 test('the first id a section gets is the one earlier builds gave it', async (t) => {
-  const s = await stub(t, { 'POST /v1/default/banks/b1/memories': { json: { success: true } } });
+  const s = await stub(t, server());
   await make(s.url).mineAgent(agentDirWith(MEMORY_MD), 'pam');
   const legacy = require('node:crypto').createHash('sha256')
     .update('pam\nThe first thing\nBudgets are set quarterly.').digest('hex').slice(0, 32);
-  assert.equal(s.seen[0].body.items[0].document_id, legacy);
-  const ids = s.seen[0].body.items.map((i) => i.document_id);
+  const ids = retains(s)[0].body.items.map((i) => i.document_id);
+  assert.equal(ids[0], legacy);
   assert.equal(new Set(ids).size, 2, 'distinct sections need distinct ids');
   for (const id of ids) assert.match(id, /^[0-9a-f]{32}$/);
 });
 
 test('an unchanged memory is not sent again', async (t) => {
-  const s = await stub(t, { 'POST /v1/default/banks/b1/memories': { json: { success: true } } });
+  const s = await stub(t, server());
   const now = clock();
   const adapter = make(s.url, 'b1', '/tmp/home', now);
   const dir = agentDirWith(MEMORY_MD);
   await adapter.mineAgent(dir, 'pam');
-  now.advance(GAP);
-  assert.deepEqual(await adapter.mineAgent(dir, 'pam'), { ok: true });
-  assert.equal(s.seen.length, 1);
+  now.advance(PASS);
+  assert.deepEqual(brief(await adapter.mineAgent(dir, 'pam')), { ok: true });
+  assert.equal(retains(s).length, 1);
 });
 
 test('an edited section is resent alone, under the id it already had', async (t) => {
-  const s = await stub(t, { 'POST /v1/default/banks/b1/memories': { json: { success: true } } });
+  const s = await stub(t, server());
   const now = clock();
   const adapter = make(s.url, 'b1', '/tmp/home', now);
   const dir = agentDirWith(MEMORY_MD);
   await adapter.mineAgent(dir, 'pam');
   fs.appendFileSync(path.join(dir, 'memory.md'), 'Lunch is at noon.\n');
-  now.advance(GAP);
+  now.advance(PASS);
   await adapter.mineAgent(dir, 'pam');
 
-  assert.equal(s.seen.length, 2);
-  assert.equal(s.seen[1].body.items.length, 1);
-  assert.equal(s.seen[1].body.items[0].metadata.heading, 'The second thing');
-  assert.equal(s.seen[1].body.items[0].document_id, s.seen[0].body.items[1].document_id);
+  const [first, second] = retains(s);
+  assert.equal(second.body.items.length, 1);
+  assert.equal(second.body.items[0].metadata.heading, 'The second thing');
+  assert.equal(second.body.items[0].document_id, first.body.items[1].document_id);
 });
 
 test('mining a different agent id produces different document ids', async (t) => {
-  const s = await stub(t, { 'POST /v1/default/banks/b1/memories': { json: { success: true } } });
+  const s = await stub(t, server());
   const now = clock();
   const adapter = make(s.url, 'b1', '/tmp/home', now);
   await adapter.mineAgent(agentDirWith(MEMORY_MD), 'pam');
-  now.advance(GAP);
+  now.advance(PASS);
   await adapter.mineAgent(agentDirWith(MEMORY_MD), 'jim');
 
-  assert.notDeepEqual(
-    s.seen[0].body.items.map((i) => i.document_id),
-    s.seen[1].body.items.map((i) => i.document_id)
-  );
+  const [pam, jim] = retains(s);
+  assert.notDeepEqual(pam.body.items.map((i) => i.document_id), jim.body.items.map((i) => i.document_id));
 });
 
 test('a second retain waits until the server has had its rest', async (t) => {
-  const s = await stub(t, { 'POST /v1/default/banks/b1/memories': { json: { success: true } } });
+  const s = await stub(t, server());
   const now = clock();
   const adapter = make(s.url, 'b1', '/tmp/home', now);
   await adapter.mineAgent(agentDirWith(MEMORY_MD), 'pam');
-  assert.deepEqual(await adapter.mineAgent(agentDirWith(MEMORY_MD), 'jim'), { ok: false });
-  assert.equal(s.seen.length, 1);
+  assert.deepEqual(brief(await adapter.mineAgent(agentDirWith(MEMORY_MD), 'jim')), { ok: false });
   now.advance(31_000);
-  assert.deepEqual(await adapter.mineAgent(agentDirWith(MEMORY_MD), 'jim'), { ok: true });
-  assert.equal(s.seen.length, 2);
+  assert.deepEqual(brief(await adapter.mineAgent(agentDirWith(MEMORY_MD), 'jim')), { ok: true, sent: true });
+  assert.equal(retains(s).length, 2);
 });
 
 test('a memory.md still being written is left until it goes quiet', async (t) => {
-  const s = await stub(t, { 'POST /v1/default/banks/b1/memories': { json: { success: true } } });
+  const s = await stub(t, server());
   const result = await make(s.url, 'b1', '/tmp/home', Date.now).mineAgent(agentDirWith(MEMORY_MD), 'pam');
-  assert.deepEqual(result, { ok: false });
+  assert.deepEqual(brief(result), { ok: false });
   assert.equal(s.seen.length, 0);
 });
 
 test('a big memory drains a few sections per retain', async (t) => {
-  const s = await stub(t, { 'POST /v1/default/banks/b1/memories': { json: { success: true } } });
+  const s = await stub(t, server());
   const now = clock();
   const adapter = make(s.url, 'b1', '/tmp/home', now);
   const big = Array.from({ length: 11 }, (_, i) => `## Note ${i}\n\nFact ${i}.\n`).join('\n');
   const dir = agentDirWith(big);
-  assert.deepEqual(await adapter.mineAgent(dir, 'pam'), { ok: false });
-  now.advance(GAP);
-  assert.deepEqual(await adapter.mineAgent(dir, 'pam'), { ok: true });
-  assert.deepEqual(s.seen.map((r) => r.body.items.length), [8, 3]);
+  assert.deepEqual(brief(await adapter.mineAgent(dir, 'pam')), { ok: false, sent: true });
+  now.advance(PASS);
+  assert.deepEqual(brief(await adapter.mineAgent(dir, 'pam')), { ok: true, sent: true });
+  assert.deepEqual(retains(s).map((r) => r.body.items.length), [8, 3]);
 });
 
-test('a retain that times out is not resent, and the server is left alone', async (t) => {
-  const s = await stub(t, { 'POST /v1/default/banks/b1/memories': () => new Promise(() => {}) });
-  t.after(() => s.server.closeAllConnections());
+// ─── The open retain: one at a time, freed only by the server's word ───────
+
+test('while the server is still working, nothing else is sent, however long it takes', async (t) => {
+  const s = await stub(t, server('processing'));
   const now = clock();
-  const adapter = make(s.url, 'b1', '/tmp/home', now, 50);
-  const dir = agentDirWith(MEMORY_MD);
-  assert.deepEqual(await adapter.mineAgent(dir, 'pam'), { ok: false });
-  now.advance(GAP - 2 * 60_000);
-  assert.deepEqual(await adapter.mineAgent(agentDirWith(MEMORY_MD), 'jim'), { ok: false }, 'still backing off');
-  now.advance(4 * 60_000);
-  assert.deepEqual(await adapter.mineAgent(dir, 'pam'), { ok: true }, 'the timed-out batch counts as sent');
-  assert.equal(s.seen.length, 1);
+  const adapter = make(s.url, 'b1', '/tmp/home', now);
+  assert.deepEqual(brief(await adapter.mineAgent(agentDirWith(MEMORY_MD), 'pam')), { ok: false, sent: true });
+  for (let pass = 0; pass < 12; pass++) {
+    now.advance(PASS); // two hours, far past the 12–42 min jobs seen on the floor
+    assert.deepEqual(brief(await adapter.mineAgent(agentDirWith(MEMORY_MD), 'jim')), { ok: false });
+  }
+  assert.equal(retains(s).length, 1);
 });
 
-test('what was sent survives a restart of the app', async (t) => {
-  const s = await stub(t, { 'POST /v1/default/banks/b1/memories': { json: { success: true } } });
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hindsight-home-'));
-  fs.mkdirSync(path.join(home, 'hive', 'agents'), { recursive: true });
+test('a restarted app finds the open retain on disk and asks about it instead of sending', async (t) => {
+  const s = await stub(t, server('processing'));
   const now = clock();
+  const dir = ledgerDir();
+  await make(s.url, 'b1', '/tmp/home', now, dir).mineAgent(agentDirWith(MEMORY_MD), 'pam');
+  const op = retains(s)[0].body.operation_id;
+  now.advance(PASS);
+  const restarted = make(s.url, 'b1', '/tmp/home', now, dir);
+  assert.deepEqual(brief(await restarted.mineAgent(agentDirWith(MEMORY_MD), 'jim')), { ok: false });
+  assert.equal(retains(s).length, 1, 'two app instances never have two retains open');
+  assert.ok(s.seen.some((r) => r.url.endsWith(`/operations/${op}`)));
+});
+
+test('a retain whose claim cannot be written is not sent', async (t) => {
+  const s = await stub(t, server());
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'hindsight-ledger-'));
+  const blocked = path.join(parent, 'not-a-folder');
+  fs.writeFileSync(blocked, 'a file where the ledger folder should be');
+  const now = clock();
+  for (const adapter of [make(s.url, 'b1', '/tmp/home', now, blocked), make(s.url, 'b1', '/tmp/home', now, blocked)]) {
+    assert.deepEqual(brief(await adapter.mineAgent(agentDirWith(MEMORY_MD), 'pam')), { ok: false });
+  }
+  assert.equal(s.seen.length, 0);
+});
+
+test('without a ledger folder the miner sends nothing', async (t) => {
+  const s = await stub(t, server());
+  const adapter = new HindsightAdapter(() => ({ url: s.url, bank: 'b1' }), () => '/tmp/home', clock());
+  assert.deepEqual(brief(await adapter.mineAgent(agentDirWith(MEMORY_MD), 'pam')), { ok: false });
+  assert.equal(s.seen.length, 0);
+});
+
+test('a retain with no answer is held open, not recorded, until the server is asked', async (t) => {
+  let retainMode = 'reset';
+  let operation = 'processing';
+  const s = await stub(t, {
+    // The connection drops after the server read the request: it may or may not be working on it.
+    [RETAIN]: (_entry, res) => {
+      if (retainMode === 'ok') return { json: { success: true } };
+      res.socket.destroy();
+      return new Promise(() => {});
+    },
+    [OPERATION]: () => ({ json: { status: operation } })
+  });
+  const now = clock();
+  const adapter = make(s.url, 'b1', '/tmp/home', now);
   const dir = agentDirWith(MEMORY_MD);
-  await make(s.url, 'b1', home, now).mineAgent(dir, 'pam');
-  assert.equal((await make(s.url, 'b1', home, now).mineAgent(dir, 'pam')).ok, false, 'the restarted app waits out the gap');
-  now.advance(GAP);
-  assert.deepEqual(await make(s.url, 'b1', home, now).mineAgent(dir, 'pam'), { ok: true });
-  assert.equal(s.seen.length, 1);
-  assert.ok(fs.existsSync(path.join(home, 'hive', '.hindsight-retained.json')));
+  assert.deepEqual(brief(await adapter.mineAgent(dir, 'pam')), { ok: false, sent: true });
+  assert.deepEqual(brief(await adapter.mineAgent(dir, 'pam')), { ok: false }, 'no resend inside the poll interval');
+
+  now.advance(PASS);
+  assert.deepEqual(brief(await adapter.mineAgent(dir, 'pam')), { ok: false }, 'the server says it is working on it');
+  assert.equal(retains(s).length, 1);
+
+  // The server has no such operation: the slot frees with nothing recorded.
+  operation = 'not_found';
+  now.advance(PASS);
+  assert.deepEqual(brief(await adapter.mineAgent(dir, 'pam')), { ok: false });
+  retainMode = 'ok';
+  operation = 'completed';
+  now.advance(PASS);
+  assert.deepEqual(brief(await adapter.mineAgent(dir, 'pam')), { ok: true, sent: true }, 'the unconfirmed sections go again');
+  const [first, second] = retains(s);
+  assert.deepEqual(second.body.items.map((i) => i.document_id), first.body.items.map((i) => i.document_id));
+  assert.notEqual(second.body.operation_id, first.body.operation_id);
+});
+
+test('only a completed operation records its sections; a failed one sends them again', async (t) => {
+  let operation = 'failed';
+  const s = await stub(t, { [RETAIN]: { json: { success: true } }, [OPERATION]: () => ({ json: { status: operation, error_message: 'model fell over' } }) });
+  const now = clock();
+  const adapter = make(s.url, 'b1', '/tmp/home', now);
+  const dir = agentDirWith(MEMORY_MD);
+  assert.deepEqual(brief(await adapter.mineAgent(dir, 'pam')), { ok: false, sent: true });
+  now.advance(PASS);
+  operation = 'completed';
+  assert.deepEqual(brief(await adapter.mineAgent(dir, 'pam')), { ok: true, sent: true });
+  assert.equal(retains(s).length, 2);
+  now.advance(PASS);
+  assert.deepEqual(brief(await adapter.mineAgent(dir, 'pam')), { ok: true });
+  assert.equal(retains(s).length, 2);
+});
+
+test('a server error leaves the outcome unknown; a refused connection frees the slot', async (t) => {
+  const s = await stub(t, { [RETAIN]: { status: 503 }, [OPERATION]: { json: { status: 'processing' } } });
+  const now = clock();
+  const adapter = make(s.url, 'b1', '/tmp/home', now);
+  assert.deepEqual(brief(await adapter.mineAgent(agentDirWith(MEMORY_MD), 'pam')), { ok: false, sent: true });
+  now.advance(PASS);
+  assert.deepEqual(brief(await adapter.mineAgent(agentDirWith(MEMORY_MD), 'jim')), { ok: false });
+  assert.equal(retains(s).length, 1, 'a 503 may have been taken: no resend while the server says it is working');
+
+  const gone = await stub(t, {});
+  await gone.close();
+  const fresh = make(gone.url, 'b1', '/tmp/home', now);
+  assert.deepEqual(brief(await fresh.mineAgent(agentDirWith(MEMORY_MD), 'pam')), { ok: false, sent: true });
+  now.advance(PASS);
+  assert.deepEqual(brief(await fresh.mineAgent(agentDirWith(MEMORY_MD), 'pam')), { ok: false, sent: true }, 'never sent, so free to try again');
+});
+
+// ─── The ledger is the app's, and nothing in it is taken on trust ──────────
+
+const ledgerFile = (dir) => path.join(dir, fs.readdirSync(dir).find((f) => f.startsWith('retained-')));
+
+test('a forged document id in the ledger is refused, not sent', async (t) => {
+  const s = await stub(t, server());
+  const now = clock();
+  const dir = ledgerDir();
+  const agent = agentDirWith(MEMORY_MD);
+  await make(s.url, 'b1', '/tmp/home', now, dir).mineAgent(agent, 'pam');
+  const file = ledgerFile(dir);
+  const ledger = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const key = Object.keys(ledger.sections)[0];
+  ledger.sections[key] = { id: 'victim-document', hash: '0'.repeat(64) };
+  fs.writeFileSync(file, JSON.stringify(ledger));
+  now.advance(PASS);
+  await make(s.url, 'b1', '/tmp/home', now, dir).mineAgent(agent, 'pam');
+  const ids = retains(s).flatMap((r) => r.body.items.map((i) => i.document_id));
+  assert.ok(!ids.includes('victim-document'));
+});
+
+test('a malformed ledger is treated as empty without throwing', async (t) => {
+  for (const bad of ['{', 'null', '{"v":1,"server":"x","busyUntil":0,"sections":7,"claim":null}', JSON.stringify({ v: 1, sections: { a: 'b' } })]) {
+    const s = await stub(t, server());
+    const dir = ledgerDir();
+    const agent = agentDirWith(MEMORY_MD);
+    const now = clock();
+    await make(s.url, 'b1', '/tmp/home', now, dir).mineAgent(agent, 'pam');
+    fs.writeFileSync(ledgerFile(dir), bad);
+    now.advance(PASS);
+    const result = await make(s.url, 'b1', '/tmp/home', now, dir).mineAgent(agent, 'pam');
+    assert.equal(result.sent, true, `ledger ${bad} counts as empty`);
+  }
+});
+
+test('a ledger that is a link is neither read nor written through', async (t) => {
+  const s = await stub(t, server());
+  const now = clock();
+  const dir = ledgerDir();
+  const agent = agentDirWith(MEMORY_MD);
+  await make(s.url, 'b1', '/tmp/home', now, dir).mineAgent(agent, 'pam');
+  const file = ledgerFile(dir);
+  const victim = path.join(ledgerDir(), 'owner-file');
+  fs.writeFileSync(victim, 'precious');
+  fs.rmSync(file);
+  fs.symlinkSync(victim, file);
+  fs.appendFileSync(path.join(agent, 'memory.md'), 'More.\n');
+  now.advance(PASS);
+  assert.deepEqual(brief(await make(s.url, 'b1', '/tmp/home', now, dir).mineAgent(agent, 'pam')), { ok: false });
+  assert.equal(fs.readFileSync(victim, 'utf8'), 'precious');
+  assert.equal(retains(s).length, 1, 'with no safe place for the claim, nothing is sent');
+});
+
+test('a ledger folder that is a link is refused', async (t) => {
+  const s = await stub(t, server());
+  const real = ledgerDir();
+  const link = path.join(ledgerDir(), 'ledger');
+  fs.symlinkSync(real, link);
+  assert.deepEqual(brief(await make(s.url, 'b1', '/tmp/home', clock(), link).mineAgent(agentDirWith(MEMORY_MD), 'pam')), { ok: false });
+  assert.equal(s.seen.length, 0);
+  assert.deepEqual(fs.readdirSync(real), []);
+});
+
+test('an oversized ledger is refused, not parsed', async (t) => {
+  const s = await stub(t, server());
+  const now = clock();
+  const dir = ledgerDir();
+  const agent = agentDirWith(MEMORY_MD);
+  await make(s.url, 'b1', '/tmp/home', now, dir).mineAgent(agent, 'pam');
+  fs.writeFileSync(ledgerFile(dir), ' '.repeat(4 * 1024 * 1024 + 1));
+  now.advance(PASS);
+  assert.equal((await make(s.url, 'b1', '/tmp/home', now, dir).mineAgent(agent, 'pam')).sent, true);
+});
+
+test('the ledger folder is private to this user', async (t) => {
+  const s = await stub(t, server());
+  const dir = path.join(ledgerDir(), 'made-here');
+  await make(s.url, 'b1', '/tmp/home', clock(), dir).mineAgent(agentDirWith(MEMORY_MD), 'pam');
+  assert.equal(fs.statSync(dir).mode & 0o777, 0o700);
+  assert.equal(fs.statSync(ledgerFile(dir)).mode & 0o777, 0o600);
+  assert.deepEqual(fs.readdirSync(dir).filter((f) => f.endsWith('.tmp')), [], 'no temp file is left behind');
+});
+
+test('another bank, or another server, starts from an empty ledger', async (t) => {
+  const s = await stub(t, { ...server(), 'POST /v1/default/banks/b2/memories': { json: { success: true } }, 'GET /v1/default/banks/b2/operations/*': { json: { status: 'completed' } } });
+  const now = clock();
+  const dir = ledgerDir();
+  const cfg = { url: s.url, bank: 'b1' };
+  const adapter = new HindsightAdapter(() => cfg, () => '/tmp/home', now, () => dir);
+  const agent = agentDirWith(MEMORY_MD);
+  await adapter.mineAgent(agent, 'pam');
+  cfg.bank = 'b2';
+  now.advance(PASS);
+  assert.deepEqual(brief(await adapter.mineAgent(agent, 'pam')), { ok: true, sent: true });
+  assert.equal(s.seen.filter((r) => r.url === '/v1/default/banks/b2/memories').length, 1);
+  cfg.url = `${s.url}/`;
+  cfg.bank = 'b1';
+  now.advance(PASS);
+  assert.deepEqual(brief(await adapter.mineAgent(agent, 'pam')), { ok: true }, 'the same server spelled with a slash is the same ledger');
+});
+
+test('the backlog says how many sections are still waiting', async (t) => {
+  const s = await stub(t, server('processing'));
+  const now = clock();
+  const adapter = make(s.url, 'b1', '/tmp/home', now);
+  const big = Array.from({ length: 11 }, (_, i) => `## Note ${i}\n\nFact ${i}.\n`).join('\n');
+  assert.equal((await adapter.mineAgent(agentDirWith(big), 'pam')).backlog, 11, 'nothing counts until the server confirms it');
+  assert.equal((await adapter.mineAgent(agentDirWith(MEMORY_MD), 'jim')).backlog, 2);
+});
+
+test('the retain path does no synchronous file I/O', () => {
+  for (const file of ['src/main/hindsightLedger.ts', 'src/main/hindsightAdapter.ts']) {
+    const text = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+    assert.doesNotMatch(text, /\b[a-zA-Z]+Sync\(/, `${file} must not block the main process`);
+  }
 });
 
 test('mining reports failure instead of throwing when the server is gone', async (t) => {
   const s = await stub(t, {});
   await s.close();
   const result = await make(s.url).mineAgent(agentDirWith(MEMORY_MD), 'pam');
-  assert.deepEqual(result, { ok: false });
+  assert.equal(result.ok, false);
 });
 
 test('mining reports failure when the server rejects the write', async (t) => {

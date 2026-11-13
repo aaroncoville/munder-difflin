@@ -13,7 +13,10 @@ export interface BackendStatus {
   bin: string | null;
 }
 
-export interface MineResult { ok: boolean; backoffAdviceMs?: number }
+/** `ok: false` asks for the agent again next pass. `sent` says this call started
+ *  a retain, so the manager can serve agents in turn; `backlog` is how many of the
+ *  agent's sections are still waiting. */
+export interface MineResult { ok: boolean; backoffAdviceMs?: number; sent?: boolean; backlog?: number }
 export interface TextResult { ok: boolean; output: string; error?: string }
 
 export interface MemoryBackend {

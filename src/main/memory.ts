@@ -34,16 +34,27 @@ export class MemoryManager {
   private initStarted = false;
   private mining = false;
   private lastMined = new Map<string, number>();
+  /** The agent that last had a retain sent; the next pass starts after it. */
+  private lastSentAgent: string | null = null;
   private backend: MemoryBackend;
+  private backendKey: string;
   constructor(
     private getHome: () => string | null,
     private getSettings: () => MemorySettings,
     private makeBackend: (id: BackendId) => MemoryBackend = (id) =>
       id === 'hindsight'
-        ? new HindsightAdapter(() => this.getSettings().hindsight, () => this.getHome())
-        : new MemPalaceAdapter(() => this.palacePath(), () => this.model())
+        ? new HindsightAdapter(() => this.getSettings().hindsight, () => this.getHome(), Date.now, () => this.hindsightLedgerDir)
+        : new MemPalaceAdapter(() => this.palacePath(), () => this.model()),
+    /** A folder of the app's own (never the hive) for the Hindsight retain ledger. */
+    private hindsightLedgerDir: string | null = null
   ) {
     this.backend = this.makeBackend(this.getSettings().backend);
+    this.backendKey = this.settingsKey();
+  }
+  /** What the mined state belongs to: the backend, and for Hindsight its server and bank too. */
+  private settingsKey(): string {
+    const s = this.getSettings();
+    return s.backend === 'hindsight' ? `hindsight\n${s.hindsight.url}\n${s.hindsight.bank}` : s.backend;
   }
   /** The backend this manager holds right now (it swaps only on refresh after a settings change). */
   backendId(): BackendId { return this.backend.id; }
@@ -97,7 +108,16 @@ export class MemoryManager {
   /** Adopt the backend the settings now name. Switching means starting over:
    *  the new backend holds none of the old one's memories, so every agent's
    *  memory.md has to be mined into it from scratch. */
+  /** Another Hindsight server or bank holds none of what was mined into this one. */
+  private forgetMinedIfSettingsChanged(): void {
+    const key = this.settingsKey();
+    if (key === this.backendKey) return;
+    this.backendKey = key;
+    this.lastMined.clear();
+    this.lastSentAgent = null;
+  }
   private swapBackendIfChanged(): void {
+    this.forgetMinedIfSettingsChanged();
     const wanted = this.getSettings().backend;
     if (wanted === this.backend.id) return;
     if (this.mineTimer) { clearTimeout(this.mineTimer); this.mineTimer = null; }
@@ -114,8 +134,13 @@ export class MemoryManager {
   async mineNow(): Promise<void> {
     const home = this.getHome(); if (!this.active() || !home || this.mining) return;
     const agentsDir = join(home, 'hive', 'agents'); if (!existsSync(agentsDir)) return;
-    let ids: string[]; try { ids = readdirSync(agentsDir); } catch { return; }
+    this.forgetMinedIfSettingsChanged();
+    let ids: string[]; try { ids = readdirSync(agentsDir).sort(); } catch { return; }
+    // Start after the agent served last, so one busy memory.md cannot take every pass.
+    const after = this.lastSentAgent ? ids.findIndex((id) => id > (this.lastSentAgent as string)) : 0;
+    if (after > 0) ids = [...ids.slice(after), ...ids.slice(0, after)];
     this.mining = true;
+    let backlog = 0, waiting = 0;
     try {
       for (const id of ids) {
         const agentDir = join(agentsDir, id), memory = join(agentDir, 'memory.md');
@@ -123,9 +148,13 @@ export class MemoryManager {
         let mtime: number; try { mtime = statSync(memory).mtimeMs; } catch { continue; }
         if (this.lastMined.get(id) === mtime) continue;
         this.lastMined.set(id, mtime); ensureMineIgnore(agentDir);
-        if (!(await this.backend.mineAgent(agentDir, id)).ok) this.lastMined.delete(id);
+        const result = await this.backend.mineAgent(agentDir, id);
+        if (result.sent) this.lastSentAgent = id;
+        if (result.backlog) { backlog += result.backlog; waiting += 1; }
+        if (!result.ok) this.lastMined.delete(id);
       }
     } finally { this.mining = false; }
+    if (backlog) console.info(`[memory] ${backlog} section(s) from ${waiting} agent(s) still waiting to be mined`);
     const postMine = this.backend.postMinePass?.(); if (postMine) this.mineDelayMs = postMine.backoffAdviceMs;
   }
   search(query: string, opts: { wing?: string; results?: number } = {}) {

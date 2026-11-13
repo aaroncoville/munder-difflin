@@ -9,30 +9,29 @@
  *   - a recalled hit carries `scores.final`, not a flat `score`;
  *   - there is no POST for creating a bank — PUT .../banks/<id> upserts one.
  */
-import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import { CLAIM_MAX_ITEMS, RetainLedger, type LedgerState, type RetainClaim } from './hindsightLedger';
 import type { BackendStatus, MemoryBackend, MineResult, TextResult } from './memoryBackend';
 
 /** How long a /health answer is trusted before the next call re-probes. */
 const HEALTH_TTL_MS = 30_000;
-/** Matches the mempalace adapter's mine timeout, so a wedged server cannot
- *  stall the mine loop for longer than a local miner would. */
-const MINE_TIMEOUT_MS = 10 * 60_000;
-/** Retain is the expensive call: the server runs an LLM fact extraction over
- *  every new chunk it is handed. The miner keeps one retain in flight at a time
- *  and then leaves the server idle at least as long as that retain kept it busy. */
+/** Retain is the expensive call: the server runs an LLM fact extraction over every
+ *  new chunk it is handed, for as long as 40 minutes on a small local model. So the
+ *  miner sends it async under an operation id it chose and recorded first, keeps one
+ *  such retain open at a time, and frees that slot only when the server reports the
+ *  operation finished. Asking again under the same id creates no new work. */
+const RETAIN_REQUEST_TIMEOUT_MS = 60_000;
+const OPERATION_TIMEOUT_MS = 15_000;
+/** Rest the server gets after a retain finishes or is refused, before the next one. */
 const RETAIN_MIN_GAP_MS = 30_000;
-/** A retain that outlives MINE_TIMEOUT_MS is still extracting on the server
- *  after we hang up, so the miner sends nothing else for this long. */
-const RETAIN_BUSY_BACKOFF_MS = 30 * 60_000;
-/** The most sections one retain may carry, so a backlog drains over several passes. */
-const RETAIN_MAX_ITEMS = 8;
+/** How often an open retain's status is asked for. */
+const CLAIM_POLL_MS = 30_000;
 /** A memory.md written this recently is probably still being appended to. */
 const QUIET_MS = 2 * 60_000;
-/** Which section text the bank already holds, kept beside the agents so an app
- *  restart does not resend every memory.md from scratch. */
-const RETAIN_STATE_FILE = '.hindsight-retained.json';
+/** Failures that prove the request never reached the server. */
+const NEVER_SENT = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EHOSTUNREACH', 'ENETUNREACH', 'EAI_AGAIN']);
 const RECALL_TIMEOUT_MS = 120_000;
 const PROBE_TIMEOUT_MS = 5_000;
 /** Recall budgets in tokens, so a caller's "N results" becomes a token
@@ -81,13 +80,6 @@ export function memorySections(markdown: string): { heading: string; body: strin
   return sections.filter((s) => s.body.length > 0);
 }
 
-interface RetainState {
-  /** No retain may start before this time, even from a freshly restarted app. */
-  busyUntil: number;
-  /** `agent\nheading\noccurrence` → the document id it is retained under and a hash of the body last sent. */
-  sections: Record<string, { id: string; hash: string }>;
-}
-
 const sha = (text: string, length = 64): string => createHash('sha256').update(text).digest('hex').slice(0, length);
 
 export class HindsightAdapter implements MemoryBackend {
@@ -99,46 +91,42 @@ export class HindsightAdapter implements MemoryBackend {
   private healthCheckedAt = -Infinity;
   private inFlightProbe: Promise<boolean> | null = null;
   private bankReady = false;
-  private retainState: RetainState | null = null;
+  private ledger: RetainLedger | null = null;
+  private ledgerDirUsed: string | null = null;
+  private ledgerState: LedgerState | null = null;
+  private lastClaimPoll = -Infinity;
 
   constructor(
     private cfg: () => { url: string; bank: string },
     private getHome: () => string | null,
     private now: () => number = Date.now,
-    private mineTimeoutMs: number = MINE_TIMEOUT_MS
+    /** The app's own folder for the retain ledger; with none, the miner sends nothing. */
+    private ledgerDir: () => string | null = () => null
   ) {}
 
-  /** The state file lives in the hive folder, and only when there is one. */
-  private retainStatePath(): string | null {
-    const home = this.getHome();
-    if (!home || !existsSync(join(home, 'hive', 'agents'))) return null;
-    return join(home, 'hive', RETAIN_STATE_FILE);
+  /** `url\nbank`: a retain ledger belongs to exactly one server and bank. */
+  private serverKey(): string {
+    const { url, bank } = this.cfg();
+    return `${url.trim().replace(/\/+$/, '')}\n${bank}`;
   }
 
-  private loadRetainState(): RetainState {
-    if (this.retainState) return this.retainState;
-    let state: RetainState = { busyUntil: 0, sections: {} };
-    const path = this.retainStatePath();
-    if (path && existsSync(path)) {
-      try {
-        const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<RetainState>;
-        state = { busyUntil: Number(parsed.busyUntil) || 0, sections: parsed.sections ?? {} };
-      } catch {
-        // A torn or hand-edited file costs one resend, which the server answers as a no-op delta.
-      }
+  /** The ledger for the current server and bank, loaded once and reloaded when either changes. */
+  private async currentLedger(): Promise<{ ledger: RetainLedger; state: LedgerState } | null> {
+    const dir = this.ledgerDir();
+    if (!dir) return null;
+    if (!this.ledger || this.ledgerDirUsed !== dir) {
+      this.ledger = new RetainLedger(dir);
+      this.ledgerDirUsed = dir;
+      this.ledgerState = null;
     }
-    return (this.retainState = state);
-  }
-
-  private saveRetainState(): void {
-    const path = this.retainStatePath();
-    if (!path || !this.retainState) return;
-    try {
-      writeFileSync(`${path}.tmp`, JSON.stringify(this.retainState), 'utf8');
-      renameSync(`${path}.tmp`, path);
-    } catch (error) {
-      console.error(`[memory] hindsight retain state not saved: ${error instanceof Error ? error.message : String(error)}`);
+    const server = this.serverKey();
+    if (this.ledgerState?.server !== server) {
+      this.ledgerState = await this.ledger.load(server);
+      this.lastClaimPoll = -Infinity;
+      // A rest longer than any this miner sets is not honoured.
+      this.ledgerState.busyUntil = Math.min(this.ledgerState.busyUntil, this.now() + RETAIN_MIN_GAP_MS);
     }
+    return { ledger: this.ledger, state: this.ledgerState };
   }
 
   private base(): string {
@@ -229,20 +217,21 @@ export class HindsightAdapter implements MemoryBackend {
   }
 
   /**
-   * Retain the sections of an agent's memory.md that changed since the bank last
-   * saw them. One call sends at most RETAIN_MAX_ITEMS sections; `ok: false` asks
-   * the manager to come back next pass, either for the rest or because the server
-   * is still cooling down from the previous retain.
+   * Retain the sections of an agent's memory.md that the server has not confirmed
+   * holding. `ok: false` asks the manager to come back next pass: a retain is still
+   * open, the server is resting, sections are left over, or nothing could be
+   * recorded. `sent` says this call started a retain, which the manager uses to
+   * serve agents in turn.
    */
   async mineAgent(agentDir: string, agentId: string): Promise<MineResult> {
+    const current = await this.currentLedger();
+    if (!current) return { ok: false };
+    const { ledger, state } = current;
     const path = join(agentDir, 'memory.md');
-    if (!existsSync(path)) return { ok: false };
-    const state = this.loadRetainState();
-    if (this.now() < state.busyUntil) return { ok: false };
     let markdown: string;
     try {
-      if (this.now() - statSync(path).mtimeMs < QUIET_MS) return { ok: false };
-      markdown = readFileSync(path, 'utf8');
+      if (this.now() - (await stat(path)).mtimeMs < QUIET_MS) return { ok: false };
+      markdown = await readFile(path, 'utf8');
     } catch {
       return { ok: false };
     }
@@ -262,57 +251,101 @@ export class HindsightAdapter implements MemoryBackend {
       // fixed, and an edit is a delta re-retain of the changed chunks only.
       pending.push({ key, id: known?.id ?? sha(`${agentId}\n${heading}\n${body}`, 32), hash, heading, body });
     }
+    let pruned = false;
     for (const key of Object.keys(state.sections)) {
-      if (key.startsWith(`${agentId}\n`) && !present.has(key)) delete state.sections[key];
+      if (key.startsWith(`${agentId}\n`) && !present.has(key)) { delete state.sections[key]; pruned = true; }
     }
-    if (!pending.length) {
-      this.saveRetainState();
-      return { ok: true };
+    if (pruned && !state.claim) await ledger.save(state);
+    if (state.claim) {
+      await this.settleClaim(ledger, state);
+      return { ok: false, backlog: pending.length };
     }
-    const batch = pending.slice(0, RETAIN_MAX_ITEMS);
-    const items = batch.map(({ id, heading, body }) => ({
+    if (!pending.length) return { ok: true };
+    if (this.now() < state.busyUntil) return { ok: false, backlog: pending.length };
+    const batch = pending.slice(0, CLAIM_MAX_ITEMS);
+    const claim: RetainClaim = { op: randomUUID(), since: this.now(), items: batch.map(({ key, id, hash }) => ({ key, id, hash })) };
+    // Fail closed: a retain whose claim is not on disk could be sent twice after a restart.
+    state.claim = claim;
+    if (!(await ledger.save(state))) {
+      state.claim = null;
+      return { ok: false };
+    }
+    console.info(`[memory] hindsight retain ${claim.op}: ${batch.length} of ${pending.length} pending sections for ${agentId}`);
+    const outcome = await this.postClaim(claim, batch.map(({ id, heading, body }) => ({
       document_id: id,
       content: body,
       // Metadata values must be strings — the API rejects anything else.
       metadata: { agent: agentId, source: 'memory.md', heading },
       tags: [`owner:${agentId}`]
-    }));
-    const record = (): void => {
-      for (const { key, id, hash } of batch) state.sections[key] = { id, hash };
-    };
-    // Claim the server before sending, so an app restarted mid-retain waits it out.
-    state.busyUntil = this.now() + this.mineTimeoutMs + RETAIN_MIN_GAP_MS;
-    this.saveRetainState();
-    const started = this.now();
+    })), agentId);
+    if (outcome === 'accepted') {
+      const settled = await this.settleClaim(ledger, state, true);
+      const left = settled === 'completed' ? pending.length - batch.length : pending.length;
+      return { ok: left === 0, sent: true, ...(left ? { backlog: left } : {}) };
+    }
+    if (outcome === 'refused') {
+      state.claim = null;
+      state.busyUntil = this.now() + RETAIN_MIN_GAP_MS;
+      await ledger.save(state);
+    } else {
+      // Unknown: the server may have it. Nothing is resent until it is asked.
+      this.lastClaimPoll = this.now();
+    }
+    return { ok: false, sent: true, backlog: pending.length };
+  }
+
+  /** Send a claimed batch. `refused` means the server did not take it and nothing is running. */
+  private async postClaim(claim: RetainClaim, items: unknown[], agentId: string): Promise<'accepted' | 'refused' | 'unknown'> {
     try {
       const res = await this.request(`${this.base()}/memories`, {
         method: 'POST',
-        body: { items, async: false },
-        timeoutMs: this.mineTimeoutMs
+        body: { items, async: true, operation_id: claim.op },
+        timeoutMs: RETAIN_REQUEST_TIMEOUT_MS
       });
-      if (!res.ok) {
-        console.error(`[memory] hindsight mine ${agentId} failed: HTTP ${res.status}`);
-        state.busyUntil = this.now() + RETAIN_MIN_GAP_MS;
-        return { ok: false };
-      }
-      record();
-      state.busyUntil = this.now() + Math.max(RETAIN_MIN_GAP_MS, this.now() - started);
-      return { ok: batch.length === pending.length };
+      if (res.ok) return 'accepted';
+      console.error(`[memory] hindsight mine ${agentId} failed: HTTP ${res.status}`);
+      return res.status >= 500 || res.status === 408 ? 'unknown' : 'refused';
     } catch (error) {
-      if (error instanceof Error && error.name === 'AbortError') {
-        // The server keeps extracting after we hang up. Sending this batch again
-        // would stack a second extraction on top of it, so count it as retained.
-        console.error(`[memory] hindsight mine ${agentId} timed out; leaving the server alone for ${RETAIN_BUSY_BACKOFF_MS / 60_000} min`);
-        record();
-        state.busyUntil = this.now() + RETAIN_BUSY_BACKOFF_MS;
-      } else {
-        console.error(`[memory] hindsight mine ${agentId} failed: ${error instanceof Error ? error.message : String(error)}`);
-        state.busyUntil = this.now() + RETAIN_MIN_GAP_MS;
-      }
-      return { ok: false };
-    } finally {
-      this.saveRetainState();
+      const code = (error as { cause?: { code?: string } })?.cause?.code;
+      console.error(`[memory] hindsight mine ${agentId} failed: ${error instanceof Error ? error.message : String(error)}${code ? ` (${code})` : ''}`);
+      return code && NEVER_SENT.has(code) ? 'refused' : 'unknown';
     }
+  }
+
+  /**
+   * Ask the server what became of the open retain, at most every CLAIM_POLL_MS
+   * unless forced. Its sections count as retained only once the server says the
+   * operation completed. Failed, cancelled or unknown to the server frees the slot
+   * with nothing recorded, so those sections are sent again later. No answer keeps
+   * the slot held, however long that takes.
+   */
+  private async settleClaim(ledger: RetainLedger, state: LedgerState, force = false): Promise<'completed' | 'released' | 'open'> {
+    const claim = state.claim;
+    if (!claim) return 'released';
+    if (!force && this.now() - this.lastClaimPoll < CLAIM_POLL_MS) return 'open';
+    this.lastClaimPoll = this.now();
+    let status: string;
+    try {
+      const res = await this.request(`${this.base()}/operations/${encodeURIComponent(claim.op)}`, { method: 'GET', timeoutMs: OPERATION_TIMEOUT_MS });
+      if (res.status === 404) status = 'not_found';
+      else if (!res.ok) return 'open';
+      else {
+        const body = (await res.json()) as { status?: unknown; error_message?: unknown };
+        status = typeof body.status === 'string' ? body.status : '';
+        if (status === 'failed') console.error(`[memory] hindsight retain ${claim.op} failed on the server: ${String(body.error_message ?? 'no reason given')}`);
+      }
+    } catch {
+      return 'open';
+    }
+    if (status === 'completed') {
+      for (const { key, id, hash } of claim.items) state.sections[key] = { id, hash };
+    } else if (status !== 'failed' && status !== 'cancelled' && status !== 'not_found') {
+      return 'open';
+    }
+    state.claim = null;
+    state.busyUntil = this.now() + RETAIN_MIN_GAP_MS;
+    await ledger.save(state);
+    return status === 'completed' ? 'completed' : 'released';
   }
 
   private async recall(query: string, resultCount: number, agentId?: string): Promise<TextResult> {
