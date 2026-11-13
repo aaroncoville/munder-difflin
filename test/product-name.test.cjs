@@ -52,3 +52,21 @@ test('the locales render the product name from the constant', () => {
     }
   }
 });
+
+test('no app source shows the old name, in full or short form', () => {
+  // A hyphen after it marks a kept identifier (release asset names such as
+  // Munder-Difflin-1.0.0-mac-arm64.dmg), not a displayed name.
+  const old = /\bMunder\b(?!-)|MUNDER\b|MunderDifflin/;
+  const offenders = [];
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(path.join(root, dir), { withFileTypes: true })) {
+      const rel = `${dir}/${e.name}`;
+      if (e.isDirectory()) walk(rel);
+      else if (/\.tsx?$/.test(e.name)) {
+        code(rel).split("\n").forEach((line) => { if (old.test(line)) offenders.push(`${rel}: ${line.trim().slice(0, 100)}`); });
+      }
+    }
+  };
+  for (const dir of ['src/main', 'src/preload', 'src/shared', 'src/renderer/src']) walk(dir);
+  assert.deepEqual(offenders, []);
+});
