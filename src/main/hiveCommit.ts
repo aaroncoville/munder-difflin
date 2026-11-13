@@ -1,5 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { accessSync, constants as fsConstants, statSync } from 'node:fs';
 import { devNull } from 'node:os';
+import { delimiter, isAbsolute, join } from 'node:path';
 
 export interface GitResult {
   ok: boolean;
@@ -75,6 +77,36 @@ export function hiveGitEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.Proces
   return env;
 }
 
+/**
+ * The git program every hive git runs: an absolute path, found once in the PATH the app has.
+ *
+ * Only absolute PATH entries count. An empty or relative entry means "the current directory" to the system's own
+ * lookup, and the current directory of a hive git is the hive, which agents write; a `git` placed there would run as
+ * the owner. Found again only if PATH itself changes, which in the app it does not (tests change it).
+ */
+let gitProgram: { path: string; for: string | undefined } | null = null;
+export function hiveGitProgram(): string {
+  const pathVar = process.env.PATH;
+  if (gitProgram && gitProgram.for === pathVar) return gitProgram.path;
+  const names = process.platform === 'win32' ? ['git.exe', 'git.cmd'] : ['git'];
+  let found = '';
+  for (const dir of (pathVar ?? '').split(delimiter)) {
+    if (!dir || !isAbsolute(dir)) continue;
+    for (const name of names) {
+      const candidate = join(dir, name);
+      try {
+        if (!statSync(candidate).isFile()) continue;
+        accessSync(candidate, fsConstants.X_OK);
+        found = candidate;
+        break;
+      } catch { /* not here */ }
+    }
+    if (found) break;
+  }
+  gitProgram = { path: found || '/usr/bin/git', for: pathVar };
+  return gitProgram.path;
+}
+
 /** How long git's output has to finish arriving once git itself has exited. */
 export const HIVE_GIT_OUTPUT_WAIT_MS = 500;
 
@@ -135,7 +167,7 @@ export function stopRunningGits(graceMs = HIVE_GIT_KILL_GRACE_MS): Promise<void>
 export function runGit(args: string[], cwd: string, timeoutMs = HIVE_GIT_TIMEOUT_MS, killGraceMs = HIVE_GIT_KILL_GRACE_MS): Promise<GitResult> {
   let child: ChildProcess;
   try {
-    child = spawn('git', [...HIVE_GIT_CONFIG, ...args], { cwd, stdio: ['ignore', 'pipe', 'pipe'], detached: GROUPS, env: hiveGitEnv() });
+    child = spawn(hiveGitProgram(), [...HIVE_GIT_CONFIG, ...args], { cwd, stdio: ['ignore', 'pipe', 'pipe'], detached: GROUPS, env: hiveGitEnv() });
   } catch (e) {
     return Promise.resolve({ ok: false, out: '', err: e instanceof Error ? e.message : String(e) });
   }

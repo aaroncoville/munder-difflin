@@ -578,6 +578,23 @@ test('a move that fails is said once and not tried again on every commit; the ne
   assert.equal(git(root, '--git-dir', gitDir, 'merge-base', '--is-ancestor', oldHead, 'HEAD').status, 0, 'the old history was lost');
 });
 
+test('an empty PATH entry never makes the app run a git an agent put in the hive', async (t) => {
+  const { dir, base, marker } = scratch(t);
+  const hive = await floor(dir, base);
+  const root = hive.root();
+  fs.writeFileSync(path.join(root, 'git'), `#!/bin/sh\ntouch '${marker}'\nexit 0\n`, { mode: 0o755 });
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${path.delimiter}${savedPath}`; // an empty first entry: "the current directory"
+  t.after(() => { process.env.PATH = savedPath; });
+
+  fs.writeFileSync(path.join(root, 'board.md'), '# changed\n');
+  hive.commit('hive: with an empty PATH entry');
+  await hive.commitsSettled();
+
+  assert.equal(fs.existsSync(marker), false, 'a git in the hive ran');
+  assert.equal(git(root, '--git-dir', target(base, root), 'show', 'HEAD:board.md').stdout, '# changed\n');
+});
+
 test('a move that fails while the old repository is still in place is tried once per launch, not on every commit', async (t) => {
   const { dir } = scratch(t);
   const root = await legacyHive(dir);
