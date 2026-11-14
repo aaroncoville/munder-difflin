@@ -306,6 +306,8 @@ hive.setHookRuntime(process.platform === 'win32'
 // Each Claude seat's generated --settings file is kept in a private folder of the app's (seatSettings.ts), never in
 // the hive, where any other seat could rewrite it.
 hive.setSeatSettingsDir(join(app.getPath('userData'), 'seat-settings'));
+// Rows the hive measures at spawn (settings sources) go to the local usage log, through its allowlist.
+hive.setUsageSink((row) => { usageLog.record(row); });
 // The app's own helper Claude sessions (hiddenClaude.ts) take their --settings file from a private folder of the app's,
 // checked like the hook runtime's, never from the temp folder an agent's sandbox can write.
 setHelperSettingsDir(join(app.getPath('userData'), 'helper-sessions'), () => hive.root(), (event) => { try { hive.appendLog(event); } catch { /* best effort */ } });
@@ -3019,6 +3021,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
           // W3 — default-MCP consent state + the bundled skills source dir.
           mcpDefaults: readConfig().mcpDefaults,
           agentPlugins: readConfig().agentPlugins,
+          scopedRoots: readConfig().scopedRoots === true,
           skillsDir: skillsResourceDir(),
           // The launch as requested, with the environment the terminal will build, so the hook runtime
           // decision is made once, before anything for this agent is created.

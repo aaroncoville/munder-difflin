@@ -537,8 +537,11 @@ export function effectiveRoots(provider: string, agentDir: string, cwd: string, 
   const generated = launch.claudeSettings;
   if (!generated) return unknown('claude-settings-files');
   const launchDirs: string[] = [];
-  if (claudeLaunch(launch.args, generated, launchDirs) === 'unknown') return unknown('claude-settings-files');
-  const files = [...managedFiles(), generated, ...(abscwd ? [join(abscwd, '.claude', 'settings.local.json'), join(abscwd, '.claude', 'settings.json')] : []), join(places.claudeUserDir, 'settings.json')];
+  const sources: { userSourcesOnly?: boolean } = {};
+  if (claudeLaunch(launch.args, generated, launchDirs, [], sources) === 'unknown') return unknown('claude-settings-files');
+  // With --setting-sources user the CLI loads no project or local settings, so their roots are not its roots.
+  const project = abscwd && !sources.userSourcesOnly ? [join(abscwd, '.claude', 'settings.local.json'), join(abscwd, '.claude', 'settings.json')] : [];
+  const files = [...managedFiles(), generated, ...project, join(places.claudeUserDir, 'settings.json')];
   const roots: string[] = [];
   let enabled: boolean | undefined;
   const managed = new Set(managedFiles());
@@ -815,6 +818,7 @@ export const READ_SITES = [
   { id: 'own-folder', read: '<hive>/agents/<id>', writer: 'every agent', planted: 'a link, a file, missing, an id that is not a plain name', outcome: 'no roots; every observation and the report unknown' },
   { id: 'claude-generated-settings', read: '<userData>/seat-settings/<digest>.json (sha256 of the hive root\'s real path and the agent id); agents/<id>/settings.json is never read', writer: 'the app only (no agent may reach the folder)', planted: 'link, folder, unreadable, oversized, named pipe, missing; anything at the old agents/<id>/settings.json', outcome: 'unknown; the old in-tree file has no effect' },
   { id: 'claude-project-settings', read: '<cwd>/.claude/settings(.local).json', writer: 'agents working in that cwd', planted: 'same kinds', outcome: 'unknown; missing is skipped' },
+  { id: 'claude-setting-sources', read: 'Claude --setting-sources user (the app passes it while scopedRoots is on)', writer: 'the app', planted: 'project settings that add roots; any other value', outcome: 'user: the project and local files are not read; any other value: unknown' },
   { id: 'claude-user-settings', read: '~/.claude/settings.json', writer: 'an unsandboxed command', planted: 'same kinds', outcome: 'unknown; missing is skipped' },
   { id: 'claude-managed-settings', read: 'managed-settings.json', writer: 'root only (not plantable by an agent)', planted: '—', outcome: 'read like the others' },
   { id: 'codex-config', read: 'agents/<id>/.codex/config.toml', writer: 'the agent (read-only under Codex\'s own sandbox)', planted: 'same kinds; a profile or unknown sandbox_mode; dotted or inline roots', outcome: 'unknown (full access: unsandboxed)' },
@@ -835,7 +839,7 @@ export const READ_SITES = [
   { id: 'claude-prompt', read: 'Claude launch line: the prompt', writer: 'the spawn request', planted: 'flags inside the prompt text', outcome: 'never read' },
   { id: 'claude-add-dir-flag', read: 'Claude --add-dir (variadic)', writer: 'the spawn request', planted: 'any directories', outcome: 'counted as roots' },
   { id: 'claude-settings-flag', read: 'Claude --settings', writer: 'the app (its generated file)', planted: 'another file or inline JSON', outcome: 'unknown' },
-  { id: 'claude-unmodelled-flag', read: 'Claude --setting-sources, --bare, --safe-mode, --restricted, --worktree, ...', writer: 'the spawn request', planted: 'any', outcome: 'unknown' },
+  { id: 'claude-unmodelled-flag', read: 'Claude --setting-sources other than user, --bare, --safe-mode, --restricted, --worktree, ...', writer: 'the spawn request', planted: 'any', outcome: 'unknown' },
   { id: 'option-after-positional', read: 'arguments after the prompt (either CLI)', writer: 'the spawn request', planted: 'codex "prompt" --yolo; claude ... "prompt" --settings x', outcome: 'unknown: both CLIs read options there' },
   { id: 'codex-project-config', read: '.codex/config.toml in the cwd and every folder above', writer: 'agents working in that cwd', planted: 'writable_roots into the hive; an unreadable or unparsed file', outcome: 'its roots count; not understood = unknown' },
   { id: 'claude-plugin-dir', read: 'Claude --plugin-dir, --plugin-url', writer: 'the spawn request', planted: 'any plugin (can carry hooks and settings)', outcome: 'unknown' },

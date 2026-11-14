@@ -26,7 +26,7 @@ import {
 } from 'node:fs';
 import { join, dirname, basename, isAbsolute, relative, resolve as resolvePath } from 'node:path';
 import { homedir } from 'node:os';
-import { claudeLaunch, claudeRoots, codexLaunchSandbox, codexRoots, launchExecutable, launchPlaces } from './launchLine';
+import { CLAUDE_USER_SOURCES, claudeLaunch, claudeRoots, codexLaunchSandbox, codexRoots, launchExecutable, launchPlaces } from './launchLine';
 import { HookRuntimeUnavailable, hookCommandFor, overlaps, rootOverlap, stageHookRuntime, unsafePathReason, verifyHookRuntime, type StagedHookRuntime, type WriteRoot } from './hookRuntime';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
@@ -280,6 +280,17 @@ const PROXY_BIND_ATTEMPTS = 3;
 const PROXY_BIND_BACKOFF_MS = [250, 750];
 
 const MINE_IGNORE_LINES = ['settings.json', 'cursor.json', 'inbox/', 'outbox/', '.codex/'];
+
+/** How many of a working folder's Claude project settings files (.claude/settings.json, .claude/settings.local.json)
+ *  exist: checked with lstat, never followed or read. A path that cannot be checked counts as absent. */
+function projectSettingsCount(cwd: string): number {
+  if (!cwd || !isAbsolute(cwd)) return 0;
+  let n = 0;
+  for (const name of ['settings.json', 'settings.local.json']) {
+    try { lstatSync(join(cwd, '.claude', name)); n++; } catch { /* absent */ }
+  }
+  return n;
+}
 
 /** Idempotently ensure `<agentDir>/.gitignore` excludes the non-memory files.
  *  Append-only: writes only the missing lines, leaving any existing entries. */
@@ -597,6 +608,15 @@ export class HiveManager {
   seatSettingsPath(agentId: string): string {
     const root = this.root();
     return seatSettingsFile(this.seatSettingsDir, root ?? '', agentId);
+  }
+  /** Where usage rows go (the app's local usage log); unset, none are kept. */
+  private usageSink: ((row: Record<string, unknown>) => void) | null = null;
+  setUsageSink(fn: ((row: Record<string, unknown>) => void) | null): void {
+    this.usageSink = fn;
+  }
+  /** Hand one row to the usage log: measure only, so it never throws and never blocks a spawn. */
+  private usage(row: Record<string, unknown>): void {
+    try { this.usageSink?.(row); } catch { /* measure only */ }
   }
   /** The machine-wide Claude settings file (a field so a test can point it elsewhere). */
   private managedClaudeSettings = process.platform === 'darwin' ? '/Library/Application Support/ClaudeCode/managed-settings.json'
@@ -1323,6 +1343,8 @@ export class HiveManager {
       spawnId?: string;
       /** Plugin names an agent keeps (Settings); every other plugin the owner has is off for the agent. */
       agentPlugins?: unknown;
+      /** Launch Claude seats with `--setting-sources user`: no project or local settings files (config scopedRoots). */
+      scopedRoots?: boolean;
     } = {}
   ): Promise<SpawnInjection> {
     // One read for the whole operation. registry() reads a failure as an empty roster, and this would then replace the
@@ -1636,6 +1658,9 @@ export class HiveManager {
       // Written from what the app holds, to the app's own folder: the in-tree agents/<id>/settings.json is never opened.
       const settingsPath = writeSeatSettings(this.seatSettingsDir, root, meta.id, JSON.stringify(this.hookSettings(rt ? hookCommandFor(rt, true) : null, meta.cwd, opts.mcpDefaults, opts.theme, writable, agentEnabledPlugins(knownPluginIds(claudeUserDir()), agentPluginList(opts.agentPlugins, (why) => { if (this.pluginSettingLogged.has(meta.id)) return; this.pluginSettingLogged.add(meta.id); this.appendLog({ kind: 'agent-plugins-setting', agentId: meta.id, why }); }))), null, 2));
       args.push('--settings', settingsPath);
+      const dropped = opts.scopedRoots === true;
+      if (dropped) args.push('--setting-sources', CLAUDE_USER_SOURCES);
+      this.usage({ kind: 'settings-sources', agentId: meta.id, provider: 'claude', projectFiles: projectSettingsCount(meta.cwd), dropped });
     }
     return { args, env };
   }

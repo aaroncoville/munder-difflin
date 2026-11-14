@@ -80,7 +80,10 @@ const EVENTS: Record<string, Record<string, FieldType>> = {
   'write-would-refuse': { agentId: 'agent', tool: { oneOf: LOG_TOOLS }, via: { oneOf: VIAS }, pathClass: { oneOf: PATH_CLASSES } },
   'write-own-settings': { agentId: 'agent', tool: { oneOf: LOG_TOOLS }, via: { oneOf: VIAS } },
   'write-observed': { agentId: 'agent', tool: { oneOf: LOG_TOOLS }, shape: { oneOf: SHAPES }, count: 'count' },
-  'write-incomplete': { agentId: 'agent', state: { oneOf: ['incomplete'] }, reason: { oneOf: ['queue', 'cap', 'session-start-flood', 'quit', 'log-refused', 'no-agent'] }, shed: 'count', burst: 'bool' }
+  'write-incomplete': { agentId: 'agent', state: { oneOf: ['incomplete'] }, reason: { oneOf: ['queue', 'cap', 'session-start-flood', 'quit', 'log-refused', 'no-agent'] }, shed: 'count', burst: 'bool' },
+  // Per Claude spawn: how many of the working folder's project settings files exist (0-2, never read) and whether
+  // the seat was launched without them (scopedRoots). A count and a flag, never a path.
+  'settings-sources': { agentId: 'agent', provider: { oneOf: ['claude'] }, projectFiles: 'count', dropped: 'bool' }
 };
 /** Fields a kind cannot be written without. */
 const REQUIRED: Record<string, string[]> = {
@@ -89,7 +92,8 @@ const REQUIRED: Record<string, string[]> = {
   'write-roots': ['agentId', 'provider', 'role', 'source', 'effective', 'excess'],
   'write-would-refuse': ['agentId', 'tool', 'via', 'pathClass'], 'write-own-settings': ['agentId', 'tool', 'via'],
   'write-observed': ['agentId', 'tool', 'shape', 'count'],
-  'write-incomplete': ['agentId', 'state', 'reason', 'shed', 'burst']
+  'write-incomplete': ['agentId', 'state', 'reason', 'shed', 'burst'],
+  'settings-sources': ['agentId', 'provider', 'projectFiles', 'dropped']
 };
 
 function valid(type: FieldType, v: unknown, known: KnownIds): boolean {
