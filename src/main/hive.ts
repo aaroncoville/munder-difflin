@@ -4233,7 +4233,13 @@ The harness fills in \`id\`, \`from\`, \`hops\`, and timestamps.
 There are two shared surfaces, both in the hive root:
 - \`board.md\` — the freeform narrative plan. The god agent is its sole scribe; others \`propose\` edits.
 - \`tasks.json\` — the structured task ledger (a kanban: \`todo / doing / blocked / done\`, with title,
-  assignee, priority, deps). Keep the task you're working reflected in its status.
+  assignee, priority, deps).
+
+\`tasks.json\`, \`board.md\`, \`spawn-requests/\` and \`registry.json\` are written only by the god agent and the app.
+Other agents read them and never write them: to change a card (its status, its assignee, a new card), mail
+\`god\` saying what should change. Either way, the card being worked shows its real status: god writes it,
+and the agent working it tells god as soon as it changes. Your own files go under your own folder
+(\`agents/<your-id>/\`) or \`evidence/\`.
 
 ## Asking the human (the ASK ME card)
 When a card can only move with the human — a question to answer, or an action only they can do
