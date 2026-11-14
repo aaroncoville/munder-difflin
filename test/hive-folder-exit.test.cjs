@@ -17,6 +17,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const ts = require('typescript');
 const loadTs = require('./load-ts.cjs');
+const { withSeatSettings } = require('./seat-settings-dir.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
@@ -69,7 +70,7 @@ async function hiveWithCommitInFlight(t, dir) {
     await allCommitsIdle();
   });
 
-  const hive = new HiveManager(() => dir);
+  const hive = withSeatSettings(new HiveManager(() => dir));
   await hive.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: dir, isGod: true });
   await hive.commitsSettled();
   process.env.FAKE_GIT_HANG = 'commit';
@@ -151,7 +152,7 @@ test('moving the data folder stops a running hive commit, and its git has exited
 test('a move whose copy fails goes on committing in the old folder', async (t) => {
   const oldHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'md-move-fail-')));
   t.after(async () => { await allCommitsIdle(); fs.rmSync(oldHome, { recursive: true, force: true }); });
-  const hive = new HiveManager(() => oldHome);
+  const hive = withSeatSettings(new HiveManager(() => oldHome));
   await hive.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: oldHome, isGod: true });
   await hive.commitsSettled();
   const events = [];

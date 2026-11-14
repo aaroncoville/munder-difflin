@@ -22,6 +22,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const loadTs = require('./load-ts.cjs');
+const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { codexTestBase, jailHome, removeDir } = require('./codex-test-home.cjs');
 // Where a Codex agent's home is: computed from its folder, outside the hive.
 const { codexShortHomePath } = loadTs('src/shared/codexRemote.ts');
@@ -120,7 +121,7 @@ async function run(cmd, env) {
 test('ensureHive writes an executable bundled-node launcher', async (t) => {
   const home = tmpHome();
   t.after(async () => { await removeDir(home); });
-  const hive = new HiveManager(() => home);
+  const hive = withSeatSettings(new HiveManager(() => home));
   await hive.ensureAgent({ id: 'a1', name: 'A', provider: 'claude', cwd: home });
 
   const launcher = launcherIn(home);
@@ -134,11 +135,11 @@ test('ensureHive writes an executable bundled-node launcher', async (t) => {
 test('the claude hook + statusLine commands run through the launcher', async (t) => {
   const home = tmpHome();
   t.after(async () => { await removeDir(home); });
-  const hive = new HiveManager(() => home);
+  const hive = withSeatSettings(new HiveManager(() => home));
   const { launcher } = runtimeFor(t, hive);
   await hive.ensureAgent({ id: 'a1', name: 'A', provider: 'claude', cwd: home });
 
-  const settings = JSON.parse(fs.readFileSync(path.join(home, 'hive/agents/a1/settings.json'), 'utf8'));
+  const settings = JSON.parse(fs.readFileSync(hive.seatSettingsPath('a1'), 'utf8'));
   const commands = [
     ...Object.values(settings.hooks).flatMap((matchers) => matchers.flatMap((m) => m.hooks.map((h) => h.command))),
     settings.statusLine.command
@@ -151,7 +152,7 @@ test('the claude hook + statusLine commands run through the launcher', async (t)
 test('every hook installer routes through the launcher — none left on bare node', async (t) => {
   const home = tmpHome();
   t.after(async () => { await removeDir(home); });
-  const hive = new HiveManager(() => home);
+  const hive = withSeatSettings(new HiveManager(() => home));
   await hive.ensureAgent({ id: 'a1', name: 'A', provider: 'claude', cwd: home });
 
   // agy and grok install into the USER's home. Redirect it, and refuse to run
@@ -190,7 +191,7 @@ test('Codex hook commands survive a hive path containing spaces', { skip: !POSIX
   const isolated = isolatedHomes(t, undefined, '/tmp');
   const home = isolated.home;
   const harness = `${isolated.harness} space`;
-  const hive = new HiveManager(() => harness);
+  const hive = withSeatSettings(new HiveManager(() => harness));
   hive.ensureHive();
   // The hook runtime folder now carries the space: the command names only it.
   const rtDir = `${isolated.harness}-rt space`;
@@ -249,7 +250,7 @@ test('POSIX Gemini and Antigravity hooks survive a hive path containing spaces',
   });
   assert.equal(os.homedir(), home, 'home redirect failed — aborting before touching the real home');
 
-  const hive = new HiveManager(() => harness);
+  const hive = withSeatSettings(new HiveManager(() => harness));
   hive.ensureHive();
   hive.installAgyHooks();
   hive.installGeminiHooks(path.join(harness, 'hive/agents/a1'));
@@ -291,7 +292,7 @@ test('POSIX Gemini and Antigravity hooks survive a hive path containing spaces',
 
 test('Codex rollouts remain isolated and are visible under the standard scan roots', (t) => {
   const { home, harness } = isolatedHomes(t);
-  const hive = new HiveManager(() => harness);
+  const hive = withSeatSettings(new HiveManager(() => harness));
   hive.ensureHive();
   const agentDir = path.join(harness, 'hive', 'agents', 'a1');
   const codexHome = codexShortHomePath(path.join(agentDir, '.codex'), 'a1');
@@ -340,7 +341,7 @@ test('bootstrap exposes archived Codex agents without respawning them', (t) => {
     agents: { a1: { id: 'a1', name: 'A', provider: 'codex', cwd: harness, archived: true } }
   }), 'utf8');
 
-  new HiveManager(() => harness).ensureHive();
+  withSeatSettings(new HiveManager(() => harness)).ensureHive();
 
   assert.equal(fs.lstatSync(sessions).isSymbolicLink(), true,
     'an archived agent is never respawned, so bootstrap must expose its rollouts');
@@ -352,7 +353,7 @@ test('bootstrap exposes archived Codex agents without respawning them', (t) => {
 
 test('a missing exposed directory is repaired on the next spawn', (t) => {
   const { home, harness } = isolatedHomes(t);
-  const hive = new HiveManager(() => harness);
+  const hive = withSeatSettings(new HiveManager(() => harness));
   hive.ensureHive();
   const agentDir = path.join(harness, 'hive', 'agents', 'a1');
   const sessions = path.join(codexShortHomePath(path.join(agentDir, '.codex'), 'a1'), 'sessions');
@@ -370,7 +371,7 @@ test('a missing exposed directory is repaired on the next spawn', (t) => {
 
 test('an unsafe agent id cannot escape the Munder scan namespace', (t) => {
   const { home, harness } = isolatedHomes(t);
-  const hive = new HiveManager(() => harness);
+  const hive = withSeatSettings(new HiveManager(() => harness));
   hive.ensureHive();
   const codexHome = path.join(harness, 'hive', 'agents', 'safe', '.codex');
   const sessions = path.join(codexHome, 'sessions');
@@ -386,7 +387,7 @@ test('an unsafe agent id cannot escape the Munder scan namespace', (t) => {
 
 test('reset cleanup removes only exposed Munder rollouts', (t) => {
   const { home, harness } = isolatedHomes(t);
-  const hive = new HiveManager(() => harness);
+  const hive = withSeatSettings(new HiveManager(() => harness));
   hive.ensureHive();
   const agentDir = path.join(harness, 'hive', 'agents', 'a1');
   const isolated = path.join(codexShortHomePath(path.join(agentDir, '.codex'), 'a1'), 'sessions');
@@ -410,7 +411,7 @@ test('Gemini gets isolated lifecycle settings and an interactive protocol seed',
   t.after(async () => { await removeDir(home); });
   // A HOME of its own, with no Codex agents' homes: Gemini is not sandboxed by the app and cannot start beside one.
   jailHome(t, codexTestBase(t, 'mdgm-'));
-  const hive = new HiveManager(() => home);
+  const hive = withSeatSettings(new HiveManager(() => home));
   const injection = await hive.ensureAgent({
     id: 'gemini-1',
     name: 'Gemini',
@@ -436,7 +437,7 @@ test('Gemini gets isolated lifecycle settings and an interactive protocol seed',
 test('a hook fires with NO node on PATH, and its payload reaches HIVE_SOCK', { skip: !POSIX }, async (t) => {
   const home = tmpHome();
   t.after(async () => { await removeDir(home); });
-  const hive = new HiveManager(() => home);
+  const hive = withSeatSettings(new HiveManager(() => home));
   runtimeFor(t, hive);
   await hive.ensureAgent({ id: 'a1', name: 'A', provider: 'claude', cwd: home });
 
@@ -472,7 +473,7 @@ test('a hook fires with NO node on PATH, and its payload reaches HIVE_SOCK', { s
   // NOTE: async spawn, not spawnSync — the shim connects back to a socket THIS
   // process is serving, so a sync call would block our own event loop and
   // deadlock the handshake.
-  const settings = JSON.parse(fs.readFileSync(path.join(home, 'hive/agents/a1/settings.json'), 'utf8'));
+  const settings = JSON.parse(fs.readFileSync(hive.seatSettingsPath('a1'), 'utf8'));
   const after = await run(settings.hooks.Stop[0].hooks[0].command, env);
   assert.equal(after.code, 0, `hook failed under a stripped PATH: ${after.stderr}`);
 

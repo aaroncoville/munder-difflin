@@ -417,12 +417,12 @@ export function observeTool(tool: string, input: unknown, ctx: RootsContext, bud
 export interface EffectiveRoots { roots: string[]; state: RootsState; source: 'claude-settings-files' | 'codex-config' | 'none'; /** The roots that are the CLI's temp folder (TMPDIR), classed apart. */ temp?: string[]; /** Why it is unknown, when that is worth its own row: the generated config's hooks are not the app's own, or a table
  *  naming a program differs from the owner's config it was copied from. */ why?: 'app-hooks-differ' | 'app-config-differs' }
 /** What the app launched the session with, as it holds it: how the CLI's sandbox was chosen on its command line. */
-export interface LaunchFacts { args?: string[]; platform?: string; /** The spawn's final environment, relocation variables only (relocationEnv). */ env?: Record<string, string>; /** The hooks the app writes into a generated Codex config now (Hive.codexAppHooks). */ codexHooks?: CodexAppHooks | null; /** The app set this spawn's CODEX_HOME: the config there is the one it generated. */ codexHomeFromApp?: boolean }
+export interface LaunchFacts { args?: string[]; platform?: string; /** The spawn's final environment, relocation variables only (relocationEnv). */ env?: Record<string, string>; /** The hooks the app writes into a generated Codex config now (Hive.codexAppHooks). */ codexHooks?: CodexAppHooks | null; /** The app set this spawn's CODEX_HOME: the config there is the one it generated. */ codexHomeFromApp?: boolean; /** A Claude seat's generated --settings file, in the app's own folder (seatSettings.ts); absent, the roots are unknown. */ claudeSettings?: string }
 /** What main holds for a spawn: its final launch line and environment, and whether it chose the Codex home. */
 export interface SpawnRecord { args: string[]; env?: Record<string, string>; codexHomeFromApp?: boolean }
 /** The launch facts the dry run reads, from the spawn record alone (never from a path's spelling). */
-export function spawnLaunchFacts(rec: SpawnRecord, platform: string, codexHooks: CodexAppHooks | null): LaunchFacts {
-  return { args: rec.args, platform, env: rec.env, codexHooks, codexHomeFromApp: rec.codexHomeFromApp === true };
+export function spawnLaunchFacts(rec: SpawnRecord, platform: string, codexHooks: CodexAppHooks | null, claudeSettings?: string): LaunchFacts {
+  return { args: rec.args, platform, env: rec.env, codexHooks, codexHomeFromApp: rec.codexHomeFromApp === true, ...(claudeSettings ? { claudeSettings } : {}) };
 }
 
 type Read = { kind: 'missing' } | { kind: 'bad' } | { kind: 'text'; text: string };
@@ -532,8 +532,10 @@ export function effectiveRoots(provider: string, agentDir: string, cwd: string, 
     const codexRootsOut = withCwd([...c.roots, ...projectRoots, ...addDirs, ...places.tmpDirs]);
     return unanchored ? unknown('codex-config') : { roots: codexRootsOut, state: 'ok', source: 'codex-config', temp: places.tmpDirs };
   }
-  // Highest precedence first; the generated file is passed with --settings. Directories merge across files.
-  const generated = join(agentDir, 'settings.json');
+  // Highest precedence first; the generated file is passed with --settings. Directories merge across files. It is read
+  // from the app's own folder only: the in-tree agents/<id>/settings.json is never read, whatever is there.
+  const generated = launch.claudeSettings;
+  if (!generated) return unknown('claude-settings-files');
   const launchDirs: string[] = [];
   if (claudeLaunch(launch.args, generated, launchDirs) === 'unknown') return unknown('claude-settings-files');
   const files = [...managedFiles(), generated, ...(abscwd ? [join(abscwd, '.claude', 'settings.local.json'), join(abscwd, '.claude', 'settings.json')] : []), join(places.claudeUserDir, 'settings.json')];
@@ -811,7 +813,7 @@ export const READ_SITES = [
   { id: 'payload-tool-input', read: 'hook payload tool_input', writer: 'same', planted: 'huge command, thousands or deep missing paths, wrong types', outcome: 'answer not delayed; at most 64 paths, 25 ms, 64 KB per call, then one truncated row; wrong types record nothing' },
   { id: 'queue', read: 'the deferred queue, one per agent', writer: 'spawned agents, by calling tools', planted: 'one agent flooding calls', outcome: 'at most 8 tool calls waiting per agent, drained in turn; more are shed and counted for that agent only (see incomplete); Stop and session start are never shed' },
   { id: 'own-folder', read: '<hive>/agents/<id>', writer: 'every agent', planted: 'a link, a file, missing, an id that is not a plain name', outcome: 'no roots; every observation and the report unknown' },
-  { id: 'claude-generated-settings', read: 'agents/<id>/settings.json', writer: 'the agent itself', planted: 'link, folder, unreadable, oversized, named pipe, parent is a file, missing', outcome: 'unknown' },
+  { id: 'claude-generated-settings', read: '<userData>/seat-settings/<digest>.json (sha256 of the hive root\'s real path and the agent id); agents/<id>/settings.json is never read', writer: 'the app only (no agent may reach the folder)', planted: 'link, folder, unreadable, oversized, named pipe, missing; anything at the old agents/<id>/settings.json', outcome: 'unknown; the old in-tree file has no effect' },
   { id: 'claude-project-settings', read: '<cwd>/.claude/settings(.local).json', writer: 'agents working in that cwd', planted: 'same kinds', outcome: 'unknown; missing is skipped' },
   { id: 'claude-user-settings', read: '~/.claude/settings.json', writer: 'an unsandboxed command', planted: 'same kinds', outcome: 'unknown; missing is skipped' },
   { id: 'claude-managed-settings', read: 'managed-settings.json', writer: 'root only (not plantable by an agent)', planted: '—', outcome: 'read like the others' },

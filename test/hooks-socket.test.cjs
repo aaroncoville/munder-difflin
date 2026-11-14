@@ -22,6 +22,7 @@ const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const electron = require.resolve('electron');
@@ -45,7 +46,7 @@ const posixOnly = { skip: process.platform === 'win32' ? 'named pipes have no so
 
 async function floor(t) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'mdh-'));
-  const hive = new HiveManager(() => home);
+  const hive = withSeatSettings(new HiveManager(() => home));
   await hive.ensureAgent({ id: 'jim-1', name: 'Jim', provider: 'claude', cwd: home });
   const servers = [];
   const make = () => { const s = new HookServer(hive, () => null, () => CONFIG, undefined, undefined); servers.push(s); return s; };

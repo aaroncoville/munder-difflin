@@ -18,6 +18,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const ts = require('typescript');
 const loadTs = require('./load-ts.cjs');
+const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { codexTestBase, jailHome, removeDir } = require('./codex-test-home.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
@@ -46,7 +47,7 @@ function liveProvisioning() {
 async function setup(t, overrides = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-spawn-refused-'));
   t.after(async () => { await removeDir(home); });
-  const real = new HiveManager(() => home);
+  const real = withSeatSettings(new HiveManager(() => home));
   await real.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: home, isGod: true });
   await real.ensureAgent({ id: 'Taken', name: 'Taken', provider: 'claude', cwd: home });
   const events = [];
@@ -65,7 +66,7 @@ async function setup(t, overrides = {}) {
     worktreePaths, worktreeOrigins,
     removeWorktree: (origin, wt) => { removed.push([origin, wt]); return removal(); },
     relocationEnv: loadTs('src/main/launchLine.ts').relocationEnv, buildPtyEnv: loadTs('src/main/ptyEnv.ts').buildPtyEnv, process,
-    RefusedRosterId, RegistryUnreadable, HookRuntimeUnavailable: loadTs('src/main/hookRuntime.ts').HookRuntimeUnavailable, CodexHomeRefused: loadTs('src/main/codexSeatHome.ts').CodexHomeRefused, PrivateDirRefused: loadTs('src/main/privateDirs.ts').PrivateDirRefused, shortTarget: loadTs('src/main/messageTarget.ts').shortTarget, isFolderName: loadTs('src/main/messageTarget.ts').isFolderName
+    RefusedRosterId, RegistryUnreadable, HookRuntimeUnavailable: loadTs('src/main/hookRuntime.ts').HookRuntimeUnavailable, CodexHomeRefused: loadTs('src/main/codexSeatHome.ts').CodexHomeRefused, PrivateDirRefused: loadTs('src/main/privateDirs.ts').PrivateDirRefused, SeatSettingsRefused: loadTs('src/main/seatSettings.ts').SeatSettingsRefused, shortTarget: loadTs('src/main/messageTarget.ts').shortTarget, isFolderName: loadTs('src/main/messageTarget.ts').isFolderName
   };
   const run = vm.runInNewContext(liveProvisioning(), context);
   const spawn = (id) => run({ id: `pty-${id}`, cwd: home, hive: { id, name: 'x' } }, 'claude');

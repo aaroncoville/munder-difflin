@@ -14,6 +14,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { removeDir } = require('./codex-test-home.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
@@ -50,7 +51,7 @@ function slowGit(t, dir) {
 }
 
 async function floor(t, dir) {
-  const hive = new HiveManager(() => dir);
+  const hive = withSeatSettings(new HiveManager(() => dir));
   t.after(() => hive.commitsSettled());
   await hive.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: dir, isGod: true });
   await hive.ensureAgent({ id: 'worker-1', name: 'Helper', provider: 'claude', cwd: dir });
@@ -154,7 +155,7 @@ test('agent files committed before the allowlist stop being tracked and stay on 
   git(root, ['add', '-f', '--', 'agents/worker-1/.nuget']);
   git(root, ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'old build tracked this']);
 
-  const hive = new HiveManager(() => dir);
+  const hive = withSeatSettings(new HiveManager(() => dir));
   hive.ensureHive();
   hive.commit('hive: next');
   await hive.commitsSettled();
@@ -244,7 +245,7 @@ test('creating the hive repository does not wait for git either', async (t) => {
   const shim = slowGit(t, dir);
   shim.only('init');
   shim.setDelay(1);
-  const hive = new HiveManager(() => dir);
+  const hive = withSeatSettings(new HiveManager(() => dir));
   t.after(() => hive.commitsSettled());
 
   const started = Date.now();

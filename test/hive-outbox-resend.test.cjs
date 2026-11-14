@@ -12,6 +12,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
@@ -21,7 +22,7 @@ const MINUTE = 60_000;
 async function floor(t) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-resend-'));
   t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
-  const hive = new HiveManager(() => home);
+  const hive = withSeatSettings(new HiveManager(() => home));
   await hive.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: home, isGod: true });
   await hive.ensureAgent({ id: 'worker-1', name: 'Helper', provider: 'claude', cwd: home });
   await hive.ensureAgent({ id: 'worker-2', name: 'Other', provider: 'claude', cwd: home });
@@ -89,7 +90,7 @@ test('the same message from another sender is delivered', async (t) => {
 test('a repeat written after the app restarts is delivered once', async (t) => {
   const { home, hive, post, got } = await floor(t);
   post(hive, done);
-  const restarted = new HiveManager(() => home);
+  const restarted = withSeatSettings(new HiveManager(() => home));
   assert.equal(post(restarted, done), 0);
   assert.equal(got('god-1', 'finished'), 1);
 });
@@ -118,7 +119,7 @@ test('a repeat whose sender left out the conversation is delivered once', async 
 test('a repeat whose sender left out the conversation is delivered once after the app restarts', async (t) => {
   const { home, hive, post, got } = await floor(t);
   post(hive, bare);
-  assert.equal(post(new HiveManager(() => home), bare), 0);
+  assert.equal(post(withSeatSettings(new HiveManager(() => home)), bare), 0);
   assert.equal(got('god-1', 'bare'), 1);
 });
 
@@ -136,7 +137,7 @@ test('after a restart, a message set aside as undelivered does not hold back the
   fs.renameSync(inbox, `${inbox}.away`);
   assert.equal(post(hive, done), 0);
   fs.renameSync(`${inbox}.away`, inbox);
-  assert.equal(post(new HiveManager(() => home), done), 1);
+  assert.equal(post(withSeatSettings(new HiveManager(() => home)), done), 1);
   assert.equal(got('god-1', 'finished'), 1);
 });
 
@@ -148,7 +149,7 @@ test('after a restart, the window runs from when the original was routed, not fr
   const sent = path.join(agents, 'worker-1', 'outbox', '.sent');
   fs.utimesSync(path.join(sent, 'm-0.json'), (now - 9 * MINUTE) / 1000, (now - 9 * MINUTE) / 1000);
   fs.utimesSync(path.join(sent, 'dup-m-1.json'), (now - MINUTE) / 1000, (now - MINUTE) / 1000);
-  assert.equal(post(new HiveManager(() => home), done, now + 2 * MINUTE), 1, 'the original was routed 11 minutes before');
+  assert.equal(post(withSeatSettings(new HiveManager(() => home)), done, now + 2 * MINUTE), 1, 'the original was routed 11 minutes before');
   assert.equal(got('god-1', 'finished'), 2);
 });
 
@@ -158,7 +159,7 @@ test('after a restart, a link, or a copy too large to be a message, under .sent 
   fs.writeFileSync(elsewhere, JSON.stringify({ ...done, from: 'worker-1' }));
   fs.symlinkSync(elsewhere, path.join(agents, 'worker-1', 'outbox', '.sent', 'linked.json'));
   filed(agents, 'huge.json', { ...bare, from: 'worker-1' }, Date.now(), ' '.repeat(1_100_000));
-  const restarted = new HiveManager(() => home);
+  const restarted = withSeatSettings(new HiveManager(() => home));
   assert.equal(post(restarted, done), 1);
   assert.equal(post(restarted, bare), 1);
   assert.equal(got('god-1', 'finished') + got('god-1', 'bare'), 2);
@@ -168,7 +169,7 @@ test('after a restart, a copy dated in the future counts from now, not from its 
   const { home, agents, post, got } = await floor(t);
   const now = Date.now();
   filed(agents, 'ahead.json', { ...done, from: 'worker-1' }, now + 60 * MINUTE);
-  const restarted = new HiveManager(() => home);
+  const restarted = withSeatSettings(new HiveManager(() => home));
   post(restarted, { to: 'god', act: 'inform', subject: 'first', body: 'reads .sent back' }, now);
   assert.equal(post(restarted, done, now + 11 * MINUTE), 1);
   assert.equal(got('god-1', 'finished'), 1);

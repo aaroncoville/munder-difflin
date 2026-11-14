@@ -16,6 +16,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const loadTs = require('./load-ts.cjs');
+const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { codexTestBase, jailHome, removeDir } = require('./codex-test-home.cjs');
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { codexShortHomePath } = loadTs('src/shared/codexRemote.ts');
@@ -28,7 +29,7 @@ const BYPASS = '--dangerously-bypass-hook-trust';
 function fixture(t) {
   const root = codexTestBase(t, 'mdsh-');
   jailHome(t, root);
-  const hive = new HiveManager(() => root);
+  const hive = withSeatSettings(new HiveManager(() => root));
   // The app's own hook runtime folder, outside the hive: without one no hook command is written.
   const runtime = fs.realpathSync(fs.mkdtempSync('/tmp/mdsr-'));
   t.after(async () => removeDir(runtime));
@@ -180,7 +181,7 @@ test('a Codex home under a temp folder Codex lets every agent write is refused',
   jailHome(t, tmpRoot);
   const cwd = path.join(tmpRoot, 'work');
   fs.mkdirSync(cwd);
-  const hive = new HiveManager(() => tmpRoot);
+  const hive = withSeatSettings(new HiveManager(() => tmpRoot));
   await assert.rejects(hive.ensureAgent({ id: 'tmp1', name: 't', provider: 'codex', cwd }), refusedHome('/tmp'));
 
   // HOME under $TMPDIR: workspace-write grants it too.

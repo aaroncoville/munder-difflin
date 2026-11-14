@@ -12,6 +12,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
@@ -27,7 +28,7 @@ function registryOf(home) {
 test('a "~/…" cwd is expanded before it reaches the registry', async (t) => {
   const home = tmpHome();
   t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
-  const hive = new HiveManager(() => home);
+  const hive = withSeatSettings(new HiveManager(() => home));
 
   await hive.ensureAgent({ id: 'a1', name: 'A', provider: 'claude', cwd: '~' });
 
@@ -40,7 +41,7 @@ test('a "~/…" cwd is expanded before it reaches the registry', async (t) => {
 test('an absolute cwd is unchanged', async (t) => {
   const home = tmpHome();
   t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
-  const hive = new HiveManager(() => home);
+  const hive = withSeatSettings(new HiveManager(() => home));
 
   await hive.ensureAgent({ id: 'a1', name: 'A', provider: 'claude', cwd: home });
 
@@ -52,7 +53,7 @@ test('an absolute cwd is unchanged', async (t) => {
 test('cwdValidity repairs a "~" left in an older registry', async (t) => {
   const home = tmpHome();
   t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
-  const hive = new HiveManager(() => home);
+  const hive = withSeatSettings(new HiveManager(() => home));
 
   // Entries written before the fix are still on disk; reading one must not
   // report it as permanently invalid.

@@ -15,6 +15,7 @@ const os = require('node:os');
 const path = require('node:path');
 const ts = require('typescript');
 const loadTs = require('./load-ts.cjs');
+const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { codexTestBase, removeDir } = require('./codex-test-home.cjs');
 
 const { CodexThreads, newThreadWrites, typeWrites } = loadTs('src/main/codexThread.ts');
@@ -228,7 +229,7 @@ test('a Codex spawn keeps the brief it was started with', async (t) => {
   });
   const cwd = path.join(home, 'repo');
   fs.mkdirSync(cwd);
-  const hive = new HiveManager(() => home);
+  const hive = withSeatSettings(new HiveManager(() => home));
   const injection = await hive.ensureAgent({ id: 'cx', name: 'Cx', provider: 'codex', cwd });
   const brief = hive.initialPromptOf('cx');
   assert.ok(brief && brief.includes('Cx'), 'the brief names the worker');

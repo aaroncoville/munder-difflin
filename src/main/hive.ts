@@ -38,6 +38,7 @@ import { setAsideUnlessFolder } from './sentFolder';
 import { COMMAND_GROUPS } from '../shared/claudeCommands';
 import { codexShortHomeRoot } from '../shared/codexRemote';
 import { PrivateDirRefused, privateDirsReach, registerPrivateDir } from './privateDirs';
+import { checkSeatSettingsTarget, seatSettingsFile, writeSeatSettings } from './seatSettings';
 import { CodexHomeRefused, codexHomesReach, codexSeatHome, existingCodexHomes, migrateSeatHome } from './codexSeatHome';
 import {
   argsWithSandboxStance,
@@ -226,7 +227,7 @@ export interface Registry {
 /** A launch as the spawn will make it: argv[0] is the command string, then its arguments; env holds only the variables that move configuration. */
 export interface HookLaunch { argv: string[]; env: Record<string, string> }
 /** What ensureAgent decided for a Claude or Codex spawn, carried to the late check. */
-export interface HookVerdict { agentId: string; kind: 'claude' | 'codex'; rt: StagedHookRuntime; rootPaths: string[]; claudeUserDir?: string; codexFromConfig?: boolean; dir: string; cwd: string; isNew: boolean; /** True when the agent's folder did not exist before this spawn. */ dirCreated?: boolean; /** The spawn this decision is for. */ spawnId?: string; /** Set only once every provisioning step the decision depends on has succeeded. */ provisioned?: boolean; /** Why provisioning did not complete. */ failure?: string; /** An agent that existed: its registry row as it was before this spawn, put back if the spawn is refused. */ prevRow?: RegistryAgent; /** The row as this spawn wrote it: only the fields it changed, and still holding what it wrote, are put back. */ wroteRow?: RegistryAgent; /** It was waiting to be archived when this spawn cleared that; put back with its row. */ archivePending?: boolean }
+export interface HookVerdict { agentId: string; kind: 'claude' | 'codex'; rt: StagedHookRuntime; rootPaths: string[]; claudeUserDir?: string; /** A Claude seat's generated settings file, as the decision checked its launch line against. */ settingsFile?: string; codexFromConfig?: boolean; dir: string; cwd: string; isNew: boolean; /** True when the agent's folder did not exist before this spawn. */ dirCreated?: boolean; /** The spawn this decision is for. */ spawnId?: string; /** Set only once every provisioning step the decision depends on has succeeded. */ provisioned?: boolean; /** Why provisioning did not complete. */ failure?: string; /** An agent that existed: its registry row as it was before this spawn, put back if the spawn is refused. */ prevRow?: RegistryAgent; /** The row as this spawn wrote it: only the fields it changed, and still holding what it wrote, are put back. */ wroteRow?: RegistryAgent; /** It was waiting to be archived when this spawn cleared that; put back with its row. */ archivePending?: boolean }
 
 export interface SpawnInjection {
   args: string[];
@@ -579,6 +580,24 @@ export class HiveManager {
     this.hookVerdicts.delete(agentId);
     return v;
   }
+  /** Where Claude seats' generated --settings files are written: a private folder of the app's own (seatSettings.ts),
+   *  never the hive, which every agent can write. Unset, a Claude spawn is refused. */
+  private seatSettingsDir: string | null = null;
+  /** Removes the seat settings folder's registration as one of the app's private folders. */
+  private unregisterSeatSettingsDir: (() => void) | null = null;
+  setSeatSettingsDir(dir: string | null): void {
+    this.unregisterSeatSettingsDir?.();
+    this.unregisterSeatSettingsDir = null;
+    this.seatSettingsDir = dir;
+    // No agent's write roots may reach it (privateDirs.ts): a file planted there would be a seat's settings.
+    if (dir) this.unregisterSeatSettingsDir = registerPrivateDir(dir, 'the seat settings folder');
+  }
+  /** The generated settings file a Claude seat of this hive is launched with. Throws SeatSettingsRefused when no
+   *  folder is set or the hive folder is not known. */
+  seatSettingsPath(agentId: string): string {
+    const root = this.root();
+    return seatSettingsFile(this.seatSettingsDir, root ?? '', agentId);
+  }
   /** The machine-wide Claude settings file (a field so a test can point it elsewhere). */
   private managedClaudeSettings = process.platform === 'darwin' ? '/Library/Application Support/ClaudeCode/managed-settings.json'
     : process.platform === 'win32' ? 'C:\\ProgramData\\ClaudeCode\\managed-settings.json' : '/etc/claude-code/managed-settings.json';
@@ -784,7 +803,7 @@ export class HiveManager {
     let codexFromConfig = false;
     if (kind === 'claude') {
       const why: string[] = [];
-      if (claudeLaunch(launch.argv, join(dir, 'settings.json'), addDirs, why) === 'unknown') return { refuse: `its launch line has an option the app does not model: ${why.join(', ')}` };
+      if (claudeLaunch(launch.argv, this.seatSettingsPath(meta.id), addDirs, why) === 'unknown') return { refuse: `its launch line has an option the app does not model: ${why.join(', ')}` };
     } else {
       const why: string[] = [];
       const mode = codexLaunchSandbox(launch.argv, addDirs, why);
@@ -835,7 +854,7 @@ export class HiveManager {
       if (why) throw new PrivateDirRefused(why);
     }
     if (!rt || 'refuse' in r) return null;
-    return { agentId: meta.id, kind, rt, rootPaths: r.roots.map((x) => x.path).filter((x): x is string => !!x), claudeUserDir: r.claudeUserDir, codexFromConfig: r.codexFromConfig, dir, cwd: meta.cwd, isNew };
+    return { agentId: meta.id, kind, rt, rootPaths: r.roots.map((x) => x.path).filter((x): x is string => !!x), claudeUserDir: r.claudeUserDir, ...(kind === 'claude' ? { settingsFile: this.seatSettingsPath(meta.id) } : {}), codexFromConfig: r.codexFromConfig, dir, cwd: meta.cwd, isNew };
   }
   /** Every Codex agent's home sits under one folder outside the hive (codexSeatHome.ts). An agent of any provider
    *  whose roots reach that folder could plant hooks in any of them, and hooks run outside the sandbox, so it is refused
@@ -907,7 +926,7 @@ export class HiveManager {
       if ('unknown' in places) fail(`its final environment cannot be modelled: ${places.unknown}`);
       else if (places.claudeUserDir !== v.claudeUserDir) fail(`its final environment moved Claude's settings to ${places.claudeUserDir}`);
       const why: string[] = [];
-      if (claudeLaunch(argv, join(v.dir, 'settings.json'), addDirs, why) === 'unknown') fail(`its final launch line has an option the app does not model: ${why.join(', ')}`);
+      if (claudeLaunch(argv, v.settingsFile ?? '', addDirs, why) === 'unknown') fail(`its final launch line has an option the app does not model: ${why.join(', ')}`);
     } else {
       // The app's own remote rewrite: the app server runs from the same generated config the verdict checked.
       const a = [...argv];
@@ -1320,6 +1339,8 @@ export class HiveManager {
     const asRead = JSON.stringify(roster);
 
     const dir = this.agentDir(meta.id);
+    // A Claude seat's settings file must have a home outside the hive, decided before anything for it is created.
+    if (isClaudeProvider(meta.provider ?? 'claude') && this.sockPath()) checkSeatSettingsTarget(this.seatSettingsPath(meta.id));
     // Before the agent's folder or registry entry exists: a refused spawn leaves nothing behind.
     const verdict = this.hookVerdict(meta, dir, root, opts.extraWritableDirs, opts.launch, !Object.hasOwn(roster.agents, meta.id));
     if (verdict) { verdict.dirCreated = !existsSync(dir); verdict.spawnId = opts.spawnId; verdict.provisioned = false; }
@@ -1612,8 +1633,8 @@ export class HiveManager {
       const writable = this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs);
       const rt = verdict?.rt ?? null;
       env.HIVE_SOCK = sock;
-      const settingsPath = join(dir, 'settings.json');
-      this.writeJson(settingsPath, this.hookSettings(rt ? hookCommandFor(rt, true) : null, meta.cwd, opts.mcpDefaults, opts.theme, writable, agentEnabledPlugins(knownPluginIds(claudeUserDir()), agentPluginList(opts.agentPlugins, (why) => { if (this.pluginSettingLogged.has(meta.id)) return; this.pluginSettingLogged.add(meta.id); this.appendLog({ kind: 'agent-plugins-setting', agentId: meta.id, why }); }))));
+      // Written from what the app holds, to the app's own folder: the in-tree agents/<id>/settings.json is never opened.
+      const settingsPath = writeSeatSettings(this.seatSettingsDir, root, meta.id, JSON.stringify(this.hookSettings(rt ? hookCommandFor(rt, true) : null, meta.cwd, opts.mcpDefaults, opts.theme, writable, agentEnabledPlugins(knownPluginIds(claudeUserDir()), agentPluginList(opts.agentPlugins, (why) => { if (this.pluginSettingLogged.has(meta.id)) return; this.pluginSettingLogged.add(meta.id); this.appendLog({ kind: 'agent-plugins-setting', agentId: meta.id, why }); }))), null, 2));
       args.push('--settings', settingsPath);
     }
     return { args, env };

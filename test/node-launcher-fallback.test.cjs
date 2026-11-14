@@ -13,6 +13,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const loadTs = require('./load-ts.cjs');
+const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const { nodeLauncherScript } = loadTs('src/main/nodeLauncher.ts');
@@ -171,7 +172,7 @@ test('Windows, under real cmd.exe: the shim is skipped and a real node runs', { 
 
 test('the hive writes this launcher, and the app\'s binary survives in it', { skip: !POSIX }, async (t) => {
   const { dir } = setup(t);
-  const hive = new HiveManager(() => dir);
+  const hive = withSeatSettings(new HiveManager(() => dir));
   await hive.ensureAgent({ id: 'a1', name: 'A', provider: 'claude', cwd: dir });
   const launcher = path.join(dir, 'hive', 'bin', 'hive-node');
   const r = spawnSync(launcher, ['-e', 'process.stdout.write(String(1 + 1))'], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } });

@@ -7,6 +7,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { removeDir } = require('./codex-test-home.cjs');
 const P = loadTs('src/main/agentPlugins.ts');
 
@@ -58,7 +59,7 @@ test('a Claude agent\'s generated settings carry the map: kept plugins on, every
   const prev = process.env.CLAUDE_CONFIG_DIR;
   process.env.CLAUDE_CONFIG_DIR = d; // the owner's Claude folder, as the app reads it
   t.after(() => { if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prev; });
-  const hive = new HiveManager(() => home);
+  const hive = withSeatSettings(new HiveManager(() => home));
   const read = async (id, opts) => {
     const inj = await hive.ensureAgent({ id, name: id, provider: 'claude', cwd: home }, opts);
     const i = inj.args.indexOf('--settings');
@@ -102,7 +103,7 @@ test('a hand-edited setting never makes ensureAgent throw', async (t) => {
   const { HiveManager } = loadTs('src/main/hive.ts');
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-plugins-home-'));
   t.after(async () => { await removeDir(home); });
-  const hive = new HiveManager(() => home);
+  const hive = withSeatSettings(new HiveManager(() => home));
   for (const bad of [{ github: true }, 'github', [1, 2]]) {
     const inj = await hive.ensureAgent({ id: `h${Math.random().toString(36).slice(2, 7)}`, name: 'h', provider: 'claude', cwd: home }, { agentPlugins: bad });
     assert.ok(inj.args.includes('--settings'));

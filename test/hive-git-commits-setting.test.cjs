@@ -13,6 +13,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
@@ -25,7 +26,7 @@ function home(t) {
 }
 
 async function floor(t, dir, disabled) {
-  const hive = new HiveManager(() => dir);
+  const hive = withSeatSettings(new HiveManager(() => dir));
   hive.setGitCommitsDisabled(disabled);
   await hive.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: dir, isGod: true });
   await hive.ensureAgent({ id: 'worker-1', name: 'Helper', provider: 'claude', cwd: dir });
@@ -66,7 +67,7 @@ test('with the setting nothing commits to a repository that already exists, and 
   const root = path.join(dir, 'hive');
   const before = head(root);
 
-  const hive = new HiveManager(() => dir);
+  const hive = withSeatSettings(new HiveManager(() => dir));
   hive.setGitCommitsDisabled(true);
   hive.ensureHive();
   hive.send(MESSAGE, 'worker-1');
@@ -94,7 +95,7 @@ for (const disabled of [true, false]) {
     const ignore = path.join(dir, 'hive', 'agents', 'worker-1', '.gitignore');
     fs.writeFileSync(ignore, 'keep-me\n');
 
-    const restarted = new HiveManager(() => dir);
+    const restarted = withSeatSettings(new HiveManager(() => dir));
     restarted.setGitCommitsDisabled(disabled);
     restarted.ensureHive();
 

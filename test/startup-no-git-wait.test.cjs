@@ -15,6 +15,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const loadTs = require('./load-ts.cjs');
+const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { archiveOrphanedAgents } = loadTs('src/main/orphanSweep.ts');
 
@@ -23,7 +24,7 @@ const BUDGET_MS = 1_800;   // under one slow git call (2 s), with room for a loa
 
 test('the hive half of startup (ensureHive, generated docs, sweeping 12 orphans) never waits on git', { timeout: 300_000 }, async (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-startup-git-'));
-  const hive = new HiveManager(() => home);
+  const hive = withSeatSettings(new HiveManager(() => home));
   hive.ensureHive();
   await hive.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: home, isGod: true });
   const ids = Array.from({ length: 12 }, (_, i) => `worker-${i + 1}`);

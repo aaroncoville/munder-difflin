@@ -12,6 +12,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 const core = require('../src/main/pipeline/mr-core.cjs');
 
@@ -23,7 +24,7 @@ const SUBMIT = { schema: 'mr.submit/1', card: 'WF-FB-VEHICLES', repo: 'wayfarer'
 async function floor(t) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-pipe-route-'));
   t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
-  const hive = new HiveManager(() => home);
+  const hive = withSeatSettings(new HiveManager(() => home));
   await hive.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: home, isGod: true });
   await hive.ensureAgent({ id: 'worker-1', name: 'Helper', provider: 'claude', cwd: home });
   await hive.ensureAgent({ id: 'worker-2', name: 'Other', provider: 'claude', cwd: home });
@@ -136,7 +137,7 @@ const promptOf = (inj) => inj.args[inj.args.findIndex((a) => a === '--append-sys
 test('agents are told about hive-mr only while a conductor is attached with its path', async (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-pipe-brief-'));
   t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
-  const hive = new HiveManager(() => home);
+  const hive = withSeatSettings(new HiveManager(() => home));
   const cli = '/Applications/Munder Difflin.app/Contents/Resources/hive-mr.cjs';
   const off = promptOf(await hive.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: home, isGod: true }));
   assert.doesNotMatch(off, /hive-mr/);
@@ -189,7 +190,7 @@ test('L1: the same payload sent again under a new message id is a repeat, and th
   assert.match(got[0].key, /^[0-9a-f]{64}$/);
   // After a restart the router's memory is gone: the conductor must dedupe on the key.
   const home = path.dirname(path.dirname(agents));
-  const again = new HiveManager(() => home);
+  const again = withSeatSettings(new HiveManager(() => home));
   const later = [];
   again.setPipelineSink((m) => later.push(m));
   fs.writeFileSync(path.join(agents, 'worker-1', 'outbox', 'third.json'), JSON.stringify({ ...toPipeline(SUBMIT), id: 'third-run' }));
