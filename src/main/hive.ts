@@ -39,6 +39,8 @@ import { COMMAND_GROUPS } from '../shared/claudeCommands';
 import { codexShortHomeRoot } from '../shared/codexRemote';
 import { PrivateDirRefused, privateDirsReach, registerPrivateDir } from './privateDirs';
 import { checkSeatSettingsTarget, seatSettingsFile, writeSeatSettings } from './seatSettings';
+import { claudeFileHooks, claudeHookEntries, hookInventoryRow, type SourceHooks } from './hookInventory';
+import { ownerHooks } from './codexHookTrust';
 import { CodexHomeRefused, codexHomesReach, codexSeatHome, existingCodexHomes, migrateSeatHome } from './codexSeatHome';
 import {
   argsWithSandboxStance,
@@ -617,6 +619,40 @@ export class HiveManager {
   /** Hand one row to the usage log: measure only, so it never throws and never blocks a spawn. */
   private usage(row: Record<string, unknown>): void {
     try { this.usageSink?.(row); } catch { /* measure only */ }
+  }
+  /** One hook-inventory row for a Claude spawn: the hooks in the settings it generated, the owner's user and managed
+   *  settings, and the working folder's project and local files unless the spawn dropped them (hookInventory.ts). */
+  private claudeHookInventory(agentId: string, generated: unknown, cwd: string, dropped: boolean): void {
+    try {
+      const managed = this.managedClaudeSettings;
+      const dropIns: string[] = [];
+      const dropDir = join(dirname(managed), 'managed-settings.d');
+      try { for (const n of readdirSync(dropDir).sort()) if (n.endsWith('.json')) dropIns.push(join(dropDir, n)); } catch { /* none */ }
+      const project = cwd && isAbsolute(cwd) ? join(cwd, '.claude') : null;
+      const sources: SourceHooks[] = [
+        { source: 'app', hooks: claudeHookEntries(generated) },
+        { source: 'user', hooks: claudeFileHooks([join(claudeUserDir(), 'settings.json')]) },
+        { source: 'managed', hooks: claudeFileHooks([managed, ...dropIns]) },
+        ...(dropped ? [] : [
+          { source: 'project' as const, hooks: project ? claudeFileHooks([join(project, 'settings.json')]) : [] },
+          { source: 'local' as const, hooks: project ? claudeFileHooks([join(project, 'settings.local.json')]) : [] },
+        ]),
+      ];
+      this.usage(hookInventoryRow(agentId, 'claude', sources));
+    } catch { /* observe only: never fails a spawn */ }
+  }
+  /** One hook-inventory row for a Codex spawn: the hooks the app generated into its config, and the owner's own hooks
+   *  in the config the app copied there, both as held in memory when it wrote them. */
+  private codexHookInventory(agentId: string, home: string): void {
+    try {
+      const w = this.codexConfigWritten(home);
+      const app = !w ? null : w.hooks ? w.hooks.events.map((event) => ({ event, command: w.hooks!.command })) : [];
+      const owner = w ? ownerHooks(w.ownerToml) : null;
+      this.usage(hookInventoryRow(agentId, 'codex', [
+        { source: 'app', hooks: app },
+        { source: 'owner', hooks: owner ? owner.hooks.map((h) => ({ event: h.eventName, command: h.command })) : null },
+      ]));
+    } catch { /* observe only: never fails a spawn */ }
   }
   /** The machine-wide Claude settings file (a field so a test can point it elsewhere). */
   private managedClaudeSettings = process.platform === 'darwin' ? '/Library/Application Support/ClaudeCode/managed-settings.json'
@@ -1527,6 +1563,7 @@ export class HiveManager {
               // (withCodexRemoteArgs drops it when --remote is added).
               const writableRoots = this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs);
               env.CODEX_HOME = this.installCodexHooks(dir, meta.cwd, meta.id, writableRoots);
+              this.codexHookInventory(meta.id, env.CODEX_HOME);
               // Codex runs a hook only once its exact hash is trusted. The spawn
               // seeds that trust for the generated hooks alone (codexHookTrust.ts)
               // and refuses to start if anything else would need it. There is no
@@ -1656,11 +1693,13 @@ export class HiveManager {
       const rt = verdict?.rt ?? null;
       env.HIVE_SOCK = sock;
       // Written from what the app holds, to the app's own folder: the in-tree agents/<id>/settings.json is never opened.
-      const settingsPath = writeSeatSettings(this.seatSettingsDir, root, meta.id, JSON.stringify(this.hookSettings(rt ? hookCommandFor(rt, true) : null, meta.cwd, opts.mcpDefaults, opts.theme, writable, agentEnabledPlugins(knownPluginIds(claudeUserDir()), agentPluginList(opts.agentPlugins, (why) => { if (this.pluginSettingLogged.has(meta.id)) return; this.pluginSettingLogged.add(meta.id); this.appendLog({ kind: 'agent-plugins-setting', agentId: meta.id, why }); }))), null, 2));
+      const generated = this.hookSettings(rt ? hookCommandFor(rt, true) : null, meta.cwd, opts.mcpDefaults, opts.theme, writable, agentEnabledPlugins(knownPluginIds(claudeUserDir()), agentPluginList(opts.agentPlugins, (why) => { if (this.pluginSettingLogged.has(meta.id)) return; this.pluginSettingLogged.add(meta.id); this.appendLog({ kind: 'agent-plugins-setting', agentId: meta.id, why }); })));
+      const settingsPath = writeSeatSettings(this.seatSettingsDir, root, meta.id, JSON.stringify(generated, null, 2));
       args.push('--settings', settingsPath);
       const dropped = opts.scopedRoots === true;
       if (dropped) args.push('--setting-sources', CLAUDE_USER_SOURCES);
       this.usage({ kind: 'settings-sources', agentId: meta.id, provider: 'claude', projectFiles: projectSettingsCount(meta.cwd), dropped });
+      this.claudeHookInventory(meta.id, generated, meta.cwd, dropped);
     }
     return { args, env };
   }

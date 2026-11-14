@@ -18,6 +18,7 @@
 import { appendFileSync, chmodSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { LOG_TOOLS, PATH_CLASSES, PROVIDERS, SHAPES, START_SOURCES, VIAS } from './writeRoots';
+import { HOOK_SOURCES } from './hookInventory';
 
 export const RETENTION_DAYS = 90;
 const SCHEMA = 1;
@@ -49,7 +50,7 @@ export const VIEWS = [
   'settings', 'memory', 'task-detail', 'terminal-fullscreen'
 ];
 
-type FieldType = 'view' | 'id' | 'agent' | 'card' | 'askKey' | 'count' | 'bool' | 'classes' | { oneOf: readonly string[] };
+type FieldType = 'view' | 'id' | 'agent' | 'card' | 'askKey' | 'count' | 'bool' | 'classes' | 'hookSources' | 'sha256' | { oneOf: readonly string[] };
 
 /** The harness's own sets: a renderer-supplied agent or card id is written only
  *  when one of these holds it. */
@@ -83,7 +84,9 @@ const EVENTS: Record<string, Record<string, FieldType>> = {
   'write-incomplete': { agentId: 'agent', state: { oneOf: ['incomplete'] }, reason: { oneOf: ['queue', 'cap', 'session-start-flood', 'quit', 'log-refused', 'no-agent'] }, shed: 'count', burst: 'bool' },
   // Per Claude spawn: how many of the working folder's project settings files exist (0-2, never read) and whether
   // the seat was launched without them (scopedRoots). A count and a flag, never a path.
-  'settings-sources': { agentId: 'agent', provider: { oneOf: ['claude'] }, projectFiles: 'count', dropped: 'bool' }
+  'settings-sources': { agentId: 'agent', provider: { oneOf: ['claude'] }, projectFiles: 'count', dropped: 'bool' },
+  // Per Claude or Codex spawn: hooks counted per source class (null = could not be read), and a digest over them.
+  'hook-inventory': { agentId: 'agent', provider: { oneOf: ['claude', 'codex'] }, sources: 'hookSources', digest: 'sha256' }
 };
 /** Fields a kind cannot be written without. */
 const REQUIRED: Record<string, string[]> = {
@@ -93,7 +96,8 @@ const REQUIRED: Record<string, string[]> = {
   'write-would-refuse': ['agentId', 'tool', 'via', 'pathClass'], 'write-own-settings': ['agentId', 'tool', 'via'],
   'write-observed': ['agentId', 'tool', 'shape', 'count'],
   'write-incomplete': ['agentId', 'state', 'reason', 'shed', 'burst'],
-  'settings-sources': ['agentId', 'provider', 'projectFiles', 'dropped']
+  'settings-sources': ['agentId', 'provider', 'projectFiles', 'dropped'],
+  'hook-inventory': ['agentId', 'provider', 'sources', 'digest']
 };
 
 function valid(type: FieldType, v: unknown, known: KnownIds): boolean {
@@ -109,6 +113,13 @@ function valid(type: FieldType, v: unknown, known: KnownIds): boolean {
   if (type === 'id') return typeof v === 'string' && ID.test(v);
   if (type === 'count') return Number.isSafeInteger(v) && (v as number) >= 0;
   if (type === 'bool') return typeof v === 'boolean';
+  if (type === 'sha256') return typeof v === 'string' && /^[0-9a-f]{64}$/.test(v);
+  // Exactly { source, count } per entry: a known class and a count or null, nothing else.
+  if (type === 'hookSources') {
+    return Array.isArray(v) && v.length <= HOOK_SOURCES.length && v.every((x) => x !== null && typeof x === 'object' && !Array.isArray(x)
+      && Object.keys(x).length === 2 && (HOOK_SOURCES as readonly string[]).includes((x as { source: unknown }).source as string)
+      && ((x as { count: unknown }).count === null || valid('count', (x as { count: unknown }).count, known)));
+  }
   if (type === 'classes') return Array.isArray(v) && v.length <= PATH_CLASSES.length && v.every((x) => typeof x === 'string' && (PATH_CLASSES as readonly string[]).includes(x));
   return typeof v === 'string' && type.oneOf.includes(v);
 }
