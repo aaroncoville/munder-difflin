@@ -75,6 +75,16 @@ export function useRestoreTeam(config?: HarnessConfig | null): RestoreTeamState 
     note = null;
     emit();
     const prevSel = useStore.getState().selectedId;
+    // addAgent selects each card it adds. The selection the restore itself last set is the card it placed last (or
+    // the earlier selection); any other selection is the owner's own choice, and later cards must not take it away.
+    let lastPlaced: string | null = null;
+    let ownerChoice: string | null = null;
+    /** Every agent this restore gave a card, in the order it did. */
+    const placed: string[] = [];
+    const noteChoice = (): void => {
+      const selected = useStore.getState().selectedId;
+      if (selected !== (lastPlaced ?? prevSel)) ownerChoice = selected;
+    };
     const restorableAgents = useStore.getState().restorableAgents;
     // Tally every agent's outcome so the run ALWAYS leaves a visible trace — the
     // original bug was that every failure path was console-only, so a click that
@@ -89,25 +99,38 @@ export function useRestoreTeam(config?: HarnessConfig | null): RestoreTeamState 
       // synchronously between awaits, so concurrent handlers can't interleave
       // mid-update. Serially this cost the sum of every agent's git probe + spawn;
       // a 6-agent team took ~6× one agent for no reason.
-      // Spawns run concurrently but agents are ADDED in roster order afterwards.
-      // Calling addAgent from inside each spawn made completion timing decide
-      // the roster order — and that order is persisted, so a slow provider or a
-      // slow git probe silently overwrote the sequence the user had dragged the
-      // cards into.
-      const restoredInOrder = await Promise.all([...restorableAgents].map(async (a): Promise<Agent | null> => {
+      // Each card is added as soon as its own spawn answers, at its place in the
+      // roster order. Adding them all after the last spawn answered let one slow
+      // agent (a Codex app server using its whole trust budget) hold back every
+      // card. Adding them in completion order let timing decide the roster order,
+      // and that order is persisted, so a slow provider or a slow git probe
+      // silently overwrote the sequence the user had dragged the cards into.
+      const restoreOne = async (a: (typeof restorableAgents)[number]): Promise<Agent | null> => {
+        // An agent that does not start still gets a stopped card that says why, at its place in the roster, from
+        // which Restart & Continue starts it again (it accepts a terminal that is already gone). Left behind in the
+        // restorable list it had no card, nothing could start it short of relaunching the app, and a later restore
+        // put it after the agents that had started, out of the order the user arranged.
+        const stopped = (why: string): Agent => {
+          failures.push(`${a.name}: ${why}`);
+          return {
+            ...a,
+            provider: inferAgentProvider(a.command, a.provider),
+            ptyId: a.ptyId ?? `pty-${a.id}`,
+            archived: false,
+            status: 'blocked',
+            action: `not started: ${why}`,
+            carrying: undefined,
+            currentStation: 'desk'
+          };
+        };
         // Per-agent guard: one agent's failure (or a rejected IPC call) must NEVER
         // abort the others — an unhandled rejection here used to make the
         // entire restore a silent no-op after the first bad agent.
         try {
           const provider = inferAgentProvider(a.command, a.provider);
           const command = (a.command ?? '').trim() || (config ? buildSpawnCommand(config, a.model, provider) : '');
-          if (!command || !a.cwd) {
-            // No spawn recipe (an old entry persisted before `command`, with no
-            // config to rebuild one). Keep it restorable and SAY why rather than
-            // silently dropping it — silent removal read as "nothing happened".
-            failures.push(`${a.name}: no saved command`);
-            return null;
-          }
+          // No spawn recipe (an old entry persisted before `command`, with no config to rebuild one).
+          if (!command || !a.cwd) return stopped('no saved command');
           const [exe, ...args] = tokenizeCommand(command);
           const ptyId = a.ptyId ?? `pty-${a.id}`;
           // An isolated agent's worktree SURVIVES an app restart on disk (it's only
@@ -180,38 +203,41 @@ export function useRestoreTeam(config?: HarnessConfig | null): RestoreTeamState 
           } else {
             // Record WHY so the outcome is shown on the floor, not buried in the
             // devtools console.
-            failures.push(`${a.name}: ${res.error ?? 'spawn failed'}`);
             console.error('[restore] spawn failed for', a.id, res.error);
-            // And keep the agent on the floor: a stopped card that says why, with its
-            // terminal id, so Restart & Continue starts it again (it accepts a terminal
-            // that is already gone). Left only in the restorable list it had no card,
-            // and nothing could start it short of relaunching the app.
-            useStore.getState().removeRestorableAgent(a.id);
-            return {
-              ...a,
-              provider,
-              ptyId,
-              archived: false,
-              status: 'blocked',
-              action: `not started: ${res.error ?? 'spawn failed'}`,
-              carrying: undefined,
-              currentStation: 'desk'
-            };
+            return stopped(res.error ?? 'spawn failed');
           }
         } catch (e) {
-          failures.push(`${a.name}: ${e instanceof Error ? e.message : String(e)}`);
           console.error('[restore] error for', a.id, e);
+          return stopped(e instanceof Error ? e.message : String(e));
         }
         return null;
-      }));
-      // Add in the ORIGINAL roster order, not completion order.
-      for (const restoredAgent of restoredInOrder) {
-        if (restoredAgent) useStore.getState().addAgent(restoredAgent);
-      }
+      };
+      const order = restorableAgents.map((a) => a.id);
+      const place = (card: Agent): void => {
+        const before = useStore.getState().agents.some((x) => x.id === card.id);
+        noteChoice();
+        // The agent stays in the restorable list until the whole restore ends, so a quit before then leaves the
+        // next launch the order to put it back in (reconcileWithLivePtys).
+        useStore.getState().addAgent(card, { keepRestorable: true });
+        placed.push(card.id);
+        lastPlaced = card.id;
+        if (ownerChoice && useStore.getState().agents.some((x) => x.id === ownerChoice)) useStore.getState().select(ownerChoice);
+        if (before) return;
+        // Ahead of the first card already on the floor that comes later in the roster.
+        const rank = order.indexOf(card.id);
+        const next = useStore.getState().agents.find((x) => x.id !== card.id && order.indexOf(x.id) > rank);
+        if (next) useStore.getState().reorderAgents(card.id, next.id);
+      };
+      await Promise.all(restorableAgents.map((a) => restoreOne(a).then((card) => { if (card) place(card); })));
     } finally {
-      // addAgent auto-selects each spawn; put the user back where they were.
+      // Every agent this restore placed has had a card (started or stopped), whether it is still on the floor, was
+      // archived or removed meanwhile, or the restore failed part-way: none of them is restorable any more.
+      for (const id of placed) useStore.getState().removeRestorableAgent(id);
+      // addAgent auto-selects each spawn; put the user back where they were, or on the card they chose meanwhile.
+      noteChoice();
       const sel = useStore.getState();
-      if (prevSel && sel.agents.some((x) => x.id === prevSel)) sel.select(prevSel);
+      const keep = ownerChoice ?? prevSel;
+      if (keep && sel.agents.some((x) => x.id === keep)) sel.select(keep);
       restoring = false;
       // ALWAYS surface a result so the button can never look inert.
       const parts: string[] = [];

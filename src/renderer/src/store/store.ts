@@ -232,7 +232,8 @@ interface State {
   renameAgent: (id: string, name: string) => Promise<{ ok: boolean; error?: string }>;
   setAgentNote: (id: string, note: string) => void;
   pushFeed: (id: string, line: string) => void;
-  addAgent: (agent: Agent) => void;
+  /** keepRestorable: leave the agent's restorable entry in place (a restore removes it when it ends). */
+  addAgent: (agent: Agent, opts?: { keepRestorable?: boolean }) => void;
   removeAgent: (id: string) => void;
   /** Archive an agent (its terminal was closed): move it from the active roster
    *  into `archivedAgents` with its PTY cleared. Retained + flagged, NOT deleted. */
@@ -790,7 +791,7 @@ export const useStore = create<State>((set, get) => ({
     }),
   pushFeed: (id, line) =>
     set((s) => ({ feeds: { ...s.feeds, [id]: [...(s.feeds[id] ?? []), line] } })),
-  addAgent: (agent) =>
+  addAgent: (agent, opts) =>
     set((s) => {
       // Idempotent by id: a MAIN-initiated spawn broadcast (hive:agentSpawned, e.g.
       // a voice hire) and a renderer-initiated hire (AddAgentModal) can both call
@@ -815,7 +816,7 @@ export const useStore = create<State>((set, get) => ({
       // Re-spawning an archived agent un-archives it: an id is active xor archived.
       const archivedAgents = s.archivedAgents.filter((a) => a.id !== agent.id);
       // A live (re)spawn also consumes any restorable entry for the same id.
-      const restorableAgents = s.restorableAgents.filter((a) => a.id !== agent.id);
+      const restorableAgents = opts?.keepRestorable ? s.restorableAgents : s.restorableAgents.filter((a) => a.id !== agent.id);
       persistAgents(agents, agent.id);
       persistArchived(archivedAgents);
       if (restorableAgents.length !== s.restorableAgents.length) persistRestorable(restorableAgents);
@@ -834,9 +835,12 @@ export const useStore = create<State>((set, get) => ({
       const { [id]: _queueGone, ...messageQueues } = s.messageQueues;
       const selectedId = s.selectedId === id ? (agents[0]?.id ?? null) : s.selectedId;
       const fullscreenAgentId = refocusAfterRemoval(s.fullscreenAgentId, agents, selectedId);
+      // A removed agent is not offered for restore either (a restore keeps its entry until it ends).
+      const restorableAgents = s.restorableAgents.filter((a) => a.id !== id);
       persistAgents(agents, selectedId);
       if (_queueGone) persistQueues(messageQueues);
-      return { agents, feeds, selectedId, messageQueues, fullscreenAgentId };
+      if (restorableAgents.length !== s.restorableAgents.length) persistRestorable(restorableAgents);
+      return { agents, feeds, selectedId, messageQueues, fullscreenAgentId, restorableAgents };
     }),
   archiveAgent: (id) =>
     set((s) => {
@@ -858,10 +862,13 @@ export const useStore = create<State>((set, get) => ({
       const { [id]: _queueGone, ...messageQueues } = s.messageQueues;
       const selectedId = s.selectedId === id ? (agents[0]?.id ?? null) : s.selectedId;
       const fullscreenAgentId = refocusAfterRemoval(s.fullscreenAgentId, agents, selectedId);
+      // An archived agent is not offered for restore either (a restore keeps its entry until it ends).
+      const restorableAgents = s.restorableAgents.filter((a) => a.id !== id);
       persistAgents(agents, selectedId);
       persistArchived(archivedAgents);
       if (_queueGone) persistQueues(messageQueues);
-      return { agents, archivedAgents, feeds, selectedId, messageQueues, fullscreenAgentId };
+      if (restorableAgents.length !== s.restorableAgents.length) persistRestorable(restorableAgents);
+      return { agents, archivedAgents, feeds, selectedId, messageQueues, fullscreenAgentId, restorableAgents };
     }),
   removeArchivedAgent: (id) =>
     set((s) => {
@@ -1009,16 +1016,27 @@ export const useStore = create<State>((set, get) => ({
       const live = new Set(livePtyIds);
       // Keep agents with no PTY (synthetic) or whose PTY is still alive.
       const agents = s.agents.filter((a) => !a.ptyId || live.has(a.ptyId));
-      if (agents.length === s.agents.length) return s;
+      if (agents.length === s.agents.length) {
+        // Every terminal survived. An agent on the floor is still never also offered for restore: a restore that was
+        // interrupted (a reload) leaves its entries in the restorable list.
+        const restorableAgents = s.restorableAgents.filter((r) => !agents.some((a) => a.id === r.id));
+        if (restorableAgents.length === s.restorableAgents.length) return s;
+        persistRestorable(restorableAgents);
+        return { restorableAgents };
+      }
       // Workers whose terminal died with the previous session become restorable
       // (full spawn recipe retained) instead of silently vanishing. God and the
       // prep assistant are excluded — they auto-respawn at boot.
       const dead = s.agents.filter(
         (a) => a.ptyId && !live.has(a.ptyId) && !a.isGod && !a.isAssistant
       );
+      // A dead agent that is still in the restorable list (a restore was interrupted) goes back in its place there,
+      // so the roster keeps its order; any other comes after. Entries of agents whose terminal survived are dropped.
       const restorableAgents = [
-        ...s.restorableAgents.filter((r) => !dead.some((d) => d.id === r.id)),
-        ...dead
+        ...s.restorableAgents
+          .filter((r) => !agents.some((a) => a.id === r.id))
+          .map((r) => dead.find((d) => d.id === r.id) ?? r),
+        ...dead.filter((d) => !s.restorableAgents.some((r) => r.id === d.id))
       ];
       const feeds: Record<string, string[]> = {};
       for (const a of agents) feeds[a.id] = s.feeds[a.id] ?? [];
