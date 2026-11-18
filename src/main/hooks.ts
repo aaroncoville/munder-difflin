@@ -511,6 +511,8 @@ export class HookServer {
     // should and blinds nothing.
     if (event === 'UserPromptSubmit' && agentId) {
       this.breaker?.recordUserPrompt(agentId);
+      // A new turn reads the inbox, so the mail that woke it is not announced again on its first tool call.
+      try { this.hive.clearMailLine?.(agentId); } catch { /* optional */ }
     }
 
     // Compaction exemption (issue #109): PreCompact opens it so the compaction
@@ -529,6 +531,8 @@ export class HookServer {
       // and burns no tokens, so any Δoutput the arm sees here is stale
       // usage-sample noise, not real generation.
       this.breaker?.recordStop(agentId);
+      // The turn is over: mail it has not read is the idle wake's to announce, not a line in the next turn.
+      if (event === 'Stop') { try { this.hive.clearMailLine?.(agentId); } catch { /* optional */ } }
       // Respect any upstream Stop hook that already re-entered this boundary.
       if (p.stop_hook_active) { this.emit(agentId, event, p); return {}; }
       // Never turn unread hive mail into a forced continuation at Stop. That old
@@ -622,12 +626,23 @@ export class HookServer {
       }
     }
 
-    if (steer || roster || goal) {
+    // New hive mail during a turn: one line, count and sender ids only (mailLine.ts), on the next tool call, so a
+    // reply reaches an agent mid-turn instead of when its turn ends. God has its own heartbeat path; an agent whose
+    // delivery the operator paused is not told until it resumes. The line comes from the summary the app keeps as it
+    // delivers, so this reads no folder and opens no file. Optional: nothing here may break the hook's reply.
+    let mail: string | null = null;
+    if (event === 'PostToolUse' && agentId) {
+      try {
+        if (!this.hive.isGod(agentId) && !this.control?.isAutoDeliveryPaused?.(agentId)) mail = this.hive.takeMailLine?.(agentId) ?? null;
+      } catch { mail = null; }
+    }
+
+    if (steer || roster || goal || mail) {
       this.emit(agentId, event, p);
       return {
         hookSpecificOutput: {
           hookEventName: event,
-          additionalContext: [roster, goal, steer].filter(Boolean).join('\n\n')
+          additionalContext: [roster, goal, steer, mail].filter(Boolean).join('\n\n')
         }
       };
     }

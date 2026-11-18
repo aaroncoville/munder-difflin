@@ -61,6 +61,7 @@ import { refreshMineIgnoresOnce } from './hiveMineIgnore';
 import { carryHiveGitDir, excludeLine, hiveGitDirFor, hiveRepoPresent, SET_ASIDE_PREFIX, settleHiveGitDir, writeGitfile, writeMarker } from './hiveGitDir';
 import { AGENT_ALLOWLIST_IGNORE_LINES, CommitQueue, HIVE_MAINTENANCE_EVERY_MS, HIVE_MAINTENANCE_IDLE_MS, HIVE_MAINTENANCE_TASKS, HIVE_MAINTENANCE_TIMEOUT_MS, HIVE_STALE_LOCK_MS, HIVE_STALE_MAINTENANCE_LOCK_MS, maintenanceArgs, runGit, stopRunningGits, untrackIgnored, type GitResult } from './hiveCommit';
 import { agentFolderId, hasExactFolder, isAppSender, isFolderName, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, RegistryUnreadable, rosterIdFor, shortTarget } from './messageTarget';
+import { mailSender, PendingMail } from './mailLine';
 import { nodeLauncherScript } from './nodeLauncher';
 import { codexTrustEntry } from '../shared/codexTrust';
 import { withCodexWritableRoots } from '../shared/codexWritableRoots';
@@ -473,6 +474,8 @@ export class HiveManager {
   ) {}
 
   private routerTimer: NodeJS.Timeout | null = null;
+  /** Mail delivered to each agent since its mid-turn line was last taken (mailLine.ts). */
+  private readonly pendingMail = new PendingMail();
 
   /** The protocol text each positional-prompt worker was last started with. A
    *  Codex worker that moves to a new thread is handed it again (codexThread.ts). */
@@ -1035,7 +1038,7 @@ export class HiveManager {
             rowRestored = true;
             if (v.archivePending) writeFileSync(join(v.dir, ARCHIVE_PENDING), '');
           }
-          else { delete reg.agents[v.agentId]; rowRemoved = true; }
+          else { delete reg.agents[v.agentId]; rowRemoved = true; this.pendingMail.clear(v.agentId); }
           this.atomicWriteJson(join(root, 'registry.json'), reg);
         }
       }
@@ -1735,6 +1738,8 @@ export class HiveManager {
    * asked. Best-effort — never throws, so a dying PTY/kill handler can't crash.
    */
   setArchived(id: string, archived: boolean): void {
+    // An archived agent takes no mid-turn mail line, so it keeps no summary.
+    if (archived) this.pendingMail.clear(id);
     const root = this.root();
     if (!root) return;
     try {
@@ -2391,6 +2396,12 @@ export class HiveManager {
     const inbox = join(this.agentDir(toId), 'inbox');
     if (!existsSync(inbox)) return false; // unknown recipient — the caller reports it
     const id = publishMessage(inbox, msg, () => `${stamp()}-${shortRand()}`);
+    // For the mid-turn mail line: only for an agent that can take it (not god, not archived). The sender is the one as
+    // routed (the outbox's owner, or the app); one off the roster, or not a plain short id, is not named.
+    const reg = this.routingRegistry();
+    if (!reg.agents[toId]?.archived && !this.isGod(toId)) {
+      this.pendingMail.delivered(toId, mailSender(msg.from, isRosterId(reg.agents, msg.from) || isAppSender(msg.from)));
+    }
     if (id !== msg.id) {
       this.appendLog({ kind: 'message-id-replaced', reason: 'duplicate', from: msg.from, to: toId, id });
       this.replacedIds.set(msg.id, { ...this.replacedIds.get(msg.id), [toId]: id });
@@ -3053,6 +3064,15 @@ export class HiveManager {
       // meaningfully longer means the agent appended durable facts.
       return readFileSync(p, 'utf8').trim().length > 200;
     } catch { return false; }
+  }
+  /** The mid-turn mail line for an agent (mailLine.ts), or null; taking it empties the agent's summary. In memory
+   *  only: no folder is read. */
+  takeMailLine(id: string): string | null {
+    return this.pendingMail.take(id);
+  }
+  /** Forget an agent's mail summary when its turn ends. */
+  clearMailLine(id: string): void {
+    this.pendingMail.clear(id);
   }
   inbox(id: string): HiveMessage[] {
     const dir = this.callerDir(id);
