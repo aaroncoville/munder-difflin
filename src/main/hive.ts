@@ -65,7 +65,7 @@ import { mailSender, PendingMail } from './mailLine';
 import { nodeLauncherScript } from './nodeLauncher';
 import { codexTrustEntry } from '../shared/codexTrust';
 import { withCodexWritableRoots, withOnlyCodexWritableRoots } from '../shared/codexWritableRoots';
-import { canonical, FAIL_CLOSED_DIR, FAIL_CLOSED_FILE, PROTECTED_WRITE_TOOLS, scopedRoots } from './writeRoots';
+import { canonical, FAIL_CLOSED_DIR, FAIL_CLOSED_FILE, PROTECTED_WRITE_TOOLS, seatRoots } from './writeRoots';
 import { godNameFromRegistry } from '../shared/godIdentity';
 import { appendSession } from './codexActivity';
 import { isSafeMessageId, publishMessage, sweepInboxLeftovers } from './messageId';
@@ -1992,17 +1992,15 @@ export class HiveManager {
   }
 
   /** With scoped roots on, the roots the role needs instead of the whole hive, from the same model the dry run reports
-   *  with (writeRoots.ts): an agent gets its own folder, `evidence/` and a working folder outside the hive; god the hive
-   *  root and its working folder, which sits above the hive on purpose (the model leaves a folder above the hive out, so
-   *  it is added here). `evidence/` is granted only while it is a real folder: a link planted there while every agent
+   *  with (writeRoots.ts seatRoots): an agent gets its own folder, `evidence/` and a working folder outside the hive;
+   *  god the hive root and its working folder, which sits above the hive on purpose. `evidence/` is granted only while it is a real folder: a link planted there while every agent
    *  could write the hive root would carry the grant wherever it points. */
   private scopedWritableDirs(meta: AgentMeta, dir: string, root: string): string[] {
     const cwd = meta.cwd ? expandTilde(meta.cwd) : '';
-    const roots = scopedRoots({ root, agentId: meta.id, isGod: meta.isGod === true, cwd }, dir);
+    const roots = seatRoots({ root, agentId: meta.id, isGod: meta.isGod === true, cwd }, dir);
     const evidence = join(canonical(root), 'evidence');
     const realDir = (p: string): boolean => { try { const st = lstatSync(p); return st.isDirectory() && !st.isSymbolicLink(); } catch { return false; } };
-    const kept = roots.filter((r) => r !== evidence || realDir(r));
-    return meta.isGod === true && isAbsolute(cwd) ? [canonical(cwd), ...kept] : kept;
+    return roots.filter((r) => r !== evidence || realDir(r));
   }
 
   private hookSettings(cmd: string | null, cwd: string, cfg: McpDefaultsMap, theme?: 'light' | 'dark', writableDirs: string[] = [], enabledPlugins?: Record<string, boolean>, scoped = false): unknown {

@@ -178,6 +178,14 @@ export function scopedRoots(ctx: RootsContext, own?: string): string[] {
   return [...new Set(roots)];
 }
 
+/** The roots a seat is given when scoped roots are enforced: scopedRoots, and for god its working folder too, which
+ *  sits above the hive on purpose (scopedRoots leaves a folder above the hive out). */
+export function seatRoots(ctx: RootsContext, own?: string): string[] {
+  const roots = scopedRoots(ctx, own);
+  const cwd = cwdOf(ctx);
+  return ctx.isGod && cwd ? [...new Set([cwd, ...roots])] : roots;
+}
+
 function absolute(p: string, ctx: RootsContext): string {
   const base = cwdOf(ctx) || canonical(ctx.root);
   return canonical(isAbsolute(p) ? p : join(base, p));
