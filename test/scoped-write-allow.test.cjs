@@ -52,7 +52,7 @@ async function floor(t, scoped) {
   const server = new HookServer(hive, () => null, () => ({ notifications: false, scopedRoots: scoped }), undefined, undefined);
   server.setWriteGate((seat) => enforcedRoots(hive.root(), seat, spawned[seat]));
   const bare = new HookServer(hive, () => null, () => ({ notifications: false }), undefined, undefined);
-  const call = (srv, seat, tool_name, tool_input) => srv.handle({ hive_seat_id: seat, agent_id: seat, session_id: 's', hook_event_name: 'PreToolUse', tool_name, tool_input });
+  const call = (srv, seat, tool_name, tool_input) => srv.handle({ hive_seat_id: seat, agent_id: seat, cwd: spawned[seat]?.cwd, session_id: 's', hook_event_name: 'PreToolUse', tool_name, tool_input });
   const seatSettings = path.dirname(hive.seatSettingsPath('ag'));
   return { base, harness, work, palace, tmp, runtime, seatSettings, root: hive.root(), server, bare, call, fire: (...a) => call(server, ...a) };
 }

@@ -437,9 +437,10 @@ export const isProtectedWrite = (tool: unknown): boolean => typeof tool === 'str
  *  every path the call names (an edit tool's target fields, a patch's file lines, read as observeTool reads them) must
  *  lie inside the seat's roots (seatRoots), its grants or its temp folders, wherever it is, inside the hive or not.
  *  Anything else is refused: the app's folders outside the hive, the home folder, any other place. A call whose paths
- *  cannot all be read (past the path bounds, a patch with no file lines) reads `unknown` and is refused. Tools other
- *  than the protected ones are null. */
-export function refusedWrite(tool: unknown, input: unknown, ctx: RootsContext): PathClass | null {
+ *  cannot all be read (past the path bounds, a patch with no file lines) reads `unknown` and is refused. A relative
+ *  path is read against `callCwd`, the working folder the hook call reports, since the CLI may have moved since it was
+ *  spawned; with no absolute call folder it cannot be read and is refused. Tools other than the protected ones are null. */
+export function refusedWrite(tool: unknown, input: unknown, ctx: RootsContext, callCwd?: unknown): PathClass | null {
   if (!isProtectedWrite(tool)) return null;
   return withMemo(() => {
     const r = rec(input);
@@ -451,9 +452,11 @@ export function refusedWrite(tool: unknown, input: unknown, ctx: RootsContext): 
     if (!paths.length) return 'unknown';
     if (cut.truncated || paths.length > MAX_PATHS || !paths.every(admitPath)) return 'unknown';
     const allowed = [...seatRoots(ctx), ...[...(ctx.grants ?? []), ...(ctx.temp ?? [])].filter((p) => typeof p === 'string' && isAbsolute(p) && admitPath(p)).map(canonical)];
+    const base = typeof callCwd === 'string' && isAbsolute(callCwd) ? callCwd : null;
     for (const p of paths) {
-      const abs = absolute(p, ctx);
-      if (!allowed.some((a) => within(abs, a))) return pathClass(p, ctx);
+      if (!isAbsolute(p) && !base) return 'unknown';
+      const abs = canonical(isAbsolute(p) ? p : join(base as string, p));
+      if (!allowed.some((a) => within(abs, a))) return pathClass(abs, ctx);
     }
     return null;
   });

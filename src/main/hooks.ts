@@ -434,7 +434,7 @@ export class HookServer {
         if (this.getConfig().scopedRoots !== true) return null;
         return 'Refused by scoped write roots: the agent this call belongs to could not be identified.';
       }
-      cls = refusedWrite(p.tool_name, p.tool_input, ctx);
+      cls = refusedWrite(p.tool_name, p.tool_input, ctx, p.cwd);
     } catch { cls = 'unknown'; }
     return cls ? `Refused by scoped write roots: this agent may not write there (${cls}). Write in your own folder, evidence/ or your working folder.` : null;
   }

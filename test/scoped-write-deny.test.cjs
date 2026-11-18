@@ -49,8 +49,8 @@ async function floor(t, scoped) {
   const server = new HookServer(hive, () => null, () => ({ notifications: false, scopedRoots: scoped }), undefined, undefined);
   server.setWriteGate((agentId) => enforcedRoots(hive.root(), agentId, spawned[agentId]));
   const bare = new HookServer(hive, () => null, () => ({ notifications: false }), undefined, undefined);
-  // As the shim sends it: the CLI's agent_id, and the seat the app spawned as hive_seat_id.
-  const call = (srv, agentId, tool_name, tool_input, extra = {}) => srv.handle({ hive_seat_id: agentId, agent_id: agentId, session_id: 's', hook_event_name: 'PreToolUse', tool_name, tool_input, ...extra });
+  // As the shim sends it: the CLI's agent_id, its working folder, and the seat the app spawned as hive_seat_id.
+  const call = (srv, agentId, tool_name, tool_input, extra = {}) => srv.handle({ hive_seat_id: agentId, agent_id: agentId, cwd: spawned[agentId]?.cwd, session_id: 's', hook_event_name: 'PreToolUse', tool_name, tool_input, ...extra });
   return { base, harness, work, root, server, bare, call, fire: (...a) => call(server, ...a) };
 }
 
@@ -89,7 +89,7 @@ test('flag on: a write to another seat\'s outbox, the task list or a hook config
   assertDeny(f, await f.fire('ag', 'Write', { file_path: path.join(f.root, 'tasks.json'), content: '[]' }), 'tasks.json', 'Write to tasks.json');
   assertDeny(f, await f.fire('ag', 'Write', { file_path: path.join(f.root, '.claude', 'settings.json'), content: '{}' }), 'hive root (other)', 'Write to a hook config in the hive');
   // A relative path is read against the seat's working folder, as the CLI reads it.
-  assertDeny(f, await f.fire('ag', 'Write', { file_path: path.relative(f.work, path.join(f.root, 'registry.json')), content: '{}' }), 'registry.json', 'relative Write');
+  assertDeny(f, await f.fire('ag', 'Write', { file_path: path.relative(f.work, path.join(f.root, 'registry.json')), content: '{}' }, { cwd: f.work }), 'registry.json', 'relative Write');
 });
 
 test('flag on: the deny holds in bypass mode, where nothing prompts', async (t) => {

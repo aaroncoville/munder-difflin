@@ -34,3 +34,23 @@ test('an edit tool call with no recognised path field is refused', (t) => {
   }
   assert.equal(refusedWrite('Write', { file_path: path.join(f.me, 'm.md'), content: 'x' }, f.ctx()), null, 'a recognised field inside the roots');
 });
+
+test('a relative path is read against the hook call\'s working folder, never the one the seat was spawned in', (t) => {
+  const f = floor(t);
+  const nested = path.join(f.me, 'nested');
+  const evidence = path.join(f.root, 'evidence');
+  // Spawned in a folder nested in its own folder, the CLI has since moved to evidence/: ../tasks.json is the hive's.
+  assert.equal(refusedWrite('Write', { file_path: '../tasks.json' }, f.ctx(nested), evidence), 'tasks.json');
+  assert.equal(refusedWrite('Write', { file_path: '../tasks.json' }, f.ctx(nested), nested), null, 'read against the call\'s folder, it is the seat\'s own');
+  assert.equal(refusedWrite('apply_patch', { input: '*** Update File: ../agents/other/m.md\n' }, f.ctx(), evidence), 'other agent folder');
+  assert.equal(refusedWrite('apply_patch', { input: '*** Add File: src/a.ts\n' }, f.ctx(), f.work), null);
+});
+
+test('a relative path with no working folder in the hook call is refused', (t) => {
+  const f = floor(t);
+  for (const cwd of [undefined, '', 'relative/dir', 42]) {
+    assert.equal(refusedWrite('Write', { file_path: 'src/a.ts' }, f.ctx(), cwd), 'unknown', `call cwd ${JSON.stringify(cwd)}`);
+    assert.equal(refusedWrite('apply_patch', { input: '*** Add File: src/a.ts\n' }, f.ctx(), cwd), 'unknown', `patch, call cwd ${JSON.stringify(cwd)}`);
+  }
+  assert.equal(refusedWrite('Write', { file_path: path.join(f.work, 'a.ts') }, f.ctx()), null, 'an absolute path needs no working folder');
+});
