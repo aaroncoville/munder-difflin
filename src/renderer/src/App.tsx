@@ -33,6 +33,7 @@ import { TaskDetailOverlay } from '@/components/TaskDetailOverlay';
 import { IdePanel } from '@/ide/IdePanel';
 import { useHoldOptionToTalk } from '@/freeflow/holdOption';
 import brandLogo from '@/assets/sixth-history/logo.png?url';
+import { PRODUCT_NAME } from '@shared/productName';
 
 // Injected at build time from package.json (see electron.vite.config.ts).
 declare const __APP_VERSION__: string;
@@ -300,6 +301,16 @@ export function App() {
           alt="Sixth History"
           style={{ height: 24, width: 24, display: 'block', objectFit: 'contain' }}
         />
+        {/* The window hides the native title (hiddenInset), so this is the only
+            place the name is shown while the app is open. */}
+        <span style={{
+          fontFamily: 'var(--cth-font-ui)',
+          fontSize: 13,
+          fontWeight: 600,
+          color: 'var(--cth-ink-900)'
+        }}>
+          {PRODUCT_NAME}
+        </span>
         {/* v0.3.7: the version is no longer inert text — it doubles as the
             update control (check / download / restart to update). */}
         {UPDATE_FEED_ENABLED ? <UpdateBadge /> : <AppVersionLabel />}
