@@ -4400,6 +4400,14 @@ Other agents read them and never write them: to change a card (its status, its a
 and the agent working it tells god as soon as it changes. Your own files go under your own folder
 (\`agents/<your-id>/\`) or \`evidence/\`.
 
+## When scoped write roots are on
+Agents other than god can write only their own folder, \`evidence/\` and their working folder; a write anywhere
+else is refused.
+Only these commands may run outside the sandbox: ${SCOPED_UNSANDBOXED_COMMANDS.map((c) => `\`${c}\``).join(', ')}.
+Everything else runs sandboxed, with no retry outside it. A call matches only when it starts with one of them: one
+that starts with \`cd\`, uses a redirect or a \`$(...)\` stays sandboxed. So run \`npm --prefix <dir> run test:focused\`,
+not \`cd <dir> && npm run test:focused\`.
+
 ## Asking the human (the ASK ME card)
 When a card can only move with the human — a question to answer, or an action only they can do
 (create an account, approve a spend, hand over credentials, test on their device) — the god sets the
