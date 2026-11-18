@@ -110,6 +110,10 @@ export interface RootsContext {
   cwd: string;
   /** The user's home, for `~` and `$HOME`; defaults to os.homedir(). */
   home?: string;
+  /** Enforcement only: folders the seat was granted besides its role's roots (the shared memory folder), and its temp
+   *  folders. A protected write is allowed inside these too. */
+  grants?: string[];
+  temp?: string[];
 }
 
 // A per-call memo, so the root, own folder and cwd are resolved once, and repeats cost nothing.
@@ -429,14 +433,31 @@ export function observeTool(tool: string, input: unknown, ctx: RootsContext, bud
 export const PROTECTED_WRITE_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'apply_patch'] as const;
 export const isProtectedWrite = (tool: unknown): boolean => typeof tool === 'string' && (PROTECTED_WRITE_TOOLS as readonly string[]).includes(tool);
 
-/** With scoped roots enforced: the class of a path this call may not write, or null when it may run. Judged by
- *  observeTool, so it refuses exactly what the dry run records as would-refuse (a call cut short or an agent folder
- *  that cannot be shown to be the agent's own reads `unknown`, and is refused). Tools other than the protected ones
- *  are null. */
+/** With scoped roots enforced: the class of a path this call may not write, or null when it may run. An allow check:
+ *  every path the call names (an edit tool's target fields, a patch's file lines, read as observeTool reads them) must
+ *  lie inside the seat's roots (seatRoots), its grants or its temp folders, wherever it is, inside the hive or not.
+ *  Anything else is refused: the app's folders outside the hive, the home folder, any other place. A call whose paths
+ *  cannot all be read (past the path bounds, a patch with no file lines) reads `unknown` and is refused. Tools other
+ *  than the protected ones are null. */
 export function refusedWrite(tool: unknown, input: unknown, ctx: RootsContext): PathClass | null {
   if (!isProtectedWrite(tool)) return null;
-  const hit = observeTool(tool as string, input, ctx).find((o) => o.refused);
-  return hit ? hit.pathClass : null;
+  return withMemo(() => {
+    const r = rec(input);
+    const cut = { truncated: false };
+    let paths: string[];
+    if (EDIT_TOOLS.has(tool as string)) paths = PATH_FIELDS.flatMap((k) => (typeof r[k] === 'string' ? [r[k] as string] : []));
+    else {
+      paths = patchPaths(input, cut);
+      if (!paths.length) return 'unknown';
+    }
+    if (cut.truncated || paths.length > MAX_PATHS || !paths.every(admitPath)) return 'unknown';
+    const allowed = [...seatRoots(ctx), ...[...(ctx.grants ?? []), ...(ctx.temp ?? [])].filter((p) => typeof p === 'string' && isAbsolute(p) && admitPath(p)).map(canonical)];
+    for (const p of paths) {
+      const abs = absolute(p, ctx);
+      if (!allowed.some((a) => within(abs, a))) return pathClass(p, ctx);
+    }
+    return null;
+  });
 }
 
 /** Why the hook shim refused a protected write it could not get checked (scoped roots): no socket to reach, another
@@ -450,11 +471,14 @@ export const FAIL_CLOSED_FILE = new RegExp(`^([A-Za-z0-9][A-Za-z0-9._-]{0,127}|_
 /** The roots context the hook holds a seat to, from what the app spawned it with: 'unchecked' for a seat whose writes
  *  are not checked (spawned with scoped roots off, or a provider the app does not give scoped roots), null for an id
  *  the app did not spawn (or no hive). */
-export function enforcedRoots(root: string | null, agentId: string, spawned: { scoped?: boolean; provider: string; isGod: boolean; cwd: string } | undefined): RootsContext | 'unchecked' | null {
+export function enforcedRoots(root: string | null, agentId: string, spawned: { scoped?: boolean; provider: string; isGod: boolean; cwd: string; env?: Record<string, string>; grants?: string[] } | undefined): RootsContext | 'unchecked' | null {
   if (!root || !spawned) return null;
   if (spawned.scoped !== true) return 'unchecked';
   if (spawned.provider !== 'claude' && spawned.provider !== 'codex') return 'unchecked';
-  return { root, agentId, isGod: spawned.isGod, cwd: spawned.cwd };
+  // The temp folders the CLI's sandbox lets it write, from the spawn's own environment, as the dry run reads them.
+  const places = launchPlaces(spawned.provider, spawned.env, homedir());
+  const temp = 'unknown' in places ? [] : places.tmpDirs;
+  return { root, agentId, isGod: spawned.isGod, cwd: spawned.cwd, grants: [...(spawned.grants ?? [])], temp };
 }
 
 // --- effective roots ---
