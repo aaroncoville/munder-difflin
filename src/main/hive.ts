@@ -65,7 +65,7 @@ import { mailSender, PendingMail } from './mailLine';
 import { nodeLauncherScript } from './nodeLauncher';
 import { codexTrustEntry } from '../shared/codexTrust';
 import { withCodexWritableRoots, withOnlyCodexWritableRoots } from '../shared/codexWritableRoots';
-import { canonical, FAIL_CLOSED_DIR, FAIL_CLOSED_FILE, PROTECTED_WRITE_TOOLS, seatRoots } from './writeRoots';
+import { canonical, FAIL_CLOSED_DIR, FAIL_CLOSED_FILE, ownFolderProblem, PROTECTED_WRITE_TOOLS, ScopedRootsRefused, seatRoots } from './writeRoots';
 import { godNameFromRegistry } from '../shared/godIdentity';
 import { appendSession } from './codexActivity';
 import { isSafeMessageId, publishMessage, sweepInboxLeftovers } from './messageId';
@@ -634,6 +634,11 @@ export class HiveManager {
       try { rmSync(taken, { recursive: true, force: true }); } catch { /* removed on a later read */ }
       if (count > 0) this.usage({ kind: 'write-fail-closed', ...(m[1] === '_unknown' ? {} : { agentId: m[1] }), reason: m[2], count });
     }
+  }
+  /** Refuses the spawn (ScopedRootsRefused) when the agent's own folder is not the real folder <hive>/agents/<id>. */
+  private refuseUntrustedOwnFolder(root: string, agentId: string): void {
+    const why = ownFolderProblem(root, agentId);
+    if (why) throw new ScopedRootsRefused(`${shortTarget(agentId)} cannot start: ${why}`);
   }
   /** Per agent, what its latest provisioning decided about scoped roots: whether they are on for it, its role and the
    *  folders it was granted besides its role's roots. Held in memory, so a later step of the same spawn (a resumed
@@ -1433,6 +1438,8 @@ export class HiveManager {
     const scoped = opts.scopedRoots === true;
     // The shared folder every agent may write under scoped roots; the hive root itself is not theirs to create it in.
     if (scoped) mkdirSync(join(root, 'evidence'), { recursive: true });
+    // The agent's own folder is granted, so it must be the real folder the app expects, before anything is written in it.
+    if (scoped) this.refuseUntrustedOwnFolder(root, meta.id);
     // A Claude seat's settings file must have a home outside the hive, decided before anything for it is created.
     if (isClaudeProvider(meta.provider ?? 'claude') && this.sockPath()) checkSeatSettingsTarget(this.seatSettingsPath(meta.id));
     // Before the agent's folder or registry entry exists: a refused spawn leaves nothing behind.
@@ -1445,6 +1452,8 @@ export class HiveManager {
     if (!this.hookKind(meta)) this.unconfinedStarting.set(verdictKey, { agentId: meta.id, provider: meta.provider ?? 'custom' });
     mkdirSync(join(dir, 'inbox', '.done'), { recursive: true });
     mkdirSync(join(dir, 'outbox', '.sent'), { recursive: true });
+    // Again once it exists: a link made in its place since the check above is refused before anything is written in it.
+    if (scoped) this.refuseUntrustedOwnFolder(root, meta.id);
 
     // Resolve role BEFORE writing identity.md. A restart passes the floor
     // roster's `description`, which can be a status caption ("on standby").
@@ -1996,7 +2005,9 @@ export class HiveManager {
    * posture existed only because these paths sit outside the project cwd.
    */
   private sandboxWritableDirs(meta: AgentMeta, dir: string, root: string, extra?: string[], scoped = false): string[] {
-    const out = [...(scoped ? this.scopedWritableDirs(meta, dir, root) : [dir, root]), ...(extra ?? [])].filter((d) => typeof d === 'string' && d.length > 0);
+    // Scoped: every root is resolved, explicit grants too, so a link is granted where it points and checked there.
+    const grants = (extra ?? []).filter((d) => typeof d === 'string' && d.length > 0).map((d) => (scoped ? canonical(d) : d));
+    const out = [...(scoped ? this.scopedWritableDirs(meta, dir, root) : [dir, root]), ...grants].filter((d) => typeof d === 'string' && d.length > 0);
     return Array.from(new Set(out));
   }
 

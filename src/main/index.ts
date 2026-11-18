@@ -43,7 +43,7 @@ import { runCanaries, memoryCanary } from './canaries';
 import { TurnTracker, diffTasks, type UsageIds } from './usageEvents';
 import { loadUsageSecret, usageRef } from './usageRef';
 import { UsageLog, recordFromRenderer } from './usageLog';
-import { WriteRootsDryRun, enforcedRoots, spawnLaunchFacts, type SpawnRecord } from './writeRoots';
+import { ScopedRootsRefused, WriteRootsDryRun, enforcedRoots, spawnLaunchFacts, type SpawnRecord } from './writeRoots';
 import { writeWeeklyDigest } from './usageDigest';
 import { HookServer } from './hooks';
 import { HeavyJobLock, heavyLimit, heavySlotNotice, probeProcesses } from './heavyJob';
@@ -3049,7 +3049,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       // that owns the session) are the app's too. Recorded with the spawn, so the config's kind never comes from a path.
       if (inj.env?.CODEX_HOME !== undefined) codexHomeFromApp = true;
     } catch (e) {
-      if (e instanceof RefusedRosterId || e instanceof RegistryUnreadable || e instanceof HookRuntimeUnavailable || e instanceof CodexHomeRefused || e instanceof PrivateDirRefused || e instanceof SeatSettingsRefused) return refuseSpawn(opts.id, opts.hive.id, provider, e);
+      if (e instanceof RefusedRosterId || e instanceof RegistryUnreadable || e instanceof HookRuntimeUnavailable || e instanceof CodexHomeRefused || e instanceof PrivateDirRefused || e instanceof SeatSettingsRefused || e instanceof ScopedRootsRefused) return refuseSpawn(opts.id, opts.hive.id, provider, e);
       // Hive provisioning is otherwise best-effort, but not for a hooked provider: the late check refuses, naming this.
       hive.hookProvisioningFailed(opts.id, e);
       console.error('[hive] ensureAgent failed:', e);

@@ -428,6 +428,32 @@ export function observeTool(tool: string, input: unknown, ctx: RootsContext, bud
 
 // --- enforcement ---
 
+/** A seat refused at spawn because, with scoped roots on, its roots cannot be trusted. */
+export class ScopedRootsRefused extends Error {
+  constructor(reason: string) {
+    super(`Scoped write roots: ${reason}. The agent was not started.`);
+    this.name = 'ScopedRootsRefused';
+  }
+}
+
+/** Why an agent's own folder cannot be granted under scoped roots, or null. The folder must be a real folder, not a
+ *  link, that resolves to exactly <hive>/agents/<id>; one not made yet must have a real agents folder to be made in.
+ *  Before scoped roots every agent could write the whole hive, so a link there could point anywhere. */
+export function ownFolderProblem(root: string, agentId: string): string | null {
+  const croot = canonical(root);
+  const agents = join(root, 'agents');
+  const dir = join(agents, agentId);
+  let st;
+  try { st = lstatSync(dir); } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') return 'its folder could not be read';
+    try { return realpathSync.native(agents) === join(croot, 'agents') ? null : 'the agents folder is a link'; } catch { return null; }
+  }
+  if (st.isSymbolicLink()) return 'its folder is a link';
+  if (!st.isDirectory()) return 'its folder is not a folder';
+  try { if (realpathSync.native(dir) !== join(croot, 'agents', agentId)) return 'its folder resolves outside the agents folder'; } catch { return 'its folder could not be resolved'; }
+  return null;
+}
+
 /** The tools whose writes the hook refuses outside scoped roots: Claude's file tools, which the OS sandbox does not
  *  govern, and Codex's patch tool. Every other tool is left to the sandbox. */
 export const PROTECTED_WRITE_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'apply_patch'] as const;
