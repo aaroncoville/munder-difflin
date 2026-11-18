@@ -135,12 +135,14 @@ test('generated Pi bridge preserves tool identity and breaker semantics', async 
 
     assert.deepEqual(bridge.frames, [
       {
+        hive_seat_id: 'pi-bridge-test',
         hook_event_name: 'PreToolUse',
         tool_name: 'bash',
         tool_input: { command: 'git status' },
         agent_id: 'pi-bridge-test'
       },
       {
+        hive_seat_id: 'pi-bridge-test',
         hook_event_name: 'PostToolUse',
         tool_name: 'bash',
         tool_input: { command: 'git status' },
@@ -200,6 +202,7 @@ test('generated Pi bridge preserves tool identity and breaker semantics', async 
     await malformed.flush();
     assert.equal(malformed.frames.length, 5);
     assert.deepEqual(malformed.frames[4], {
+      hive_seat_id: 'pi-bridge-test',
       hook_event_name: 'PostToolUse',
       tool_name: 'legacy-safe',
       tool_input: { path: 'fallback.txt' },

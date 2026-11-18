@@ -6,13 +6,18 @@
  * id, so it has no HALT, pause or gated tool for it, and a HALT or pause keyed on `agent_id` let a seat's subagents
  * carry on. The shim adds the seat id from the app-set AGENT_ID as `hive_seat_id`; the HALT gate, the pause and
  * gated-tool gate and the write-roots dry run use it. A frame without one (an older shim) falls back to `agent_id`.
+ *
+ * Every CLI bridge must therefore send `hive_seat_id`. Each one here is the real generated file, run against a socket.
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const net = require('node:net');
+const os = require('node:os');
 const path = require('node:path');
+const { spawn } = require('node:child_process');
 const loadTs = require('./load-ts.cjs');
-const { codexTestBase, jailHome } = require('./codex-test-home.cjs');
+const { codexTestBase, jailHome, removeDir } = require('./codex-test-home.cjs');
 const { withSeatSettings } = require('./seat-settings-dir.cjs');
 
 const electron = require.resolve('electron');
@@ -96,4 +101,103 @@ test('a seat id with no controls gets none, even when its agent_id has them', as
   const r = await f.pre({ agent_id: SEAT, hive_seat_id: 'stranger' });
   assert.notEqual(r.continue, false);
   assert.equal(denied(r), false, JSON.stringify(r));
+});
+
+// ─── the other CLIs' bridges ──────────────────────────────────────────────
+
+function findFile(dir, name) {
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, e.name);
+    if (e.isFile() && e.name === name) return p;
+    if (e.isDirectory()) { const hit = findFile(p, name); if (hit) return hit; }
+  }
+  return null;
+}
+
+/** Stage `provider`'s real bridge and return its file. */
+async function staged(t, provider, name) {
+  const base = codexTestBase(t, 'mdbr-');
+  jailHome(t, base);
+  const harness = path.join(base, 'h');
+  fs.mkdirSync(harness, { recursive: true });
+  const hive = withSeatSettings(new HiveManager(() => harness));
+  hive.ensureHive();
+  const injection = await hive.ensureAgent({ id: `${provider}-seat`, name: provider, provider, cwd: base });
+  const file = findFile(provider === 'pi' ? injection.env.PI_CODING_AGENT_DIR : base, name);
+  assert.ok(file, `${provider}: ${name} staged`);
+  return file;
+}
+
+/** Run `args` in a child with AGENT_ID and HIVE_SOCK set, and return the first frame it sends to the socket. */
+async function frameFrom(t, args, stdin) {
+  const short = fs.mkdtempSync(path.join(os.tmpdir(), 'sg-'));
+  t.after(async () => removeDir(short));
+  const sock = path.join(short, 's');
+  let frame = '';
+  const srv = net.createServer((c) => { c.on('data', (d) => { frame += d; if (frame.includes('\n')) c.end('{}'); }); });
+  await new Promise((r) => srv.listen(sock, r));
+  t.after(() => srv.close());
+  await new Promise((resolve) => {
+    const child = spawn(process.execPath, args, { cwd: short, env: { PATH: process.env.PATH, ELECTRON_RUN_AS_NODE: '1', HIVE_SOCK: sock, AGENT_ID: SEAT } });
+    child.on('close', resolve);
+    child.stdin.end(stdin ?? '');
+  });
+  assert.ok(frame.includes('\n'), 'the bridge sent a frame');
+  return JSON.parse(frame.split('\n')[0]);
+}
+
+function assertSeated(frame) {
+  assert.equal(frame.hive_seat_id, SEAT, JSON.stringify(frame));
+  assert.equal(Object.keys(frame)[0], 'hive_seat_id', 'first, so an oversized frame still names its seat');
+  assert.equal(frame.agent_id, SEAT, 'agent_id is what the bridge sent before');
+}
+
+test('the agy bridge sends the seat id', async (t) => {
+  const shim = await staged(t, 'antigravity', 'agy-hook.cjs');
+  const frame = await frameFrom(t, [shim, 'PreToolUse'], JSON.stringify({ conversationId: 'c', toolCall: { name: 'Bash', args: {} } }));
+  assertSeated(frame);
+  assert.equal(frame.hook_event_name, 'PreToolUse');
+});
+
+test('the gemini bridge sends the seat id, replacing one the payload carried', async (t) => {
+  const shim = await staged(t, 'gemini', 'gemini-hook.cjs');
+  const frame = await frameFrom(t, [shim], JSON.stringify({ hook_event_name: 'BeforeTool', tool_name: 'run_shell_command', hive_seat_id: 'other' }));
+  assertSeated(frame);
+  assert.equal(frame.hook_event_name, 'PreToolUse');
+});
+
+test('the grok bridge sends the seat id', async (t) => {
+  const shim = await staged(t, 'grok', 'grok-hook.cjs');
+  const frame = await frameFrom(t, [shim], JSON.stringify({ hookEventName: 'pre_tool_use', toolName: 'Bash', toolInput: {} }));
+  assertSeated(frame);
+  assert.equal(frame.hook_event_name, 'PreToolUse');
+});
+
+test('the opencode plugin sends the seat id, on the call it waits for and on the one it does not', async (t) => {
+  const file = await staged(t, 'opencode', 'hive-bridge.js');
+  const copy = path.join(path.dirname(file), 'bridge-under-test.mjs');
+  fs.copyFileSync(file, copy);
+  for (const [hook, event] of [['tool.execute.before', 'PreToolUse'], ['tool.execute.after', 'PostToolUse']]) {
+    const drive = `const { HiveBridge } = await import(${JSON.stringify(require('node:url').pathToFileURL(copy).href)});
+      const plugin = await HiveBridge();
+      await plugin[${JSON.stringify(hook)}]({ tool: 'bash', callID: 'c1', sessionID: 's1', args: {} }, { args: {} });`;
+    const frame = await frameFrom(t, ['--input-type=module', '-e', drive]);
+    assertSeated(frame);
+    assert.equal(frame.hook_event_name, event);
+  }
+});
+
+test('the pi extension sends the seat id, on the call it waits for and on the one it does not', async (t) => {
+  const file = await staged(t, 'pi', 'hive-bridge.js');
+  const copy = path.join(path.dirname(file), 'bridge-under-test.cjs');
+  fs.copyFileSync(file, copy);
+  for (const [hook, event] of [['tool_call', 'PreToolUse'], ['tool_result', 'PostToolUse']]) {
+    const drive = `const handlers = new Map();
+      globalThis.pi = { on: (name, fn) => handlers.set(name, fn) };
+      require(${JSON.stringify(copy)});
+      Promise.resolve(handlers.get(${JSON.stringify(hook)})({ toolName: 'bash', toolCallId: 'c1', input: {} }));`;
+    const frame = await frameFrom(t, ['-e', drive]);
+    assertSeated(frame);
+    assert.equal(frame.hook_event_name, event);
+  }
 });
