@@ -653,6 +653,17 @@ export class HiveManager {
     const s = this.spawnScopes.get(spawnId);
     return s ? { scoped: s.scoped, isGod: s.isGod, grants: [...s.grants] } : undefined;
   }
+  /** Spawns whose terminal started, until they are retired: spawnSettled leaves their policy in place. */
+  private startedSpawns = new Set<string>();
+  /** The spawn is over (refused, rolled back, never started, or its terminal torn down): its policy and token go, so a
+   *  call still carrying the token is refused as an unknown one. By spawn id only, never the agent id: a newer spawn of
+   *  the same agent keeps its own. Retiring twice, or a spawn with no policy, does nothing. */
+  retireSpawn(spawnId: string): void {
+    const token = this.spawnScopes.get(spawnId)?.token;
+    if (token && this.spawnTokens.get(token) === spawnId) this.spawnTokens.delete(token);
+    this.spawnScopes.delete(spawnId);
+    this.startedSpawns.delete(spawnId);
+  }
   /** The policy of the scoped spawn a hook call's token names, or undefined: a token the app did not issue. */
   spawnPolicy(token: unknown): SpawnPolicy | undefined {
     const key = typeof token === 'string' && token ? this.spawnTokens.get(token) : undefined;
@@ -1031,6 +1042,7 @@ export class HiveManager {
     const started = this.startingSpawns.get(spawnId);
     if (started) this.startedRoots.set(started.agentId, started.rootPaths);
     this.startingSpawns.delete(spawnId);
+    if (this.spawnScopes.has(spawnId)) this.startedSpawns.add(spawnId);
     // Running now, it is reported by the live seats instead.
     this.unconfinedStarting.delete(spawnId);
   }
@@ -1038,6 +1050,8 @@ export class HiveManager {
    *  does not sandbox is counted through the live seats instead. */
   spawnSettled(spawnId: string): void {
     this.unconfinedStarting.delete(spawnId);
+    // One that ended without its terminal starting (a throw on the way) is over: nothing will tear it down later.
+    if (!this.startedSpawns.has(spawnId)) this.retireSpawn(spawnId);
   }
   /** The app's running agents and their providers (the terminals it started), for the checks above. */
   setLiveSeats(fn: () => Array<{ agentId: string; provider: string }>): void {
@@ -1116,6 +1130,7 @@ export class HiveManager {
    *  with no decision on record (refused before anything was created, or already rolled back) is left as it is. */
   withdrawRefusedSpawn(spawnId: string, why: string): void {
     this.unconfinedStarting.delete(spawnId);
+    this.retireSpawn(spawnId);
     const v = this.takeHookVerdict(spawnId) ?? this.startingSpawns.get(spawnId);
     this.startingSpawns.delete(spawnId);
     if (!v) return;

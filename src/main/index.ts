@@ -629,6 +629,8 @@ function teardownPty(id: string): void {
   // 0) Revoke this id's broker capability (if any). Idempotent + harmless for a
   //    non-worker PTY; ensures a dead worker's token can never reach an integration.
   try { integrationBroker.revoke(id); } catch { /* best-effort */ }
+  // The PTY id is the spawn id: its scoped-roots policy and token end with it, so the token cannot be used again.
+  try { hive.retireSpawn(id); } catch { /* best-effort */ }
   // 1) Archive the agent — retained + flagged; only live-PTY agents are active.
   const agentId = ptyToAgent.get(id);
   if (agentId) {
