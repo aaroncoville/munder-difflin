@@ -157,7 +157,7 @@ export function looksLikeTrustDialog(rawOutput: string): boolean {
  * Extract the last assistant text block from the transcript JSONL written
  * at or after `spawnedAt`. Reuses projectDir() from transcript.ts.
  */
-function extractLastAssistantText(cwd: string, spawnedAt: number): string | null {
+function extractLastAssistantText(cwd: string, spawnedAt: number): { text: string } | { error: string } | null {
   try {
     const dir = projectDir(cwd);
     if (!existsSync(dir)) return null;
@@ -175,24 +175,37 @@ function extractLastAssistantText(cwd: string, spawnedAt: number): string | null
     if (!candidates.length) return null;
     candidates.sort((a, b) => b.mtime - a.mtime);
 
-    const lines = readFileSync(path.join(dir, candidates[0].f), 'utf8').split('\n');
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const trimmed = lines[i].trim();
-      if (!trimmed) continue;
-      let rec: { type?: unknown; message?: { content?: unknown[] } };
-      try { rec = JSON.parse(trimmed); } catch { continue; }
-      if (rec.type !== 'assistant') continue;
-      const content = rec.message?.content;
-      if (!Array.isArray(content)) continue;
-      for (let j = content.length - 1; j >= 0; j--) {
-        const block = content[j] as { type?: unknown; text?: unknown };
-        if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
-          return block.text.trim();
+    return lastAssistantReply(readFileSync(path.join(dir, candidates[0].f), 'utf8'));
+  } catch { return null; }
+}
+
+/**
+ * The last assistant text in a transcript, or the CLI's own error. When the CLI cannot reach the model (signed out,
+ * login expired, an API error) it still writes an assistant record, marked isApiErrorMessage, whose text is its own
+ * message: returned as a reply, a caller would judge it as model output and report a misleading cause.
+ */
+export function lastAssistantReply(jsonl: string): { text: string } | { error: string } | null {
+  const lines = jsonl.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const trimmed = lines[i].trim();
+    if (!trimmed) continue;
+    let rec: { type?: unknown; isApiErrorMessage?: unknown; error?: unknown; message?: { content?: unknown[] } };
+    try { rec = JSON.parse(trimmed); } catch { continue; }
+    if (rec.type !== 'assistant') continue;
+    const content = rec.message?.content;
+    if (!Array.isArray(content)) continue;
+    for (let j = content.length - 1; j >= 0; j--) {
+      const block = content[j] as { type?: unknown; text?: unknown };
+      if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
+        if (rec.isApiErrorMessage === true) {
+          const code = typeof rec.error === 'string' && rec.error ? `${rec.error}: ` : '';
+          return { error: `the CLI answered with an error instead of the model: ${code}${block.text.trim()}` };
         }
+        return { text: block.text.trim() };
       }
     }
-    return null;
-  } catch { return null; }
+  }
+  return null;
 }
 
 export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Promise<HiddenClaudeResult> {
@@ -286,8 +299,9 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
     };
 
     const captureAndFinish = () => {
-      const text = extractLastAssistantText(opts.cwd, spawnedAt);
-      if (text) { finish({ ok: true, text }); return; }
+      const reply = extractLastAssistantText(opts.cwd, spawnedAt);
+      if (reply && 'text' in reply) { finish({ ok: true, text: reply.text }); return; }
+      if (reply) { finish({ ok: false, error: reply.error }); return; }
       // A cwd the CLI has never been trusted in blocks on the workspace-trust
       // dialog forever — it renders as ordinary boot output, so the boot-quiet
       // heuristic reads it as "ready" and sends the prompt into a menu that
