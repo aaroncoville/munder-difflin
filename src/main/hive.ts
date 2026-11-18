@@ -4800,7 +4800,9 @@ process.stdin.on('end', () => {
   let agy = {};
   try { agy = JSON.parse(data || '{}'); } catch (_) {}
   const tc = agy.toolCall || {};
+  // The seat the app spawned goes first, as the Claude hook shim sends it: the hook server keys operator controls on it.
   const payload = {
+    hive_seat_id: agentId,
     hook_event_name: event,
     agent_id: agentId,
     session_id: agy.conversationId,
@@ -4850,10 +4852,17 @@ var net = require('node:net');
 var SOCK = process.env.HIVE_SOCK;
 var AGENT = process.env.AGENT_ID || null;
 var AUTO = process.env.HIVE_AUTO_APPROVE === '1';
+/* The seat the app spawned goes first, as the Claude hook shim sends it: the hook server keys operator controls on it. */
+function seated(payload) {
+  var rest = Object.assign({}, payload);
+  delete rest.hive_seat_id;
+  return Object.assign({ hive_seat_id: AGENT }, rest);
+}
 function post(payload) {
   try {
     if (!SOCK) return;
     payload.agent_id = payload.agent_id || AGENT;
+    payload = seated(payload);
     var c = net.createConnection(SOCK, function () { try { c.end(JSON.stringify(payload) + '\\n'); } catch (e) {} });
     c.on('error', function () {});
   } catch (e) {}
@@ -4865,7 +4874,7 @@ function ask(payload, allowed) {
   try {
     if (!SOCK) return allowed;
     payload.agent_id = payload.agent_id || AGENT;
-    frame = JSON.stringify(payload) + '\\n';
+    frame = JSON.stringify(seated(payload)) + '\\n';
   } catch (e) { return allowed; }
   return new Promise(function (resolve) {
     var resp = '';
@@ -4935,10 +4944,17 @@ module.exports.default = module.exports;
 const OPENCODE_PLUGIN = `import { createConnection } from 'node:net';
 const SOCK = process.env.HIVE_SOCK;
 const AGENT = process.env.AGENT_ID || null;
+/* The seat the app spawned goes first, as the Claude hook shim sends it: the hook server keys operator controls on it. */
+function seated(payload) {
+  const rest = Object.assign({}, payload);
+  delete rest.hive_seat_id;
+  return Object.assign({ hive_seat_id: AGENT }, rest);
+}
 function post(payload) {
   try {
     if (!SOCK) return;
     payload.agent_id = payload.agent_id || AGENT;
+    payload = seated(payload);
     const c = createConnection(SOCK, () => { try { c.end(JSON.stringify(payload) + '\\n'); } catch (e) {} });
     c.on('error', () => {});
   } catch (e) {}
@@ -4958,7 +4974,7 @@ function denial(payload) {
     try {
       if (!SOCK) return done();
       payload.agent_id = payload.agent_id || AGENT;
-      const frame = JSON.stringify(payload) + '\\n';
+      const frame = JSON.stringify(seated(payload)) + '\\n';
       timer = setTimeout(done, 5000);
       const c = createConnection(SOCK, () => { try { c.end(frame); } catch (e) { done(); } });
       c.on('data', (d) => { resp += d; });
@@ -5013,8 +5029,13 @@ process.stdin.on('end', () => {
     AfterTool: 'PostToolUse',
     AfterAgent: 'Stop'
   };
+  // The seat the app spawned goes first, as the Claude hook shim sends it: the hook server keys operator controls on it.
+  // A hive_seat_id the payload carried is replaced.
+  const rest = { ...gemini };
+  delete rest.hive_seat_id;
   const payload = {
-    ...gemini,
+    hive_seat_id: agentId,
+    ...rest,
     hook_event_name: names[gemini.hook_event_name] || gemini.hook_event_name || 'Unknown',
     agent_id: agentId
   };
@@ -5079,7 +5100,9 @@ process.stdin.on('end', () => {
     pre_compact: 'PreCompact',
     post_compact: 'PostCompact'
   };
+  // The seat the app spawned goes first, as the Claude hook shim sends it: the hook server keys operator controls on it.
   const payload = {
+    hive_seat_id: agentId,
     hook_event_name: names[grok.hookEventName] || grok.hookEventName || 'Unknown',
     agent_id: agentId,
     session_id: grok.sessionId,

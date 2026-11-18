@@ -444,9 +444,13 @@ export class HookServer {
 
   private handle(p: HookPayload): unknown {
     const agentId = p.agent_id ?? undefined;
+    // The operator's controls and the write-roots dry run are keyed on the seat the app spawned. For a subagent's calls
+    // the CLI's agent_id is the subagent's own id, which the app never learns. A frame with no hive_seat_id (an older
+    // shim) falls back to agent_id.
+    const seatId = (typeof p.hive_seat_id === 'string' && p.hive_seat_id) || agentId;
     const event = p.hook_event_name ?? 'Unknown';
     this.onEvent?.(agentId, event, p.message);
-    try { this.writeObserver?.(agentId, event, p); } catch { /* observation never blocks a hook */ }
+    try { this.writeObserver?.(seatId, event, p); } catch { /* observation never blocks a hook */ }
     if (agentId && typeof p.transcript_path === 'string' && p.transcript_path) {
       this.transcriptPaths.set(agentId, p.transcript_path);
     }
@@ -488,8 +492,8 @@ export class HookServer {
     // 7C.3 — a graceful operator HALT overrides everything (incl. the inbox
     // drain below): stop the agent CLEANLY at this hook boundary rather than
     // killing the PTY. session_id is in the payload for a later --resume.
-    if (agentId && this.control?.shouldHalt(agentId)) {
-      this.emit(agentId, event, p);
+    if (seatId && this.control?.shouldHalt(seatId)) {
+      this.emit(seatId, event, p);
       return { continue: false, stopReason: 'Halted by the operator from the floor.' };
     }
 
@@ -580,11 +584,11 @@ export class HookServer {
     // agent is paused or this tool is gated. Race-free (immediate return, no
     // renderer round-trip → can't hit the shim timeout). Slow human APPROVAL is
     // deliberately left to Claude's native permission prompt.
-    if (event === 'PreToolUse' && agentId && this.control) {
-      const d = this.control.toolDecision(agentId, p.tool_name ?? '');
+    if (event === 'PreToolUse' && seatId && this.control) {
+      const d = this.control.toolDecision(seatId, p.tool_name ?? '');
       if (d.deny) {
-        this.emitControl(agentId, p.tool_name, d.reason);
-        this.emit(agentId, event, p);
+        this.emitControl(seatId, p.tool_name, d.reason);
+        this.emit(seatId, event, p);
         return {
           hookSpecificOutput: {
             hookEventName: 'PreToolUse',
