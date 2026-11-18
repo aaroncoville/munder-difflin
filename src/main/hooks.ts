@@ -22,6 +22,7 @@ import type { CircuitBreaker } from './breaker';
 import { estimateCostUsd } from './pricing';
 import { validateHookEvent } from '../shared/hookEvents';
 import { frameIds } from './usageEvents';
+import { isProtectedWrite, refusedWrite, type RootsContext } from './writeRoots';
 
 /** Maximum JSON payload bytes in one newline-delimited hook frame. */
 const MAX_HOOK_FRAME_BYTES = 256 * 1024;
@@ -410,6 +411,24 @@ export class HookServer {
   private writeObserver: ((agentId: string | undefined, event: string, p: HookPayload) => void) | null = null;
   setWriteObserver(fn: ((agentId: string | undefined, event: string, p: HookPayload) => void) | null): void { this.writeObserver = fn; }
 
+  /** The roots a seat is held to when scoped roots are enforced for it, or null when its writes are not checked. */
+  private writeGate: ((agentId: string) => RootsContext | null) | null = null;
+  setWriteGate(fn: ((agentId: string) => RootsContext | null) | null): void { this.writeGate = fn; }
+
+  /** Why a file write must be refused under the seat's scoped roots, or null. The reason names the path's class, never
+   *  the path. A check that fails is a refusal: the seat is one whose writes are checked, and the tool is one the OS
+   *  sandbox does not hold. */
+  private writeDenial(agentId: string, p: HookPayload): string | null {
+    if (!this.writeGate || !isProtectedWrite(p.tool_name)) return null;
+    let cls: string | null;
+    try {
+      const ctx = this.writeGate(agentId);
+      if (!ctx) return null;
+      cls = refusedWrite(p.tool_name, p.tool_input, ctx);
+    } catch { cls = 'unknown'; }
+    return cls ? `Refused by scoped write roots: this agent may not write there (${cls}). Write in your own folder, evidence/ or your working folder.` : null;
+  }
+
   private handle(p: HookPayload): unknown {
     const agentId = p.agent_id ?? undefined;
     const event = p.hook_event_name ?? 'Unknown';
@@ -560,6 +579,17 @@ export class HookServer {
             permissionDecisionReason: d.reason ?? 'Denied by operator.'
           }
         };
+      }
+    }
+
+    // Scoped write roots: a file write outside the seat's roots is refused here, before a heavy-job slot can be taken
+    // for it. It is the hook's answer, so it holds in bypass mode too, where nothing prompts.
+    if (event === 'PreToolUse' && agentId) {
+      const reason = this.writeDenial(agentId, p);
+      if (reason) {
+        this.emitControl(agentId, p.tool_name, reason);
+        this.emit(agentId, event, p);
+        return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } };
       }
     }
 

@@ -414,6 +414,31 @@ export function observeTool(tool: string, input: unknown, ctx: RootsContext, bud
   });
 }
 
+// --- enforcement ---
+
+/** The tools whose writes the hook refuses outside scoped roots: Claude's file tools, which the OS sandbox does not
+ *  govern, and Codex's patch tool. Every other tool is left to the sandbox. */
+export const PROTECTED_WRITE_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'apply_patch'] as const;
+export const isProtectedWrite = (tool: unknown): boolean => typeof tool === 'string' && (PROTECTED_WRITE_TOOLS as readonly string[]).includes(tool);
+
+/** With scoped roots enforced: the class of a path this call may not write, or null when it may run. Judged by
+ *  observeTool, so it refuses exactly what the dry run records as would-refuse (a call cut short or an agent folder
+ *  that cannot be shown to be the agent's own reads `unknown`, and is refused). Tools other than the protected ones
+ *  are null. */
+export function refusedWrite(tool: unknown, input: unknown, ctx: RootsContext): PathClass | null {
+  if (!isProtectedWrite(tool)) return null;
+  const hit = observeTool(tool as string, input, ctx).find((o) => o.refused);
+  return hit ? hit.pathClass : null;
+}
+
+/** The roots context the hook holds a seat to, from what the app spawned it with: null when the seat's writes are not
+ *  checked (spawned with scoped roots off, a provider the app does not give scoped roots, or an id it did not spawn). */
+export function enforcedRoots(root: string | null, agentId: string, spawned: { scoped?: boolean; provider: string; isGod: boolean; cwd: string } | undefined): RootsContext | null {
+  if (!root || !spawned || spawned.scoped !== true) return null;
+  if (spawned.provider !== 'claude' && spawned.provider !== 'codex') return null;
+  return { root, agentId, isGod: spawned.isGod, cwd: spawned.cwd };
+}
+
 // --- effective roots ---
 
 export interface EffectiveRoots { roots: string[]; state: RootsState; source: 'claude-settings-files' | 'codex-config' | 'none'; /** The roots that are the CLI's temp folder (TMPDIR), classed apart. */ temp?: string[]; /** Why it is unknown, when that is worth its own row: the generated config's hooks are not the app's own, or a table

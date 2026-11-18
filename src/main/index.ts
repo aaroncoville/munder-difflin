@@ -43,7 +43,7 @@ import { runCanaries, memoryCanary } from './canaries';
 import { TurnTracker, diffTasks, type UsageIds } from './usageEvents';
 import { loadUsageSecret, usageRef } from './usageRef';
 import { UsageLog, recordFromRenderer } from './usageLog';
-import { WriteRootsDryRun, spawnLaunchFacts, type SpawnRecord } from './writeRoots';
+import { WriteRootsDryRun, enforcedRoots, spawnLaunchFacts, type SpawnRecord } from './writeRoots';
 import { writeWeeklyDigest } from './usageDigest';
 import { HookServer } from './hooks';
 import { HeavyJobLock, heavyLimit, heavySlotNotice, probeProcesses } from './heavyJob';
@@ -435,7 +435,7 @@ hookServer.setHeavyLock(heavyLock);
 // roots would refuse are recorded in the usage log as path classes (see writeRoots.ts).
 // What the app itself spawned each agent with, kept in memory: registry.json is in the hive,
 // which agents can write, so a cwd or role read from it could be planted.
-const spawnRoots = new Map<string, SpawnRecord & { cwd: string; provider: string; isGod: boolean; gen: number }>();
+const spawnRoots = new Map<string, SpawnRecord & { cwd: string; provider: string; isGod: boolean; gen: number; scoped?: boolean }>();
 // The agents whose terminals are running, with their providers: the hive refuses a Codex agent while one the app
 // does not sandbox is among them. A terminal's agent with no spawn record counts as unsandboxed.
 hive.setLiveSeats(() => [...ptyToAgent.values()].map((agentId) => ({ agentId, provider: spawnRoots.get(agentId)?.provider ?? 'unknown' })));
@@ -464,6 +464,8 @@ const writeRootsDryRun = new WriteRootsDryRun({
   logFallback: (row) => { try { hive.appendLog(row); } catch { /* nothing further */ } }
 });
 hookServer.setWriteObserver((agentId, event, p) => writeRootsDryRun.onHook(agentId, event, p));
+// Seats spawned with scoped roots on have file writes outside their roots refused at PreToolUse (writeRoots.ts).
+hookServer.setWriteGate((agentId) => enforcedRoots(hive.root(), agentId, spawnRoots.get(agentId)));
 const memory = new MemoryManager(
   () => readConfig().harnessHome,
   () => migrateMemorySettings(readConfig()),
@@ -3330,7 +3332,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   if (res.ok && opts.hive?.id) {
     hive.spawnStarted(opts.id);
     ptyToAgent.set(opts.id, opts.hive.id);
-    spawnRoots.set(opts.hive.id, { cwd: opts.cwd, provider, isGod: opts.hive.isGod === true, args: [opts.command, ...(opts.args ?? [])], env: relocationEnv(buildPtyEnv(process.env, '', opts.env)), codexHomeFromApp, gen: ++spawnGeneration });
+    spawnRoots.set(opts.hive.id, { cwd: opts.cwd, provider, isGod: opts.hive.isGod === true, args: [opts.command, ...(opts.args ?? [])], env: relocationEnv(buildPtyEnv(process.env, '', opts.env)), codexHomeFromApp, gen: ++spawnGeneration, scoped: scopedRootsOn });
     // Where this worker's Codex rollouts will be written, now that any resume
     // has settled its CODEX_HOME.
     codexHomes.recordSpawn(opts.hive.id, opts.env?.CODEX_HOME, codexResumedSession);
