@@ -64,7 +64,8 @@ import { agentFolderId, hasExactFolder, isAppSender, isFolderName, isKnownTarget
 import { mailSender, PendingMail } from './mailLine';
 import { nodeLauncherScript } from './nodeLauncher';
 import { codexTrustEntry } from '../shared/codexTrust';
-import { withCodexWritableRoots } from '../shared/codexWritableRoots';
+import { withCodexWritableRoots, withOnlyCodexWritableRoots } from '../shared/codexWritableRoots';
+import { canonical, scopedRoots } from './writeRoots';
 import { godNameFromRegistry } from '../shared/godIdentity';
 import { appendSession } from './codexActivity';
 import { isSafeMessageId, publishMessage, sweepInboxLeftovers } from './messageId';
@@ -805,10 +806,10 @@ export class HiveManager {
     return out;
   }
   /** Every root a Claude or Codex agent's sandbox may write, labelled with where it comes from. */
-  private agentRoots(meta: AgentMeta, dir: string, root: string, extra: string[] | undefined, kind: 'claude' | 'codex', claudeUserDir?: string): WriteRoot[] {
+  private agentRoots(meta: AgentMeta, dir: string, root: string, extra: string[] | undefined, kind: 'claude' | 'codex', claudeUserDir?: string, scoped = false): WriteRoot[] {
     return [
       { path: meta.cwd, from: 'its working directory' },
-      ...this.sandboxWritableDirs(meta, dir, root, extra).map((p) => ({ path: p, from: 'the write roots the app gives it' })),
+      ...this.sandboxWritableDirs(meta, dir, root, extra, scoped).map((p) => ({ path: p, from: 'the write roots the app gives it' })),
       ...(kind === 'claude' ? this.claudeSettingsRoots(meta.cwd, claudeUserDir) : this.codexUserRoots(meta.cwd)),
     ];
   }
@@ -850,10 +851,10 @@ export class HiveManager {
   /** Every root a launch would give the agent, from its launch line, its final environment and its settings files; or
    *  why the launch cannot be modelled. Reads files, writes nothing. With no launch given (a direct caller, not the
    *  app's spawn path) only the files are read; the app always gives one, and checks the final one again before spawning. */
-  verdictRoots(meta: AgentMeta, dir: string, root: string, extra: string[] | undefined, launch?: HookLaunch): { roots: WriteRoot[]; claudeUserDir?: string; codexFromConfig?: boolean } | { refuse: string } {
+  verdictRoots(meta: AgentMeta, dir: string, root: string, extra: string[] | undefined, launch?: HookLaunch, scoped = false): { roots: WriteRoot[]; claudeUserDir?: string; codexFromConfig?: boolean } | { refuse: string } {
     const kind = this.hookKind(meta);
     if (!kind) return { roots: [] };
-    if (!launch) return { roots: this.agentRoots(meta, dir, root, extra, kind) };
+    if (!launch) return { roots: this.agentRoots(meta, dir, root, extra, kind, undefined, scoped) };
     const exe = launchExecutable(launch.argv);
     if (exe !== kind) return { refuse: `its launch line does not run ${kind} itself (it starts with ${JSON.stringify((launch.argv[0] ?? '').trim().split(/\s+/)[0] ?? '')})` };
     const places = launchPlaces(kind, launch.env, homedir());
@@ -876,7 +877,7 @@ export class HiveManager {
       }
     }
     return {
-      roots: [...this.agentRoots(meta, dir, root, extra, kind, kind === 'claude' ? places.claudeUserDir : undefined),
+      roots: [...this.agentRoots(meta, dir, root, extra, kind, kind === 'claude' ? places.claudeUserDir : undefined, scoped),
         ...addDirs.map((p) => ({ path: this.settingsRoot(p, meta.cwd), from: 'its launch line (--add-dir)' })),
         ...places.tmpDirs.map((p) => ({ path: p, from: 'its temp folder (TMPDIR), which its sandbox lets it write' }))],
       ...(kind === 'claude' ? { claudeUserDir: places.claudeUserDir } : {}),
@@ -886,7 +887,7 @@ export class HiveManager {
   /** Decide once, before anything for this agent is created: the runtime it will use and the roots it was checked
    *  against. Throws HookRuntimeUnavailable naming the cause. Null when the agent gets no app hook command, or no
    *  runtime folder is set. */
-  private hookVerdict(meta: AgentMeta, dir: string, root: string, extra: string[] | undefined, launch: HookLaunch | undefined, isNew: boolean): HookVerdict | null {
+  private hookVerdict(meta: AgentMeta, dir: string, root: string, extra: string[] | undefined, launch: HookLaunch | undefined, isNew: boolean, scoped = false): HookVerdict | null {
     const kind = this.hookKind(meta);
     if (!kind) {
       // The app does not sandbox this provider: it can write anywhere, so no check of its roots holds it. It reaches
@@ -904,7 +905,7 @@ export class HiveManager {
         throw new CodexHomeRefused(`${unconfined.map((u) => `${shortTarget(u.agentId)} (${u.provider})`).join(', ')} runs without a sandbox the app can check and could write a Codex agent's home; ${shortTarget(meta.id)} cannot start until it has stopped`);
       }
     }
-    const r = this.verdictRoots(meta, dir, root, extra, launch);
+    const r = this.verdictRoots(meta, dir, root, extra, launch, scoped);
     const rt = this.runtimeFor(meta.id, 'refuse' in r ? [] : r.roots, kind === 'codex' && process.platform === 'win32', 'refuse' in r ? r.refuse : null);
     if (!('refuse' in r)) {
       this.refuseCodexHomesReach(r.roots);
@@ -1382,7 +1383,8 @@ export class HiveManager {
       spawnId?: string;
       /** Plugin names an agent keeps (Settings); every other plugin the owner has is off for the agent. */
       agentPlugins?: unknown;
-      /** Launch Claude seats with `--setting-sources user`: no project or local settings files (config scopedRoots). */
+      /** Launch Claude seats with `--setting-sources user`: no project or local settings files; and give Claude and Codex
+       *  seats only the write roots their role needs (writeRoots.ts scopedRoots) instead of the whole hive (config scopedRoots). */
       scopedRoots?: boolean;
     } = {}
   ): Promise<SpawnInjection> {
@@ -1400,10 +1402,13 @@ export class HiveManager {
     const asRead = JSON.stringify(roster);
 
     const dir = this.agentDir(meta.id);
+    const scoped = opts.scopedRoots === true;
+    // The shared folder every agent may write under scoped roots; the hive root itself is not theirs to create it in.
+    if (scoped) mkdirSync(join(root, 'evidence'), { recursive: true });
     // A Claude seat's settings file must have a home outside the hive, decided before anything for it is created.
     if (isClaudeProvider(meta.provider ?? 'claude') && this.sockPath()) checkSeatSettingsTarget(this.seatSettingsPath(meta.id));
     // Before the agent's folder or registry entry exists: a refused spawn leaves nothing behind.
-    const verdict = this.hookVerdict(meta, dir, root, opts.extraWritableDirs, opts.launch, !Object.hasOwn(roster.agents, meta.id));
+    const verdict = this.hookVerdict(meta, dir, root, opts.extraWritableDirs, opts.launch, !Object.hasOwn(roster.agents, meta.id), scoped);
     if (verdict) { verdict.dirCreated = !existsSync(dir); verdict.spawnId = opts.spawnId; verdict.provisioned = false; }
     // Keyed by this spawn, so two overlapping spawns of one agent never share a decision.
     const verdictKey = opts.spawnId ?? meta.id;
@@ -1564,8 +1569,8 @@ export class HiveManager {
               // Codex reads them: config.toml, which is all an app server attached
               // with --remote honours, and --add-dir for a local TUI
               // (withCodexRemoteArgs drops it when --remote is added).
-              const writableRoots = this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs);
-              env.CODEX_HOME = this.installCodexHooks(dir, meta.cwd, meta.id, writableRoots);
+              const writableRoots = this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs, scoped);
+              env.CODEX_HOME = this.installCodexHooks(dir, meta.cwd, meta.id, writableRoots, scoped);
               this.codexHookInventory(meta.id, env.CODEX_HOME);
               // Codex runs a hook only once its exact hash is trusted. The spawn
               // seeds that trust for the generated hooks alone (codexHookTrust.ts)
@@ -1692,7 +1697,7 @@ export class HiveManager {
     // user's repo) so the agent reports activity and drains its inbox on Stop.
     const sock = this.sockPath();
     if (sock) {
-      const writable = this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs);
+      const writable = this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs, scoped);
       const rt = verdict?.rt ?? null;
       env.HIVE_SOCK = sock;
       // Written from what the app holds, to the app's own folder: the in-tree agents/<id>/settings.json is never opened.
@@ -1959,9 +1964,23 @@ export class HiveManager {
    * This is what lets auto mode keep the OS sandbox on — the old full-bypass
    * posture existed only because these paths sit outside the project cwd.
    */
-  private sandboxWritableDirs(meta: AgentMeta, dir: string, root: string, extra?: string[]): string[] {
-    const out = [dir, root, ...(extra ?? [])].filter((d) => typeof d === 'string' && d.length > 0);
+  private sandboxWritableDirs(meta: AgentMeta, dir: string, root: string, extra?: string[], scoped = false): string[] {
+    const out = [...(scoped ? this.scopedWritableDirs(meta, dir, root) : [dir, root]), ...(extra ?? [])].filter((d) => typeof d === 'string' && d.length > 0);
     return Array.from(new Set(out));
+  }
+
+  /** With scoped roots on, the roots the role needs instead of the whole hive, from the same model the dry run reports
+   *  with (writeRoots.ts): an agent gets its own folder, `evidence/` and a working folder outside the hive; god the hive
+   *  root and its working folder, which sits above the hive on purpose (the model leaves a folder above the hive out, so
+   *  it is added here). `evidence/` is granted only while it is a real folder: a link planted there while every agent
+   *  could write the hive root would carry the grant wherever it points. */
+  private scopedWritableDirs(meta: AgentMeta, dir: string, root: string): string[] {
+    const cwd = meta.cwd ? expandTilde(meta.cwd) : '';
+    const roots = scopedRoots({ root, agentId: meta.id, isGod: meta.isGod === true, cwd }, dir);
+    const evidence = join(canonical(root), 'evidence');
+    const realDir = (p: string): boolean => { try { const st = lstatSync(p); return st.isDirectory() && !st.isSymbolicLink(); } catch { return false; } };
+    const kept = roots.filter((r) => r !== evidence || realDir(r));
+    return meta.isGod === true && isAbsolute(cwd) ? [canonical(cwd), ...kept] : kept;
   }
 
   private hookSettings(cmd: string | null, cwd: string, cfg: McpDefaultsMap, theme?: 'light' | 'dark', writableDirs: string[] = [], enabledPlugins?: Record<string, boolean>): unknown {
@@ -3294,7 +3313,7 @@ export class HiveManager {
    *  ~/.codex/auth.json is linked in and their config.toml is copied + extended
    *  (login + model/provider/trust settings still apply).
    *  Returns the CODEX_HOME path for the caller to put in the worker's env. */
-  private installCodexHooks(dir: string, cwd: string, agentId: string, writableRoots: string[] = []): string {
+  private installCodexHooks(dir: string, cwd: string, agentId: string, writableRoots: string[] = [], scoped = false): string {
     // Computed, never read from the agent folder (codexSeatHome.ts). A spawn whose
     // roots reach it was refused before anything was created (hookVerdict).
     const home = codexSeatHome(dir, agentId);
@@ -3365,7 +3384,7 @@ export class HiveManager {
       // freeze. Verify any change with codex's own resolver, no model spend:
       // `codex app-server` → initialize → `hooks/list` reports the normalized
       // timeoutSec per event.
-      this.writeCodexConfig(home, cwd, writableRoots);
+      this.writeCodexConfig(home, cwd, writableRoots, scoped);
 
       // Keep each worker's CODEX_HOME isolated while putting its rollout data
       // below Codex's standard scan roots. External usage tools can then discover
@@ -3384,16 +3403,16 @@ export class HiveManager {
   /** A resume that runs this agent in the home of the agent that owns the session: that home's config.toml is
    *  written fresh for this spawn (its working folder, its write roots, the app's hooks) before the trust step,
    *  as a fresh spawn's own is. The caller has checked the home is one of the computed ones. */
-  prepareResumedCodexHome(agentId: string, cwd: string, home: string, extra: string[] = []): void {
+  prepareResumedCodexHome(agentId: string, cwd: string, home: string, extra: string[] = [], scoped = false, isGod = false): void {
     const root = this.root();
     if (!root) throw new Error('the hive folder is not known');
     const dir = this.agentDir(agentId);
-    this.writeCodexConfig(home, cwd, this.sandboxWritableDirs({ id: agentId, name: agentId, cwd } as AgentMeta, dir, root, extra));
+    this.writeCodexConfig(home, cwd, this.sandboxWritableDirs({ id: agentId, name: agentId, cwd, isGod } as AgentMeta, dir, root, extra, scoped), scoped);
   }
 
   /** The generated config.toml for a Codex home: the owner's config, the app's lifecycle hooks, directory trust for
    *  `cwd` and the extra writable roots. Always a whole new file, renamed into place. */
-  private writeCodexConfig(home: string, cwd: string, writableRoots: string[]): void {
+  private writeCodexConfig(home: string, cwd: string, writableRoots: string[], scoped = false): void {
     const userHome = join(homedir(), '.codex');
     const app = this.codexAppHooks();
     const ownerToml = existsSync(join(userHome, 'config.toml'))
@@ -3421,7 +3440,8 @@ export class HiveManager {
     let trusted = cwd;
     try { trusted = realpathSync(cwd); } catch { /* not on disk yet — best spelling we have */ }
     config += codexTrustEntry(trusted);
-    config = withCodexWritableRoots(config, writableRoots);
+    // Scoped: exactly the seat's roots, none inherited from the owner's config (withOnlyCodexWritableRoots).
+    config = scoped ? withOnlyCodexWritableRoots(config, writableRoots) : withCodexWritableRoots(config, writableRoots);
     // Always a whole new file, renamed into place: a stale config.toml (or a
     // link standing in for it) is replaced, never written through or kept.
     const configTmp = join(home, `.config.toml.${process.pid}.${shortRand()}`);

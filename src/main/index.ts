@@ -2997,6 +2997,8 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // passes here, and with none stated gets the configs' own mode, or workspace-write when none is set.
   if (opts.hive && provider === 'codex' && hive.enabled()) opts.args = hive.withCodexSandboxStance(opts.args ?? [], opts.cwd, opts.command);
   let codexHomeFromApp = false;
+  // Read once per spawn: the roots the seat is given and every later step for it follow the same answer.
+  const scopedRootsOn = readConfig().scopedRoots === true;
   if (opts.hive && hive.enabled()) {
     // Memory and knowledge settings are best-effort and not hook provisioning: read them outside the try below, so a
     // failure here never refuses the spawn and never reads as a hook provisioning error.
@@ -3021,7 +3023,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
           // W3 — default-MCP consent state + the bundled skills source dir.
           mcpDefaults: readConfig().mcpDefaults,
           agentPlugins: readConfig().agentPlugins,
-          scopedRoots: readConfig().scopedRoots === true,
+          scopedRoots: scopedRootsOn,
           skillsDir: skillsResourceDir(),
           // The launch as requested, with the environment the terminal will build, so the hook runtime
           // decision is made once, before anything for this agent is created.
@@ -3292,7 +3294,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       if (codexResumedSession) {
         let extra: string[] = [];
         try { extra = [memory.env().MEMPALACE_PALACE_PATH].filter((p): p is string => !!p); } catch { /* memory off */ }
-        hive.prepareResumedCodexHome(opts.hive.id, opts.cwd, home, extra);
+        hive.prepareResumedCodexHome(opts.hive.id, opts.cwd, home, extra, scopedRootsOn, opts.hive.isGod === true);
       }
     } catch (e) {
       const refusal = e instanceof CodexHomeRefused ? e : new CodexHomeRefused(`Codex home ${home} could not be prepared for ${opts.hive.id} (${(e as Error)?.message ?? e})`);

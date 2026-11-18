@@ -159,15 +159,17 @@ export function ownFolder(ctx: RootsContext, root: string = canonical(ctx.root))
   return ok ? p : null;
 }
 
-/** The folders the role may write under scoped roots. An agent with no valid own folder gets none. */
-export function scopedRoots(ctx: RootsContext): string[] {
+/** The folders the role may write under scoped roots. An agent with no valid own folder gets none. `own` is for the
+ *  spawn, which grants the folder it makes for the agent itself (it may not exist yet when the spawn is checked);
+ *  everything else reads the folder from disk. */
+export function scopedRoots(ctx: RootsContext, own?: string): string[] {
   const root = canonical(ctx.root);
   let roots: string[];
   if (ctx.isGod) roots = [root];
   else {
-    const own = ownFolder(ctx, root);
-    if (!own) return [];
-    roots = [own, join(root, 'evidence')];
+    const mine = own === undefined ? ownFolder(ctx, root) : canonical(own);
+    if (!mine) return [];
+    roots = [mine, join(root, 'evidence')];
   }
   // A working directory counts only outside the hive and not above it. One inside the hive is
   // covered by the own folder or is not the agent's to write (bin, agents/, another agent).
