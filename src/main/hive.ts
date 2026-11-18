@@ -66,7 +66,7 @@ import { mailSender, PendingMail } from './mailLine';
 import { nodeLauncherScript } from './nodeLauncher';
 import { codexTrustEntry } from '../shared/codexTrust';
 import { withCodexWritableRoots, withOnlyCodexWritableRoots } from '../shared/codexWritableRoots';
-import { canonical, cwdHoldsHive, insideAny, FAIL_CLOSED_DIR, FAIL_CLOSED_FILE, ownFolderProblem, PROTECTED_WRITE_TOOLS, ScopedRootsRefused, seatRoots } from './writeRoots';
+import { canonical, cwdHoldsHive, cwdOutsideOwnFolder, insideAny, FAIL_CLOSED_DIR, FAIL_CLOSED_FILE, ownFolderProblem, PROTECTED_WRITE_TOOLS, ScopedRootsRefused, seatRoots } from './writeRoots';
 import { godNameFromRegistry } from '../shared/godIdentity';
 import { appendSession } from './codexActivity';
 import { isSafeMessageId, publishMessage, sweepInboxLeftovers } from './messageId';
@@ -1538,6 +1538,11 @@ export class HiveManager {
     // root or holds it would be the whole hive.
     if (scoped && meta.isGod !== true && meta.cwd && cwdHoldsHive(root, expandTilde(meta.cwd))) {
       throw new ScopedRootsRefused(`${shortTarget(meta.id)} cannot start: its working folder is the hive folder or holds it; give it a working folder outside the hive`);
+    }
+    // Inside the hive, the only working folder a seat but god may have is its own folder: anywhere else (another agent's
+    // folder, evidence/) the CLI would let it write a part of the hive its roots do not grant.
+    if (scoped && meta.isGod !== true && meta.cwd && cwdOutsideOwnFolder(root, meta.id, expandTilde(meta.cwd))) {
+      throw new ScopedRootsRefused(`${shortTarget(meta.id)} cannot start: its working folder is inside the hive but not in its own folder; give it a working folder in its own folder or outside the hive`);
     }
     // Claude merges the owner's user and managed settings into every seat: a write root there outside the seat's own
     // would be added to its sandbox whatever the seat's settings say.

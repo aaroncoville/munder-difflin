@@ -97,3 +97,32 @@ test('flag off: an agent working in the folder that holds the hive starts as bef
   await f.spawn('above', 'claude', false, { cwd: f.harness });
   await f.spawn('inroot', 'claude', false, { cwd: f.root });
 });
+
+test('flag on: an agent whose working folder is inside the hive but not inside its own folder is refused; god is not', async (t) => {
+  const f = floor(t);
+  await f.spawn('peer', 'claude', true);
+  for (const [id, cwd] of [['ev', () => path.join(f.root, 'evidence')], ['evsub', () => path.join(f.root, 'evidence', 'run-1')], ['peerdir', () => f.A('peer')], ['agents', () => path.join(f.root, 'agents')]]) {
+    for (const provider of ['claude', 'codex']) {
+      await assert.rejects(f.spawn(`${id}-${provider}`, provider, true, { cwd: cwd() }), (e) => e instanceof ScopedRootsRefused && /working folder/.test(e.message) && !e.message.includes(f.base), `${id} ${provider}`);
+      assert.equal(Object.hasOwn(f.hive.registry().agents, `${id}-${provider}`), false, `${id} ${provider}: no registry row`);
+    }
+  }
+  await f.spawn('god', 'claude', true, { cwd: path.join(f.root, 'evidence'), isGod: true });
+});
+
+test('flag on: an agent working inside its own folder, or outside the hive, starts as before', async (t) => {
+  const f = floor(t);
+  await f.spawn('own', 'claude', true, { cwd: f.A('own') });
+  fs.mkdirSync(path.join(f.A('own'), 'repo'));
+  await f.spawn('own', 'claude', true, { cwd: path.join(f.A('own'), 'repo') });
+  await f.spawn('own-cx', 'codex', true, { cwd: f.A('own-cx') });
+  await f.spawn('outside', 'claude', true, { cwd: f.work });
+});
+
+test('flag off: an agent working in another agent\'s folder or evidence/ starts as before', async (t) => {
+  const f = floor(t);
+  await f.spawn('peer', 'claude', false);
+  await f.spawn('peerdir', 'claude', false, { cwd: f.A('peer') });
+  fs.mkdirSync(path.join(f.root, 'evidence'), { recursive: true });
+  await f.spawn('ev', 'claude', false, { cwd: path.join(f.root, 'evidence') });
+});
