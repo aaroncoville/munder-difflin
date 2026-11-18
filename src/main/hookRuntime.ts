@@ -61,6 +61,11 @@ export function overlaps(a: string, b: string): boolean {
   return within(x, y) || within(y, x);
 }
 
+/** True when `dir` holds `p` (contains or equals it), compared with the links in both resolved. */
+export function holds(dir: string, p: string): boolean {
+  return within(realish(p), realish(dir));
+}
+
 export function writeNoFollow(dir: string, f: RuntimeFile): void {
   const tmp = join(dir, `.${f.name}.${process.pid}.${randomBytes(6).toString('hex')}`);
   const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0);

@@ -19,6 +19,7 @@ import { appendFileSync, chmodSync, mkdirSync, readdirSync, readFileSync, rmSync
 import { join } from 'node:path';
 import { FAIL_CLOSED_REASONS, LOG_TOOLS, PATH_CLASSES, PROVIDERS, SHAPES, START_SOURCES, VIAS } from './writeRoots';
 import { HOOK_SOURCES } from './hookInventory';
+import { WITHHELD_REASONS } from './repoInstructions';
 
 export const RETENTION_DAYS = 90;
 const SCHEMA = 1;
@@ -88,7 +89,10 @@ const EVENTS: Record<string, Record<string, FieldType>> = {
   // the seat was launched without them (scopedRoots). A count and a flag, never a path.
   'settings-sources': { agentId: 'agent', provider: { oneOf: ['claude'] }, projectFiles: 'count', dropped: 'bool' },
   // Per Claude or Codex spawn: hooks counted per source class (null = could not be read), and a digest over them.
-  'hook-inventory': { agentId: 'agent', provider: { oneOf: ['claude', 'codex'] }, sources: 'hookSources', digest: 'sha256' }
+  'hook-inventory': { agentId: 'agent', provider: { oneOf: ['claude', 'codex'] }, sources: 'hookSources', digest: 'sha256' },
+  // Per Claude spawn with scopedRoots and a repository: how many of its instruction files were passed in the prompt and
+  // how many were withheld, and why the first was (repoInstructions.ts). Counts and a class, never a path or text.
+  'repo-instructions': { agentId: 'agent', included: 'count', withheld: 'count', reason: { oneOf: WITHHELD_REASONS } }
 };
 /** Fields a kind cannot be written without. */
 const REQUIRED: Record<string, string[]> = {
@@ -100,7 +104,8 @@ const REQUIRED: Record<string, string[]> = {
   'write-incomplete': ['agentId', 'state', 'reason', 'shed', 'burst'],
   'write-fail-closed': ['reason', 'count'],
   'settings-sources': ['agentId', 'provider', 'projectFiles', 'dropped'],
-  'hook-inventory': ['agentId', 'provider', 'sources', 'digest']
+  'hook-inventory': ['agentId', 'provider', 'sources', 'digest'],
+  'repo-instructions': ['agentId', 'included', 'withheld']
 };
 
 function valid(type: FieldType, v: unknown, known: KnownIds): boolean {
