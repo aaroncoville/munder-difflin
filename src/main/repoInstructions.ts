@@ -3,8 +3,8 @@
  *
  * With scopedRoots on, Claude seats launch with `--setting-sources user`, so a repository's settings and hooks are not
  * loaded. That also drops the repository's CLAUDE.md and .claude/rules, which carry the instructions the repository
- * gives agents. The app reads those itself and passes them in the seat's appended system prompt, from a source no seat
- * can steer:
+ * gives agents. The app reads those itself and passes them in the seat's appended system prompt. The checks below judge
+ * which seats can write a file now, at the spawn; they cannot tell who wrote it before:
  *  - the checkout is the one the app recorded at spawn (an isolated worker's origin checkout, never its worktree; else
  *    the spawn's cwd when it is a git checkout), never found by reading anything inside a worktree;
  *  - files come from that checkout's working tree, never from git objects (every seat that commits from a worktree
