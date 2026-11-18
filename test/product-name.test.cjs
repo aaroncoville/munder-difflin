@@ -75,6 +75,16 @@ test('the window title is the product name', () => {
   assert.match(read('src/renderer/index.html'), new RegExp(`<title>${PRODUCT_NAME}</title>`));
 });
 
+test('the startup splash names the product, not the setting', () => {
+  // The splash is static HTML painted before any script runs, so it cannot read
+  // the constant; this holds the literal to it.
+  const html = read('src/renderer/index.html');
+  const title = html.match(/<div class="title">([^<]*)<\/div>/);
+  assert.ok(title, 'the splash has no title');
+  assert.equal(title[1], PRODUCT_WORDMARK);
+  assert.doesNotMatch(html.match(/<div class="mk">([^<]*)<\/div>/)[1], /^MD$/);
+});
+
 test("the Settings card's star, issue and changelog links open this build's repository", () => {
   const { PRODUCT_REPO_URL } = loadTs('src/shared/productName.ts');
   const hero = code('src/renderer/src/components/SettingsHeroCard.tsx');
