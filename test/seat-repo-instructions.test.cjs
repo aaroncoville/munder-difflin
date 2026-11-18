@@ -478,3 +478,14 @@ test('reading stops once the cap is passed', (t) => {
   assert.equal(r.reason, 'too-large');
   assert.equal(rulesOpened, 0, 'nothing after the cap was passed is read');
 });
+
+test('a file holding a NUL byte is withheld, so nothing after it is lost from the launch line', async (t) => {
+  const f = floor(t);
+  write(path.join(f.origin, 'CLAUDE.md'), 'BEFORE THE NUL\u0000AFTER THE NUL\n');
+  write(path.join(f.origin, '.claude', 'CLAUDE.md'), 'DOT CLAUDE FILE\n');
+  const prompt = promptOf((await spawnWorker(f, 'nul1')).args);
+  assert.equal(prompt.includes('\u0000'), false);
+  assert.equal(prompt.includes('BEFORE THE NUL'), false);
+  assert.ok(prompt.includes('DOT CLAUDE FILE'));
+  assert.deepEqual(repoRows(f, 'nul1'), [{ kind: 'repo-instructions', agentId: 'nul1', included: 1, withheld: 1, reason: 'unreadable' }]);
+});

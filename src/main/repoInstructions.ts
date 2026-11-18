@@ -189,8 +189,8 @@ export function repoInstructions(checkout: string, home: string, reaches: (file:
     }
     // A rule that applies only to some paths is not an instruction for the whole checkout.
     if (rules.includes(file) && hasPathsField(j.text)) continue;
-    // Text holding the marker could close its own fence.
-    if (j.text.includes(marker)) { withheld++; reason ??= 'unreadable'; continue; }
+    // Text holding the marker could close its own fence. A NUL ends a launch argument there, silently cutting the rest.
+    if (j.text.includes(marker) || j.text.includes('\0')) { withheld++; reason ??= 'unreadable'; continue; }
     const framed = ['', `<<<repo-file ${marker} ${relative(root, file)}`, j.text.replace(/\n$/, ''), `>>>repo-file ${marker}`];
     bytes += Buffer.byteLength('\n' + framed.join('\n'), 'utf8');
     if (bytes > REPO_INSTRUCTIONS_CAP) return tooLarge(withheld + included + 1);
