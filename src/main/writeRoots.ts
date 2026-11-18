@@ -445,11 +445,10 @@ export function refusedWrite(tool: unknown, input: unknown, ctx: RootsContext): 
     const r = rec(input);
     const cut = { truncated: false };
     let paths: string[];
+    // No path read means the call cannot be judged (a renamed field, a patch with no file lines): refused.
     if (EDIT_TOOLS.has(tool as string)) paths = PATH_FIELDS.flatMap((k) => (typeof r[k] === 'string' ? [r[k] as string] : []));
-    else {
-      paths = patchPaths(input, cut);
-      if (!paths.length) return 'unknown';
-    }
+    else paths = patchPaths(input, cut);
+    if (!paths.length) return 'unknown';
     if (cut.truncated || paths.length > MAX_PATHS || !paths.every(admitPath)) return 'unknown';
     const allowed = [...seatRoots(ctx), ...[...(ctx.grants ?? []), ...(ctx.temp ?? [])].filter((p) => typeof p === 'string' && isAbsolute(p) && admitPath(p)).map(canonical)];
     for (const p of paths) {
