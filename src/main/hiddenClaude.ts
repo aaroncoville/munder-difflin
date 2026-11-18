@@ -180,7 +180,7 @@ export function helperTranscriptPath(realCwd: string, sessionId: string, env: Re
 function extractLastAssistantText(file: string): { text: string } | { error: string } | null {
   let fd: number | null = null;
   try {
-    fd = openSync(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    fd = openSync(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
     if (!fstatSync(fd).isFile()) return null;
     return lastAssistantReply(readFileSync(fd, 'utf8'));
   } catch { return null; }
@@ -282,7 +282,7 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
         name: 'xterm-color',
         cols: 220,
         rows: 50,
-        cwd: opts.cwd,
+        cwd,
         env,
       });
     } catch (e) {
