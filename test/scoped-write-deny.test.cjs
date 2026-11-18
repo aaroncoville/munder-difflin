@@ -25,7 +25,7 @@ require.cache[electron] = {
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { HookServer } = loadTs('src/main/hooks.ts');
-const { enforcedRoots } = loadTs('src/main/writeRoots.ts');
+const { seatGate } = loadTs('src/main/writeRoots.ts');
 
 async function floor(t, scoped) {
   const base = codexTestBase(t, 'mdwd-');
@@ -43,14 +43,16 @@ async function floor(t, scoped) {
     cx: { cwd: work, provider: 'codex', isGod: false, scoped },
     god: { cwd: harness, provider: 'claude', isGod: true, scoped },
   };
+  const tokens = {};
   for (const [id, s] of Object.entries(spawned)) {
-    await hive.ensureAgent({ id, name: id, provider: 'claude', cwd: s.cwd, isGod: s.isGod }, { spawnId: `pty-${id}`, scopedRoots: scoped });
+    tokens[id] = (await hive.ensureAgent({ id, name: id, provider: 'claude', cwd: s.cwd, isGod: s.isGod }, { spawnId: `pty-${id}`, scopedRoots: scoped })).env.HIVE_SPAWN_TOKEN;
   }
   const server = new HookServer(hive, () => null, () => ({ notifications: false, scopedRoots: scoped }), undefined, undefined);
-  server.setWriteGate((agentId) => enforcedRoots(hive.root(), agentId, spawned[agentId]));
+  // As index.ts wires it: the spawn the call's token names, else the agent's spawn record.
+  server.setWriteGate((seat, token) => seatGate(hive.root(), seat, token, (tk) => hive.spawnPolicy(tk), (id) => spawned[id]));
   const bare = new HookServer(hive, () => null, () => ({ notifications: false }), undefined, undefined);
   // As the shim sends it: the CLI's agent_id, its working folder, and the seat the app spawned as hive_seat_id.
-  const call = (srv, agentId, tool_name, tool_input, extra = {}) => srv.handle({ hive_seat_id: agentId, agent_id: agentId, cwd: spawned[agentId]?.cwd, session_id: 's', hook_event_name: 'PreToolUse', tool_name, tool_input, ...extra });
+  const call = (srv, agentId, tool_name, tool_input, extra = {}) => srv.handle({ hive_seat_id: agentId, agent_id: agentId, cwd: spawned[agentId]?.cwd, ...(tokens[agentId] ? { hive_spawn: tokens[agentId] } : {}), session_id: 's', hook_event_name: 'PreToolUse', tool_name, tool_input, ...extra });
   return { base, harness, work, root, server, bare, call, fire: (...a) => call(server, ...a) };
 }
 

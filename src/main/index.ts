@@ -43,7 +43,7 @@ import { runCanaries, memoryCanary } from './canaries';
 import { TurnTracker, diffTasks, type UsageIds } from './usageEvents';
 import { loadUsageSecret, usageRef } from './usageRef';
 import { UsageLog, recordFromRenderer } from './usageLog';
-import { ScopedRootsRefused, WriteRootsDryRun, enforcedRoots, spawnLaunchFacts, type SpawnRecord } from './writeRoots';
+import { ScopedRootsRefused, WriteRootsDryRun, seatGate, spawnLaunchFacts, type SpawnRecord } from './writeRoots';
 import { writeWeeklyDigest } from './usageDigest';
 import { HookServer } from './hooks';
 import { HeavyJobLock, heavyLimit, heavySlotNotice, probeProcesses } from './heavyJob';
@@ -465,7 +465,7 @@ const writeRootsDryRun = new WriteRootsDryRun({
 });
 hookServer.setWriteObserver((agentId, event, p) => writeRootsDryRun.onHook(agentId, event, p));
 // Seats spawned with scoped roots on have file writes outside their roots refused at PreToolUse (writeRoots.ts).
-hookServer.setWriteGate((agentId) => enforcedRoots(hive.root(), agentId, spawnRoots.get(agentId)));
+hookServer.setWriteGate((seat, token) => seatGate(hive.root(), seat, token, (t) => hive.spawnPolicy(t), (id) => spawnRoots.get(id)));
 const memory = new MemoryManager(
   () => readConfig().harnessHome,
   () => migrateMemorySettings(readConfig()),
@@ -3294,7 +3294,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       if (codexResumedSession) {
         let extra: string[] = [];
         try { extra = [memory.env().MEMPALACE_PALACE_PATH].filter((p): p is string => !!p); } catch { /* memory off */ }
-        hive.prepareResumedCodexHome(opts.hive.id, opts.cwd, home, extra);
+        hive.prepareResumedCodexHome(opts.hive.id, opts.cwd, home, extra, opts.id);
       }
     } catch (e) {
       const refusal = e instanceof CodexHomeRefused ? e : new CodexHomeRefused(`Codex home ${home} could not be prepared for ${opts.hive.id} (${(e as Error)?.message ?? e})`);
@@ -3330,7 +3330,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   if (res.ok && opts.hive?.id) {
     hive.spawnStarted(opts.id);
     ptyToAgent.set(opts.id, opts.hive.id);
-    spawnRoots.set(opts.hive.id, { cwd: opts.cwd, provider, isGod: opts.hive.isGod === true, args: [opts.command, ...(opts.args ?? [])], env: relocationEnv(buildPtyEnv(process.env, '', opts.env)), codexHomeFromApp, gen: ++spawnGeneration, ...hive.spawnScope(opts.hive.id) });
+    spawnRoots.set(opts.hive.id, { cwd: opts.cwd, provider, isGod: opts.hive.isGod === true, args: [opts.command, ...(opts.args ?? [])], env: relocationEnv(buildPtyEnv(process.env, '', opts.env)), codexHomeFromApp, gen: ++spawnGeneration, ...hive.spawnScope(opts.id) });
     // Where this worker's Codex rollouts will be written, now that any resume
     // has settled its CODEX_HOME.
     codexHomes.recordSpawn(opts.hive.id, opts.env?.CODEX_HOME, codexResumedSession);

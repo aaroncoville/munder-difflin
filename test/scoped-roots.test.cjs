@@ -149,7 +149,7 @@ test('a resumed Codex home is written with the scoped roots its agent\'s provisi
   const inj = await codex(f, 'cres', { scopedRoots: true });
   const home = inj.env.CODEX_HOME;
   fs.writeFileSync(path.join(home, 'config.toml'), '');
-  f.hive.prepareResumedCodexHome('cres', f.work, home, [f.palace]);
+  f.hive.prepareResumedCodexHome('cres', f.work, home, [f.palace], 'pty-cres');
   assert.deepEqual(parseToml(codexConfig(inj)).sandbox_workspace_write.writable_roots, [f.agentDir('cres'), path.join(f.root, 'evidence'), f.work, f.palace]);
-  assert.deepEqual(f.hive.spawnScope('cres'), { scoped: true, isGod: false, grants: [f.palace] });
+  assert.deepEqual(f.hive.spawnScope('pty-cres'), { scoped: true, isGod: false, grants: [f.palace] });
 });

@@ -27,7 +27,7 @@ require.cache[electron] = {
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { HookServer } = loadTs('src/main/hooks.ts');
-const { enforcedRoots } = loadTs('src/main/writeRoots.ts');
+const { seatGate } = loadTs('src/main/writeRoots.ts');
 
 async function floor(t, { configOn = true } = {}) {
   const base = codexTestBase(t, 'mdsid-');
@@ -45,12 +45,15 @@ async function floor(t, { configOn = true } = {}) {
     other: { cwd: work, provider: 'claude', isGod: false, scoped: true },
     old: { cwd: work, provider: 'claude', isGod: false, scoped: false },
   };
-  for (const [id, s] of Object.entries(spawned)) await hive.ensureAgent({ id, name: id, provider: 'claude', cwd: s.cwd }, { spawnId: `pty-${id}`, scopedRoots: s.scoped });
+  const tokens = {};
+  for (const [id, s] of Object.entries(spawned)) tokens[id] = (await hive.ensureAgent({ id, name: id, provider: 'claude', cwd: s.cwd }, { spawnId: `pty-${id}`, scopedRoots: s.scoped })).env.HIVE_SPAWN_TOKEN;
   const server = new HookServer(hive, () => null, () => ({ notifications: false, scopedRoots: configOn }), undefined, undefined);
-  server.setWriteGate((seat) => enforcedRoots(hive.root(), seat, spawned[seat]));
+  // As index.ts wires it: the spawn the call's token names, else the agent's spawn record.
+  server.setWriteGate((seat, token) => seatGate(hive.root(), seat, token, (tk) => hive.spawnPolicy(tk), (id) => spawned[id]));
   const root = hive.root();
+  // The token is the one the seat's own spawn was given, as its shim sends it.
   const pre = (extra, tool_name = 'Write', tool_input = { file_path: path.join(root, 'agents', 'other', 'outbox', 'forged.json'), content: '{}' }) =>
-    server.handle({ session_id: 's', hook_event_name: 'PreToolUse', tool_name, tool_input, ...extra });
+    server.handle({ session_id: 's', hook_event_name: 'PreToolUse', cwd: work, ...(tokens[extra.hive_seat_id] ? { hive_spawn: tokens[extra.hive_seat_id] } : {}), tool_name, tool_input, ...extra });
   return { root, runtime, server, pre };
 }
 

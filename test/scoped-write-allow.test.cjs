@@ -25,7 +25,7 @@ require.cache[electron] = {
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { HookServer } = loadTs('src/main/hooks.ts');
-const { enforcedRoots } = loadTs('src/main/writeRoots.ts');
+const { seatGate } = loadTs('src/main/writeRoots.ts');
 
 async function floor(t, scoped) {
   const base = codexTestBase(t, 'mdwa-');
@@ -46,13 +46,16 @@ async function floor(t, scoped) {
     cx: { cwd: work, provider: 'codex', isGod: false, scoped, env: { HOME: base, TMPDIR: tmp }, grants: [palace] },
     god: { cwd: harness, provider: 'claude', isGod: true, scoped, env: { HOME: base, TMPDIR: tmp }, grants: [palace] },
   };
+  const tokens = {};
   for (const [id, s] of Object.entries(spawned)) {
-    await hive.ensureAgent({ id, name: id, provider: 'claude', cwd: s.cwd, isGod: s.isGod }, { spawnId: `pty-${id}`, scopedRoots: scoped, extraWritableDirs: [palace] });
+    const launch = { argv: ['claude'], env: s.env };
+    tokens[id] = (await hive.ensureAgent({ id, name: id, provider: 'claude', cwd: s.cwd, isGod: s.isGod }, { spawnId: `pty-${id}`, scopedRoots: scoped, extraWritableDirs: [palace], launch })).env.HIVE_SPAWN_TOKEN;
   }
   const server = new HookServer(hive, () => null, () => ({ notifications: false, scopedRoots: scoped }), undefined, undefined);
-  server.setWriteGate((seat) => enforcedRoots(hive.root(), seat, spawned[seat]));
+  // As index.ts wires it: the spawn the call's token names, else the agent's spawn record.
+  server.setWriteGate((seat, token) => seatGate(hive.root(), seat, token, (tk) => hive.spawnPolicy(tk), (id) => spawned[id]));
   const bare = new HookServer(hive, () => null, () => ({ notifications: false }), undefined, undefined);
-  const call = (srv, seat, tool_name, tool_input) => srv.handle({ hive_seat_id: seat, agent_id: seat, cwd: spawned[seat]?.cwd, session_id: 's', hook_event_name: 'PreToolUse', tool_name, tool_input });
+  const call = (srv, seat, tool_name, tool_input) => srv.handle({ hive_seat_id: seat, agent_id: seat, cwd: spawned[seat]?.cwd, ...(tokens[seat] ? { hive_spawn: tokens[seat] } : {}), session_id: 's', hook_event_name: 'PreToolUse', tool_name, tool_input });
   const seatSettings = path.dirname(hive.seatSettingsPath('ag'));
   return { base, harness, work, palace, tmp, runtime, seatSettings, root: hive.root(), server, bare, call, fire: (...a) => call(server, ...a) };
 }

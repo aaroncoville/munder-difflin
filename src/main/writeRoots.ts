@@ -518,6 +518,25 @@ export function enforcedRoots(root: string | null, agentId: string, spawned: { s
   return { root, agentId, isGod: spawned.isGod, cwd: spawned.cwd, grants: [...(spawned.grants ?? [])], temp };
 }
 
+/** The roots a hook call is judged against, from the spawn its token names and else from the agent's spawn record:
+ *  a context to judge by; 'unchecked' for a seat whose writes are not checked; 'refuse' when the call cannot be
+ *  matched to a policy (a token the app did not issue or issued to another agent, or no token from a seat whose
+ *  recorded spawn is scoped: a scoped spawn's process always sends its token); null for an id the app did not spawn. */
+export function seatGate(
+  root: string | null, seat: string, token: unknown,
+  policyOf: (token: string) => { agentId: string; provider: string; isGod: boolean; cwd: string; env?: Record<string, string>; grants?: string[] } | undefined,
+  recordOf: (seat: string) => Parameters<typeof enforcedRoots>[2],
+): RootsContext | 'unchecked' | 'refuse' | null {
+  if (typeof token === 'string' && token) {
+    const p = policyOf(token);
+    if (!p || p.agentId !== seat) return 'refuse';
+    const ctx = enforcedRoots(root, seat, { ...p, scoped: true });
+    return ctx && ctx !== 'unchecked' ? ctx : 'refuse';
+  }
+  const rec = enforcedRoots(root, seat, recordOf(seat));
+  return rec && rec !== 'unchecked' ? 'refuse' : rec;
+}
+
 // --- effective roots ---
 
 export interface EffectiveRoots { roots: string[]; state: RootsState; source: 'claude-settings-files' | 'codex-config' | 'none'; /** The roots that are the CLI's temp folder (TMPDIR), classed apart. */ temp?: string[]; /** Why it is unknown, when that is worth its own row: the generated config's hooks are not the app's own, or a table

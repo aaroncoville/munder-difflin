@@ -35,6 +35,8 @@ interface HookPayload {
   /** The seat the app spawned, added by the hook shim from its environment; agent_id is the CLI's own (a subagent's
    *  id for a subagent's calls). */
   hive_seat_id?: string | null;
+  /** A scoped spawn's token, added by the shim from its environment: which spawn's policy judges this call. */
+  hive_spawn?: string;
   session_id?: string;
   transcript_path?: string;
   /** Status-line payloads only: the session's live context accounting. */
@@ -416,8 +418,8 @@ export class HookServer {
 
   /** The roots a seat is held to when scoped roots are enforced for it; 'unchecked' for a seat whose writes are not
    *  checked; null for an id the app did not spawn. */
-  private writeGate: ((seatId: string) => RootsContext | 'unchecked' | null) | null = null;
-  setWriteGate(fn: ((seatId: string) => RootsContext | 'unchecked' | null) | null): void { this.writeGate = fn; }
+  private writeGate: ((seatId: string, spawnToken: unknown) => RootsContext | 'unchecked' | 'refuse' | null) | null = null;
+  setWriteGate(fn: ((seatId: string, spawnToken: unknown) => RootsContext | 'unchecked' | 'refuse' | null) | null): void { this.writeGate = fn; }
 
   /** Why a file write must be refused under the seat's scoped roots, or null. The seat is the shim's hive_seat_id, never
    *  the CLI's agent_id, which for a subagent's calls is the subagent's own id. With scoped roots on, a protected write
@@ -428,8 +430,9 @@ export class HookServer {
     const seat = typeof p.hive_seat_id === 'string' && p.hive_seat_id ? p.hive_seat_id : null;
     let cls: string | null;
     try {
-      const ctx = seat ? this.writeGate(seat) : null;
+      const ctx = seat ? this.writeGate(seat, p.hive_spawn) : null;
       if (ctx === 'unchecked') return null;
+      if (ctx === 'refuse') return 'Refused by scoped write roots: this call could not be matched to the spawn of its agent.';
       if (!ctx) {
         if (this.getConfig().scopedRoots !== true) return null;
         return 'Refused by scoped write roots: the agent this call belongs to could not be identified.';

@@ -640,13 +640,23 @@ export class HiveManager {
     const why = ownFolderProblem(root, agentId);
     if (why) throw new ScopedRootsRefused(`${shortTarget(agentId)} cannot start: ${why}`);
   }
-  /** Per agent, what its latest provisioning decided about scoped roots: whether they are on for it, its role and the
-   *  folders it was granted besides its role's roots. Held in memory, so a later step of the same spawn (a resumed
-   *  Codex home, the record the hook's write check reads) follows the same answer, never a setting changed meanwhile. */
-  private spawnScopes = new Map<string, { scoped: boolean; isGod: boolean; grants: string[] }>();
-  spawnScope(agentId: string): { scoped: boolean; isGod: boolean; grants: string[] } | undefined {
-    const s = this.spawnScopes.get(agentId);
+  /** Per spawn (its spawn id), what provisioning decided about scoped roots: whether they are on, the agent, its role,
+   *  provider and working folder, the folders it was granted besides its role's roots, and its launch environment
+   *  (relocation variables, for its temp folders). Held in memory and keyed by the spawn, never the agent id, so two
+   *  overlapping spawns of one agent each keep their own answer through every later step (a resumed Codex home, the
+   *  record the hook's write check reads), whatever the setting reads meanwhile. */
+  private spawnScopes = new Map<string, SpawnPolicy>();
+  /** A scoped spawn's token (in its HIVE_SPAWN_TOKEN, sent by the hook shim as hive_spawn) → its spawn id. */
+  private spawnTokens = new Map<string, string>();
+  spawnScope(spawnId: string): { scoped: boolean; isGod: boolean; grants: string[] } | undefined {
+    const s = this.spawnScopes.get(spawnId);
     return s ? { scoped: s.scoped, isGod: s.isGod, grants: [...s.grants] } : undefined;
+  }
+  /** The policy of the scoped spawn a hook call's token names, or undefined: a token the app did not issue. */
+  spawnPolicy(token: unknown): SpawnPolicy | undefined {
+    const key = typeof token === 'string' && token ? this.spawnTokens.get(token) : undefined;
+    const s = key === undefined ? undefined : this.spawnScopes.get(key);
+    return s ? { ...s, grants: [...s.grants], env: { ...s.env } } : undefined;
   }
   /** Where usage rows go (the app's local usage log); unset, none are kept. */
   private usageSink: ((row: Record<string, unknown>) => void) | null = null;
@@ -1453,7 +1463,15 @@ export class HiveManager {
     // Keyed by this spawn, so two overlapping spawns of one agent never share a decision.
     const verdictKey = opts.spawnId ?? meta.id;
     if (verdict) this.hookVerdicts.set(verdictKey, verdict); else this.hookVerdicts.delete(verdictKey);
-    this.spawnScopes.set(meta.id, { scoped, isGod: meta.isGod === true, grants: [...(opts.extraWritableDirs ?? [])] });
+    // A scoped Claude or Codex spawn gets a token of its own: its hook calls are judged by this spawn's policy alone.
+    const spawnToken = scoped && this.hookKind(meta) ? randomBytes(16).toString('hex') : null;
+    const prevToken = this.spawnScopes.get(verdictKey)?.token;
+    if (prevToken) this.spawnTokens.delete(prevToken);
+    this.spawnScopes.set(verdictKey, {
+      agentId: meta.id, scoped, isGod: meta.isGod === true, provider: meta.provider ?? 'claude', cwd: meta.cwd ? expandTilde(meta.cwd) : '',
+      grants: [...(opts.extraWritableDirs ?? [])], env: { ...(opts.launch?.env ?? {}) }, ...(spawnToken ? { token: spawnToken } : {}),
+    });
+    if (spawnToken) this.spawnTokens.set(spawnToken, verdictKey);
     if (!this.hookKind(meta)) this.unconfinedStarting.set(verdictKey, { agentId: meta.id, provider: meta.provider ?? 'custom' });
     mkdirSync(join(dir, 'inbox', '.done'), { recursive: true });
     mkdirSync(join(dir, 'outbox', '.sent'), { recursive: true });
@@ -1537,6 +1555,7 @@ export class HiveManager {
     };
     // Tells the hook shim this seat's file writes are checked: one it cannot get checked is refused, not allowed.
     if (scoped && this.hookKind(meta)) env.HIVE_SCOPED_ROOTS = '1';
+    if (spawnToken) env.HIVE_SPAWN_TOKEN = spawnToken;
     // The bundled-node launcher, so an agent can run the hive's .cjs helpers (KG
     // CLI, Slack reply helper) even when `node` is not on its PATH. Invoking the
     // Electron binary directly would open a second app window, so this must stay
@@ -3452,12 +3471,13 @@ export class HiveManager {
   /** A resume that runs this agent in the home of the agent that owns the session: that home's config.toml is
    *  written fresh for this spawn (its working folder, its write roots, the app's hooks) before the trust step,
    *  as a fresh spawn's own is. The caller has checked the home is one of the computed ones. */
-  prepareResumedCodexHome(agentId: string, cwd: string, home: string, extra: string[] = []): void {
+  prepareResumedCodexHome(agentId: string, cwd: string, home: string, extra: string[] = [], spawnId: string = agentId): void {
     const root = this.root();
     if (!root) throw new Error('the hive folder is not known');
     const dir = this.agentDir(agentId);
-    // Scoped roots as this agent's provisioning decided them, not as the setting reads now.
-    const scope = this.spawnScope(agentId);
+    // Scoped roots as this spawn's provisioning decided them, not as the setting reads now nor as another spawn did.
+    const found = this.spawnScopes.get(spawnId);
+    const scope = found && found.agentId === agentId ? found : undefined;
     const scoped = scope?.scoped === true;
     this.writeCodexConfig(home, cwd, this.sandboxWritableDirs({ id: agentId, name: agentId, cwd, isGod: scope?.isGod === true } as AgentMeta, dir, root, extra, scoped), scoped);
   }
@@ -4554,6 +4574,9 @@ const GENERATED_HIVE_DOCS = [
   { filename: 'COMMANDS.md', contents: COMMANDS_MD }
 ] as const;
 
+/** What one spawn's provisioning decided about scoped roots (HiveManager.spawnScopes). */
+export interface SpawnPolicy { agentId: string; scoped: boolean; isGod: boolean; provider: string; cwd: string; grants: string[]; env: Record<string, string>; token?: string }
+
 // ─── cth-hook shim (written to <hive>/bin/cth-hook.cjs) ──────────────────────
 // A minimal pipe: read the hook payload on stdin, tag it with this agent's id,
 // forward it to the hive's UDS, and relay the response back to `claude`. All the
@@ -4582,6 +4605,9 @@ process.stdin.on('end', () => {
     delete rest.hive_seat_id;
     payload = Object.assign({ hive_seat_id: process.env.AGENT_ID || null }, rest);
   }
+  // A scoped spawn's own token (set by the app per spawn), so the app judges this call by that spawn's policy.
+  if (process.env.HIVE_SPAWN_TOKEN) payload.hive_spawn = process.env.HIVE_SPAWN_TOKEN;
+  else delete payload.hive_spawn;
   const sock = process.env.HIVE_SOCK;
   if (isStatus) {
     // Status-line mode: Claude Code pipes the session status JSON (incl.
