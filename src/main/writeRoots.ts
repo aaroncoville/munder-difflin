@@ -110,6 +110,10 @@ export interface RootsContext {
   cwd: string;
   /** The user's home, for `~` and `$HOME`; defaults to os.homedir(). */
   home?: string;
+  /** Enforcement only: folders the seat was granted besides its role's roots (the shared memory folder), and its temp
+   *  folders. A protected write is allowed inside these too. */
+  grants?: string[];
+  temp?: string[];
 }
 
 // A per-call memo, so the root, own folder and cwd are resolved once, and repeats cost nothing.
@@ -159,21 +163,31 @@ export function ownFolder(ctx: RootsContext, root: string = canonical(ctx.root))
   return ok ? p : null;
 }
 
-/** The folders the role may write under scoped roots. An agent with no valid own folder gets none. */
-export function scopedRoots(ctx: RootsContext): string[] {
+/** The folders the role may write under scoped roots. An agent with no valid own folder gets none. `own` is for the
+ *  spawn, which grants the folder it makes for the agent itself (it may not exist yet when the spawn is checked);
+ *  everything else reads the folder from disk. */
+export function scopedRoots(ctx: RootsContext, own?: string): string[] {
   const root = canonical(ctx.root);
   let roots: string[];
   if (ctx.isGod) roots = [root];
   else {
-    const own = ownFolder(ctx, root);
-    if (!own) return [];
-    roots = [own, join(root, 'evidence')];
+    const mine = own === undefined ? ownFolder(ctx, root) : canonical(own);
+    if (!mine) return [];
+    roots = [mine, join(root, 'evidence')];
   }
   // A working directory counts only outside the hive and not above it. One inside the hive is
   // covered by the own folder or is not the agent's to write (bin, agents/, another agent).
   const cwd = cwdOf(ctx);
   if (cwd && !within(cwd, root) && !within(root, cwd)) roots.push(cwd);
   return [...new Set(roots)];
+}
+
+/** The roots a seat is given when scoped roots are enforced: scopedRoots, and for god its working folder too, which
+ *  sits above the hive on purpose (scopedRoots leaves a folder above the hive out). */
+export function seatRoots(ctx: RootsContext, own?: string): string[] {
+  const roots = scopedRoots(ctx, own);
+  const cwd = cwdOf(ctx);
+  return ctx.isGod && cwd ? [...new Set([cwd, ...roots])] : roots;
 }
 
 function absolute(p: string, ctx: RootsContext): string {
@@ -410,6 +424,124 @@ export function observeTool(tool: string, input: unknown, ctx: RootsContext, bud
     if (truncated) out.push({ via: 'truncated', pathClass: 'unknown', refused: true });
     return out;
   });
+}
+
+// --- enforcement ---
+
+/** A seat refused at spawn because, with scoped roots on, its roots cannot be trusted. */
+export class ScopedRootsRefused extends Error {
+  constructor(reason: string) {
+    super(`Scoped write roots: ${reason}. The agent was not started.`);
+    this.name = 'ScopedRootsRefused';
+  }
+}
+
+/** True when `p` resolves inside one of `roots` (each resolved too). */
+export function insideAny(p: string, roots: string[]): boolean {
+  if (typeof p !== 'string' || !isAbsolute(p) || !admitPath(p)) return false;
+  const abs = canonical(p);
+  return roots.some((r) => typeof r === 'string' && isAbsolute(r) && admitPath(r) && within(abs, canonical(r)));
+}
+
+/** True when a working folder is the hive root or a folder above it. Both CLIs let a seat write its working folder
+ *  whatever its roots say, so for any seat but god such a folder is the whole hive. */
+export function cwdHoldsHive(root: string, cwd: string): boolean {
+  return typeof cwd === 'string' && isAbsolute(cwd) && within(canonical(root), canonical(cwd));
+}
+
+/** Why an agent's own folder cannot be granted under scoped roots, or null. The folder must be a real folder, not a
+ *  link, that resolves to exactly <hive>/agents/<id>; one not made yet must have a real agents folder to be made in.
+ *  Before scoped roots every agent could write the whole hive, so a link there could point anywhere. */
+export function ownFolderProblem(root: string, agentId: string): string | null {
+  const croot = canonical(root);
+  const agents = join(root, 'agents');
+  const dir = join(agents, agentId);
+  let st;
+  try { st = lstatSync(dir); } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') return 'its folder could not be read';
+    try { return realpathSync.native(agents) === join(croot, 'agents') ? null : 'the agents folder is a link'; } catch { return null; }
+  }
+  if (st.isSymbolicLink()) return 'its folder is a link';
+  if (!st.isDirectory()) return 'its folder is not a folder';
+  try { if (realpathSync.native(dir) !== join(croot, 'agents', agentId)) return 'its folder resolves outside the agents folder'; } catch { return 'its folder could not be resolved'; }
+  return null;
+}
+
+/** The tools whose writes the hook refuses outside scoped roots: Claude's file tools, which the OS sandbox does not
+ *  govern, and Codex's patch tool. Every other tool is left to the sandbox. */
+export const PROTECTED_WRITE_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'apply_patch'] as const;
+export const isProtectedWrite = (tool: unknown): boolean => typeof tool === 'string' && (PROTECTED_WRITE_TOOLS as readonly string[]).includes(tool);
+
+/** With scoped roots enforced: the class of a path this call may not write, or null when it may run. An allow check:
+ *  every path the call names (an edit tool's target fields, a patch's file lines, read as observeTool reads them) must
+ *  lie inside the seat's roots (seatRoots), its grants or its temp folders, wherever it is, inside the hive or not.
+ *  Anything else is refused: the app's folders outside the hive, the home folder, any other place. A call whose paths
+ *  cannot all be read (past the path bounds, a patch with no file lines) reads `unknown` and is refused. A relative
+ *  path is read against `callCwd`, the working folder the hook call reports, since the CLI may have moved since it was
+ *  spawned; with no absolute call folder it cannot be read and is refused. Tools other than the protected ones are null. */
+export function refusedWrite(tool: unknown, input: unknown, ctx: RootsContext, callCwd?: unknown): PathClass | 'hard link' | null {
+  if (!isProtectedWrite(tool)) return null;
+  return withMemo(() => {
+    const r = rec(input);
+    const cut = { truncated: false };
+    let paths: string[];
+    // No path read means the call cannot be judged (a renamed field, a patch with no file lines): refused.
+    if (EDIT_TOOLS.has(tool as string)) paths = PATH_FIELDS.flatMap((k) => (typeof r[k] === 'string' ? [r[k] as string] : []));
+    else paths = patchPaths(input, cut);
+    if (!paths.length) return 'unknown';
+    if (cut.truncated || paths.length > MAX_PATHS || !paths.every(admitPath)) return 'unknown';
+    const allowed = [...seatRoots(ctx), ...[...(ctx.grants ?? []), ...(ctx.temp ?? [])].filter((p) => typeof p === 'string' && isAbsolute(p) && admitPath(p)).map(canonical)];
+    const base = typeof callCwd === 'string' && isAbsolute(callCwd) ? callCwd : null;
+    for (const p of paths) {
+      if (!isAbsolute(p) && !base) return 'unknown';
+      const abs = canonical(isAbsolute(p) ? p : join(base as string, p));
+      if (!allowed.some((a) => within(abs, a))) return pathClass(abs, ctx);
+      // A file with another hard link is the same object as a name that may sit outside every root: writing it would
+      // change that object too, so an existing target with more than one link is refused wherever it is.
+      try { const st = lstatSync(abs); if (st.isFile() && st.nlink > 1) return 'hard link'; } catch { /* not there yet */ }
+    }
+    return null;
+  });
+}
+
+/** Why the hook shim refused a protected write it could not get checked (scoped roots): no socket to reach, another
+ *  connect error, no answer in time, an answer that is not a JSON object. */
+export const FAIL_CLOSED_REASONS = ['no-socket', 'connect-error', 'timeout', 'malformed'] as const;
+/** The folder, inside the app's private hook runtime folder, where the shim counts those refusals: one file per agent
+ *  and reason, `<agent id>.<reason>`, one byte per refusal (`_unknown` when the id is not a plain name). */
+export const FAIL_CLOSED_DIR = 'fail-closed';
+export const FAIL_CLOSED_FILE = new RegExp(`^([A-Za-z0-9][A-Za-z0-9._-]{0,127}|_unknown)\\.(${FAIL_CLOSED_REASONS.join('|')})$`);
+
+/** The roots context the hook holds a seat to, from what the app spawned it with: 'unchecked' for a seat whose writes
+ *  are not checked (spawned with scoped roots off, or a provider the app does not give scoped roots), null for an id
+ *  the app did not spawn (or no hive). */
+export function enforcedRoots(root: string | null, agentId: string, spawned: { scoped?: boolean; provider: string; isGod: boolean; cwd: string; env?: Record<string, string>; grants?: string[] } | undefined): RootsContext | 'unchecked' | null {
+  if (!root || !spawned) return null;
+  if (spawned.scoped !== true) return 'unchecked';
+  if (spawned.provider !== 'claude' && spawned.provider !== 'codex') return 'unchecked';
+  // The temp folders the CLI's sandbox lets it write, from the spawn's own environment, as the dry run reads them.
+  const places = launchPlaces(spawned.provider, spawned.env, homedir());
+  const temp = 'unknown' in places ? [] : places.tmpDirs;
+  return { root, agentId, isGod: spawned.isGod, cwd: spawned.cwd, grants: [...(spawned.grants ?? [])], temp };
+}
+
+/** The roots a hook call is judged against, from the spawn its token names and else from the agent's spawn record:
+ *  a context to judge by; 'unchecked' for a seat whose writes are not checked; 'refuse' when the call cannot be
+ *  matched to a policy (a token the app did not issue or issued to another agent, or no token from a seat whose
+ *  recorded spawn is scoped: a scoped spawn's process always sends its token); null for an id the app did not spawn. */
+export function seatGate(
+  root: string | null, seat: string, token: unknown,
+  policyOf: (token: string) => { agentId: string; provider: string; isGod: boolean; cwd: string; env?: Record<string, string>; grants?: string[] } | undefined,
+  recordOf: (seat: string) => Parameters<typeof enforcedRoots>[2],
+): RootsContext | 'unchecked' | 'refuse' | null {
+  if (typeof token === 'string' && token) {
+    const p = policyOf(token);
+    if (!p || p.agentId !== seat) return 'refuse';
+    const ctx = enforcedRoots(root, seat, { ...p, scoped: true });
+    return ctx && ctx !== 'unchecked' ? ctx : 'refuse';
+  }
+  const rec = enforcedRoots(root, seat, recordOf(seat));
+  return rec && rec !== 'unchecked' ? 'refuse' : rec;
 }
 
 // --- effective roots ---

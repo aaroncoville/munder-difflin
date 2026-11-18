@@ -348,7 +348,9 @@ export interface HarnessConfig {
   usageLog?: boolean;
   /** Claude seats launch with `--setting-sources user`: the owner's user settings and the app's generated settings
    *  load, the project and local .claude/settings files in the working folder (which any agent working there can
-   *  write) do not. Default OFF; every Claude spawn logs how many of those files it would drop either way. */
+   *  write) do not. Claude and Codex seats are also given only the write roots their role needs (writeRoots.ts
+   *  scopedRoots) instead of the whole hive. Default OFF; every Claude spawn logs how many of those files it would drop
+   *  either way. */
   scopedRoots?: boolean;
   /** Claude plugins a hive agent's session keeps (names, without the marketplace); every other plugin the owner has is
    *  off for agents. Unset = the default list in agentPlugins.ts. (Mirrored in preload + renderer config.) */
