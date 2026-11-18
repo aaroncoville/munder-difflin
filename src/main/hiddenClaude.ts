@@ -1,12 +1,14 @@
 import * as pty from 'node-pty';
-import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { agentEnabledPlugins, claudeUserDir, knownPluginIds } from './agentPlugins';
 import { ensurePrivateDir, writeNoFollow } from './hookRuntime';
 import { registerPrivateDir } from './privateDirs';
 import { resolveCommand, userShellPath } from './shellEnv';
 import { expandTilde } from './fs';
-import { projectDir } from './transcript';
+import { projectKey } from './transcript';
 import { ensureKilled } from './procKill';
 
 /**
@@ -115,11 +117,12 @@ export function hiddenClaudeSettings(ids: readonly string[], keep: readonly stri
  *  regression test. --strict-mcp-config starts only the servers named with --mcp-config (none by default), so no user,
  *  project or plugin server runs. --bare and --restricted are not used: --bare refuses OAuth (helpers draw on the
  *  owner's plan) and --restricted refuses bypassPermissions. */
-export function hiddenClaudeArgs(opts: HiddenClaudeOptions, settingsPath: string): string[] {
+export function hiddenClaudeArgs(opts: HiddenClaudeOptions, settingsPath: string, sessionId: string): string[] {
   const disallowed = opts.disallowedTools ?? ['Edit', 'Write', 'NotebookEdit'];
   const addDirs = (opts.addDirs ?? []).filter((d) => d && existsSync(d));
   const args: string[] = [
     '--model', opts.model,
+    '--session-id', sessionId,
     '--permission-mode', 'bypassPermissions',
     '--disallowedTools', ...disallowed,
   ];
@@ -154,29 +157,34 @@ export function looksLikeTrustDialog(rawOutput: string): boolean {
 }
 
 /**
- * Extract the last assistant text block from the transcript JSONL written
- * at or after `spawnedAt`. Reuses projectDir() from transcript.ts.
+ * Where the CLI writes the transcript of session `sessionId` started in `realCwd`: the session-history root of the
+ * child's own environment (CLAUDE_CONFIG_DIR when it is an absolute path, else ~/.claude), `projects/`, the project key
+ * of the physical cwd the process runs in, then `<sessionId>.jsonl`. Every other session started in the same folder
+ * writes there too, so only this one file is this helper's.
  */
-function extractLastAssistantText(cwd: string, spawnedAt: number): { text: string } | { error: string } | null {
+/** Whether anything, a dangling link included, is at `p`. */
+function pathTaken(p: string): boolean {
+  try { lstatSync(p); return true; } catch { return false; }
+}
+
+export function helperTranscriptPath(realCwd: string, sessionId: string, env: Record<string, string | undefined>): string {
+  const configDir = env.CLAUDE_CONFIG_DIR;
+  const root = configDir && path.isAbsolute(configDir) ? configDir : path.join(os.homedir(), '.claude');
+  return path.join(root, 'projects', projectKey(realCwd), `${sessionId}.jsonl`);
+}
+
+/**
+ * The reply in this helper's own transcript. The file did not exist before the spawn (checked there), so only a
+ * regular file that is not a link is read: a link, or anything else at that path, is not something the CLI wrote.
+ */
+function extractLastAssistantText(file: string): { text: string } | { error: string } | null {
+  let fd: number | null = null;
   try {
-    const dir = projectDir(cwd);
-    if (!existsSync(dir)) return null;
-
-    const candidates: { f: string; mtime: number }[] = [];
-    for (const f of readdirSync(dir)) {
-      if (!f.endsWith('.jsonl')) continue;
-      try {
-        const mtime = statSync(path.join(dir, f)).mtimeMs;
-        // 5 s slack: include files that already existed at spawn but were
-        // updated by this session. Sort by mtime and take the newest.
-        if (mtime >= spawnedAt - 5000) candidates.push({ f, mtime });
-      } catch { /* file removed between readdir and stat — skip */ }
-    }
-    if (!candidates.length) return null;
-    candidates.sort((a, b) => b.mtime - a.mtime);
-
-    return lastAssistantReply(readFileSync(path.join(dir, candidates[0].f), 'utf8'));
+    fd = openSync(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    if (!fstatSync(fd).isFile()) return null;
+    return lastAssistantReply(readFileSync(fd, 'utf8'));
   } catch { return null; }
+  finally { if (fd !== null) { try { closeSync(fd); } catch { /* already closed */ } } }
 }
 
 /**
@@ -184,6 +192,9 @@ function extractLastAssistantText(cwd: string, spawnedAt: number): { text: strin
  * login expired, an API error) it still writes an assistant record, marked isApiErrorMessage, whose text is its own
  * message: returned as a reply, a caller would judge it as model output and report a misleading cause.
  */
+/** The longest CLI error text passed on: it is logged, and a runaway message must not flood the log. */
+const CLI_ERROR_MAX = 500;
+
 export function lastAssistantReply(jsonl: string): { text: string } | { error: string } | null {
   const lines = jsonl.split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -199,7 +210,7 @@ export function lastAssistantReply(jsonl: string): { text: string } | { error: s
       if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
         if (rec.isApiErrorMessage === true) {
           const code = typeof rec.error === 'string' && rec.error ? `${rec.error}: ` : '';
-          return { error: `the CLI answered with an error instead of the model: ${code}${block.text.trim()}` };
+          return { error: `the CLI answered with an error instead of the model: ${code}${block.text.trim()}`.slice(0, CLI_ERROR_MAX) };
         }
         return { text: block.text.trim() };
       }
@@ -212,8 +223,12 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
   return new Promise((resolve) => {
     if (!prompt.trim()) { resolve({ ok: false, error: 'empty prompt' }); return; }
     // Defense-in-depth: `~` is shell syntax, not a path Node understands.
-    const cwd = opts.cwd ? expandTilde(opts.cwd) : opts.cwd;
-    if (!cwd || !existsSync(cwd)) {
+    const given = opts.cwd ? expandTilde(opts.cwd) : opts.cwd;
+    // The physical path, used for both the spawn and the transcript lookup: the CLI keys its transcript by the cwd
+    // its process runs in, which for a path through a link is the link's target.
+    let cwd: string;
+    try { cwd = given ? realpathSync(given) : ''; } catch { cwd = ''; }
+    if (!cwd) {
       resolve({ ok: false, error: `cwd does not exist: ${opts.cwd}` });
       return;
     }
@@ -234,13 +249,27 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
       resolve({ ok: false, error: `helper settings: ${e instanceof Error ? e.message : String(e)}` });
       return;
     }
-    const args = hiddenClaudeArgs(opts, path.join(settingsDir, 'settings.json'));
+    const env = { ...process.env, PATH: userShellPath(), ...(opts.env ?? {}) } as Record<string, string>;
+    // The helper's own session id, so its reply is read from its own transcript and no other session's. Its file must
+    // not exist yet: anything already there was not written by this run.
+    let sessionId = '';
+    let transcript = '';
+    for (let tries = 0; tries < 3 && !transcript; tries++) {
+      const id = randomUUID();
+      const file = helperTranscriptPath(cwd, id, env);
+      if (!pathTaken(file)) { sessionId = id; transcript = file; }
+    }
+    if (!transcript) {
+      dropSettings();
+      resolve({ ok: false, error: 'helper transcript: every session id tried already has a transcript' });
+      return;
+    }
+    const args = hiddenClaudeArgs(opts, path.join(settingsDir, 'settings.json'), sessionId);
 
     const bootCapMs = opts.bootCapMs ?? 7000;
     const idleMs = opts.idleMs ?? 3500;
     const timeoutMs = opts.timeoutMs ?? 180_000;
 
-    const spawnedAt = Date.now();
     // Windows: node-pty's CreateProcess can't exec the npm `.cmd`/extensionless
     // `claude` shim directly (ERROR_BAD_EXE_FORMAT, error 193) — route non-.exe
     // targets through cmd.exe. A real claude.exe (WinGet) launches directly. (#22)
@@ -254,11 +283,7 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
         cols: 220,
         rows: 50,
         cwd: opts.cwd,
-        env: {
-          ...process.env,
-          PATH: userShellPath(),
-          ...(opts.env ?? {}),
-        } as Record<string, string>,
+        env,
       });
     } catch (e) {
       dropSettings();
@@ -299,7 +324,7 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
     };
 
     const captureAndFinish = () => {
-      const reply = extractLastAssistantText(opts.cwd, spawnedAt);
+      const reply = extractLastAssistantText(transcript);
       if (reply && 'text' in reply) { finish({ ok: true, text: reply.text }); return; }
       if (reply) { finish({ ok: false, error: reply.error }); return; }
       // A cwd the CLI has never been trusted in blocks on the workspace-trust
