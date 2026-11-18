@@ -65,7 +65,7 @@ import { mailSender, PendingMail } from './mailLine';
 import { nodeLauncherScript } from './nodeLauncher';
 import { codexTrustEntry } from '../shared/codexTrust';
 import { withCodexWritableRoots, withOnlyCodexWritableRoots } from '../shared/codexWritableRoots';
-import { canonical, FAIL_CLOSED_DIR, FAIL_CLOSED_FILE, ownFolderProblem, PROTECTED_WRITE_TOOLS, ScopedRootsRefused, seatRoots } from './writeRoots';
+import { canonical, cwdHoldsHive, FAIL_CLOSED_DIR, FAIL_CLOSED_FILE, ownFolderProblem, PROTECTED_WRITE_TOOLS, ScopedRootsRefused, seatRoots } from './writeRoots';
 import { godNameFromRegistry } from '../shared/godIdentity';
 import { appendSession } from './codexActivity';
 import { isSafeMessageId, publishMessage, sweepInboxLeftovers } from './messageId';
@@ -1440,6 +1440,11 @@ export class HiveManager {
     if (scoped) mkdirSync(join(root, 'evidence'), { recursive: true });
     // The agent's own folder is granted, so it must be the real folder the app expects, before anything is written in it.
     if (scoped) this.refuseUntrustedOwnFolder(root, meta.id);
+    // Both CLIs let a seat write its working folder whatever its roots say: for any seat but god, one that is the hive
+    // root or holds it would be the whole hive.
+    if (scoped && meta.isGod !== true && meta.cwd && cwdHoldsHive(root, expandTilde(meta.cwd))) {
+      throw new ScopedRootsRefused(`${shortTarget(meta.id)} cannot start: its working folder is the hive folder or holds it; give it a working folder outside the hive`);
+    }
     // A Claude seat's settings file must have a home outside the hive, decided before anything for it is created.
     if (isClaudeProvider(meta.provider ?? 'claude') && this.sockPath()) checkSeatSettingsTarget(this.seatSettingsPath(meta.id));
     // Before the agent's folder or registry entry exists: a refused spawn leaves nothing behind.

@@ -436,6 +436,12 @@ export class ScopedRootsRefused extends Error {
   }
 }
 
+/** True when a working folder is the hive root or a folder above it. Both CLIs let a seat write its working folder
+ *  whatever its roots say, so for any seat but god such a folder is the whole hive. */
+export function cwdHoldsHive(root: string, cwd: string): boolean {
+  return typeof cwd === 'string' && isAbsolute(cwd) && within(canonical(root), canonical(cwd));
+}
+
 /** Why an agent's own folder cannot be granted under scoped roots, or null. The folder must be a real folder, not a
  *  link, that resolves to exactly <hive>/agents/<id>; one not made yet must have a real agents folder to be made in.
  *  Before scoped roots every agent could write the whole hive, so a link there could point anywhere. */

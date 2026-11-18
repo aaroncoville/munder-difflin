@@ -81,3 +81,19 @@ test('flag off: a linked own folder and a linked grant are handled as before', a
   const s = settingsOf(await f.spawn('linked', 'claude', false, { extra: [link] }));
   assert.deepEqual(s.sandbox.filesystem.allowWrite, [f.A('linked'), f.root, link]);
 });
+
+test('flag on: an agent whose working folder is the hive root, or holds it, is refused; god is not', async (t) => {
+  const f = floor(t);
+  for (const [id, cwd] of [['inroot', () => f.root], ['above', () => f.harness], ['tilde', () => '~/h']]) {
+    await assert.rejects(f.spawn(id, 'claude', true, { cwd: cwd() }), (e) => e instanceof ScopedRootsRefused && /working folder/.test(e.message) && !e.message.includes(f.base), id);
+    await assert.rejects(f.spawn(`${id}-cx`, 'codex', true, { cwd: cwd() }), ScopedRootsRefused, `${id} codex`);
+  }
+  await f.spawn('god', 'claude', true, { cwd: f.harness, isGod: true });
+  await f.spawn('fine', 'claude', true, { cwd: f.work });
+});
+
+test('flag off: an agent working in the folder that holds the hive starts as before', async (t) => {
+  const f = floor(t);
+  await f.spawn('above', 'claude', false, { cwd: f.harness });
+  await f.spawn('inroot', 'claude', false, { cwd: f.root });
+});
