@@ -21,7 +21,7 @@ interface OwnerHook { eventName: string; command: unknown; matcher: string | nul
 /** The hooks in the owner's own config as the app copied it into the generated
  *  one (everything above the generated block), and the trust the owner recorded
  *  for them in that file (hooks.state, by hook id); null when they cannot be read. */
-function ownerHooks(text: string): { hooks: OwnerHook[]; state: Record<string, string> } | null {
+export function ownerHooks(text: string): { hooks: OwnerHook[]; state: Record<string, string> } | null {
   let doc: unknown;
   try { doc = parseToml(text); } catch { return null; }
   if (!isPlainObject(doc)) return null;

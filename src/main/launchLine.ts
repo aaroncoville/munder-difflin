@@ -129,11 +129,14 @@ const CLAUDE_FLAGS = new Set(['--allow-dangerously-skip-permissions', '--ax-scre
   '--continue', '--dangerously-skip-permissions', '--desktop', '--disable-slash-commands', '--exclude-dynamic-system-prompt-sections',
   '--fork-session', '--forward-subagent-text', '-h', '--help', '--ide', '--include-hook-events', '--include-partial-messages', '--no-chrome',
   '--no-session-persistence', '-p', '--print', '--replay-user-messages', '--strict-mcp-config', '--verbose', '-v', '--version', '--tmux']);
+/** The one --setting-sources value the app passes (scopedRoots): user settings only. */
+export const CLAUDE_USER_SOURCES = 'user';
 /** Claude's launch line as the app spawned it, read with the CLI's option grammar up to the first positional (the prompt
  *  is never read): `--add-dir` directories are collected as roots; a `--settings` other than the generated file, an
- *  option that changes where settings come from or the folder it runs in (--setting-sources, --bare, --safe-mode,
- *  --restricted, --worktree, --debug's optional value ...), or any other option the grammar does not know, is `unknown`. */
-export function claudeLaunch(args: string[] | undefined, generatedSettings: string, addDirs: string[] = [], why: string[] = []): 'ok' | 'unknown' {
+ *  option that changes where settings come from or the folder it runs in (--setting-sources other than the app's own
+ *  `user`, --bare, --safe-mode, --restricted, --worktree, --debug's optional value ...), or any other option the grammar
+ *  does not know, is `unknown`. `--setting-sources user` sets `facts.userSourcesOnly`: no project or local settings. */
+export function claudeLaunch(args: string[] | undefined, generatedSettings: string, addDirs: string[] = [], why: string[] = [], facts: { userSourcesOnly?: boolean } = {}): 'ok' | 'unknown' {
   if (!Array.isArray(args) || args.length === 0) { why.push('no launch line'); return 'unknown'; } // nothing to read it from
   const a = args.filter((x): x is string => typeof x === 'string');
   const words = [...(a[0] ?? '').trim().split(/\s+/).filter(Boolean), ...a.slice(1)];
@@ -148,6 +151,13 @@ export function claudeLaunch(args: string[] | undefined, generatedSettings: stri
     const name = w.startsWith('--') && eq !== -1 ? w.slice(0, eq) : w;
     const inline = w.startsWith('--') && eq !== -1 ? w.slice(eq + 1) : null;
     if (CLAUDE_FLAGS.has(name)) { if (inline !== null) { why.push(`option ${name} with a value`); return 'unknown'; } continue; }
+    if (name === '--setting-sources') {
+      // Only the value the app itself builds is modelled: the owner's user settings, no project or local files.
+      const v = inline ?? words[++i];
+      if (v !== CLAUDE_USER_SOURCES) { why.push(`--setting-sources ${v === undefined ? 'without a value' : JSON.stringify(v)}`); return 'unknown'; }
+      facts.userSourcesOnly = true;
+      continue;
+    }
     if (name === '-r' || name === '--resume') { if (inline === null && words[i + 1] !== undefined && !words[i + 1].startsWith('-')) i++; continue; }
     if (CLAUDE_VALUE_OPTS.has(name)) {
       const v = inline ?? words[++i];

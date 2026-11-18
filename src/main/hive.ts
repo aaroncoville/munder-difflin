@@ -26,7 +26,7 @@ import {
 } from 'node:fs';
 import { join, dirname, basename, isAbsolute, relative, resolve as resolvePath } from 'node:path';
 import { homedir } from 'node:os';
-import { claudeLaunch, claudeRoots, codexLaunchSandbox, codexRoots, launchExecutable, launchPlaces } from './launchLine';
+import { CLAUDE_USER_SOURCES, claudeLaunch, claudeRoots, codexLaunchSandbox, codexRoots, launchExecutable, launchPlaces } from './launchLine';
 import { HookRuntimeUnavailable, hookCommandFor, overlaps, rootOverlap, stageHookRuntime, unsafePathReason, verifyHookRuntime, type StagedHookRuntime, type WriteRoot } from './hookRuntime';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
@@ -38,6 +38,9 @@ import { setAsideUnlessFolder } from './sentFolder';
 import { COMMAND_GROUPS } from '../shared/claudeCommands';
 import { codexShortHomeRoot } from '../shared/codexRemote';
 import { PrivateDirRefused, privateDirsReach, registerPrivateDir } from './privateDirs';
+import { checkSeatSettingsTarget, seatSettingsFile, writeSeatSettings } from './seatSettings';
+import { claudeFileHooks, claudeHookEntries, hookInventoryRow, type SourceHooks } from './hookInventory';
+import { ownerHooks } from './codexHookTrust';
 import { CodexHomeRefused, codexHomesReach, codexSeatHome, existingCodexHomes, migrateSeatHome } from './codexSeatHome';
 import {
   argsWithSandboxStance,
@@ -226,7 +229,7 @@ export interface Registry {
 /** A launch as the spawn will make it: argv[0] is the command string, then its arguments; env holds only the variables that move configuration. */
 export interface HookLaunch { argv: string[]; env: Record<string, string> }
 /** What ensureAgent decided for a Claude or Codex spawn, carried to the late check. */
-export interface HookVerdict { agentId: string; kind: 'claude' | 'codex'; rt: StagedHookRuntime; rootPaths: string[]; claudeUserDir?: string; codexFromConfig?: boolean; dir: string; cwd: string; isNew: boolean; /** True when the agent's folder did not exist before this spawn. */ dirCreated?: boolean; /** The spawn this decision is for. */ spawnId?: string; /** Set only once every provisioning step the decision depends on has succeeded. */ provisioned?: boolean; /** Why provisioning did not complete. */ failure?: string; /** An agent that existed: its registry row as it was before this spawn, put back if the spawn is refused. */ prevRow?: RegistryAgent; /** The row as this spawn wrote it: only the fields it changed, and still holding what it wrote, are put back. */ wroteRow?: RegistryAgent; /** It was waiting to be archived when this spawn cleared that; put back with its row. */ archivePending?: boolean }
+export interface HookVerdict { agentId: string; kind: 'claude' | 'codex'; rt: StagedHookRuntime; rootPaths: string[]; claudeUserDir?: string; /** A Claude seat's generated settings file, as the decision checked its launch line against. */ settingsFile?: string; codexFromConfig?: boolean; dir: string; cwd: string; isNew: boolean; /** True when the agent's folder did not exist before this spawn. */ dirCreated?: boolean; /** The spawn this decision is for. */ spawnId?: string; /** Set only once every provisioning step the decision depends on has succeeded. */ provisioned?: boolean; /** Why provisioning did not complete. */ failure?: string; /** An agent that existed: its registry row as it was before this spawn, put back if the spawn is refused. */ prevRow?: RegistryAgent; /** The row as this spawn wrote it: only the fields it changed, and still holding what it wrote, are put back. */ wroteRow?: RegistryAgent; /** It was waiting to be archived when this spawn cleared that; put back with its row. */ archivePending?: boolean }
 
 export interface SpawnInjection {
   args: string[];
@@ -279,6 +282,17 @@ const PROXY_BIND_ATTEMPTS = 3;
 const PROXY_BIND_BACKOFF_MS = [250, 750];
 
 const MINE_IGNORE_LINES = ['settings.json', 'cursor.json', 'inbox/', 'outbox/', '.codex/'];
+
+/** How many of a working folder's Claude project settings files (.claude/settings.json, .claude/settings.local.json)
+ *  exist: checked with lstat, never followed or read. A path that cannot be checked counts as absent. */
+function projectSettingsCount(cwd: string): number {
+  if (!cwd || !isAbsolute(cwd)) return 0;
+  let n = 0;
+  for (const name of ['settings.json', 'settings.local.json']) {
+    try { lstatSync(join(cwd, '.claude', name)); n++; } catch { /* absent */ }
+  }
+  return n;
+}
 
 /** Idempotently ensure `<agentDir>/.gitignore` excludes the non-memory files.
  *  Append-only: writes only the missing lines, leaving any existing entries. */
@@ -579,6 +593,67 @@ export class HiveManager {
     this.hookVerdicts.delete(agentId);
     return v;
   }
+  /** Where Claude seats' generated --settings files are written: a private folder of the app's own (seatSettings.ts),
+   *  never the hive, which every agent can write. Unset, a Claude spawn is refused. */
+  private seatSettingsDir: string | null = null;
+  /** Removes the seat settings folder's registration as one of the app's private folders. */
+  private unregisterSeatSettingsDir: (() => void) | null = null;
+  setSeatSettingsDir(dir: string | null): void {
+    this.unregisterSeatSettingsDir?.();
+    this.unregisterSeatSettingsDir = null;
+    this.seatSettingsDir = dir;
+    // No agent's write roots may reach it (privateDirs.ts): a file planted there would be a seat's settings.
+    if (dir) this.unregisterSeatSettingsDir = registerPrivateDir(dir, 'the seat settings folder');
+  }
+  /** The generated settings file a Claude seat of this hive is launched with. Throws SeatSettingsRefused when no
+   *  folder is set or the hive folder is not known. */
+  seatSettingsPath(agentId: string): string {
+    const root = this.root();
+    return seatSettingsFile(this.seatSettingsDir, root ?? '', agentId);
+  }
+  /** Where usage rows go (the app's local usage log); unset, none are kept. */
+  private usageSink: ((row: Record<string, unknown>) => void) | null = null;
+  setUsageSink(fn: ((row: Record<string, unknown>) => void) | null): void {
+    this.usageSink = fn;
+  }
+  /** Hand one row to the usage log: measure only, so it never throws and never blocks a spawn. */
+  private usage(row: Record<string, unknown>): void {
+    try { this.usageSink?.(row); } catch { /* measure only */ }
+  }
+  /** One hook-inventory row for a Claude spawn: the hooks in the settings it generated, the owner's user and managed
+   *  settings, and the working folder's project and local files unless the spawn dropped them (hookInventory.ts). */
+  private claudeHookInventory(agentId: string, generated: unknown, cwd: string, dropped: boolean): void {
+    try {
+      const managed = this.managedClaudeSettings;
+      const dropIns: string[] = [];
+      const dropDir = join(dirname(managed), 'managed-settings.d');
+      try { for (const n of readdirSync(dropDir).sort()) if (n.endsWith('.json')) dropIns.push(join(dropDir, n)); } catch { /* none */ }
+      const project = cwd && isAbsolute(cwd) ? join(cwd, '.claude') : null;
+      const sources: SourceHooks[] = [
+        { source: 'app', hooks: claudeHookEntries(generated) },
+        { source: 'user', hooks: claudeFileHooks([join(claudeUserDir(), 'settings.json')]) },
+        { source: 'managed', hooks: claudeFileHooks([managed, ...dropIns]) },
+        ...(dropped ? [] : [
+          { source: 'project' as const, hooks: project ? claudeFileHooks([join(project, 'settings.json')]) : [] },
+          { source: 'local' as const, hooks: project ? claudeFileHooks([join(project, 'settings.local.json')]) : [] },
+        ]),
+      ];
+      this.usage(hookInventoryRow(agentId, 'claude', sources));
+    } catch { /* observe only: never fails a spawn */ }
+  }
+  /** One hook-inventory row for a Codex spawn: the hooks the app generated into its config, and the owner's own hooks
+   *  in the config the app copied there, both as held in memory when it wrote them. */
+  private codexHookInventory(agentId: string, home: string): void {
+    try {
+      const w = this.codexConfigWritten(home);
+      const app = !w ? null : w.hooks ? w.hooks.events.map((event) => ({ event, command: w.hooks!.command })) : [];
+      const owner = w ? ownerHooks(w.ownerToml) : null;
+      this.usage(hookInventoryRow(agentId, 'codex', [
+        { source: 'app', hooks: app },
+        { source: 'owner', hooks: owner ? owner.hooks.map((h) => ({ event: h.eventName, command: h.command })) : null },
+      ]));
+    } catch { /* observe only: never fails a spawn */ }
+  }
   /** The machine-wide Claude settings file (a field so a test can point it elsewhere). */
   private managedClaudeSettings = process.platform === 'darwin' ? '/Library/Application Support/ClaudeCode/managed-settings.json'
     : process.platform === 'win32' ? 'C:\\ProgramData\\ClaudeCode\\managed-settings.json' : '/etc/claude-code/managed-settings.json';
@@ -784,7 +859,7 @@ export class HiveManager {
     let codexFromConfig = false;
     if (kind === 'claude') {
       const why: string[] = [];
-      if (claudeLaunch(launch.argv, join(dir, 'settings.json'), addDirs, why) === 'unknown') return { refuse: `its launch line has an option the app does not model: ${why.join(', ')}` };
+      if (claudeLaunch(launch.argv, this.seatSettingsPath(meta.id), addDirs, why) === 'unknown') return { refuse: `its launch line has an option the app does not model: ${why.join(', ')}` };
     } else {
       const why: string[] = [];
       const mode = codexLaunchSandbox(launch.argv, addDirs, why);
@@ -835,7 +910,7 @@ export class HiveManager {
       if (why) throw new PrivateDirRefused(why);
     }
     if (!rt || 'refuse' in r) return null;
-    return { agentId: meta.id, kind, rt, rootPaths: r.roots.map((x) => x.path).filter((x): x is string => !!x), claudeUserDir: r.claudeUserDir, codexFromConfig: r.codexFromConfig, dir, cwd: meta.cwd, isNew };
+    return { agentId: meta.id, kind, rt, rootPaths: r.roots.map((x) => x.path).filter((x): x is string => !!x), claudeUserDir: r.claudeUserDir, ...(kind === 'claude' ? { settingsFile: this.seatSettingsPath(meta.id) } : {}), codexFromConfig: r.codexFromConfig, dir, cwd: meta.cwd, isNew };
   }
   /** Every Codex agent's home sits under one folder outside the hive (codexSeatHome.ts). An agent of any provider
    *  whose roots reach that folder could plant hooks in any of them, and hooks run outside the sandbox, so it is refused
@@ -907,7 +982,7 @@ export class HiveManager {
       if ('unknown' in places) fail(`its final environment cannot be modelled: ${places.unknown}`);
       else if (places.claudeUserDir !== v.claudeUserDir) fail(`its final environment moved Claude's settings to ${places.claudeUserDir}`);
       const why: string[] = [];
-      if (claudeLaunch(argv, join(v.dir, 'settings.json'), addDirs, why) === 'unknown') fail(`its final launch line has an option the app does not model: ${why.join(', ')}`);
+      if (claudeLaunch(argv, v.settingsFile ?? '', addDirs, why) === 'unknown') fail(`its final launch line has an option the app does not model: ${why.join(', ')}`);
     } else {
       // The app's own remote rewrite: the app server runs from the same generated config the verdict checked.
       const a = [...argv];
@@ -1304,6 +1379,8 @@ export class HiveManager {
       spawnId?: string;
       /** Plugin names an agent keeps (Settings); every other plugin the owner has is off for the agent. */
       agentPlugins?: unknown;
+      /** Launch Claude seats with `--setting-sources user`: no project or local settings files (config scopedRoots). */
+      scopedRoots?: boolean;
     } = {}
   ): Promise<SpawnInjection> {
     // One read for the whole operation. registry() reads a failure as an empty roster, and this would then replace the
@@ -1320,6 +1397,8 @@ export class HiveManager {
     const asRead = JSON.stringify(roster);
 
     const dir = this.agentDir(meta.id);
+    // A Claude seat's settings file must have a home outside the hive, decided before anything for it is created.
+    if (isClaudeProvider(meta.provider ?? 'claude') && this.sockPath()) checkSeatSettingsTarget(this.seatSettingsPath(meta.id));
     // Before the agent's folder or registry entry exists: a refused spawn leaves nothing behind.
     const verdict = this.hookVerdict(meta, dir, root, opts.extraWritableDirs, opts.launch, !Object.hasOwn(roster.agents, meta.id));
     if (verdict) { verdict.dirCreated = !existsSync(dir); verdict.spawnId = opts.spawnId; verdict.provisioned = false; }
@@ -1484,6 +1563,7 @@ export class HiveManager {
               // (withCodexRemoteArgs drops it when --remote is added).
               const writableRoots = this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs);
               env.CODEX_HOME = this.installCodexHooks(dir, meta.cwd, meta.id, writableRoots);
+              this.codexHookInventory(meta.id, env.CODEX_HOME);
               // Codex runs a hook only once its exact hash is trusted. The spawn
               // seeds that trust for the generated hooks alone (codexHookTrust.ts)
               // and refuses to start if anything else would need it. There is no
@@ -1612,9 +1692,14 @@ export class HiveManager {
       const writable = this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs);
       const rt = verdict?.rt ?? null;
       env.HIVE_SOCK = sock;
-      const settingsPath = join(dir, 'settings.json');
-      this.writeJson(settingsPath, this.hookSettings(rt ? hookCommandFor(rt, true) : null, meta.cwd, opts.mcpDefaults, opts.theme, writable, agentEnabledPlugins(knownPluginIds(claudeUserDir()), agentPluginList(opts.agentPlugins, (why) => { if (this.pluginSettingLogged.has(meta.id)) return; this.pluginSettingLogged.add(meta.id); this.appendLog({ kind: 'agent-plugins-setting', agentId: meta.id, why }); }))));
+      // Written from what the app holds, to the app's own folder: the in-tree agents/<id>/settings.json is never opened.
+      const generated = this.hookSettings(rt ? hookCommandFor(rt, true) : null, meta.cwd, opts.mcpDefaults, opts.theme, writable, agentEnabledPlugins(knownPluginIds(claudeUserDir()), agentPluginList(opts.agentPlugins, (why) => { if (this.pluginSettingLogged.has(meta.id)) return; this.pluginSettingLogged.add(meta.id); this.appendLog({ kind: 'agent-plugins-setting', agentId: meta.id, why }); })));
+      const settingsPath = writeSeatSettings(this.seatSettingsDir, root, meta.id, JSON.stringify(generated, null, 2));
       args.push('--settings', settingsPath);
+      const dropped = opts.scopedRoots === true;
+      if (dropped) args.push('--setting-sources', CLAUDE_USER_SOURCES);
+      this.usage({ kind: 'settings-sources', agentId: meta.id, provider: 'claude', projectFiles: projectSettingsCount(meta.cwd), dropped });
+      this.claudeHookInventory(meta.id, generated, meta.cwd, dropped);
     }
     return { args, env };
   }
@@ -4233,7 +4318,13 @@ The harness fills in \`id\`, \`from\`, \`hops\`, and timestamps.
 There are two shared surfaces, both in the hive root:
 - \`board.md\` — the freeform narrative plan. The god agent is its sole scribe; others \`propose\` edits.
 - \`tasks.json\` — the structured task ledger (a kanban: \`todo / doing / blocked / done\`, with title,
-  assignee, priority, deps). Keep the task you're working reflected in its status.
+  assignee, priority, deps).
+
+\`tasks.json\`, \`board.md\`, \`spawn-requests/\` and \`registry.json\` are written only by the god agent and the app.
+Other agents read them and never write them: to change a card (its status, its assignee, a new card), mail
+\`god\` saying what should change. Either way, the card being worked shows its real status: god writes it,
+and the agent working it tells god as soon as it changes. Your own files go under your own folder
+(\`agents/<your-id>/\`) or \`evidence/\`.
 
 ## Asking the human (the ASK ME card)
 When a card can only move with the human — a question to answer, or an action only they can do

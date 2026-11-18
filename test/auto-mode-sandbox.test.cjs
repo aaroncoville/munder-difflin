@@ -15,6 +15,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { withSeatSettings } = require('./seat-settings-dir.cjs');
 
 const electron = require.resolve('electron');
 require.cache[electron] = {
@@ -35,7 +36,7 @@ test('codex auto mode is workspace-write with approvals off, never the full bypa
 
 test('a Claude agent gets a native sandbox that still allows its agent dir and the hive root', async () => {
   const home = tmpHome();
-  const hive = new HiveManager(() => home);
+  const hive = withSeatSettings(new HiveManager(() => home));
   const palace = path.join(home, 'palace');
   const inj = await hive.ensureAgent(
     { id: 'jim-1', name: 'Jim', provider: 'claude', cwd: home },

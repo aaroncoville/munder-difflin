@@ -13,6 +13,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { removeDir } = require('./codex-test-home.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
@@ -28,7 +29,7 @@ function scratch(t) {
 
 /** A hive manager as the app sets it up: its git directory in the app data folder. */
 async function floor(dir, base) {
-  const hive = new HiveManager(() => dir);
+  const hive = withSeatSettings(new HiveManager(() => dir));
   hive.setGitDirBase?.(base);
   await hive.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: dir, isGod: true });
   await hive.commitsSettled();
@@ -53,13 +54,13 @@ function plantInGitDir(gitDir, hiveRoot, marker) {
 test('settings an agent planted in the hive repository before the move never run', async (t) => {
   const { dir, base, marker } = scratch(t);
   // An existing hive, from before this change: its repository inside the hive.
-  const legacy = new HiveManager(() => dir);
+  const legacy = withSeatSettings(new HiveManager(() => dir));
   await legacy.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: dir, isGod: true });
   await legacy.commitsSettled();
   const root = legacy.root();
   plantInGitDir(path.join(root, '.git'), root, marker);
 
-  const hive = new HiveManager(() => dir);
+  const hive = withSeatSettings(new HiveManager(() => dir));
   hive.setGitDirBase?.(base);
   hive.ensureHive();
   fs.writeFileSync(path.join(root, 'board.md'), '# after the move\n');
@@ -72,7 +73,7 @@ test('settings an agent planted in the hive repository before the move never run
 
 test('a commondir planted in the hive repository before the move cannot point git at another config', async (t) => {
   const { dir, base, marker } = scratch(t);
-  const legacy = new HiveManager(() => dir);
+  const legacy = withSeatSettings(new HiveManager(() => dir));
   await legacy.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: dir, isGod: true });
   await legacy.commitsSettled();
   const root = legacy.root();
@@ -82,7 +83,7 @@ test('a commondir planted in the hive repository before the move cannot point gi
   plantInGitDir(elsewhere, root, marker);
   fs.writeFileSync(path.join(root, '.git', 'commondir'), `${elsewhere}\n`);
 
-  const hive = new HiveManager(() => dir);
+  const hive = withSeatSettings(new HiveManager(() => dir));
   hive.setGitDirBase?.(base);
   hive.ensureHive();
   fs.writeFileSync(path.join(root, 'board.md'), '# after the move\n');
@@ -105,7 +106,7 @@ test('a git folder an agent puts in the hive after the move is ignored, and its 
   fs.writeFileSync(path.join(root, 'board.md'), '# later\n');
   hive.commit('hive: after the agent planted a repository');
   await hive.commitsSettled();
-  const fresh = new HiveManager(() => dir);
+  const fresh = withSeatSettings(new HiveManager(() => dir));
   fresh.setGitDirBase?.(base);
   fresh.commit('hive: after a restart');
   await fresh.commitsSettled();
@@ -120,7 +121,7 @@ test('a git folder an agent puts in the hive after the move is ignored, and its 
 
 test('the first commit moves the history into the app data folder and leaves a gitfile that still reads it', async (t) => {
   const { dir, base } = scratch(t);
-  const legacy = new HiveManager(() => dir);
+  const legacy = withSeatSettings(new HiveManager(() => dir));
   await legacy.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: dir, isGod: true });
   await legacy.commitsSettled();
   const root = legacy.root();
@@ -133,7 +134,7 @@ test('the first commit moves the history into the app data folder and leaves a g
   fs.mkdirSync(path.join(root, '.git', 'modules', 'sub'), { recursive: true });
   fs.writeFileSync(path.join(root, '.git', 'modules', 'sub', 'config'), '[filter "evil"]\n\tclean = /bin/false\n');
 
-  const hive = new HiveManager(() => dir);
+  const hive = withSeatSettings(new HiveManager(() => dir));
   hive.setGitDirBase(base);
   hive.commit('hive: after the move');
   await hive.commitsSettled();
@@ -152,7 +153,7 @@ test('the first commit moves the history into the app data folder and leaves a g
 
 test('a move interrupted between its two renames finishes on the next run', async (t) => {
   const { dir, base } = scratch(t);
-  const legacy = new HiveManager(() => dir);
+  const legacy = withSeatSettings(new HiveManager(() => dir));
   await legacy.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: dir, isGod: true });
   await legacy.commitsSettled();
   const root = legacy.root();
@@ -162,7 +163,7 @@ test('a move interrupted between its two renames finishes on the next run', asyn
   // As if the app stopped right after the first rename.
   fs.renameSync(path.join(root, '.git'), `${gitDir}.import`);
 
-  const hive = new HiveManager(() => dir);
+  const hive = withSeatSettings(new HiveManager(() => dir));
   hive.setGitDirBase(base);
   hive.ensureHive();
   hive.commit('hive: after the interruption');
@@ -185,7 +186,7 @@ test('a gitfile is never followed, even into the app\'s own folder; a data-folde
   await first.stopCommits();
   fs.cpSync(path.join(dir, 'hive'), path.join(moved, 'hive'), { recursive: true });
   assert.equal(first.carryGitDirTo(path.join(moved, 'hive')), true);
-  const second = new HiveManager(() => moved);
+  const second = withSeatSettings(new HiveManager(() => moved));
   second.setGitDirBase(base);
   fs.writeFileSync(path.join(moved, 'hive', 'board.md'), '# in the new home\n');
   second.commit('hive: in the new home');
@@ -196,7 +197,7 @@ test('a gitfile is never followed, even into the app\'s own folder; a data-folde
   const copied = path.join(dir, 'copied-by-hand');
   fs.mkdirSync(copied);
   fs.cpSync(path.join(dir, 'hive'), path.join(copied, 'hive'), { recursive: true });
-  const third = new HiveManager(() => copied);
+  const third = withSeatSettings(new HiveManager(() => copied));
   third.setGitDirBase(base);
   third.ensureHive();
   third.commit('hive: copied by hand');
@@ -217,7 +218,7 @@ test('a gitfile is never followed, even into the app\'s own folder; a data-folde
   git(dir, '--git-dir', evil, '--work-tree', agentTree, '-c', 'user.name=a', '-c', 'user.email=a@a', 'commit', '-q', '-m', 'agent history');
   plantInGitDir(evil, path.join(fourth, 'hive'), marker);
   fs.writeFileSync(path.join(fourth, 'hive', '.git'), `gitdir: ${evil}\n`);
-  const hive4 = new HiveManager(() => fourth);
+  const hive4 = withSeatSettings(new HiveManager(() => fourth));
   hive4.setGitDirBase(base);
   hive4.ensureHive();
   hive4.commit('hive: fourth');
@@ -293,7 +294,7 @@ test('an untrack pass that keeps failing is tried at most once a minute, its fir
   console.warn = (...a) => warnings.push(a.join(' '));
   t.after(() => { console.warn = warn; });
 
-  const hive = new HiveManager(() => dir);
+  const hive = withSeatSettings(new HiveManager(() => dir));
   hive.setGitDirBase(base);
   hive.ensureHive();
   for (let i = 0; i < 5; i++) {
@@ -340,7 +341,7 @@ test('a filter defined only in the owner\'s global git config is never run by th
 
 test('history the old repository borrowed through alternates is copied in, not lost, when the alternates go', async (t) => {
   const { dir, base } = scratch(t);
-  const legacy = new HiveManager(() => dir);
+  const legacy = withSeatSettings(new HiveManager(() => dir));
   await legacy.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: dir, isGod: true });
   await legacy.commitsSettled();
   const root = legacy.root();
@@ -355,7 +356,7 @@ test('history the old repository borrowed through alternates is copied in, not l
   fs.writeFileSync(path.join(root, '.git', 'objects', 'info', 'alternates'), `${path.join(lender, '.git', 'objects')}\n`);
   git(root, 'update-ref', 'refs/heads/borrowed', borrowed);
 
-  const hive = new HiveManager(() => dir);
+  const hive = withSeatSettings(new HiveManager(() => dir));
   hive.setGitDirBase(base);
   hive.commit('hive: after the move');
   await hive.commitsSettled();
@@ -423,7 +424,7 @@ for (const kind of ['folder', 'file']) {
 test('nested repositories the old repository had recorded are dropped at the move, before any add looks inside them', async (t) => {
   const { dir, base, marker } = scratch(t);
   // An existing hive, from before this change, whose index already holds a nested repository.
-  const legacy = new HiveManager(() => dir);
+  const legacy = withSeatSettings(new HiveManager(() => dir));
   await legacy.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: dir, isGod: true });
   await legacy.commitsSettled();
   const root = legacy.root();
@@ -434,7 +435,7 @@ test('nested repositories the old repository had recorded are dropped at the mov
   assert.equal(gitlinks(root, path.join(root, '.git')).length, 1);
   fs.rmSync(marker, { force: true });
 
-  const hive = new HiveManager(() => dir);
+  const hive = withSeatSettings(new HiveManager(() => dir));
   hive.setGitDirBase?.(base);
   hive.ensureHive();
   fs.writeFileSync(path.join(nested, 'f.txt'), 'bbbb\n');
@@ -447,7 +448,7 @@ test('nested repositories the old repository had recorded are dropped at the mov
 
 /** An existing hive from before this change: its repository inside the hive, with a commit. */
 async function legacyHive(dir) {
-  const legacy = new HiveManager(() => dir);
+  const legacy = withSeatSettings(new HiveManager(() => dir));
   await legacy.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: dir, isGod: true });
   await legacy.commitsSettled();
   return legacy.root();
@@ -477,7 +478,7 @@ for (const entry of ['objects', 'objects/info', 'refs', 'info']) {
     fs.rmSync(inRepo, { recursive: true, force: true });
     fs.symlinkSync(seat, inRepo);
 
-    const hive = new HiveManager(() => dir);
+    const hive = withSeatSettings(new HiveManager(() => dir));
     hive.setGitDirBase?.(base);
     hive.ensureHive();
     hive.commit('hive: first commit of the new build');
@@ -508,7 +509,7 @@ test('an in-progress merge the old repository carried never makes the app\'s fir
   const seatCommit = spawnSync(REAL_GIT, ['-c', 'user.name=s', '-c', 'user.email=s@s', 'commit-tree', tree, '-m', 'made by an agent'], { cwd: root, encoding: 'utf8' }).stdout.trim();
   fs.writeFileSync(path.join(root, '.git', 'MERGE_HEAD'), `${seatCommit}\n`);
 
-  const hive = new HiveManager(() => dir);
+  const hive = withSeatSettings(new HiveManager(() => dir));
   hive.setGitDirBase?.(base);
   hive.ensureHive();
   fs.writeFileSync(path.join(root, 'board.md'), '# after the move\n');
@@ -558,7 +559,7 @@ test('a move that fails is said once and not tried again on every commit; the ne
   process.env.PATH = `${bin}${path.delimiter}${savedPath}`;
   t.after(() => { process.env.PATH = savedPath; });
 
-  const hive = new HiveManager(() => dir);
+  const hive = withSeatSettings(new HiveManager(() => dir));
   hive.setGitDirBase(base);
   hive.ensureHive();
   for (let i = 0; i < 3; i++) {
@@ -572,7 +573,7 @@ test('a move that fails is said once and not tried again on every commit; the ne
   assert.equal(git(root, 'rev-parse', 'HEAD').stdout.trim(), oldHead, 'the hive has no working .git while the move waits');
 
   process.env.PATH = savedPath;
-  const relaunched = new HiveManager(() => dir);
+  const relaunched = withSeatSettings(new HiveManager(() => dir));
   relaunched.setGitDirBase(base);
   relaunched.ensureHive(); // as a launch does
   relaunched.commit('hive: after the relaunch');
@@ -605,7 +606,7 @@ test('a move that fails while the old repository is still in place is tried once
   const blocked = path.join(dir, 'blocked-base');
   fs.writeFileSync(blocked, 'not a folder');
 
-  const hive = new HiveManager(() => dir);
+  const hive = withSeatSettings(new HiveManager(() => dir));
   hive.setGitDirBase(blocked);
   hive.ensureHive();
   for (let i = 0; i < 3; i++) {
@@ -649,7 +650,7 @@ for (const [what, prepare] of [
     fs.mkdirSync(seatDir, { recursive: true });
     const hold = prepare(root, seatDir);
 
-    const hive = new HiveManager(() => dir);
+    const hive = withSeatSettings(new HiveManager(() => dir));
     hive.setGitDirBase?.(base);
     hive.ensureHive();
     hive.commit('hive: first commit of the new build');
@@ -674,7 +675,7 @@ test('a holding folder an earlier attempt left is never deleted, even with a .gi
   // Since then a .git folder has appeared in the hive (an older build's git init, or an agent).
   git(root, 'init', '-q');
 
-  const hive = new HiveManager(() => dir);
+  const hive = withSeatSettings(new HiveManager(() => dir));
   hive.setGitDirBase(base);
   hive.ensureHive();
   fs.writeFileSync(path.join(root, 'board.md'), '# after\n');
@@ -703,7 +704,7 @@ test('a move from an earlier attempt\'s holding folder that fails puts that fold
   process.env.PATH = `${bin}${path.delimiter}${savedPath}`;
   t.after(() => { process.env.PATH = savedPath; });
 
-  const hive = new HiveManager(() => dir);
+  const hive = withSeatSettings(new HiveManager(() => dir));
   hive.setGitDirBase(base);
   hive.ensureHive();
   await hive.commitsSettled();

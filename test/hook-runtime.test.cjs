@@ -13,6 +13,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const loadTs = require('./load-ts.cjs');
+const { withSeatSettings, seatFile } = require('./seat-settings-dir.cjs');
 const { codexTestBase, removeDir } = require('./codex-test-home.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
@@ -37,7 +38,7 @@ function floor(t, opts = {}) {
   assert.equal(os.homedir(), home);
   let homeNow = opts.unknownRoot ? null : home;
   const moveHome = (h) => { homeNow = h; };
-  const hive = new HiveManager(() => homeNow);
+  const hive = withSeatSettings(new HiveManager(() => homeNow));
   const root = path.join(home, 'hive');
   const log = () => (fs.existsSync(path.join(root, 'log.jsonl')) ? fs.readFileSync(path.join(root, 'log.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
   return { base, home, away, rt, hive, root, log, setHome: () => { homeNow = home; }, moveHome };
@@ -75,7 +76,7 @@ const claudeCommands = (settings) => [
   ...Object.values(settings.hooks ?? {}).flatMap((ms) => ms.flatMap((m) => m.hooks.map((h) => h.command))),
   ...(settings.statusLine ? [settings.statusLine.command] : []),
 ];
-const claudeSettings = (root, id) => JSON.parse(fs.readFileSync(path.join(root, 'agents', id, 'settings.json'), 'utf8'));
+const claudeSettings = (root, id) => JSON.parse(fs.readFileSync(seatFile(path.join(root, 'agents', id)), 'utf8'));
 const refused = async (p) => {
   try { await p; } catch (e) { assert.equal(e.code, 'hook-runtime-unavailable', String(e)); return e.message; }
   assert.fail('the spawn was not refused');
@@ -133,7 +134,7 @@ test('a spawn fails visibly when the runtime folder is in the hive, reached thro
     const rows = log().filter((r) => r.kind === 'hook-runtime');
     assert.ok(rows.length >= 1 && rows.every((r) => r.ok === false && /hive folder/.test(r.reason)), JSON.stringify(rows));
     assert.equal(hive.hookRuntimeStatus().ok, false);
-    assert.equal(fs.existsSync(path.join(root, 'agents/c1/settings.json')) && claudeCommands(claudeSettings(root, 'c1')).length > 0, false, 'no hook command written');
+    assert.equal(fs.existsSync(seatFile(path.join(root, 'agents', 'c1'))) && claudeCommands(claudeSettings(root, 'c1')).length > 0, false, 'no hook command written');
   }
   {
     const { base, home, away, hive, root } = floor(t);
@@ -459,7 +460,7 @@ test('round 3: an agent refused over an hour ago and never spawned since leaves 
 
 // --- round 4: one decision from the launch itself, made before anything is created ---
 
-const claudeLaunch = (dir, extra = [], env = {}) => ({ argv: ['claude --permission-mode bypassPermissions', '--append-system-prompt', 'hi', '--settings', path.join(dir, 'settings.json'), ...extra], env });
+const claudeLaunch = (dir, extra = [], env = {}) => ({ argv: ['claude --permission-mode bypassPermissions', '--append-system-prompt', 'hi', '--settings', seatFile(dir), ...extra], env });
 const codexLaunch = (extra = [], env = {}) => ({ argv: ['codex -a never -s workspace-write', ...extra], env });
 
 test('round 4: the launch line and its environment decide; anything not modelled refuses, naming the cause', async (t) => {
@@ -471,7 +472,7 @@ test('round 4: the launch line and its environment decide; anything not modelled
   await spawn('ok1', 'claude', claudeLaunch(dir('ok1')));
   await spawn('ok2', 'codex', codexLaunch());
   // The exact forms the live floor runs today (argv elements whole, as the app hands them to the PTY).
-  await spawn('live1', 'claude', { argv: ['claude --model claude-opus-5-5 --permission-mode bypassPermissions', '--append-system-prompt', 'You are "X" -- a multi word prompt --text', '--settings', path.join(dir('live1'), 'settings.json'), '--remote-control-session-name-prefix', 'X', '--resume', '4df241fc-56f4-48dc-b830-602be03f8b81'], env: { HOME: home } });
+  await spawn('live1', 'claude', { argv: ['claude --model claude-opus-5-5 --permission-mode bypassPermissions', '--append-system-prompt', 'You are "X" -- a multi word prompt --text', '--settings', seatFile(dir('live1')), '--remote-control-session-name-prefix', 'X', '--resume', '4df241fc-56f4-48dc-b830-602be03f8b81'], env: { HOME: home } });
   await spawn('live2', 'codex', { argv: ['codex --model gpt-5.6-sol -a never -s workspace-write', '--add-dir', dir('live2'), '--add-dir', root, 'You are "Y" --channel x'], env: { HOME: home, CODEX_HOME: path.join(dir('live2'), '.codex') } });
   await spawn('live3', 'codex', { argv: ['codex', 'resume', '01a1d072-5747-7e83-a08f-03389a2cac3f', '-a', 'never', '-s', 'workspace-write', 'prompt'], env: { HOME: home } });
   const cases = [
@@ -650,9 +651,9 @@ test('round 6: no folder is ever deleted — a pre-existing orphan folder surviv
   fs.mkdirSync(orphan, { recursive: true });
   fs.writeFileSync(path.join(orphan, 'notes.md'), 'keep me\n');
   const before = fs.readFileSync(path.join(orphan, 'notes.md'));
-  await hive.ensureAgent({ id: 'orph', name: 'o', provider: 'claude', cwd: away }, { launch: { argv: ['claude', '--settings', path.join(orphan, 'settings.json')], env: {} }, spawnId: 'pty-1' });
+  await hive.ensureAgent({ id: 'orph', name: 'o', provider: 'claude', cwd: away }, { launch: { argv: ['claude', '--settings', seatFile(orphan)], env: {} }, spawnId: 'pty-1' });
   hive.markHookProvisioned('pty-1');
-  assert.throws(() => hive.confirmSpawn('pty-1', { id: 'orph', provider: 'claude' }, ['claude', '--settings', path.join(orphan, 'settings.json'), '--add-dir', path.dirname(rt)], {}), /write root that was not checked/);
+  assert.throws(() => hive.confirmSpawn('pty-1', { id: 'orph', provider: 'claude' }, ['claude', '--settings', seatFile(orphan), '--add-dir', path.dirname(rt)], {}), /write root that was not checked/);
   assert.deepEqual(fs.readFileSync(path.join(orphan, 'notes.md')), before, 'the file is untouched');
   assert.equal(Object.hasOwn(hive.registry().agents, 'orph'), false, 'the row this call added is gone');
   const row = log().filter((r) => r.kind === 'spawn-rolled-back').at(-1);
@@ -663,7 +664,7 @@ test('round 6: no folder is ever deleted — a pre-existing orphan folder surviv
 test('round 6: the decision is keyed per spawn; a missing or mismatched one refuses', async (t) => {
   const { home, away, rt, hive } = floor(t);
   hive.setHookRuntime(rt);
-  const L = (id) => ({ argv: ['claude', '--settings', path.join(home, 'hive', 'agents', id, 'settings.json')], env: {} });
+  const L = (id) => ({ argv: ['claude', '--settings', seatFile(path.join(home, 'hive', 'agents', id))], env: {} });
   // Two overlapping spawns of one agent each keep their own decision.
   await hive.ensureAgent({ id: 'a1', name: 'a', provider: 'claude', cwd: away }, { launch: L('a1'), spawnId: 'pty-A' }); hive.markHookProvisioned('pty-A');
   await hive.ensureAgent({ id: 'a1', name: 'a', provider: 'claude', cwd: away }, { launch: L('a1'), spawnId: 'pty-B' }); hive.markHookProvisioned('pty-B');
@@ -683,7 +684,7 @@ test('round 7 (H1): a decision is confirmable only once provisioning finished; e
   const { home, away, rt, hive, root } = floor(t);
   hive.setHookRuntime(rt);
   hive.ensureHive();
-  const L = (id) => ({ argv: ['claude', '--settings', path.join(root, 'agents', id, 'settings.json')], env: {} });
+  const L = (id) => ({ argv: ['claude', '--settings', seatFile(path.join(root, 'agents', id))], env: {} });
   // Site index.ts ensureAgent catch: an ordinary provisioning error (a file where the inbox folder goes) is recorded and refuses, named.
   fs.mkdirSync(path.join(root, 'agents', 'blocked'), { recursive: true });
   fs.writeFileSync(path.join(root, 'agents', 'blocked', 'inbox'), 'x');
@@ -705,7 +706,7 @@ test('round 7 (H1): a decision is confirmable only once provisioning finished; e
   // Site copyBundledSkills catch: skills are not hooks; a failure there leaves the hook settings in place.
   await hive.ensureAgent({ id: 'sk', name: 's', provider: 'claude', cwd: away }, { launch: L('sk'), spawnId: 'pty-sk', skillsDir: path.join(home, 'no-such-skills') });
   hive.markHookProvisioned('pty-sk');
-  assert.ok(JSON.parse(fs.readFileSync(path.join(root, 'agents', 'sk', 'settings.json'), 'utf8')).hooks.Stop[0].hooks[0].command.includes(rt));
+  assert.ok(JSON.parse(fs.readFileSync(seatFile(path.join(root, 'agents', 'sk')), 'utf8')).hooks.Stop[0].hooks[0].command.includes(rt));
   assert.doesNotThrow(() => hive.confirmSpawn('pty-sk', { id: 'sk', provider: 'claude' }, L('sk').argv, {}));
   // Site index.ts ensureClaudePermissionsAccepted swallow: it runs after the mark and only accepts a folder trust prompt.
   const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.ts'), 'utf8');
@@ -719,7 +720,7 @@ test('round 7 (H1): a decision is confirmable only once provisioning finished; e
 test('round 7 (H2): a late refusal removes only a row this spawn still owns — both interleavings', async (t) => {
   const { home, away, rt, hive, root, log } = floor(t);
   hive.setHookRuntime(rt);
-  const L = { argv: ['claude', '--settings', path.join(root, 'agents', 'same', 'settings.json')], env: {} };
+  const L = { argv: ['claude', '--settings', seatFile(path.join(root, 'agents', 'same'))], env: {} };
   const bad = [...L.argv, '--add-dir', path.dirname(rt)];
   const both = async () => {
     await hive.ensureAgent({ id: 'same', name: 's', provider: 'claude', cwd: away }, { launch: L, spawnId: 'A' }); hive.markHookProvisioned('A');
@@ -734,7 +735,7 @@ test('round 7 (H2): a late refusal removes only a row this spawn still owns — 
   // Order 2 (a fresh floor): A refuses before B's late check; B's row still stands and B then starts.
   const f2 = floor(t);
   f2.hive.setHookRuntime(f2.rt);
-  const L2 = { argv: ['claude', '--settings', path.join(f2.root, 'agents', 'same', 'settings.json')], env: {} };
+  const L2 = { argv: ['claude', '--settings', seatFile(path.join(f2.root, 'agents', 'same'))], env: {} };
   await f2.hive.ensureAgent({ id: 'same', name: 's', provider: 'claude', cwd: f2.away }, { launch: L2, spawnId: 'A' }); f2.hive.markHookProvisioned('A');
   await f2.hive.ensureAgent({ id: 'same', name: 's', provider: 'claude', cwd: f2.away }, { launch: L2, spawnId: 'B' }); f2.hive.markHookProvisioned('B');
   assert.throws(() => f2.hive.confirmSpawn('A', { id: 'same', provider: 'claude' }, [...L2.argv, '--add-dir', path.dirname(f2.rt)], {}), /not checked/);
@@ -743,15 +744,15 @@ test('round 7 (H2): a late refusal removes only a row this spawn still owns — 
   // Order 3 (a fresh floor): B is decided first and starts; A wrote the row last but refuses afterwards: B has started, so the row stays.
   const f3 = floor(t);
   f3.hive.setHookRuntime(f3.rt);
-  const L3 = { argv: ['claude', '--settings', path.join(f3.root, 'agents', 'same', 'settings.json')], env: {} };
+  const L3 = { argv: ['claude', '--settings', seatFile(path.join(f3.root, 'agents', 'same'))], env: {} };
   await f3.hive.ensureAgent({ id: 'same', name: 's', provider: 'claude', cwd: f3.away }, { launch: L3, spawnId: 'B' }); f3.hive.markHookProvisioned('B');
   await f3.hive.ensureAgent({ id: 'same', name: 's', provider: 'claude', cwd: f3.away }, { launch: L3, spawnId: 'A' }); f3.hive.markHookProvisioned('A');
   f3.hive.confirmSpawn('B', { id: 'same', provider: 'claude' }, L3.argv, {});
   assert.throws(() => f3.hive.confirmSpawn('A', { id: 'same', provider: 'claude' }, [...L3.argv, '--add-dir', path.dirname(f3.rt)], {}), /not checked/);
   assert.equal(Object.hasOwn(f3.hive.registry().agents, 'same'), true, 'a later spawn has started: the row stays');
   // Alone: the row A added, and still owns, is removed.
-  await hive.ensureAgent({ id: 'solo', name: 's', provider: 'claude', cwd: away }, { launch: { argv: ['claude', '--settings', path.join(root, 'agents', 'solo', 'settings.json')], env: {} }, spawnId: 'S' }); hive.markHookProvisioned('S');
-  assert.throws(() => hive.confirmSpawn('S', { id: 'solo', provider: 'claude' }, ['claude', '--settings', path.join(root, 'agents', 'solo', 'settings.json'), '--add-dir', path.dirname(rt)], {}), /not checked/);
+  await hive.ensureAgent({ id: 'solo', name: 's', provider: 'claude', cwd: away }, { launch: { argv: ['claude', '--settings', seatFile(path.join(root, 'agents', 'solo'))], env: {} }, spawnId: 'S' }); hive.markHookProvisioned('S');
+  assert.throws(() => hive.confirmSpawn('S', { id: 'solo', provider: 'claude' }, ['claude', '--settings', seatFile(path.join(root, 'agents', 'solo')), '--add-dir', path.dirname(rt)], {}), /not checked/);
   assert.equal(Object.hasOwn(hive.registry().agents, 'solo'), false);
 });
 
@@ -993,7 +994,7 @@ test('a Claude seat whose generated settings carry enabledPlugins passes the spa
   fs.writeFileSync(path.join(userDir, 'settings.json'), JSON.stringify({ enabledPlugins: { 'superpowers@claude-plugins-official': true, 'terraform@claude-plugins-official': true } }));
   const id = 'pl1';
   const dir = path.join(home, 'hive', 'agents', id);
-  const argv = ['claude', '--settings', path.join(dir, 'settings.json')];
+  const argv = ['claude', '--settings', seatFile(dir)];
   const inj = await hive.ensureAgent({ id, name: 'p', provider: 'claude', cwd: away }, { launch: { argv, env: {} }, spawnId: 's-pl1' });
   const settings = JSON.parse(fs.readFileSync(inj.args[inj.args.indexOf('--settings') + 1], 'utf8'));
   assert.deepEqual(settings.enabledPlugins, { 'superpowers@claude-plugins-official': true, 'terraform@claude-plugins-official': false });

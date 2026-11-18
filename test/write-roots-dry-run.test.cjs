@@ -9,6 +9,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { withSeatSettings, seatFile } = require('./seat-settings-dir.cjs');
 const { codexTestBase, removeDir } = require('./codex-test-home.cjs');
 
 const W = loadTs('src/main/writeRoots.ts');
@@ -37,8 +38,15 @@ function hive(t) {
 }
 
 const shell = (command, extra = {}) => ({ command, ...extra });
+/** Where the app keeps an agent's generated Claude settings: a folder of its own outside the hive (seatSettings.ts),
+ *  here <home>/seat-settings/<id>.json for the agent folder <home>/hive/agents/<id>. */
+const seatOf = (agentDir) => {
+  const dir = path.join(path.dirname(path.dirname(path.dirname(agentDir))), 'seat-settings');
+  try { fs.mkdirSync(dir, { recursive: true }); } catch { /* a case planted something else there */ }
+  return path.join(dir, `${path.basename(agentDir)}.json`);
+};
 /** The launch line the app gives a Claude agent: its generated settings and its prompt. */
-const claudeLine = (agentDir) => ({ args: ['claude --permission-mode bypassPermissions', '--append-system-prompt', 'you are an agent', '--settings', path.join(agentDir, 'settings.json')], platform: 'darwin', env: {} });
+const claudeLine = (agentDir, generated = seatOf(agentDir)) => ({ args: ['claude --permission-mode bypassPermissions', '--append-system-prompt', 'you are an agent', '--settings', generated], platform: 'darwin', env: {}, claudeSettings: generated });
 
 test('scoped roots are role-aware: god keeps the hive root, an agent gets its folder, evidence and an outside worktree', (t) => {
   const { home, root, ctx, god } = hive(t);
@@ -152,24 +160,24 @@ test('edit, MCP and patch tools; writes to the own settings are recorded though 
 test('effective Claude roots come from every settings file the CLI merges; off or absent is unsandboxed, unreadable is unknown', async (t) => {
   const home = freshHome(t);
   jailHome(t, home);
-  const h = new HiveManager(() => home);
+  const h = withSeatSettings(new HiveManager(() => home));
   await h.ensureAgent({ id: 'g1', name: 'G', provider: 'claude', cwd: path.join(home, 'hive'), isGod: true });
   await h.ensureAgent({ id: 'w1', name: 'W', provider: 'claude', cwd: path.join(home, 'hive') });
   const root = path.join(home, 'hive');
   const ctxOf = (id, isGod, cwd = home) => ({ root, agentId: id, isGod, cwd, home });
   const dir = path.join(root, 'agents/w1');
-  const w = W.effectiveRoots('claude', dir, home, home, claudeLine(dir));
+  const w = W.effectiveRoots('claude', dir, home, home, claudeLine(dir, seatFile(dir)));
   assert.equal(w.state, 'ok');
   const rw = W.rootsReport(w, ctxOf('w1', false));
   assert.deepEqual(rw.effective.sort(), ['contains hive', 'hive root', 'own folder'], JSON.stringify(rw));
   assert.deepEqual(rw.excess.sort(), ['contains hive', 'hive root']);
-  assert.deepEqual(W.rootsReport(W.effectiveRoots('claude', path.join(root, 'agents/g1'), home, home, claudeLine(path.join(root, 'agents/g1'))), ctxOf('g1', true)).excess, ['contains hive']);
+  assert.deepEqual(W.rootsReport(W.effectiveRoots('claude', path.join(root, 'agents/g1'), home, home, claudeLine(path.join(root, 'agents/g1'), seatFile(path.join(root, 'agents/g1')))), ctxOf('g1', true)).excess, ['contains hive']);
   fs.mkdirSync(path.join(home, '.claude'));
   fs.writeFileSync(path.join(home, '.claude/settings.json'), JSON.stringify({ permissions: { additionalDirectories: [path.join(root, 'bin')] } }));
   const outside = freshHome(t);
-  const ro = W.rootsReport(W.effectiveRoots('claude', dir, outside, home, claudeLine(dir)), ctxOf('w1', false, outside));
+  const ro = W.rootsReport(W.effectiveRoots('claude', dir, outside, home, claudeLine(dir, seatFile(dir))), ctxOf('w1', false, outside));
   assert.deepEqual(ro.excess.sort(), ['bin', 'hive root'], 'a user settings file adds a root');
-  const generated = fs.readFileSync(path.join(dir, 'settings.json'), 'utf8');
+  const generated = fs.readFileSync(seatFile(dir), 'utf8');
   const shapes = [
     ['no sandbox key', { permissions: { additionalDirectories: [] } }, 'unsandboxed'],
     ['enabled false', { sandbox: { enabled: false, filesystem: { allowWrite: [] } } }, 'unsandboxed'],
@@ -179,14 +187,14 @@ test('effective Claude roots come from every settings file the CLI merges; off o
     ['allowWrite not a list', { sandbox: { enabled: true, filesystem: { allowWrite: '/' } } }, 'unknown'],
   ];
   for (const [why, body, state] of shapes) {
-    fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify(body));
-    const eff = W.effectiveRoots('claude', dir, outside, home, claudeLine(dir));
+    fs.writeFileSync(seatFile(dir), JSON.stringify(body));
+    const eff = W.effectiveRoots('claude', dir, outside, home, claudeLine(dir, seatFile(dir)));
     assert.equal(eff.state, state, why);
     assert.deepEqual(W.rootsReport(eff, ctxOf('w1', false, outside)), { effective: [state], excess: [state] }, why);
   }
-  fs.writeFileSync(path.join(dir, 'settings.json'), generated);
+  fs.writeFileSync(seatFile(dir), generated);
   fs.writeFileSync(path.join(home, '.claude/settings.json'), JSON.stringify({ sandbox: { enabled: false } }));
-  assert.equal(W.effectiveRoots('claude', dir, outside, home, claudeLine(dir)).state, 'ok', 'the generated --settings file outranks the user file');
+  assert.equal(W.effectiveRoots('claude', dir, outside, home, claudeLine(dir, seatFile(dir))).state, 'ok', 'the generated --settings file outranks the user file');
   assert.equal(W.effectiveRoots('claude', path.join(root, 'agents/none'), outside, home).state, 'unknown', 'no generated file');
 });
 
@@ -225,7 +233,7 @@ test('effective Codex roots: inherited roots show; full access is unsandboxed; e
   assert.equal(write('', { args: ['codex', '-s', 'banana'], platform: 'darwin', env: cxEnv, codexHomeFromApp: true }).state, 'unknown');
   assert.equal(write('', { ...auto, platform: 'win32' }).state, 'unknown', 'a platform with no sandbox');
   assert.equal(write('').state, 'ok');
-  fs.writeFileSync(path.join(root, 'agents/a1/settings.json'), JSON.stringify({ sandbox: { enabled: true, filesystem: { allowWrite: [] } } }));
+  fs.writeFileSync(seatOf(path.join(root, 'agents/a1')), JSON.stringify({ sandbox: { enabled: true, filesystem: { allowWrite: [] } } }));
   assert.equal(W.effectiveRoots('claude', path.join(root, 'agents/a1'), ctx.cwd, ctx.home, claudeLine(path.join(root, 'agents/a1'))).state, 'ok');
   // R3: the launch line is read with Codex's option grammar; the prompt is never read.
   const L = (...args) => W.codexLaunchSandbox(args);
@@ -284,7 +292,7 @@ test('the usage log takes the dry-run events with fixed lists only: no path, no 
 test('the dry run counts every call, looks an agent up only for calls that can write, and never changes the hook answer', async (t) => {
   const home = freshHome(t);
   jailHome(t, home);
-  const h = new HiveManager(() => home);
+  const h = withSeatSettings(new HiveManager(() => home));
   await h.ensureAgent({ id: 'w1', name: 'W', provider: 'claude', cwd: path.join(home, 'hive') });
   const root = path.join(home, 'hive');
   const control = { takeSteer: () => null, shouldHalt: () => false, toolDecision: () => ({ deny: false }) };
@@ -296,7 +304,7 @@ test('the dry run counts every call, looks an agent up only for calls that can w
   const later = [];
   const settle = () => { while (later.length) later.shift()(); };
   const dry = new W.WriteRootsDryRun({
-    agent: (id) => { lookups++; return id === 'w1' ? { ctx: { root, agentId: 'w1', isGod: false, cwd: home, home }, provider: 'claude', agentDir: path.join(root, 'agents/w1'), launch: claudeLine(path.join(root, 'agents/w1')) } : null; },
+    agent: (id) => { lookups++; return id === 'w1' ? { ctx: { root, agentId: 'w1', isGod: false, cwd: home, home }, provider: 'claude', agentDir: path.join(root, 'agents/w1'), launch: claudeLine(path.join(root, 'agents/w1'), seatFile(path.join(root, 'agents/w1'))) } : null; },
     known: (id) => id === 'w1',
     record: (e) => rows.push(e),
     defer: (fn) => later.push(fn),
@@ -357,7 +365,7 @@ function hostileCommands(root) {
 test('the hook answer does not wait for the dry run: answer time is the same for any command', async (t) => {
   const { root, agent } = hookFloor(t);
   const { HookServer: HS } = loadTs('src/main/hooks.ts');
-  const h = new HiveManager(() => path.dirname(root));
+  const h = withSeatSettings(new HiveManager(() => path.dirname(root)));
   const control = { takeSteer: () => null, shouldHalt: () => false, toolDecision: () => ({ deny: false }) };
   let slowLookups = 0;
   const dry = new W.WriteRootsDryRun({
@@ -436,7 +444,7 @@ test('admission: made-up ids never take a queue slot; each agent has its own bou
 test('generated: a value planted at any read site reads as unknown or refused, never as scoped or own', (t) => {
   const outcomes = [];
   const sites = [
-    { name: 'generated Claude settings', provider: 'claude', file: (c) => path.join(c.root, 'agents/a1/settings.json'), optional: false },
+    { name: 'generated Claude settings', provider: 'claude', file: (c) => seatOf(path.join(c.root, 'agents/a1')), optional: false },
     { name: 'project settings', provider: 'claude', file: (c) => path.join(c.cwd, '.claude/settings.json'), optional: true },
     { name: 'project local settings', provider: 'claude', file: (c) => path.join(c.cwd, '.claude/settings.local.json'), optional: true },
     { name: 'user Claude settings', provider: 'claude', file: (c) => path.join(c.home, '.claude/settings.json'), optional: true },
@@ -455,7 +463,7 @@ test('generated: a value planted at any read site reads as unknown or refused, n
     fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
     const c = { root, cwd, home };
     // Every other source valid, so the planted one decides.
-    fs.writeFileSync(path.join(root, 'agents/a1/settings.json'), good.claude);
+    fs.writeFileSync(seatOf(path.join(root, 'agents/a1')), good.claude);
     fs.writeFileSync(path.join(root, 'agents/a1/.codex/config.toml'), good.codex);
     const f = site.file(c);
     fs.rmSync(f, { force: true, recursive: true });
@@ -518,21 +526,21 @@ test('every row of READ_SITES has a case here, and each case holds', (t) => {
   for (const d of ['agents/a1/.codex', 'agents/a2/outbox', 'bin', 'evidence']) fs.mkdirSync(path.join(root, d), { recursive: true });
   const dir = path.join(root, 'agents/a1');
   const ctx = { root, agentId: 'a1', isGod: false, cwd: '', home };
-  fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ sandbox: { enabled: true, filesystem: { allowWrite: [] } } }));
+  fs.writeFileSync(seatOf(dir), JSON.stringify({ sandbox: { enabled: true, filesystem: { allowWrite: [] } } }));
   fs.writeFileSync(path.join(dir, '.codex/config.toml'), '');
   const cx = { CODEX_HOME: path.join(dir, '.codex') };
   const codex = (...args) => W.effectiveRoots('codex', dir, '', home, { args, platform: 'darwin', env: cx, codexHomeFromApp: true });
-  const claude = (...args) => W.effectiveRoots('claude', dir, '', home, { args, platform: 'darwin', env: {} });
-  const ok = ['claude', '--settings', path.join(dir, 'settings.json')];
-  const plant = (f, fn) => { const keep = fs.readFileSync(f); fs.rmSync(f); fn(f); try { return W.effectiveRoots(f.includes('.codex') ? 'codex' : 'claude', dir, '', home, f.includes('.codex') ? { args: ['codex -s workspace-write'], platform: 'darwin', env: cx, codexHomeFromApp: true } : { args: ok, platform: 'darwin', env: {} }).state; } finally { fs.rmSync(f, { force: true, recursive: true }); fs.writeFileSync(f, keep); } };
+  const claude = (...args) => W.effectiveRoots('claude', dir, '', home, { args, platform: 'darwin', env: {}, claudeSettings: seatOf(dir) });
+  const ok = ['claude', '--settings', seatOf(dir)];
+  const plant = (f, fn) => { const keep = fs.readFileSync(f); fs.rmSync(f); fn(f); try { return W.effectiveRoots(f.includes('.codex') ? 'codex' : 'claude', dir, '', home, f.includes('.codex') ? { args: ['codex -s workspace-write'], platform: 'darwin', env: cx, codexHomeFromApp: true } : { args: ok, claudeSettings: seatOf(dir), platform: 'darwin', env: {} }).state; } finally { fs.rmSync(f, { force: true, recursive: true }); fs.writeFileSync(f, keep); } };
   const CASES = {
     'payload-agent-id': () => { const later = []; const d = new W.WriteRootsDryRun({ agent: () => null, known: () => false, record: () => {}, defer: (f) => later.push(f) }); d.onHook('fake', 'PreToolUse', {}); assert.equal(later.length, 0); },
-    attribution: () => { const later = []; const rows = []; const d = new W.WriteRootsDryRun({ agent: (id) => ({ ctx: { ...ctx, agentId: id }, provider: 'claude', agentDir: dir, launch: { args: ok, platform: 'darwin', env: {} } }), known: (id) => id === 'a1' || id === 'a2', record: (e) => rows.push(e), defer: (f) => later.push(f) }); for (let i = 0; i < 50; i++) d.onHook('a2', 'PreToolUse', { tool_name: 'Read', tool_input: {} }); d.onHook('a1', 'PreToolUse', { tool_name: 'Write', tool_input: { file_path: path.join(root, 'bin/x') } }); while (later.length) later.shift()(); assert.ok(rows.some((r) => r.agentId === 'a1' && r.kind === 'write-would-refuse'), 'a forged flood under a2 cannot shed a1'); },
+    attribution: () => { const later = []; const rows = []; const d = new W.WriteRootsDryRun({ agent: (id) => ({ ctx: { ...ctx, agentId: id }, provider: 'claude', agentDir: dir, launch: { args: ok, claudeSettings: seatOf(dir), platform: 'darwin', env: {} } }), known: (id) => id === 'a1' || id === 'a2', record: (e) => rows.push(e), defer: (f) => later.push(f) }); for (let i = 0; i < 50; i++) d.onHook('a2', 'PreToolUse', { tool_name: 'Read', tool_input: {} }); d.onHook('a1', 'PreToolUse', { tool_name: 'Write', tool_input: { file_path: path.join(root, 'bin/x') } }); while (later.length) later.shift()(); assert.ok(rows.some((r) => r.agentId === 'a1' && r.kind === 'write-would-refuse'), 'a forged flood under a2 cannot shed a1'); },
     incomplete: () => { const later = []; const rows = []; const d = new W.WriteRootsDryRun({ agent: (id) => ({ ctx: { ...ctx, agentId: id }, provider: 'claude', agentDir: dir }), known: () => true, record: (e) => rows.push(e), defer: (f) => later.push(f) }); for (let i = 0; i < W.MAX_QUEUE + 3; i++) d.onHook('a1', 'PreToolUse', { tool_name: 'Read', tool_input: {} }); d.onHook('a1', 'Stop', {}); while (later.length) later.shift()(); assert.deepEqual(rows.find((r) => r.kind === 'write-incomplete'), { kind: 'write-incomplete', agentId: 'a1', state: 'incomplete', reason: 'queue', shed: 3, burst: true }); rows.length = 0; d.onHook('a1', 'PreToolUse', { tool_name: 'Read', tool_input: {} }); d.onHook('a1', 'Stop', {}); while (later.length) later.shift()(); assert.ok(!rows.some((r) => r.kind === 'write-incomplete'), 'a turn with nothing shed is not incomplete'); },
-    'session-start': () => { const later = []; const rows = []; let gen = 1; const d = new W.WriteRootsDryRun({ agent: (id) => ({ ctx: { ...ctx, agentId: id }, provider: 'claude', agentDir: dir, launch: { args: ok, platform: 'darwin', env: {} } }), known: () => true, generation: () => gen, record: (e) => rows.push(e), defer: (f) => later.push(f) }); const settle = () => { while (later.length) later.shift()(); };
+    'session-start': () => { const later = []; const rows = []; let gen = 1; const d = new W.WriteRootsDryRun({ agent: (id) => ({ ctx: { ...ctx, agentId: id }, provider: 'claude', agentDir: dir, launch: { args: ok, claudeSettings: seatOf(dir), platform: 'darwin', env: {} } }), known: () => true, generation: () => gen, record: (e) => rows.push(e), defer: (f) => later.push(f) }); const settle = () => { while (later.length) later.shift()(); };
       d.onHook('a1', 'SessionStart', { source: 'startup' }); settle();
-      fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ sandbox: { enabled: false } })); d.onHook('a1', 'SessionStart', { source: 'clear' }); settle();
-      fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ sandbox: { enabled: true, filesystem: { allowWrite: [] } } }));
+      fs.writeFileSync(seatOf(dir), JSON.stringify({ sandbox: { enabled: false } })); d.onHook('a1', 'SessionStart', { source: 'clear' }); settle();
+      fs.writeFileSync(seatOf(dir), JSON.stringify({ sandbox: { enabled: true, filesystem: { allowWrite: [] } } }));
       const r = rows.filter((x) => x.kind === 'write-roots'); assert.equal(r.length, 2, 'every start is recorded'); assert.deepEqual([r[0].start, r[0].ordinal, r[1].start, r[1].ordinal], ['startup', 1, 'clear', 2]); assert.notDeepEqual(r[0].excess, r[1].excess, 'a settings change between starts shows'); assert.deepEqual(r[1].excess, ['unsandboxed']);
       rows.length = 0; d.onHook('a1', 'SessionStart', { source: 'compact' }); d.onHook('a1', 'SessionStart', { source: 'resume' }); d.onHook('a1', 'SessionStart', {}); settle(); assert.deepEqual(rows.filter((x) => x.kind === 'write-roots').map((x) => x.coalesced), [3], 'waiting together: one row, coalesced 3');
       rows.length = 0; for (let i = 0; i < 12; i++) d.onHook('a1', 'SessionStart', {}); settle(); d.onHook('a1', 'Stop', {}); settle(); assert.ok(rows.some((x) => x.kind === 'write-incomplete' && x.reason === 'session-start-flood'), 'a flood of starts is incomplete');
@@ -614,12 +622,24 @@ test('every row of READ_SITES has a case here, and each case holds', (t) => {
     'payload-tool-input': () => assert.equal(W.observeTool('Bash', { command: Array.from({ length: 200 }, (_, i) => `rm ${root}/bin/${i}`).join(';') }, ctx).at(-1).via, 'truncated'),
     queue: () => { assert.ok(W.MAX_QUEUE * W.BUDGET_MS <= 250, 'per agent'); const later = []; const rows = []; const d = new W.WriteRootsDryRun({ agent: (id) => ({ ctx: { ...ctx, agentId: id }, provider: 'claude', agentDir: dir }), known: () => true, record: (e) => rows.push(e), defer: (f) => later.push(f) }); for (let i = 0; i < 500; i++) d.onHook('a2', 'PreToolUse', { tool_name: 'Read', tool_input: {} }); d.onHook('a1', 'PreToolUse', { tool_name: 'Write', tool_input: { file_path: path.join(root, 'bin/x') } }); while (later.length) later.shift()(); assert.ok(rows.some((r) => r.kind === 'write-would-refuse' && r.agentId === 'a1'), 'one agent\'s burst does not shed another\'s write'); },
     'own-folder': () => { fs.rmSync(path.join(root, 'agents/a9'), { force: true, recursive: true }); fs.symlinkSync(path.join(root, 'agents/a2'), path.join(root, 'agents/a9')); assert.deepEqual(W.scopedRoots({ ...ctx, agentId: 'a9' }), []); },
-    'claude-generated-settings': () => assert.equal(plant(path.join(dir, 'settings.json'), (f) => fs.mkdirSync(f)), 'unknown'),
-    'claude-project-settings': () => { const cwd = path.join(home, 'wt'); fs.mkdirSync(path.join(cwd, '.claude'), { recursive: true }); fs.mkdirSync(path.join(cwd, '.claude/settings.json')); assert.equal(W.effectiveRoots('claude', dir, cwd, home, { args: ok, platform: 'darwin', env: {} }).state, 'unknown'); fs.rmSync(cwd, { recursive: true }); },
+    'claude-setting-sources': () => { const wt = path.join(home, 'wt-src'); fs.mkdirSync(path.join(wt, '.claude'), { recursive: true }); fs.writeFileSync(path.join(wt, '.claude/settings.json'), JSON.stringify({ permissions: { additionalDirectories: [path.join(root, 'bin')] } })); fs.writeFileSync(path.join(wt, '.claude/settings.local.json'), JSON.stringify({ permissions: { additionalDirectories: [path.join(root, 'research')] } })); const at = (...extra) => W.effectiveRoots('claude', dir, wt, home, { args: [...ok, ...extra], claudeSettings: seatOf(dir), platform: 'darwin', env: {} }); assert.ok(at().roots.includes(path.join(root, 'bin')) && at().roots.includes(path.join(root, 'research')), 'read without the option'); const u = at('--setting-sources', 'user'); assert.equal(u.state, 'ok'); assert.ok(!u.roots.includes(path.join(root, 'bin')) && !u.roots.includes(path.join(root, 'research')), 'not read with it'); assert.equal(at('--setting-sources', 'user,project').state, 'unknown'); fs.rmSync(wt, { recursive: true }); },
+    'claude-generated-settings': () => {
+      assert.equal(plant(seatOf(dir), (f) => fs.mkdirSync(f)), 'unknown');
+      // The old in-tree file, which every agent can write, is never read: whatever is planted there changes nothing.
+      const inTree = path.join(dir, 'settings.json');
+      const before = claude(...ok);
+      for (const plantIt of [() => fs.writeFileSync(inTree, JSON.stringify({ sandbox: { enabled: false } })), () => fs.writeFileSync(inTree, '{ broken'), () => fs.mkdirSync(inTree)]) {
+        plantIt();
+        try { assert.deepEqual(claude(...ok), before); } finally { fs.rmSync(inTree, { recursive: true, force: true }); }
+      }
+      fs.writeFileSync(inTree, fs.readFileSync(seatOf(dir)));
+      try { assert.equal(W.effectiveRoots('claude', dir, '', home, { args: ['claude', '--settings', inTree], platform: 'darwin', env: {} }).state, 'unknown', 'with no generated file from the app, never the in-tree one'); } finally { fs.rmSync(inTree, { force: true }); }
+    },
+    'claude-project-settings': () => { const cwd = path.join(home, 'wt'); fs.mkdirSync(path.join(cwd, '.claude'), { recursive: true }); fs.mkdirSync(path.join(cwd, '.claude/settings.json')); assert.equal(W.effectiveRoots('claude', dir, cwd, home, { args: ok, claudeSettings: seatOf(dir), platform: 'darwin', env: {} }).state, 'unknown'); fs.rmSync(cwd, { recursive: true }); },
     'claude-user-settings': () => { fs.mkdirSync(path.join(home, '.claude/settings.json'), { recursive: true }); assert.equal(claude(...ok).state, 'unknown'); fs.rmSync(path.join(home, '.claude'), { recursive: true }); },
     'claude-managed-settings': () => assert.equal(claude(...ok).state, 'ok', 'read without error when absent'),
     'codex-config': () => assert.equal(plant(path.join(dir, '.codex/config.toml'), (f) => fs.symlinkSync('/etc/hosts', f)), 'unknown'),
-    'spawn-record': () => { assert.equal(W.effectiveRoots('gemini', dir, '', home, { args: ok, platform: 'darwin', env: {} }).state, 'unknown'); assert.equal(claude(...ok).state, 'ok'); assert.equal(W.effectiveRoots('claude', dir, '', home, { args: ok, platform: 'win32', env: {} }).state, 'unknown'); },
+    'spawn-record': () => { assert.equal(W.effectiveRoots('gemini', dir, '', home, { args: ok, claudeSettings: seatOf(dir), platform: 'darwin', env: {} }).state, 'unknown'); assert.equal(claude(...ok).state, 'ok'); assert.equal(W.effectiveRoots('claude', dir, '', home, { args: ok, platform: 'win32', env: {} }).state, 'unknown'); },
     'codex-prompt': () => assert.equal(codex('codex -s danger-full-access', 'now -s workspace-write').state, 'unsandboxed'),
     'codex-sandbox-flag': () => {
       assert.equal(codex('codex -s workspace-write').state, 'ok');
@@ -684,7 +704,7 @@ test('every row of READ_SITES has a case here, and each case holds', (t) => {
       const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.ts'), 'utf8');
       assert.match(main, /^      if \(inj\.env\?\.CODEX_HOME !== undefined\) codexHomeFromApp = true;$/m);
       assert.match(main, /^    spawnRoots\.set\(opts\.hive\.id, \{[^\n]*codexHomeFromApp,[^\n]*\}\);$/m);
-      assert.match(main, /^      launch: spawnLaunchFacts\(spawned, process\.platform, hive\.codexAppHooks\(\)\),$/m);
+      assert.match(main, /^      launch: spawnLaunchFacts\(spawned, process\.platform, hive\.codexAppHooks\(\), spawned\.provider === 'claude' \? seatSettingsFor\(agentId\) : undefined\),$/m);
       // The record is made only after the late check, so a refused spawn leaves none (and no new generation).
       const setAt = main.search(/^    spawnRoots\.set\(opts\.hive\.id, /m);
       const checkAt = main.search(/^    try \{ hive\.confirmSpawn\(/m);
@@ -714,24 +734,24 @@ test('every row of READ_SITES has a case here, and each case holds', (t) => {
     'codex-remote-flag': () => assert.equal(codex('codex -s workspace-write', '--remote', 'ws://x').state, 'unknown'),
     'codex-unknown-option': () => assert.equal(codex('codex -s workspace-write', '--weird').state, 'unknown'),
     'claude-prompt': () => { assert.equal(claude(...ok, 'please --settings /tmp/x --add-dir /').state, 'ok', 'the prompt is not read'); assert.equal(claude(...ok, 'prompt', '--settings', '/tmp/x').state, 'unknown', 'anything after the prompt is not modelled'); assert.equal(claude(...ok, 'prompt').state, 'ok', 'a prompt last is fine'); },
-    'claude-add-dir-flag': () => { const e = claude('claude', '--add-dir', path.join(root, 'bin'), path.join(root, 'research'), '--settings', path.join(dir, 'settings.json')); assert.ok(e.roots.includes(path.join(root, 'bin')) && e.roots.includes(path.join(root, 'research'))); },
+    'claude-add-dir-flag': () => { const e = claude('claude', '--add-dir', path.join(root, 'bin'), path.join(root, 'research'), '--settings', seatOf(dir)); assert.ok(e.roots.includes(path.join(root, 'bin')) && e.roots.includes(path.join(root, 'research'))); },
     'claude-settings-flag': () => { assert.equal(claude('claude', '--settings', '/tmp/other.json').state, 'unknown'); assert.equal(claude('claude', '--settings', '{"sandbox":{}}').state, 'unknown'); },
-    'claude-unmodelled-flag': () => { for (const f of ['--setting-sources=user', '--bare', '--safe-mode', '--restricted', '--worktree', '-w', '--debug']) assert.equal(claude(...ok, f).state, 'unknown', f); },
+    'claude-unmodelled-flag': () => { for (const f of ['--setting-sources=project', '--setting-sources=user,local', '--bare', '--safe-mode', '--restricted', '--worktree', '-w', '--debug']) assert.equal(claude(...ok, f).state, 'unknown', f); },
     'option-after-positional': () => { assert.equal(codex('codex -s workspace-write', 'prompt', '--yolo').state, 'unknown'); assert.equal(claude(...ok, 'prompt', '--add-dir', '/').state, 'unknown'); },
     'codex-project-config': () => { const wt = path.join(home, 'proj', 'sub'); fs.mkdirSync(path.join(home, 'proj', '.codex'), { recursive: true }); fs.mkdirSync(wt, { recursive: true }); fs.writeFileSync(path.join(home, 'proj', '.codex', 'config.toml'), `[sandbox_workspace_write]\nwritable_roots = [${JSON.stringify(path.join(root, 'bin'))}]\n`); const e = W.effectiveRoots('codex', dir, wt, home, { args: ['codex -s workspace-write'], platform: 'darwin', env: cx, codexHomeFromApp: true }); assert.ok(e.roots.includes(path.join(root, 'bin')), 'a project config above the cwd'); fs.writeFileSync(path.join(home, 'proj', '.codex', 'config.toml'), 'sandbox_workspace_write = { x'); assert.equal(W.effectiveRoots('codex', dir, wt, home, { args: ['codex -s workspace-write'], platform: 'darwin', env: cx, codexHomeFromApp: true }).state, 'unknown'); fs.rmSync(path.join(home, 'proj', '.codex', 'config.toml')); fs.mkdirSync(path.join(home, 'proj', '.codex', 'config.toml')); assert.equal(W.effectiveRoots('codex', dir, wt, home, { args: ['codex -s workspace-write'], platform: 'darwin', env: cx, codexHomeFromApp: true }).state, 'unknown', 'a folder where the file should be'); fs.rmSync(path.join(home, 'proj'), { recursive: true }); },
     'claude-plugin-dir': () => { assert.equal(claude(...ok, '--plugin-dir', '/p').state, 'unknown'); assert.equal(claude(...ok, '--plugin-url', 'https://x').state, 'unknown'); assert.equal(codex('codex -s workspace-write', '-c', 'profile="x"').state, 'unknown', '-c profile'); },
-    'env-tmpdir': () => { const e = W.effectiveRoots('claude', dir, '', home, { args: ok, platform: 'darwin', env: { TMPDIR: path.join(root, 'bin') } }); assert.ok(W.rootsReport(e, ctx).excess.includes('bin'), 'inside the hive it keeps its hive class');
+    'env-tmpdir': () => { const e = W.effectiveRoots('claude', dir, '', home, { args: ok, claudeSettings: seatOf(dir), platform: 'darwin', env: { TMPDIR: path.join(root, 'bin') } }); assert.ok(W.rootsReport(e, ctx).excess.includes('bin'), 'inside the hive it keeps its hive class');
       const macTmp = path.join(home, 'var-folders-T'); fs.mkdirSync(macTmp, { recursive: true });
-      const r = W.rootsReport(W.effectiveRoots('claude', dir, '', home, { args: ok, platform: 'darwin', env: { TMPDIR: macTmp } }), ctx);
-      assert.ok(r.effective.includes('temp') && r.excess.includes('temp') && !r.excess.includes('outside hive'), 'outside the hive it is temp, not an outside-hive grant: ' + JSON.stringify(r)); assert.ok(W.effectiveRoots('codex', dir, '', home, { args: ['codex -s workspace-write'], platform: 'darwin', env: { ...cx, TMPDIR: path.join(root, 'research') }, codexHomeFromApp: true }).roots.includes(path.join(root, 'research'))); assert.ok(W.effectiveRoots('claude', dir, '', home, { args: ok, platform: 'darwin', env: { CLAUDE_CODE_TMPDIR: path.join(root, 'bin') } }).roots.includes(path.join(root, 'bin'))); assert.equal(W.effectiveRoots('claude', dir, '', home, { args: ok, platform: 'darwin', env: { TMPDIR: 'rel' } }).state, 'unknown'); },
+      const r = W.rootsReport(W.effectiveRoots('claude', dir, '', home, { args: ok, claudeSettings: seatOf(dir), platform: 'darwin', env: { TMPDIR: macTmp } }), ctx);
+      assert.ok(r.effective.includes('temp') && r.excess.includes('temp') && !r.excess.includes('outside hive'), 'outside the hive it is temp, not an outside-hive grant: ' + JSON.stringify(r)); assert.ok(W.effectiveRoots('codex', dir, '', home, { args: ['codex -s workspace-write'], platform: 'darwin', env: { ...cx, TMPDIR: path.join(root, 'research') }, codexHomeFromApp: true }).roots.includes(path.join(root, 'research'))); assert.ok(W.effectiveRoots('claude', dir, '', home, { args: ok, claudeSettings: seatOf(dir), platform: 'darwin', env: { CLAUDE_CODE_TMPDIR: path.join(root, 'bin') } }).roots.includes(path.join(root, 'bin'))); assert.equal(W.effectiveRoots('claude', dir, '', home, { args: ok, claudeSettings: seatOf(dir), platform: 'darwin', env: { TMPDIR: 'rel' } }).state, 'unknown'); },
     'launch-executable-name': () => { const L = loadTs('src/main/launchLine.ts'); assert.equal(L.launchExecutable(['/opt/anything/bin/claude --x']), 'claude', 'judged by name'); assert.equal(L.launchExecutable(['claude-wrapper']), null); },
-    'relative-roots': () => { const wt = path.join(home, 'wt2'); fs.mkdirSync(path.join(wt, '.claude'), { recursive: true }); fs.writeFileSync(path.join(wt, '.claude/settings.json'), JSON.stringify({ permissions: { additionalDirectories: ['../hive/bin'] } })); const e = W.effectiveRoots('claude', dir, wt, home, { args: ok, platform: 'darwin', env: {} }); assert.ok(e.roots.includes(path.join(wt, '../hive/bin')), 'against the spawn cwd'); fs.writeFileSync(path.join(wt, '.claude/settings.json'), JSON.stringify({ permissions: { additionalDirectories: ['$X/y'] } })); assert.equal(W.effectiveRoots('claude', dir, wt, home, { args: ok, platform: 'darwin', env: {} }).state, 'unknown'); fs.writeFileSync(path.join(home, '.claude-rel.json'), '{}'); assert.equal(W.effectiveRoots('codex', dir, '', home, { args: ['codex -s workspace-write', '--add-dir', 'rel'], platform: 'darwin', env: cx, codexHomeFromApp: true }).state, 'unknown', 'relative with no cwd'); fs.rmSync(wt, { recursive: true }); },
+    'relative-roots': () => { const wt = path.join(home, 'wt2'); fs.mkdirSync(path.join(wt, '.claude'), { recursive: true }); fs.writeFileSync(path.join(wt, '.claude/settings.json'), JSON.stringify({ permissions: { additionalDirectories: ['../hive/bin'] } })); const e = W.effectiveRoots('claude', dir, wt, home, { args: ok, claudeSettings: seatOf(dir), platform: 'darwin', env: {} }); assert.ok(e.roots.includes(path.join(wt, '../hive/bin')), 'against the spawn cwd'); fs.writeFileSync(path.join(wt, '.claude/settings.json'), JSON.stringify({ permissions: { additionalDirectories: ['$X/y'] } })); assert.equal(W.effectiveRoots('claude', dir, wt, home, { args: ok, claudeSettings: seatOf(dir), platform: 'darwin', env: {} }).state, 'unknown'); fs.writeFileSync(path.join(home, '.claude-rel.json'), '{}'); assert.equal(W.effectiveRoots('codex', dir, '', home, { args: ['codex -s workspace-write', '--add-dir', 'rel'], platform: 'darwin', env: cx, codexHomeFromApp: true }).state, 'unknown', 'relative with no cwd'); fs.rmSync(wt, { recursive: true }); },
     'strict-decoders': () => { assert.deepEqual(W.codexRoots('[sandbox_workspace_write]\n"writable\\u005froots" = ["/"]\n').roots, ['/'], 'an escaped key is the key it spells'); assert.equal(W.codexRoots('[sandbox_workspace_write]\nwritable_roots = "/"\n').state, 'unknown'); assert.equal(W.claudeRoots(JSON.stringify({ sandbox: { enabled: true, filesystem: 'x' } })), null); },
-    'launch-wrapper': () => { for (const w of ['env X=1 claude', 'sh -c "claude"', 'npx claude']) assert.equal(W.effectiveRoots('claude', dir, '', home, { args: [w, '--settings', path.join(dir, 'settings.json')], platform: 'darwin', env: {} }).state, 'unknown', w); assert.equal(W.effectiveRoots('codex', dir, '', home, { args: ['npx codex -s workspace-write'], platform: 'darwin', env: cx, codexHomeFromApp: true }).state, 'unknown'); },
-    'env-missing': () => { assert.equal(W.effectiveRoots('claude', dir, '', home, { args: ok, platform: 'darwin' }).state, 'unknown'); assert.equal(W.effectiveRoots('codex', dir, '', home, { args: ['codex -s workspace-write'], platform: 'darwin' }).state, 'unknown'); },
-    'env-home': () => { const other = path.join(home, 'other-home'); fs.mkdirSync(path.join(other, '.claude'), { recursive: true }); fs.writeFileSync(path.join(other, '.claude/settings.json'), JSON.stringify({ permissions: { additionalDirectories: [path.join(root, 'bin')] } })); const e = W.effectiveRoots('claude', dir, '', home, { args: ok, platform: 'darwin', env: { HOME: other } }); assert.ok(e.roots.includes(path.join(root, 'bin')), 'read from the spawn\'s HOME'); assert.equal(W.effectiveRoots('claude', dir, '', home, { args: ok, platform: 'darwin', env: { HOME: 'rel' } }).state, 'unknown'); },
-    'env-claude-config-dir': () => { const cfg = path.join(home, 'cfg'); fs.mkdirSync(cfg, { recursive: true }); fs.writeFileSync(path.join(cfg, 'settings.json'), JSON.stringify({ permissions: { additionalDirectories: [path.join(root, 'research')] } })); assert.ok(W.effectiveRoots('claude', dir, '', home, { args: ok, platform: 'darwin', env: { CLAUDE_CONFIG_DIR: cfg } }).roots.includes(path.join(root, 'research'))); assert.equal(W.effectiveRoots('claude', dir, '', home, { args: ok, platform: 'darwin', env: { CLAUDE_CONFIG_DIR: 'cfg' } }).state, 'unknown'); },
-    'env-other-provider': () => { assert.equal(W.effectiveRoots('claude', dir, '', home, { args: ok, platform: 'darwin', env: { CODEX_HOME: 'rel' } }).state, 'ok', 'Claude ignores CODEX_HOME'); assert.equal(W.effectiveRoots('codex', dir, '', home, { args: ['codex -s workspace-write'], platform: 'darwin', env: { ...cx, CLAUDE_CONFIG_DIR: 'rel', XDG_CONFIG_HOME: '/x', CLAUDE_CODE_MCP_SERVE_SETTINGS: '' }, codexHomeFromApp: true }).state, 'ok', 'Codex ignores Claude\'s variables'); },
+    'launch-wrapper': () => { for (const w of ['env X=1 claude', 'sh -c "claude"', 'npx claude']) assert.equal(W.effectiveRoots('claude', dir, '', home, { args: [w, '--settings', seatOf(dir)], platform: 'darwin', env: {} }).state, 'unknown', w); assert.equal(W.effectiveRoots('codex', dir, '', home, { args: ['npx codex -s workspace-write'], platform: 'darwin', env: cx, codexHomeFromApp: true }).state, 'unknown'); },
+    'env-missing': () => { assert.equal(W.effectiveRoots('claude', dir, '', home, { args: ok, claudeSettings: seatOf(dir), platform: 'darwin' }).state, 'unknown'); assert.equal(W.effectiveRoots('codex', dir, '', home, { args: ['codex -s workspace-write'], platform: 'darwin' }).state, 'unknown'); },
+    'env-home': () => { const other = path.join(home, 'other-home'); fs.mkdirSync(path.join(other, '.claude'), { recursive: true }); fs.writeFileSync(path.join(other, '.claude/settings.json'), JSON.stringify({ permissions: { additionalDirectories: [path.join(root, 'bin')] } })); const e = W.effectiveRoots('claude', dir, '', home, { args: ok, claudeSettings: seatOf(dir), platform: 'darwin', env: { HOME: other } }); assert.ok(e.roots.includes(path.join(root, 'bin')), 'read from the spawn\'s HOME'); assert.equal(W.effectiveRoots('claude', dir, '', home, { args: ok, claudeSettings: seatOf(dir), platform: 'darwin', env: { HOME: 'rel' } }).state, 'unknown'); },
+    'env-claude-config-dir': () => { const cfg = path.join(home, 'cfg'); fs.mkdirSync(cfg, { recursive: true }); fs.writeFileSync(path.join(cfg, 'settings.json'), JSON.stringify({ permissions: { additionalDirectories: [path.join(root, 'research')] } })); assert.ok(W.effectiveRoots('claude', dir, '', home, { args: ok, claudeSettings: seatOf(dir), platform: 'darwin', env: { CLAUDE_CONFIG_DIR: cfg } }).roots.includes(path.join(root, 'research'))); assert.equal(W.effectiveRoots('claude', dir, '', home, { args: ok, claudeSettings: seatOf(dir), platform: 'darwin', env: { CLAUDE_CONFIG_DIR: 'cfg' } }).state, 'unknown'); },
+    'env-other-provider': () => { assert.equal(W.effectiveRoots('claude', dir, '', home, { args: ok, claudeSettings: seatOf(dir), platform: 'darwin', env: { CODEX_HOME: 'rel' } }).state, 'ok', 'Claude ignores CODEX_HOME'); assert.equal(W.effectiveRoots('codex', dir, '', home, { args: ['codex -s workspace-write'], platform: 'darwin', env: { ...cx, CLAUDE_CONFIG_DIR: 'rel', XDG_CONFIG_HOME: '/x', CLAUDE_CODE_MCP_SERVE_SETTINGS: '' }, codexHomeFromApp: true }).state, 'ok', 'Codex ignores Claude\'s variables'); },
     'env-codex-home': () => {
       const ch = path.join(home, 'cx'); fs.mkdirSync(ch, { recursive: true });
       const grant = `[sandbox_workspace_write]\nwritable_roots = [${JSON.stringify(path.join(root, 'bin'))}]\n`;
@@ -745,8 +765,8 @@ test('every row of READ_SITES has a case here, and each case holds', (t) => {
       finally { fs.rmSync(own, { recursive: true, force: true }); }
       assert.equal(at({ CODEX_HOME: 'cx' }, true).state, 'unknown');
     },
-    'env-xdg-config-home': () => assert.equal(W.effectiveRoots('claude', dir, '', home, { args: ok, platform: 'darwin', env: { XDG_CONFIG_HOME: home } }).state, 'unknown'),
-    'env-claude-unmodelled': () => { const L = loadTs('src/main/launchLine.ts'); const env = L.relocationEnv({ CLAUDE_CODE_MCP_SERVE_SETTINGS: '/x', CLAUDE_CODE_OAUTH_TOKEN: 'secret', PATH: '/bin' }); assert.deepEqual(env, { CLAUDE_CODE_MCP_SERVE_SETTINGS: '' }, 'recorded by name only; secrets and others never kept'); assert.equal(W.effectiveRoots('claude', dir, '', home, { args: ok, platform: 'darwin', env }).state, 'unknown'); },
+    'env-xdg-config-home': () => assert.equal(W.effectiveRoots('claude', dir, '', home, { args: ok, claudeSettings: seatOf(dir), platform: 'darwin', env: { XDG_CONFIG_HOME: home } }).state, 'unknown'),
+    'env-claude-unmodelled': () => { const L = loadTs('src/main/launchLine.ts'); const env = L.relocationEnv({ CLAUDE_CODE_MCP_SERVE_SETTINGS: '/x', CLAUDE_CODE_OAUTH_TOKEN: 'secret', PATH: '/bin' }); assert.deepEqual(env, { CLAUDE_CODE_MCP_SERVE_SETTINGS: '' }, 'recorded by name only; secrets and others never kept'); assert.equal(W.effectiveRoots('claude', dir, '', home, { args: ok, claudeSettings: seatOf(dir), platform: 'darwin', env }).state, 'unknown'); },
     'claude-unknown-option': () => { assert.equal(claude(...ok, '--weird').state, 'unknown'); assert.equal(W.effectiveRoots('claude', dir, '', home, { platform: 'darwin', env: {} }).state, 'unknown', 'no launch line'); },
   };
   assert.deepEqual(Object.keys(CASES).sort(), W.READ_SITES.map((r) => r.id).sort(), 'a row with no case, or a case with no row');

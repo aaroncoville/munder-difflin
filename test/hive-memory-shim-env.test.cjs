@@ -15,6 +15,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const loadTs = require('./load-ts.cjs');
+const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const { MemPalaceAdapter } = loadTs('src/main/memPalaceAdapter.ts');
@@ -51,7 +52,7 @@ test('the name each backend reports is one the shim actually recognises', () => 
 test('a spawned agent is told which agent the shim is recalling for', async (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'shim-env-hive-'));
   t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
-  const hive = new HiveManager(() => home);
+  const hive = withSeatSettings(new HiveManager(() => home));
   const injected = await hive.ensureAgent({ id: 'pam', name: 'Pam', provider: 'claude', cwd: home }, {});
 
   assert.equal(injected.env.HIVE_MEMORY_AGENT, 'pam');

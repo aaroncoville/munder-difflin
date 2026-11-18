@@ -10,6 +10,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
@@ -17,7 +18,7 @@ const { HiveManager } = loadTs('src/main/hive.ts');
 async function floor(t) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-created-at-'));
   t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
-  const hive = new HiveManager(() => home);
+  const hive = withSeatSettings(new HiveManager(() => home));
   await hive.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: home, isGod: true });
   await hive.ensureAgent({ id: 'worker-1', name: 'Helper', provider: 'claude', cwd: home });
   await hive.ensureAgent({ id: 'worker-2', name: 'Other', provider: 'claude', cwd: home });
@@ -110,7 +111,7 @@ test('a message already in an inbox with only the old field still reads, unchang
 async function pair(t, senderId, godId) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-created-at-pair-'));
   t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
-  const hive = new HiveManager(() => home);
+  const hive = withSeatSettings(new HiveManager(() => home));
   await hive.ensureAgent({ id: godId, name: 'Boss', provider: 'claude', cwd: home, isGod: true });
   await hive.ensureAgent({ id: senderId, name: 'Helper', provider: 'claude', cwd: home });
   const outbox = path.join(home, 'hive', 'agents', senderId, 'outbox');

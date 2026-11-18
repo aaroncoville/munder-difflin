@@ -17,6 +17,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const ts = require('typescript');
 const loadTs = require('./load-ts.cjs');
+const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
@@ -25,7 +26,7 @@ const { CodexThreads } = loadTs('src/main/codexThread.ts');
 async function setup(t, emit) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-routing-snapshot-'));
   t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
-  const hive = new HiveManager(() => home, emit);
+  const hive = withSeatSettings(new HiveManager(() => home, emit));
   await hive.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: home, isGod: true });
   await hive.ensureAgent({ id: 'worker-1', name: 'One', provider: 'claude', cwd: home });
   await hive.ensureAgent({ id: 'worker-2', name: 'Two', provider: 'claude', cwd: home });

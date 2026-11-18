@@ -13,6 +13,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { removeDir } = require('./codex-test-home.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
@@ -89,7 +90,7 @@ function fakeGit(t, dir) {
 }
 
 async function floor(t, dir, timing) {
-  const hive = new HiveManager(() => dir);
+  const hive = withSeatSettings(new HiveManager(() => dir));
   if (timing) hive.setMaintenanceTiming(timing);
   await hive.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: dir, isGod: true });
   await hive.commitsSettled();
@@ -228,7 +229,7 @@ test('agent files a failed untrack left tracked are untracked by the next commit
   const shim = fakeGit(t, dir);
   shim.set('FAKE_GIT_FAIL_ONCE', 'rm');
 
-  const hive = new HiveManager(() => dir);
+  const hive = withSeatSettings(new HiveManager(() => dir));
   hive.setUntrackRetryDelays?.([0, 0]); // the retry is what is checked here, not its backoff
   hive.ensureHive();
   hive.commit('hive: the untrack fails');
@@ -250,7 +251,7 @@ test('a failed git init is reported as the hive repository not being created', a
   console.warn = (...a) => warnings.push(a.join(' '));
   t.after(() => { console.warn = warn; });
 
-  const hive = new HiveManager(() => dir);
+  const hive = withSeatSettings(new HiveManager(() => dir));
   hive.ensureHive();
   await hive.commitsSettled();
 

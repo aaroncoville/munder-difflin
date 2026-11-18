@@ -10,6 +10,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
@@ -45,7 +46,7 @@ test('the refusal with no conductor attached is still tested', () => {
 test('a new floor has no hive-mr path and tells no agent about it', async (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-pipe-inert-'));
   t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
-  const hive = new HiveManager(() => home);
+  const hive = withSeatSettings(new HiveManager(() => home));
   assert.equal(hive.pipelineCli, null);
   const agent = await hive.ensureAgent({ id: 'god-1', name: 'Boss', provider: 'claude', cwd: home, isGod: true });
   const brief = agent.args[agent.args.indexOf('--append-system-prompt') + 1];

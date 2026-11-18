@@ -14,6 +14,7 @@ const vm = require('node:vm');
 const { execFileSync } = require('node:child_process');
 const ts = require('typescript');
 const loadTs = require('./load-ts.cjs');
+const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const grace = loadTs('src/main/workerDoneGrace.ts');
@@ -136,7 +137,7 @@ const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encodi
 async function setup(t, overrides = {}) {
   const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'md-grace-tick-')));
   t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
-  const hive = new HiveManager(() => home, () => true);
+  const hive = withSeatSettings(new HiveManager(() => home, () => true));
   await hive.ensureAgent({ id: 'god-1', name: 'G', provider: 'claude', cwd: home, isGod: true });
   const id = 'worker-w';
   await hive.ensureAgent({ id, name: 'W', provider: 'claude', cwd: home });

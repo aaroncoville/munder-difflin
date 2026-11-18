@@ -16,6 +16,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const ts = require('typescript');
 const loadTs = require('./load-ts.cjs');
+const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { codexTestBase, jailHome } = require('./codex-test-home.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
@@ -42,10 +43,11 @@ async function setup(t, result) {
   fs.mkdirSync(cwd);
   const rt = fs.realpathSync(fs.mkdtempSync('/tmp/mdsfr-'));
   t.after(() => fs.rmSync(rt, { recursive: true, force: true }));
-  const hive = new HiveManager(() => base);
+  const hive = withSeatSettings(new HiveManager(() => base));
   hive.setHookRuntime(rt);
   const id = 'w1';
-  const settings = path.join(base, 'hive', 'agents', id, 'settings.json');
+  hive.ensureHive();
+  const settings = hive.seatSettingsPath(id);
   const argv = ['claude', '--settings', settings];
   await hive.ensureAgent({ id, name: id, provider: 'claude', cwd }, { launch: { argv, env: {} }, spawnId: `pty-${id}` });
   hive.markHookProvisioned(`pty-${id}`);
@@ -102,7 +104,7 @@ test('an unexpected failure between provisioning and the terminal does not keep 
   jailHome(t, base);
   const cwd = path.join(base, 'work');
   fs.mkdirSync(cwd);
-  const hive = new HiveManager(() => base);
+  const hive = withSeatSettings(new HiveManager(() => base));
   const source = fs.readFileSync(path.resolve(__dirname, '..', 'src/main/index.ts'), 'utf8');
   const ast = ts.createSourceFile('index.ts', source, ts.ScriptTarget.ES2022, true);
   const wrapper = ast.statements.find((n) => ts.isFunctionDeclaration(n) && n.name?.text === 'spawnAgent');

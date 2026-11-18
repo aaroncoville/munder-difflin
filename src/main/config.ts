@@ -346,6 +346,10 @@ export interface HarnessConfig {
    *  seen and answered), written to <userData>/usage (the app's data folder, not the hive) and never sent anywhere. Default
    *  ON; Settings has the switch and a delete button. See docs/usage-log.md. */
   usageLog?: boolean;
+  /** Claude seats launch with `--setting-sources user`: the owner's user settings and the app's generated settings
+   *  load, the project and local .claude/settings files in the working folder (which any agent working there can
+   *  write) do not. Default OFF; every Claude spawn logs how many of those files it would drop either way. */
+  scopedRoots?: boolean;
   /** Claude plugins a hive agent's session keeps (names, without the marketplace); every other plugin the owner has is
    *  off for agents. Unset = the default list in agentPlugins.ts. (Mirrored in preload + renderer config.) */
   agentPlugins?: string[];
@@ -490,6 +494,7 @@ const DEFAULTS: HarnessConfig = {
   autoUpdate: true,
   telemetryEnabled: true,
   usageLog: true,
+  scopedRoots: false,
   multiWindow: true,
   slackEnabled: false,
   slackSigningSecret: undefined,

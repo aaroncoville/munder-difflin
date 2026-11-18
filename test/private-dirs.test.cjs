@@ -14,6 +14,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { codexTestBase, jailHome } = require('./codex-test-home.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
@@ -31,7 +32,7 @@ function floor(t, { runtimeOutside = false } = {}) {
   const work = path.join(base, 'work', 'repo');
   for (const d of [home, userData, harness, work]) fs.mkdirSync(d, { recursive: true, mode: 0o700 });
   jailHome(t, home);
-  const hive = new HiveManager(() => harness);
+  const hive = withSeatSettings(new HiveManager(() => harness));
   // What the app does at start: its data folder is covered, and each module registers the folder it chooses.
   const off = [];
   if (registry) off.push(registry.registerPrivateDir(userData, 'the app data folder'));
@@ -45,14 +46,15 @@ function floor(t, { runtimeOutside = false } = {}) {
   return { base, home, userData, harness, work, hive, hookRuntime, helper };
 }
 
-const launch = (provider, dir) => provider === 'claude'
-  ? { argv: ['claude', '--settings', path.join(dir, 'settings.json')], env: {} }
+// The generated settings file the app passes a Claude seat, in its seat settings folder.
+const launch = (provider, dir, hive) => provider === 'claude'
+  ? { argv: ['claude', '--settings', hive.seatSettingsPath(path.basename(dir))], env: {} }
   : { argv: ['codex -a never -s workspace-write'], env: {} };
 
 async function refusedBeforeAnything(f, id, provider, opts, folder) {
   const dir = path.join(f.harness, 'hive', 'agents', id);
   await assert.rejects(
-    f.hive.ensureAgent({ id, name: id, provider, cwd: opts.cwd ?? f.work }, { launch: launch(provider, dir), spawnId: `pty-${id}`, extraWritableDirs: opts.extra }),
+    f.hive.ensureAgent({ id, name: id, provider, cwd: opts.cwd ?? f.work }, { launch: launch(provider, dir, f.hive), spawnId: `pty-${id}`, extraWritableDirs: opts.extra }),
     (e) => { assert.ok(e.message.includes(folder), `the reason names ${folder}: ${e.message}`); return true; },
     `${id}`
   );
@@ -83,9 +85,9 @@ test('a root inside a private folder, or one that contains it, is refused', asyn
 test('today\'s floor still starts: Claude and Codex agents in worktrees, the orchestrator, a worker', async (t) => {
   const f = floor(t);
   const dir = (id) => path.join(f.harness, 'hive', 'agents', id);
-  await f.hive.ensureAgent({ id: 'cl', name: 'cl', provider: 'claude', cwd: f.work }, { launch: launch('claude', dir('cl')), spawnId: 'pty-cl' });
+  await f.hive.ensureAgent({ id: 'cl', name: 'cl', provider: 'claude', cwd: f.work }, { launch: launch('claude', dir('cl'), f.hive), spawnId: 'pty-cl' });
   await f.hive.ensureAgent({ id: 'cx', name: 'cx', provider: 'codex', cwd: f.work }, { launch: launch('codex'), spawnId: 'pty-cx' });
-  await f.hive.ensureAgent({ id: 'god', name: 'god', provider: 'claude', cwd: f.harness, isGod: true }, { launch: launch('claude', dir('god')), spawnId: 'pty-god' });
+  await f.hive.ensureAgent({ id: 'god', name: 'god', provider: 'claude', cwd: f.harness, isGod: true }, { launch: launch('claude', dir('god'), f.hive), spawnId: 'pty-god' });
   await f.hive.ensureAgent({ id: 'worker-1', name: 'w', provider: 'codex', cwd: f.work }, { launch: { argv: ['codex --model gpt-5 -a never -s workspace-write', 'do the task'], env: {} }, spawnId: 'pty-w' });
   for (const id of ['cl', 'cx', 'god', 'worker-1']) assert.equal(Object.hasOwn(f.hive.registry().agents, id), true, id);
 });
@@ -99,7 +101,7 @@ test('a folder registered later is covered from then on', async (t) => {
   const off = registerPrivateDir(real, 'a test ledger');
   await refusedBeforeAnything(f, 'later', 'claude', { cwd: real }, real);
   off();
-  await f.hive.ensureAgent({ id: 'after', name: 'a', provider: 'claude', cwd: real }, { launch: launch('claude', path.join(f.harness, 'hive', 'agents', 'after')), spawnId: 'pty-after' });
+  await f.hive.ensureAgent({ id: 'after', name: 'a', provider: 'claude', cwd: real }, { launch: launch('claude', path.join(f.harness, 'hive', 'agents', 'after'), f.hive), spawnId: 'pty-after' });
 });
 
 test('the app registers its data folder at start', () => {

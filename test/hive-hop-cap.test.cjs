@@ -23,6 +23,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 // No Codex agents' homes in HOME: agents the app does not sandbox cannot start beside one.
 require('./codex-test-home.cjs').isolateHomeForFile('md-nohomes-');
@@ -37,7 +38,7 @@ const RELAYS = 30;
 async function floor(t) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-hop-cap-'));
   t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
-  const hive = new HiveManager(() => home);
+  const hive = withSeatSettings(new HiveManager(() => home));
   // hopless-1 runs kimi — no hook bridge, canReceiveInbox:false, so every
   // direct mail to it bounces to god (the hookless path). No PTY, no sidecar,
   // no net: routing exercises the bounce ladder with nothing running but the

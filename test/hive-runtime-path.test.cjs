@@ -19,6 +19,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const loadTs = require('./load-ts.cjs');
+const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
@@ -31,7 +32,7 @@ const SEP = path.delimiter;
 async function hiveIn(t) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-runtime-'));
   t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
-  const hive = new HiveManager(() => home);
+  const hive = withSeatSettings(new HiveManager(() => home));
   await hive.ensureAgent({ id: 'a1', name: 'A', provider: 'claude', cwd: home });
   return { home, hive, root: path.join(home, 'hive') };
 }

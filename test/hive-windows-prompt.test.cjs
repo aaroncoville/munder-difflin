@@ -21,6 +21,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 // No Codex agents' homes in HOME: agents the app does not sandbox cannot start beside one.
 require('./codex-test-home.cjs').isolateHomeForFile('md-nohomes-');
@@ -33,7 +34,7 @@ const KG_CLI = path.join('/Applications', 'Munder Difflin.app', 'Contents', 'Res
 async function floor(t, opts = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-winprompt-'));
   t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
-  const hive = new HiveManager(() => home);
+  const hive = withSeatSettings(new HiveManager(() => home));
   const inj = await hive.ensureAgent(
     { id: 'god-1', name: 'Michael', provider: opts.provider ?? 'claude', cwd: home, isGod: true },
     { semanticMemory: true, knowledgeGraph: true, kgCliPath: KG_CLI, ...(opts.injectOpts ?? {}) }

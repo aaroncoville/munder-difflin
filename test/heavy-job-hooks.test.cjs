@@ -8,6 +8,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { codexTestBase, removeDir } = require('./codex-test-home.cjs');
 
 const electron = require.resolve('electron');
@@ -94,7 +95,7 @@ async function server(t, limit = 1) {
   const previous = process.env.HOME;
   process.env.HOME = userHome;
   assert.equal(os.homedir(), userHome, 'HOME jailed before any hive is built');
-  const hive = new HiveManager(() => home);
+  const hive = withSeatSettings(new HiveManager(() => home));
   t.after(async () => {
     if (previous === undefined) delete process.env.HOME; else process.env.HOME = previous;
     await removeDir(home);

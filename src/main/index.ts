@@ -90,6 +90,7 @@ import { buildWorkerLaunch } from './workerLaunch';
 import { isFolderName, RefusedRosterId, RegistryUnreadable, shortTarget } from './messageTarget';
 import { HookRuntimeUnavailable } from './hookRuntime';
 import { PrivateDirRefused, registerPrivateDir } from './privateDirs';
+import { SeatSettingsRefused } from './seatSettings';
 import { relocationEnv } from './launchLine';
 import { buildPtyEnv } from './ptyEnv';
 import { ControlRegistry } from './control';
@@ -302,6 +303,11 @@ hive.setGitDirBase(join(app.getPath('userData'), 'hive-git'));
 hive.setHookRuntime(process.platform === 'win32'
   ? join(process.env.LOCALAPPDATA || app.getPath('userData'), 'munder-difflin-hooks')
   : join(app.getPath('userData'), 'hook-runtime'));
+// Each Claude seat's generated --settings file is kept in a private folder of the app's (seatSettings.ts), never in
+// the hive, where any other seat could rewrite it.
+hive.setSeatSettingsDir(join(app.getPath('userData'), 'seat-settings'));
+// Rows the hive measures at spawn (settings sources) go to the local usage log, through its allowlist.
+hive.setUsageSink((row) => { usageLog.record(row); });
 // The app's own helper Claude sessions (hiddenClaude.ts) take their --settings file from a private folder of the app's,
 // checked like the hook runtime's, never from the temp folder an agent's sandbox can write.
 setHelperSettingsDir(join(app.getPath('userData'), 'helper-sessions'), () => hive.root(), (event) => { try { hive.appendLog(event); } catch { /* best effort */ } });
@@ -434,6 +440,10 @@ const spawnRoots = new Map<string, SpawnRecord & { cwd: string; provider: string
 // does not sandbox is among them. A terminal's agent with no spawn record counts as unsandboxed.
 hive.setLiveSeats(() => [...ptyToAgent.values()].map((agentId) => ({ agentId, provider: spawnRoots.get(agentId)?.provider ?? 'unknown' })));
 let spawnGeneration = 0;
+/** A Claude seat's generated settings file, or undefined when it has none (then its roots read as unknown). */
+function seatSettingsFor(agentId: string): string | undefined {
+  try { return hive.seatSettingsPath(agentId); } catch { return undefined; }
+}
 const writeRootsDryRun = new WriteRootsDryRun({
   agent: (agentId) => {
     const root = hive.root();
@@ -443,7 +453,7 @@ const writeRootsDryRun = new WriteRootsDryRun({
       ctx: { root, agentId, isGod: spawned.isGod, cwd: spawned.cwd },
       provider: spawned.provider,
       agentDir: join(root, 'agents', agentId),
-      launch: spawnLaunchFacts(spawned, process.platform, hive.codexAppHooks()),
+      launch: spawnLaunchFacts(spawned, process.platform, hive.codexAppHooks(), spawned.provider === 'claude' ? seatSettingsFor(agentId) : undefined),
       gen: spawned.gen
     };
   },
@@ -2788,7 +2798,7 @@ function spawnFailReason(error?: string): SpawnFailReason {
 /** A refused id must not start as a process with no prompt, environment, hooks or
  *  roster entry. Its worktree goes too, since no process will ever tear it down. One
  *  that cannot be removed is logged and stays tracked, because it is still on disk. */
-async function refuseSpawn(ptyId: string, agentId: string, provider: string, refusal: RefusedRosterId | RegistryUnreadable | HookRuntimeUnavailable | CodexHomeRefused | PrivateDirRefused): Promise<{ ok: false; error: string }> {
+async function refuseSpawn(ptyId: string, agentId: string, provider: string, refusal: RefusedRosterId | RegistryUnreadable | HookRuntimeUnavailable | CodexHomeRefused | PrivateDirRefused | SeatSettingsRefused): Promise<{ ok: false; error: string }> {
   // An ordinary id as it is; only one that is not a plain folder name is quoted and cut short.
   hive.appendLog({ kind: 'spawn-refused', agentId: isFolderName(agentId) ? agentId : shortTarget(agentId), reason: refusal.message });
   // Whatever ensureAgent already did for this spawn (a new agent's registry row) is rolled back.
@@ -3011,6 +3021,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
           // W3 — default-MCP consent state + the bundled skills source dir.
           mcpDefaults: readConfig().mcpDefaults,
           agentPlugins: readConfig().agentPlugins,
+          scopedRoots: readConfig().scopedRoots === true,
           skillsDir: skillsResourceDir(),
           // The launch as requested, with the environment the terminal will build, so the hook runtime
           // decision is made once, before anything for this agent is created.
@@ -3036,7 +3047,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       // that owns the session) are the app's too. Recorded with the spawn, so the config's kind never comes from a path.
       if (inj.env?.CODEX_HOME !== undefined) codexHomeFromApp = true;
     } catch (e) {
-      if (e instanceof RefusedRosterId || e instanceof RegistryUnreadable || e instanceof HookRuntimeUnavailable || e instanceof CodexHomeRefused || e instanceof PrivateDirRefused) return refuseSpawn(opts.id, opts.hive.id, provider, e);
+      if (e instanceof RefusedRosterId || e instanceof RegistryUnreadable || e instanceof HookRuntimeUnavailable || e instanceof CodexHomeRefused || e instanceof PrivateDirRefused || e instanceof SeatSettingsRefused) return refuseSpawn(opts.id, opts.hive.id, provider, e);
       // Hive provisioning is otherwise best-effort, but not for a hooked provider: the late check refuses, naming this.
       hive.hookProvisioningFailed(opts.id, e);
       console.error('[hive] ensureAgent failed:', e);
