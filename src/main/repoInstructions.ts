@@ -9,8 +9,11 @@
  *    the spawn's cwd when it is a git checkout), never found by reading anything inside a worktree;
  *  - files come from that checkout's working tree, never from git objects (every seat that commits from a worktree
  *    writes the base repository's .git);
- *  - a file any live seat, or the seat being spawned, can write is withheld, as is a link or anything that is not a
- *    regular file. Each is opened without following a link and without blocking on a pipe;
+ *  - a file any live seat, or the seat being spawned, can write is withheld, as is a link, a file with more than one
+ *    name (a hard link: its other name may be one a seat can write), or anything that is not a regular file. A link
+ *    anywhere in the path, the checkout's own included, whose folder a seat can write could be pointed at text of the
+ *    seat's own, so it withholds everything below it. Each file is opened without following a link and without
+ *    blocking on a pipe, and must be the very file that was checked;
  *  - over REPO_INSTRUCTIONS_CAP in total, nothing is included: a truncated instruction can say the opposite of the
  *    whole one.
  *
@@ -19,9 +22,9 @@
  * front matter sets no `paths`, in name order. CLAUDE.local.md and CLAUDE.md files in subfolders are not read, and an
  * `@path` import is left as literal text, never expanded.
  */
-import { lstatSync, readdirSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { MAX_SETTINGS, readSettings } from './writeRoots';
+import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readlinkSync, readSync, realpathSync, type Stats } from 'node:fs';
+import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
+import { MAX_SETTINGS } from './writeRoots';
 
 /** The most text, in bytes, the block may hold. */
 export const REPO_INSTRUCTIONS_CAP = 64 * 1024;
@@ -74,6 +77,44 @@ function linkedFolder(checkout: string, file: string): boolean {
   return false;
 }
 
+/** True when a link on the way to `p` (followed one by one, through every link it leads to) sits in a folder a seat
+ *  can write: the seat could point it at a folder or file of its own. */
+function aliasWritable(p: string, reaches: (path: string) => boolean, depth = 0): boolean {
+  if (depth > 32) return true;
+  const full = resolve(p);
+  const top = parse(full).root;
+  const parts = full.slice(top.length).split(sep).filter(Boolean);
+  let cur = top;
+  for (let i = 0; i < parts.length; i++) {
+    const next = join(cur, parts[i]);
+    let st;
+    try { st = lstatSync(next); } catch { return false; }
+    if (st.isSymbolicLink()) {
+      if (reaches(cur)) return true;
+      let target;
+      try { target = resolve(cur, readlinkSync(next)); } catch { return true; }
+      return aliasWritable(join(target, ...parts.slice(i + 1)), reaches, depth + 1);
+    }
+    cur = next;
+  }
+  return false;
+}
+
+/** The text of the file that was checked: opened without following a link and without blocking on a pipe, then judged
+ *  on the handle. A different file (swapped in since the check), a second name or a non-file is null. */
+function readChecked(file: string, checked: Stats): string | null {
+  let fd: number | null = null;
+  try {
+    fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    const h = fstatSync(fd);
+    if (!h.isFile() || h.nlink !== 1 || h.dev !== checked.dev || h.ino !== checked.ino || h.size > MAX_SETTINGS) return null;
+    const buf = Buffer.alloc(h.size);
+    let off = 0;
+    while (off < buf.length) { const n = readSync(fd, buf, off, buf.length - off, off); if (n <= 0) break; off += n; }
+    return buf.subarray(0, off).toString('utf8');
+  } catch { return null; } finally { if (fd !== null) closeSync(fd); }
+}
+
 type Judged = { kind: 'absent' } | { kind: 'withheld'; reason: WithheldReason } | { kind: 'text'; text: string };
 
 /** One file: absent, withheld (and why), or its text. `reaches` says whether a seat can write the path. */
@@ -83,23 +124,30 @@ function judge(checkout: string, file: string, reaches: (file: string) => boolea
     const c = (e as NodeJS.ErrnoException).code;
     return c === 'ENOENT' || c === 'ENOTDIR' ? { kind: 'absent' } : { kind: 'withheld', reason: 'unreadable' };
   }
-  if (reaches(file)) return { kind: 'withheld', reason: 'writable' };
-  if (st.isSymbolicLink() || linkedFolder(checkout, file)) return { kind: 'withheld', reason: 'link' };
+  if (reaches(file) || aliasWritable(file, reaches)) return { kind: 'withheld', reason: 'writable' };
+  if (st.isSymbolicLink() || st.nlink !== 1 || linkedFolder(checkout, file)) return { kind: 'withheld', reason: 'link' };
   if (!st.isFile()) return { kind: 'withheld', reason: 'unreadable' };
   // Larger than any file read here: over the cap whatever it says. Smaller ones are read, so a rule's front matter is
   // known before its size counts.
   if (st.size > MAX_SETTINGS) return { kind: 'withheld', reason: 'too-large' };
-  // Opened without following a link and without blocking on a pipe, and judged again on the handle.
-  const r = readSettings(file);
-  if (r.kind === 'missing') return { kind: 'absent' };
-  if (r.kind !== 'text') return { kind: 'withheld', reason: 'unreadable' };
-  return { kind: 'text', text: r.text };
+  const text = readChecked(file, st);
+  return text === null ? { kind: 'withheld', reason: 'link' } : { kind: 'text', text };
 }
 
-/** The repository instructions block for a checkout, with counts for the usage row. `reaches` is true for a path a
- *  live seat, or the seat being spawned, can write. Never throws for a file it cannot use: that file is withheld. */
+/** The repository instructions block for a checkout, with counts for the usage row. `reaches` is true for a file or
+ *  folder a live seat, or the seat being spawned, can write. Never throws for a file it cannot use: it is withheld. */
 export function repoInstructions(checkout: string, home: string, reaches: (file: string) => boolean): RepoInstructions {
-  const root = resolve(checkout);
+  const given = resolve(checkout);
+  // The checkout as recorded may be reached through links. One a seat can repoint makes every file below it the seat's.
+  if (aliasWritable(given, reaches)) {
+    return {
+      block: `Repository instructions (${basename(given)})\nSome repository instructions were withheld because an agent can write them.`,
+      included: 0, withheld: 1, reason: 'writable'
+    };
+  }
+  // From here on, the checkout's real path: nothing on the way to it can be repointed by a seat.
+  let root: string;
+  try { root = realpathSync.native(given); } catch { return { block: '', included: 0, withheld: 0 }; }
   const fixed = [join(root, 'CLAUDE.md'), join(root, '.claude', 'CLAUDE.md'), ...parentFiles(root, home)];
   let rules: string[] = [];
   try { rules = readdirSync(join(root, '.claude', 'rules')).filter((n) => n.endsWith('.md')).sort().map((n) => join(root, '.claude', 'rules', n)); } catch { /* none */ }

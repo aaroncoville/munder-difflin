@@ -27,7 +27,7 @@ import {
 import { join, dirname, basename, isAbsolute, relative, resolve as resolvePath } from 'node:path';
 import { homedir } from 'node:os';
 import { CLAUDE_USER_SOURCES, claudeLaunch, claudeRootEntries, claudeRoots, codexLaunchSandbox, codexRoots, launchExecutable, launchPlaces } from './launchLine';
-import { HookRuntimeUnavailable, hookCommandFor, overlaps, rootOverlap, stageHookRuntime, unsafePathReason, verifyHookRuntime, type StagedHookRuntime, type WriteRoot } from './hookRuntime';
+import { HookRuntimeUnavailable, hookCommandFor, holds, overlaps, rootOverlap, stageHookRuntime, unsafePathReason, verifyHookRuntime, type StagedHookRuntime, type WriteRoot } from './hookRuntime';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
 import type { AgentUsageSample } from './usage';
@@ -1068,7 +1068,7 @@ export class HiveManager {
       }
       const live = this.liveSeatRoots();
       const roots = own && live ? [...own, ...live] : null;
-      const r = repoInstructions(checkout, homedir(), (file) => roots === null || roots.some((p) => overlaps(file, p)));
+      const r = repoInstructions(checkout, homedir(), (p) => roots === null || roots.some((r) => holds(r, p)));
       this.usage({ kind: 'repo-instructions', agentId: meta.id, included: r.included, withheld: r.withheld, ...(r.reason ? { reason: r.reason } : {}) });
       return r.block ? `\n\n${r.block}` : '';
     } catch { return ''; }

@@ -277,3 +277,80 @@ test('the hive protocol tells a seat to read the CLAUDE.md of the checkout it wo
   assert.match(line, /CLAUDE\.md is not loaded for you/);
   assert.match(line, /read its CLAUDE\.md and follow it/);
 });
+
+/** Start a Claude seat whose working folder is `cwd` through the app's own admission, late check and terminal start,
+ *  and list it among the live seats. */
+async function startLive(f, id, cwd) {
+  fs.mkdirSync(cwd, { recursive: true });
+  const settings = f.hive.seatSettingsPath(id);
+  const inj = await f.hive.ensureAgent({ id, name: id, provider: 'claude', cwd }, { spawnId: `pty-${id}`, launch: { argv: ['claude', '--settings', settings], env: {} } });
+  f.hive.markHookProvisioned(`pty-${id}`);
+  f.hive.confirmSpawn(`pty-${id}`, { id, provider: 'claude' }, ['claude', ...inj.args], {});
+  f.hive.spawnStarted(`pty-${id}`);
+  f.live = [...(f.live ?? []), { agentId: id, provider: 'claude' }];
+  f.hive.setLiveSeats(() => f.live);
+}
+
+test('a hard link to a file a seat can write is withheld, and so is any file with more than one name', async (t) => {
+  const f = floor(t);
+  const writable = path.join(f.base, 'writable');
+  await startLive(f, 'hl-live', writable);
+  write(path.join(writable, 'plant.md'), `PLANTED THROUGH A HARD LINK: ${PROSE}\n`);
+  fs.linkSync(path.join(writable, 'plant.md'), path.join(f.origin, 'CLAUDE.md'));
+  // A second name nobody can write still means the file is not only the checkout's.
+  write(path.join(f.base, 'outside', 'other.md'), 'SECOND NAME TEXT\n');
+  fs.linkSync(path.join(f.base, 'outside', 'other.md'), path.join(f.origin, '.claude', 'CLAUDE.md'));
+  const prompt = promptOf((await spawnWorker(f, 'hl1')).args);
+  for (const s of ['PLANTED THROUGH A HARD LINK', 'SECOND NAME TEXT']) assert.equal(prompt.includes(s), false, s);
+  assert.deepEqual(repoRows(f, 'hl1'), [{ kind: 'repo-instructions', agentId: 'hl1', included: 0, withheld: 2, reason: 'link' }]);
+});
+
+test('a checkout reached through a link in a folder a seat can write is withheld whole', async (t) => {
+  const f = floor(t);
+  write(path.join(f.origin, 'CLAUDE.md'), 'ROOT FILE: present.\n');
+  const writable = path.join(f.base, 'writable');
+  const quiet = path.join(f.base, 'quiet');
+  fs.mkdirSync(quiet);
+  fs.mkdirSync(writable);
+  fs.symlinkSync(f.origin, path.join(writable, 'alias'));
+  fs.symlinkSync(f.origin, path.join(quiet, 'alias'));
+  // Through a link no seat can repoint, the checkout reads as usual.
+  const through = promptOf((await spawnWorker(f, 'al1', { repoCheckout: path.join(quiet, 'alias') })).args);
+  assert.ok(through.includes('ROOT FILE'));
+  await startLive(f, 'al-live', writable);
+  const prompt = promptOf((await spawnWorker(f, 'al2', { repoCheckout: path.join(writable, 'alias') })).args);
+  assert.equal(prompt.includes('ROOT FILE'), false, 'the seat could point the link at text of its own');
+  assert.ok(prompt.includes(WRITABLE_LINE));
+  assert.deepEqual(repoRows(f, 'al2'), [{ kind: 'repo-instructions', agentId: 'al2', included: 0, withheld: 1, reason: 'writable' }]);
+});
+
+test('a link to a folder a seat can write, anywhere above the file, withholds it', async (t) => {
+  const f = floor(t);
+  const writable = path.join(f.base, 'writable');
+  await startLive(f, 'up-live', writable);
+  const real = path.join(writable, 'real-code');
+  write(path.join(real, 'origin2', 'CLAUDE.md'), `INSIDE A WRITABLE FOLDER: ${PROSE}\n`);
+  fs.symlinkSync(real, path.join(f.home, 'linked-code'));
+  const prompt = promptOf((await spawnWorker(f, 'up1', { repoCheckout: path.join(f.home, 'linked-code', 'origin2') })).args);
+  assert.equal(prompt.includes('INSIDE A WRITABLE FOLDER'), false);
+  assert.equal(repoRows(f, 'up1')[0].included, 0);
+});
+
+test('a file swapped between the check and the read is withheld', async (t) => {
+  const f = floor(t);
+  const target = path.join(f.origin, 'CLAUDE.md');
+  write(target, 'CHECKED TEXT\n');
+  write(path.join(f.origin, 'swap.md'), `SWAPPED IN: ${PROSE}\n`);
+  const real = fs.openSync;
+  let swapped = false;
+  fs.openSync = function (p, ...rest) {
+    if (!swapped && p === target) { swapped = true; fs.renameSync(path.join(f.origin, 'swap.md'), target); }
+    return real.call(this, p, ...rest);
+  };
+  t.after(() => { fs.openSync = real; });
+  const prompt = promptOf((await spawnWorker(f, 'sw1')).args);
+  fs.openSync = real;
+  assert.ok(swapped, 'the file was swapped as it was opened');
+  for (const s of ['CHECKED TEXT', 'SWAPPED IN']) assert.equal(prompt.includes(s), false, s);
+  assert.deepEqual(repoRows(f, 'sw1'), [{ kind: 'repo-instructions', agentId: 'sw1', included: 0, withheld: 1, reason: 'link' }]);
+});
