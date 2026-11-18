@@ -46,10 +46,11 @@ async function floor(t, scoped) {
   for (const [id, s] of Object.entries(spawned)) {
     await hive.ensureAgent({ id, name: id, provider: 'claude', cwd: s.cwd, isGod: s.isGod }, { spawnId: `pty-${id}`, scopedRoots: scoped });
   }
-  const server = new HookServer(hive, () => null, () => ({ notifications: false }), undefined, undefined);
+  const server = new HookServer(hive, () => null, () => ({ notifications: false, scopedRoots: scoped }), undefined, undefined);
   server.setWriteGate((agentId) => enforcedRoots(hive.root(), agentId, spawned[agentId]));
   const bare = new HookServer(hive, () => null, () => ({ notifications: false }), undefined, undefined);
-  const call = (srv, agentId, tool_name, tool_input, extra = {}) => srv.handle({ agent_id: agentId, session_id: 's', hook_event_name: 'PreToolUse', tool_name, tool_input, ...extra });
+  // As the shim sends it: the CLI's agent_id, and the seat the app spawned as hive_seat_id.
+  const call = (srv, agentId, tool_name, tool_input, extra = {}) => srv.handle({ hive_seat_id: agentId, agent_id: agentId, session_id: 's', hook_event_name: 'PreToolUse', tool_name, tool_input, ...extra });
   return { base, harness, work, root, server, bare, call, fire: (...a) => call(server, ...a) };
 }
 
@@ -124,10 +125,10 @@ test('flag on: the seat\'s own folder, evidence/ and an outside worktree are all
   }
 });
 
-test('flag on: other tools are left to the sandbox, and a call with no seat record is not judged', async (t) => {
+test('flag on: other tools are left to the sandbox, and a write from a seat the app did not spawn is refused', async (t) => {
   const f = await floor(t, true);
   const other = path.join(f.root, 'agents', 'other', 'outbox', 'm.json');
   assert.equal(denied(await f.fire('ag', 'Bash', { command: `rm ${other}` })), false, 'Bash');
   assert.equal(denied(await f.fire('ag', 'Read', { file_path: other })), false, 'Read');
-  assert.equal(denied(await f.fire('stranger', 'Write', { file_path: other, content: '' })), false, 'an id the app did not spawn has no roots to hold it to');
+  assert.ok(denied(await f.fire('stranger', 'Write', { file_path: other, content: '' })), 'an id the app did not spawn has no roots, so nothing it may write');
 });

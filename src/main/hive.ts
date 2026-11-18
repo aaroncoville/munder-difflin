@@ -4549,6 +4549,13 @@ process.stdin.on('end', () => {
     delete rest.agent_id;
     payload = Object.assign({ agent_id: process.env.AGENT_ID || null }, rest);
   }
+  // The seat the app spawned, always from the environment and first: the CLI's own agent_id (a subagent's id, for a
+  // subagent's calls) is kept as it is, and a hive_seat_id the payload carried is replaced.
+  {
+    const rest = Object.assign({}, payload);
+    delete rest.hive_seat_id;
+    payload = Object.assign({ hive_seat_id: process.env.AGENT_ID || null }, rest);
+  }
   const sock = process.env.HIVE_SOCK;
   if (isStatus) {
     // Status-line mode: Claude Code pipes the session status JSON (incl.

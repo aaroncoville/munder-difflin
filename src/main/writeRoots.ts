@@ -439,11 +439,13 @@ export const FAIL_CLOSED_REASONS = ['no-socket', 'connect-error', 'timeout', 'ma
 export const FAIL_CLOSED_DIR = 'fail-closed';
 export const FAIL_CLOSED_FILE = new RegExp(`^([A-Za-z0-9][A-Za-z0-9._-]{0,127}|_unknown)\\.(${FAIL_CLOSED_REASONS.join('|')})$`);
 
-/** The roots context the hook holds a seat to, from what the app spawned it with: null when the seat's writes are not
- *  checked (spawned with scoped roots off, a provider the app does not give scoped roots, or an id it did not spawn). */
-export function enforcedRoots(root: string | null, agentId: string, spawned: { scoped?: boolean; provider: string; isGod: boolean; cwd: string } | undefined): RootsContext | null {
-  if (!root || !spawned || spawned.scoped !== true) return null;
-  if (spawned.provider !== 'claude' && spawned.provider !== 'codex') return null;
+/** The roots context the hook holds a seat to, from what the app spawned it with: 'unchecked' for a seat whose writes
+ *  are not checked (spawned with scoped roots off, or a provider the app does not give scoped roots), null for an id
+ *  the app did not spawn (or no hive). */
+export function enforcedRoots(root: string | null, agentId: string, spawned: { scoped?: boolean; provider: string; isGod: boolean; cwd: string } | undefined): RootsContext | 'unchecked' | null {
+  if (!root || !spawned) return null;
+  if (spawned.scoped !== true) return 'unchecked';
+  if (spawned.provider !== 'claude' && spawned.provider !== 'codex') return 'unchecked';
   return { root, agentId, isGod: spawned.isGod, cwd: spawned.cwd };
 }
 
