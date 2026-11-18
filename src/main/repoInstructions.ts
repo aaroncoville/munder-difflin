@@ -18,9 +18,9 @@
  *    whole one.
  *
  * The files, in order: CLAUDE.md and .claude/CLAUDE.md at the checkout root; CLAUDE.md in each folder above it, up to
- * but not including HOME (the farthest first, the nearest last); then .claude/rules/*.md at the checkout root whose
- * front matter sets no `paths`, in name order. CLAUDE.local.md and CLAUDE.md files in subfolders are not read, and an
- * `@path` import is left as literal text, never expanded.
+ * but not including HOME (the farthest first, the nearest last; none when the checkout is not below HOME); then
+ * .claude/rules/*.md at the checkout root whose front matter sets no `paths`, in name order. CLAUDE.local.md and
+ * CLAUDE.md files in subfolders are not read, and an `@path` import is left as literal text, never expanded.
  */
 import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readlinkSync, readSync, realpathSync, type Stats } from 'node:fs';
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
@@ -57,11 +57,16 @@ export function hasPathsField(text: string): boolean {
   return !!m && /^paths[ \t]*:/m.test(m[1]);
 }
 
-/** CLAUDE.md in each folder above the checkout, up to but not including HOME (or the filesystem root), farthest first. */
+/** CLAUDE.md in each folder between HOME and the checkout (its real path), farthest first, HOME itself left out. Both
+ *  are compared as real paths, so a HOME or checkout spelled through a link or in another case still stops at HOME;
+ *  a checkout that is not below HOME gets none. */
 function parentFiles(checkout: string, home: string): string[] {
-  const stop = resolve(home);
+  let top: string;
+  try { top = realpathSync.native(resolve(home)); } catch { return []; }
+  const rel = relative(top, checkout);
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) return [];
   const out: string[] = [];
-  for (let d = dirname(checkout); d !== stop && dirname(d) !== d; d = dirname(d)) out.unshift(join(d, 'CLAUDE.md'));
+  for (let d = dirname(checkout); d !== top && d.startsWith(top + sep); d = dirname(d)) out.unshift(join(d, 'CLAUDE.md'));
   return out;
 }
 

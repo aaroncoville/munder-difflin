@@ -354,3 +354,27 @@ test('a file swapped between the check and the read is withheld', async (t) => {
   for (const s of ['CHECKED TEXT', 'SWAPPED IN']) assert.equal(prompt.includes(s), false, s);
   assert.deepEqual(repoRows(f, 'sw1'), [{ kind: 'repo-instructions', agentId: 'sw1', included: 0, withheld: 1, reason: 'link' }]);
 });
+
+test('a checkout outside HOME gets no parent files at all', async (t) => {
+  const f = floor(t);
+  const outside = path.join(f.base, 'shared', 'code', 'repo');
+  write(path.join(outside, 'CLAUDE.md'), 'OUTSIDE ROOT FILE\n');
+  write(path.join(f.base, 'shared', 'code', 'CLAUDE.md'), 'SHARED PARENT FILE\n');
+  write(path.join(f.base, 'shared', 'CLAUDE.md'), 'SHARED TOP FILE\n');
+  const prompt = promptOf((await spawnWorker(f, 'oh1', { repoCheckout: outside })).args);
+  assert.ok(prompt.includes('OUTSIDE ROOT FILE'), 'the checkout\'s own files still count');
+  for (const s of ['SHARED PARENT FILE', 'SHARED TOP FILE']) assert.equal(prompt.includes(s), false, s);
+  assert.deepEqual(repoRows(f, 'oh1'), [{ kind: 'repo-instructions', agentId: 'oh1', included: 1, withheld: 0 }]);
+});
+
+test('HOME given through a link stops the parent walk at the same folder', async (t) => {
+  const f = floor(t);
+  write(path.join(f.parent, 'CLAUDE.md'), 'PARENT FILE: the code folder.\n');
+  write(path.join(f.home, 'CLAUDE.md'), 'HOME FILE: never included.\n');
+  write(path.join(f.base, 'CLAUDE.md'), 'ABOVE HOME FILE: never included.\n');
+  fs.symlinkSync(f.home, path.join(f.base, 'home-link'));
+  jailHome(t, path.join(f.base, 'home-link'));
+  const prompt = promptOf((await spawnWorker(f, 'hk1')).args);
+  assert.ok(prompt.includes('PARENT FILE'));
+  for (const s of ['HOME FILE', 'ABOVE HOME FILE']) assert.equal(prompt.includes(s), false, s);
+});
