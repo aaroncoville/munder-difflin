@@ -364,10 +364,25 @@ export function codexRoots(toml: string, kind: CodexConfigKind = 'project', appH
 /** Writable dirs in one Claude settings file; `enabled` is its sandbox.enabled, if it says. JSON.parse, then an exact
  *  shape check of the keys read: any other type at those keys (or at the objects holding them) is null (unknown). */
 export function claudeRoots(json: string): { roots: string[]; enabled: boolean | undefined } | null {
+  const c = readClaudeRoots(json);
+  return c ? { roots: c.roots, enabled: c.enabled } : null;
+}
+
+/** The same reading as claudeRoots, with the key each root came from, and the Edit allow rules in permissions.allow
+ *  (each lets the edit tools write what it names; read only when that list is a list of text). */
+export function claudeRootEntries(json: string): { entries: ClaudeRootEntry[]; editRules: string[] } | null {
+  const c = readClaudeRoots(json);
+  return c ? { entries: c.entries, editRules: c.editRules } : null;
+}
+export interface ClaudeRootEntry { key: 'sandbox.filesystem.allowWrite' | 'permissions.additionalDirectories'; value: string }
+
+function readClaudeRoots(json: string): { roots: string[]; enabled: boolean | undefined; entries: ClaudeRootEntry[]; editRules: string[] } | null {
   let v: unknown;
   try { v = JSON.parse(json); } catch { return null; }
   if (!isPlainObject(v)) return null;
   const roots: string[] = [];
+  const entries: ClaudeRootEntry[] = [];
+  const editRules: string[] = [];
   let enabled: boolean | undefined;
   if (Object.hasOwn(v, 'sandbox')) {
     const sb = v.sandbox;
@@ -376,13 +391,22 @@ export function claudeRoots(json: string): { roots: string[]; enabled: boolean |
     if (Object.hasOwn(sb, 'filesystem')) {
       const fsx = sb.filesystem;
       if (!isPlainObject(fsx)) return null;
-      if (Object.hasOwn(fsx, 'allowWrite')) { if (!stringList(fsx.allowWrite)) return null; roots.push(...fsx.allowWrite); }
+      if (Object.hasOwn(fsx, 'allowWrite')) {
+        if (!stringList(fsx.allowWrite)) return null;
+        roots.push(...fsx.allowWrite);
+        for (const value of fsx.allowWrite) entries.push({ key: 'sandbox.filesystem.allowWrite', value });
+      }
     }
   }
   if (Object.hasOwn(v, 'permissions')) {
     const pm = v.permissions;
     if (!isPlainObject(pm)) return null;
-    if (Object.hasOwn(pm, 'additionalDirectories')) { if (!stringList(pm.additionalDirectories)) return null; roots.push(...pm.additionalDirectories); }
+    if (Object.hasOwn(pm, 'additionalDirectories')) {
+      if (!stringList(pm.additionalDirectories)) return null;
+      roots.push(...pm.additionalDirectories);
+      for (const value of pm.additionalDirectories) entries.push({ key: 'permissions.additionalDirectories', value });
+    }
+    if (Object.hasOwn(pm, 'allow') && stringList(pm.allow)) editRules.push(...pm.allow.filter((r) => /^\s*Edit\s*(\(|$)/.test(r)));
   }
-  return { roots, enabled };
+  return { roots, enabled, entries, editRules };
 }

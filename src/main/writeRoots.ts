@@ -436,6 +436,13 @@ export class ScopedRootsRefused extends Error {
   }
 }
 
+/** True when `p` resolves inside one of `roots` (each resolved too). */
+export function insideAny(p: string, roots: string[]): boolean {
+  if (typeof p !== 'string' || !isAbsolute(p) || !admitPath(p)) return false;
+  const abs = canonical(p);
+  return roots.some((r) => typeof r === 'string' && isAbsolute(r) && admitPath(r) && within(abs, canonical(r)));
+}
+
 /** True when a working folder is the hive root or a folder above it. Both CLIs let a seat write its working folder
  *  whatever its roots say, so for any seat but god such a folder is the whole hive. */
 export function cwdHoldsHive(root: string, cwd: string): boolean {

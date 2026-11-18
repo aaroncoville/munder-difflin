@@ -26,7 +26,7 @@ import {
 } from 'node:fs';
 import { join, dirname, basename, isAbsolute, relative, resolve as resolvePath } from 'node:path';
 import { homedir } from 'node:os';
-import { CLAUDE_USER_SOURCES, claudeLaunch, claudeRoots, codexLaunchSandbox, codexRoots, launchExecutable, launchPlaces } from './launchLine';
+import { CLAUDE_USER_SOURCES, claudeLaunch, claudeRootEntries, claudeRoots, codexLaunchSandbox, codexRoots, launchExecutable, launchPlaces } from './launchLine';
 import { HookRuntimeUnavailable, hookCommandFor, overlaps, rootOverlap, stageHookRuntime, unsafePathReason, verifyHookRuntime, type StagedHookRuntime, type WriteRoot } from './hookRuntime';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
@@ -65,7 +65,7 @@ import { mailSender, PendingMail } from './mailLine';
 import { nodeLauncherScript } from './nodeLauncher';
 import { codexTrustEntry } from '../shared/codexTrust';
 import { withCodexWritableRoots, withOnlyCodexWritableRoots } from '../shared/codexWritableRoots';
-import { canonical, cwdHoldsHive, FAIL_CLOSED_DIR, FAIL_CLOSED_FILE, ownFolderProblem, PROTECTED_WRITE_TOOLS, ScopedRootsRefused, seatRoots } from './writeRoots';
+import { canonical, cwdHoldsHive, insideAny, FAIL_CLOSED_DIR, FAIL_CLOSED_FILE, ownFolderProblem, PROTECTED_WRITE_TOOLS, ScopedRootsRefused, seatRoots } from './writeRoots';
 import { godNameFromRegistry } from '../shared/godIdentity';
 import { appendSession } from './codexActivity';
 import { isSafeMessageId, publishMessage, sweepInboxLeftovers } from './messageId';
@@ -823,6 +823,35 @@ export class HiveManager {
     }
     return out;
   }
+  /** With scoped roots on, the first write root the owner's managed or user Claude settings add outside the seat's
+   *  scoped roots, grants and temp folders, as "<source> settings: <key>" (never the path); null when there is none.
+   *  Read with the same reader as every other Claude settings root (claudeRoots, through claudeRootEntries). A file that cannot be read or
+   *  understood is named too: its roots cannot be shown to be inside. An Edit allow rule is read as the folder its
+   *  pattern starts in: `//x` absolute, `~/x` in the home folder, `/x` beside the settings file, any other relative to
+   *  the working folder; a bare `Edit` allows everything. */
+  private claudeSettingsExcess(meta: AgentMeta, dir: string, root: string, extra: string[] | undefined, launch: HookLaunch | undefined): string | null {
+    const places = launch ? launchPlaces('claude', launch.env, homedir()) : null;
+    if (places && 'unknown' in places) return null; // the spawn check refuses this launch, saying why
+    const cwd = meta.cwd ? expandTilde(meta.cwd) : '';
+    const allowed = [...this.sandboxWritableDirs(meta, dir, root, extra, true), ...(places ? places.tmpDirs : [])];
+    const managed = this.managedClaudeSettings;
+    const dropDir = join(dirname(managed), 'managed-settings.d');
+    const dropIns: string[] = [];
+    try { for (const n of readdirSync(dropDir).sort()) if (n.endsWith('.json')) dropIns.push(join(dropDir, n)); } catch { /* none */ }
+    const userDir = places ? places.claudeUserDir : (process.env.CLAUDE_CONFIG_DIR && isAbsolute(process.env.CLAUDE_CONFIG_DIR) ? process.env.CLAUDE_CONFIG_DIR : join(homedir(), '.claude'));
+    const files: Array<[string, string]> = [...[managed, ...dropIns].map((f): [string, string] => [f, 'managed settings']), [join(userDir, 'settings.json'), 'user settings']];
+    const inside = (p: string | null): boolean => !!p && insideAny(p, allowed);
+    for (const [file, source] of files) {
+      const text = this.readSmallFile(file);
+      if (text === 'missing') continue;
+      if (text === null) return `${source} (could not be read)`;
+      const c = claudeRootEntries(text);
+      if (!c) return `${source} (could not be understood)`;
+      for (const e of c.entries) if (!inside(this.settingsRoot(e.value, cwd))) return `${source}: ${e.key}`;
+      for (const rule of c.editRules) if (!inside(editRuleFolder(rule, dirname(file), cwd))) return `${source}: permissions.allow Edit`;
+    }
+    return null;
+  }
   /** Every writable_roots entry in one Codex config file, in any table (a profile, a dotted key, an
    *  inline table); [] when the file is absent. A link, a non-file, or an entry not fully understood
    *  is a root that could not be read. */
@@ -1454,6 +1483,12 @@ export class HiveManager {
     // root or holds it would be the whole hive.
     if (scoped && meta.isGod !== true && meta.cwd && cwdHoldsHive(root, expandTilde(meta.cwd))) {
       throw new ScopedRootsRefused(`${shortTarget(meta.id)} cannot start: its working folder is the hive folder or holds it; give it a working folder outside the hive`);
+    }
+    // Claude merges the owner's user and managed settings into every seat: a write root there outside the seat's own
+    // would be added to its sandbox whatever the seat's settings say.
+    if (scoped && this.hookKind(meta) === 'claude') {
+      const why = this.claudeSettingsExcess(meta, dir, root, opts.extraWritableDirs, opts.launch);
+      if (why) throw new ScopedRootsRefused(`${shortTarget(meta.id)} cannot start: the owner's ${why} adds a write root outside its scoped roots`);
     }
     // A Claude seat's settings file must have a home outside the hive, decided before anything for it is created.
     if (isClaudeProvider(meta.provider ?? 'claude') && this.sockPath()) checkSeatSettingsTarget(this.seatSettingsPath(meta.id));
@@ -4573,6 +4608,25 @@ const GENERATED_HIVE_DOCS = [
   { filename: 'PROTOCOL.md', contents: PROTOCOL_MD },
   { filename: 'COMMANDS.md', contents: COMMANDS_MD }
 ] as const;
+
+/** The folder an Edit(...) allow rule's pattern starts in, or null when it cannot be read (a bare `Edit` allows every
+ *  path). `//x` is absolute, `~/x` in the home folder, `/x` relative to the settings file's folder, any other relative
+ *  to the working folder. A pattern is cut at its first wildcard; a cut inside a name keeps the folder holding it. */
+function editRuleFolder(rule: string, settingsDir: string, cwd: string): string | null {
+  const m = /^\s*Edit\s*\((.*)\)\s*$/.exec(rule);
+  if (!m) return null;
+  const spec = m[1].trim();
+  if (!spec) return null;
+  let p: string;
+  if (spec.startsWith('//')) p = spec.slice(1);
+  else if (spec === '~' || spec.startsWith('~/')) p = join(homedir(), spec.slice(1));
+  else if (spec.startsWith('/')) p = join(settingsDir, spec);
+  else { if (!cwd || !isAbsolute(cwd)) return null; p = join(cwd, spec); }
+  const cut = p.search(/[*?[{]/);
+  if (cut === -1) return resolvePath(p);
+  const head = p.slice(0, cut);
+  return resolvePath(head.endsWith('/') ? head : dirname(head));
+}
 
 /** What one spawn's provisioning decided about scoped roots (HiveManager.spawnScopes). */
 export interface SpawnPolicy { agentId: string; scoped: boolean; isGod: boolean; provider: string; cwd: string; grants: string[]; env: Record<string, string>; token?: string }
