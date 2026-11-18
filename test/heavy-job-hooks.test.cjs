@@ -472,3 +472,27 @@ test('opencode: an idle from a session the bridge never heard about, or with no 
   await b.reached(3);
   assert.equal(ctx.lock.snapshot().length, 1);
 });
+
+test('a subagent\'s call that has not started running yet is not freed by empty scans after its seat\'s turn', async (t) => {
+  const { hooks, fire } = await server(t);
+  // The call is waiting, for example at a permission prompt: no process of it exists yet.
+  const lock = new HeavyJobLock({ limit: () => 1, setTimer: () => ({}), clearTimer: () => {}, roots: () => [{ agentId: 'a1', pid: 10 }], probe: async () => [] });
+  hooks.setHeavyLock(lock);
+  fireAs(hooks, sub('a1'), 'PreToolUse', 'npm test', { tool_use_id: 'u1' });
+  fireAs(hooks, { agent_id: 'a1', hive_seat_id: 'a1' }, 'Stop', 'x');
+  await lock.scan();
+  await lock.scan();
+  await lock.scan();
+  assert.equal(decision(fire('a2', 'PreToolUse', 'npm test')), 'deny', 'a call that never ran is still held after empty scans');
+  fireAs(hooks, sub('a1'), 'SubagentStop', 'x');
+  assert.equal(lock.snapshot().length, 0, 'that subagent stopping frees it');
+});
+
+test('a main-thread PostToolUse does not free a call a subagent took under the same call id', async (t) => {
+  const { hooks, lock } = await server(t);
+  fireAs(hooks, sub('a1'), 'PreToolUse', 'npm test', { tool_use_id: 'u1' });
+  fireAs(hooks, { agent_id: 'a1', hive_seat_id: 'a1' }, 'PostToolUse', 'npm test', { tool_use_id: 'u1' });
+  assert.equal(lock.snapshot().length, 1, 'only the call\'s own taker ends it');
+  fireAs(hooks, sub('a1'), 'PostToolUse', 'npm test', { tool_use_id: 'u1' });
+  assert.equal(lock.snapshot().length, 0);
+});

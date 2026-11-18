@@ -408,9 +408,10 @@ export class HeavyJobLock {
 
   /** PostToolUse of a heavy call. Calls that share an id share a command, and scans bind the oldest
    *  first, so the oldest is the one that can be running. */
-  callDone(agentId: string, callId: string): void {
+  callDone(agentId: string, callId: string, by?: string): void {
     // A subagent's foreground call is marked posted when its agent's turn ends, and still ends with its own PostToolUse.
-    const call = this.callsOf(agentId).find((c) => c.callId === callId && (!c.posted || (c.by !== undefined && !c.background)));
+    // Only the thread that took a call ends it: a main-thread PostToolUse never frees a subagent's call, or the reverse.
+    const call = this.callsOf(agentId).find((c) => c.callId === callId && c.by === by && (!c.posted || (c.by !== undefined && !c.background)));
     if (!call) return;
     if (call.background) call.posted = true;
     else this.release(call.key, 'posttool');
@@ -555,7 +556,9 @@ export class HeavyJobLock {
         if (c.pid !== undefined) claimed.add(c.pid);
       }
       if (c.pid !== undefined) { c.seen = true; c.misses = 0; c.touched = this.now(); continue; }
-      if (!c.seen && !c.posted) { c.misses = 0; continue; }
+      // A call never seen running is kept while it is not posted, and also when a subagent took it: posted at its seat's
+      // turn end, it may still be waiting (at a permission prompt, say) and start later.
+      if (!c.seen && (!c.posted || c.by !== undefined)) { c.misses = 0; continue; }
       c.misses++;
       if (c.misses >= HEAVY_SCAN_MISSES) this.release(c.key, 'process-exit');
     }
@@ -589,7 +592,7 @@ export function gateHeavyCall(lock: HeavyJobLock, agentId: string, p: HeavyHookP
 /** The hook events that end a call: its PostToolUse (a command that exits non-zero fires
  *  PostToolUseFailure instead), or the turn ending or being replaced by a new prompt. */
 export function settleHeavyCall(lock: HeavyJobLock, agentId: string, event: string, p: HeavyHookPayload, by?: string): void {
-  if (event === 'PostToolUse' || event === 'PostToolUseFailure') lock.callDone(agentId, heavyCallId(p));
+  if (event === 'PostToolUse' || event === 'PostToolUseFailure') lock.callDone(agentId, heavyCallId(p), by);
   else if (event === 'Stop' || event === 'UserPromptSubmit') lock.turnOver(agentId, p.tool_session_id);
   else if (event === 'SubagentStop' && p.tool_session_id !== undefined) lock.turnOver(agentId, p.tool_session_id);
   else if (event === 'SubagentStop' && by !== undefined) lock.subagentDone(agentId, by);
