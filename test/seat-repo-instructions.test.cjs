@@ -269,14 +269,17 @@ test('the spawn core records the origin for an isolated worker, the cwd for a gi
   assert.equal(await recordedCheckout({ scopedRoots: false, origins: new Map([['pty-1', repo]]), cwd: repo }), undefined, 'flag off');
 });
 
-test('the hive protocol tells a seat to read the CLAUDE.md of the checkout it works in when scoped settings are on', async (t) => {
+test('the hive protocol tells a seat to read a checkout\'s CLAUDE.md only when no instructions were passed for it, and never one withheld', async (t) => {
   const f = floor(t);
   // One bullet, possibly wrapped over two lines.
   const text = fs.readFileSync(path.join(f.harness, 'hive', 'PROTOCOL.md'), 'utf8').replace(/\n {2}/g, ' ');
   const line = text.split('\n').find((l) => l.includes('scoped settings'));
   assert.ok(line, 'PROTOCOL.md has the line');
   assert.match(line, /CLAUDE\.md is not loaded for you/);
-  assert.match(line, /read its CLAUDE\.md and follow it/);
+  // Read the file only when the prompt passed nothing for that checkout; never one the prompt says was withheld.
+  assert.match(line, /no repository instructions for the checkout you work in, read its CLAUDE\.md and follow it/);
+  assert.match(line, /withheld, do not rely on those files; ask god/);
+  assert.equal(/Before working in a checkout, read its CLAUDE\.md/.test(line), false, 'no unconditional instruction to read it');
 });
 
 /** Start a Claude seat whose working folder is `cwd` through the app's own admission, late check and terminal start,
