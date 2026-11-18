@@ -4511,6 +4511,8 @@ The harness fills in \`id\`, \`from\`, \`hops\`, and timestamps.
 - \`board.md\` is the shared plan. Don't edit it directly — \`propose\` changes to \`god\`,
   who is its sole scribe.
 - Re-reading a message you already moved to \`.done/\` is a no-op. Don't reprocess.
+- When scoped settings are on, a repository's CLAUDE.md is not loaded for you. Before working in a
+  checkout, read its CLAUDE.md and follow it.
 
 ## The work: board.md vs tasks.json
 There are two shared surfaces, both in the hive root:
