@@ -2004,9 +2004,12 @@ export class HiveManager {
       // Edit/Write tools; with only one the agent deadlocks on its own inbox.
       // failIfUnavailable stays false: a platform without a sandbox (Windows)
       // runs as before rather than refusing to spawn.
+      // autoAllowBashIfSandboxed: from Claude Code 2.1.325 a sandboxed Bash command
+      // asks for permission by default, so an agent outside bypass mode would stall
+      // on its first command. The sandbox is the boundary here, not the prompt.
       ...(writableDirs.length
         ? {
-            sandbox: { enabled: true, filesystem: { allowWrite: writableDirs } },
+            sandbox: { enabled: true, autoAllowBashIfSandboxed: true, filesystem: { allowWrite: writableDirs } },
             permissions: { additionalDirectories: writableDirs }
           }
         : {}),

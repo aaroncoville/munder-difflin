@@ -55,3 +55,15 @@ test('a Claude agent gets a native sandbox that still allows its agent dir and t
   // No bypass of the sandbox anywhere in the injected args.
   assert.ok(!inj.args.some((a) => /dangerously/.test(a)));
 });
+
+test('a sandboxed Claude agent runs Bash without a permission prompt in every permission mode', async () => {
+  // From Claude Code 2.1.325, sandboxed Bash asks for permission unless the settings
+  // opt out, so an agent outside bypass mode would stall on its first command.
+  const home = tmpHome();
+  const hive = withSeatSettings(new HiveManager(() => home));
+  const inj = await hive.ensureAgent({ id: 'pam-1', name: 'Pam', provider: 'claude', cwd: home });
+  const i = inj.args.indexOf('--settings');
+  const settings = JSON.parse(fs.readFileSync(inj.args[i + 1], 'utf8'));
+  assert.equal(settings.sandbox.enabled, true);
+  assert.equal(settings.sandbox.autoAllowBashIfSandboxed, true);
+});
