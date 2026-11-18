@@ -66,7 +66,7 @@ import { mailSender, PendingMail } from './mailLine';
 import { nodeLauncherScript } from './nodeLauncher';
 import { codexTrustEntry } from '../shared/codexTrust';
 import { withCodexWritableRoots, withOnlyCodexWritableRoots } from '../shared/codexWritableRoots';
-import { canonical, cwdHoldsHive, insideAny, FAIL_CLOSED_DIR, FAIL_CLOSED_FILE, ownFolderProblem, PROTECTED_WRITE_TOOLS, ScopedRootsRefused, seatRoots } from './writeRoots';
+import { canonical, cwdHoldsHive, cwdOutsideOwnFolder, insideAny, FAIL_CLOSED_DIR, FAIL_CLOSED_FILE, ownFolderProblem, PROTECTED_WRITE_TOOLS, ScopedRootsRefused, seatRoots } from './writeRoots';
 import { godNameFromRegistry } from '../shared/godIdentity';
 import { appendSession } from './codexActivity';
 import { isSafeMessageId, publishMessage, sweepInboxLeftovers } from './messageId';
@@ -653,6 +653,18 @@ export class HiveManager {
     const s = this.spawnScopes.get(spawnId);
     return s ? { scoped: s.scoped, isGod: s.isGod, grants: [...s.grants] } : undefined;
   }
+  /** Spawns whose terminal started, until they are retired: spawnSettled leaves their policy in place. */
+  private startedSpawns = new Set<string>();
+  /** The spawn is over (refused, rolled back, never started, or its terminal torn down): its policy and token go, so a
+   *  call still carrying the token is refused as an unknown one, and its roots stop counting as live. By spawn id only,
+   *  never the agent id: a newer spawn of the same agent keeps its own. Retiring twice, or an unknown spawn, does nothing. */
+  retireSpawn(spawnId: string): void {
+    const token = this.spawnScopes.get(spawnId)?.token;
+    if (token && this.spawnTokens.get(token) === spawnId) this.spawnTokens.delete(token);
+    this.spawnScopes.delete(spawnId);
+    this.startedSpawns.delete(spawnId);
+    this.startedRoots.delete(spawnId);
+  }
   /** The policy of the scoped spawn a hook call's token names, or undefined: a token the app did not issue. */
   spawnPolicy(token: unknown): SpawnPolicy | undefined {
     const key = typeof token === 'string' && token ? this.spawnTokens.get(token) : undefined;
@@ -1027,10 +1039,11 @@ export class HiveManager {
   }
   /** The terminal for this spawn started: nothing of it is rolled back any more. */
   spawnStarted(spawnId: string): void {
-    // The roots its decision was checked against, for as long as it is live (liveSeatRoots).
+    // The roots its decision was checked against, for as long as this spawn is live (liveSeatRoots), until retired.
     const started = this.startingSpawns.get(spawnId);
-    if (started) this.startedRoots.set(started.agentId, started.rootPaths);
+    if (started) this.startedRoots.set(spawnId, { agentId: started.agentId, roots: started.rootPaths });
     this.startingSpawns.delete(spawnId);
+    if (this.spawnScopes.has(spawnId) || started) this.startedSpawns.add(spawnId);
     // Running now, it is reported by the live seats instead.
     this.unconfinedStarting.delete(spawnId);
   }
@@ -1038,13 +1051,16 @@ export class HiveManager {
    *  does not sandbox is counted through the live seats instead. */
   spawnSettled(spawnId: string): void {
     this.unconfinedStarting.delete(spawnId);
+    // One that ended without its terminal starting (a throw on the way) is over: nothing will tear it down later.
+    if (!this.startedSpawns.has(spawnId)) this.retireSpawn(spawnId);
   }
   /** The app's running agents and their providers (the terminals it started), for the checks above. */
   setLiveSeats(fn: () => Array<{ agentId: string; provider: string }>): void {
     this.liveSeats = fn;
   }
-  /** Per agent, the write roots its last started spawn was checked against. */
-  private startedRoots = new Map<string, string[]>();
+  /** Per started spawn (its spawn id), its agent and the write roots its decision was checked against. Keyed by the
+   *  spawn, so two overlapping spawns of one agent each keep their own until each is retired. */
+  private startedRoots = new Map<string, { agentId: string; roots: string[] }>();
   /** The write roots of every live seat, or null when one of them may write anywhere: a seat the app does not sandbox,
    *  or one with no checked roots on record. A seat that is still starting (admitted, its terminal not yet up) counts,
    *  with the roots its admission was checked against. */
@@ -1053,9 +1069,11 @@ export class HiveManager {
     const out: string[] = [];
     for (const v of [...this.hookVerdicts.values(), ...this.startingSpawns.values()]) out.push(...v.rootPaths);
     for (const s of this.liveSeats()) {
-      const roots = this.hookKind({ provider: s.provider } as AgentMeta) ? this.startedRoots.get(s.agentId) : undefined;
-      if (!roots) return null;
-      out.push(...roots);
+      if (!this.hookKind({ provider: s.provider } as AgentMeta)) return null;
+      // Every started spawn of the seat that has not been retired: an earlier one can still be running.
+      const spawns = [...this.startedRoots.values()].filter((r) => r.agentId === s.agentId);
+      if (!spawns.length) return null;
+      for (const r of spawns) out.push(...r.roots);
     }
     return out;
   }
@@ -1116,6 +1134,7 @@ export class HiveManager {
    *  with no decision on record (refused before anything was created, or already rolled back) is left as it is. */
   withdrawRefusedSpawn(spawnId: string, why: string): void {
     this.unconfinedStarting.delete(spawnId);
+    this.retireSpawn(spawnId);
     const v = this.takeHookVerdict(spawnId) ?? this.startingSpawns.get(spawnId);
     this.startingSpawns.delete(spawnId);
     if (!v) return;
@@ -1523,6 +1542,11 @@ export class HiveManager {
     // root or holds it would be the whole hive.
     if (scoped && meta.isGod !== true && meta.cwd && cwdHoldsHive(root, expandTilde(meta.cwd))) {
       throw new ScopedRootsRefused(`${shortTarget(meta.id)} cannot start: its working folder is the hive folder or holds it; give it a working folder outside the hive`);
+    }
+    // Inside the hive, the only working folder a seat but god may have is its own folder: anywhere else (another agent's
+    // folder, evidence/) the CLI would let it write a part of the hive its roots do not grant.
+    if (scoped && meta.isGod !== true && meta.cwd && cwdOutsideOwnFolder(root, meta.id, expandTilde(meta.cwd))) {
+      throw new ScopedRootsRefused(`${shortTarget(meta.id)} cannot start: its working folder is inside the hive but not in its own folder; give it a working folder in its own folder or outside the hive`);
     }
     // Claude merges the owner's user and managed settings into every seat: a write root there outside the seat's own
     // would be added to its sandbox whatever the seat's settings say.
