@@ -132,6 +132,45 @@ test('a refused agent is told when the slot frees, and can then run', async (t) 
   assert.equal(decision(fire('a2', 'PreToolUse', 'npm test')), undefined);
 });
 
+// A subagent's frames carry the CLI's agent_id (the subagent's own id) and the shim's hive_seat_id (the seat the app
+// started). The slot belongs to the seat, so a seat cannot run more heavy jobs than the limit through its subagents.
+const sub = (seat, id = `sub-of-${seat}`) => ({ hive_seat_id: seat, agent_id: id });
+const fireAs = (hooks, ids, hook_event_name, command, extra = {}) => hooks.handle({ ...ids, hook_event_name, session_id: 's', tool_name: 'Bash', tool_input: { command }, ...extra });
+
+test('a subagent running the suite is denied while another seat holds the slot', async (t) => {
+  const { hooks, fire } = await server(t);
+  fire('a1', 'PreToolUse', 'npm test');
+  const r = fireAs(hooks, sub('a2'), 'PreToolUse', 'npm test');
+  assert.equal(decision(r), 'deny');
+  assert.match(r.hookSpecificOutput.permissionDecisionReason, /held by a1/);
+});
+
+test('a subagent takes the slot as its seat, which then holds it against other seats', async (t) => {
+  const { hooks, lock, fire } = await server(t);
+  assert.equal(decision(fireAs(hooks, sub('a1'), 'PreToolUse', 'npm test', { tool_use_id: 'u1' })), undefined);
+  assert.deepEqual(lock.snapshot().map((h) => h.agentId), ['a1'], 'held under the seat, not the subagent id');
+  assert.match(fire('a2', 'PreToolUse', 'npm test').hookSpecificOutput.permissionDecisionReason, /held by a1/);
+});
+
+test('a PostToolUse from the subagent frees its seat\'s slot', async (t) => {
+  const { hooks, lock, fire } = await server(t);
+  fireAs(hooks, sub('a1'), 'PreToolUse', 'npm test', { tool_use_id: 'u1' });
+  assert.equal(decision(fire('a2', 'PreToolUse', 'npm test')), 'deny');
+  fireAs(hooks, sub('a1'), 'PostToolUse', 'npm test', { tool_use_id: 'u1' });
+  assert.equal(lock.snapshot().length, 0, 'the seat\'s slot is free');
+  assert.equal(decision(fire('a2', 'PreToolUse', 'npm test')), undefined);
+});
+
+test('a frame with no seat id, or an empty one, takes and frees the slot under its agent_id as before', async (t) => {
+  const { hooks, lock } = await server(t);
+  for (const ids of [{ agent_id: 'a1' }, { agent_id: 'a1', hive_seat_id: '' }, { agent_id: 'a1', hive_seat_id: null }]) {
+    fireAs(hooks, ids, 'PreToolUse', 'npm test', { tool_use_id: 'u1' });
+    assert.deepEqual(lock.snapshot().map((h) => h.agentId), ['a1'], JSON.stringify(ids));
+    fireAs(hooks, ids, 'PostToolUse', 'npm test', { tool_use_id: 'u1' });
+    assert.equal(lock.snapshot().length, 0, JSON.stringify(ids));
+  }
+});
+
 test('slot after approval: a heavy call the approval gate denies takes no slot, so another agent can', async (t) => {
   const { lock, control, fire } = await server(t);
   control.toolDecision = (id) => (id === 'a1' ? { deny: true, reason: 'paused' } : { deny: false });

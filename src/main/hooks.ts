@@ -64,6 +64,12 @@ interface HookPayload {
   cache_creation?: number;
 }
 
+/** The seat a hook call belongs to: the shim's hive_seat_id, or the frame's agent_id when it has none. For a subagent's
+ *  call agent_id is the subagent's own id, so anything held per seat must be keyed by this instead. */
+function seatOf(p: HookPayload, agentId: string | undefined): string | undefined {
+  return (typeof p.hive_seat_id === 'string' && p.hive_seat_id) || agentId;
+}
+
 /** Live health of the hook socket — the ONE endpoint every lifecycle hook,
  *  proxy-bridge emit and cost sample travels through. When nothing accepts on
  *  it the shims' connect() fails and they exit 0 with empty stdout, which the
@@ -487,7 +493,9 @@ export class HookServer {
 
     // Before every gate and early return below: a finished call must free its heavy-job slot even
     // when the agent is halted or the hook answers with queued context.
-    if (agentId && this.heavyLock) settleHeavyCall(this.heavyLock, agentId, event, p);
+    // Keyed by the seat, so a subagent's call frees the slot its seat took.
+    const heavySeat = seatOf(p, agentId);
+    if (heavySeat && this.heavyLock) settleHeavyCall(this.heavyLock, heavySeat, event, p);
 
     // 7C.3 — a graceful operator HALT overrides everything (incl. the inbox
     // drain below): stop the agent CLEANLY at this hook boundary rather than
@@ -614,10 +622,11 @@ export class HookServer {
     // After the approval gate above: a call it denies gets no PostToolUse, so a slot taken earlier
     // would stay held. Slow approval at Claude's own prompt comes after this hook, and a rejection
     // there is caught when the turn ends.
-    if (event === 'PreToolUse' && agentId && this.heavyLock) {
-      const reason = gateHeavyCall(this.heavyLock, agentId, p);
+    // A subagent's heavy call takes its seat's slot: a seat runs no more heavy jobs through subagents than on its own.
+    if (event === 'PreToolUse' && heavySeat && this.heavyLock) {
+      const reason = gateHeavyCall(this.heavyLock, heavySeat, p);
       if (reason) {
-        this.emitControl(agentId, p.tool_name, reason);
+        this.emitControl(heavySeat, p.tool_name, reason);
         this.emit(agentId, event, p);
         return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } };
       }
