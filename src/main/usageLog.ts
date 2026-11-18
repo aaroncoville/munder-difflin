@@ -17,7 +17,7 @@
  */
 import { appendFileSync, chmodSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { LOG_TOOLS, PATH_CLASSES, PROVIDERS, SHAPES, START_SOURCES, VIAS } from './writeRoots';
+import { FAIL_CLOSED_REASONS, LOG_TOOLS, PATH_CLASSES, PROVIDERS, SHAPES, START_SOURCES, VIAS } from './writeRoots';
 import { HOOK_SOURCES } from './hookInventory';
 
 export const RETENTION_DAYS = 90;
@@ -82,6 +82,8 @@ const EVENTS: Record<string, Record<string, FieldType>> = {
   'write-own-settings': { agentId: 'agent', tool: { oneOf: LOG_TOOLS }, via: { oneOf: VIAS } },
   'write-observed': { agentId: 'agent', tool: { oneOf: LOG_TOOLS }, shape: { oneOf: SHAPES }, count: 'count' },
   'write-incomplete': { agentId: 'agent', state: { oneOf: ['incomplete'] }, reason: { oneOf: ['queue', 'cap', 'session-start-flood', 'quit', 'log-refused', 'no-agent'] }, shed: 'count', burst: 'bool' },
+  // Scoped roots: protected file writes the hook shim refused because it could not get them checked. A count per reason.
+  'write-fail-closed': { agentId: 'agent', reason: { oneOf: FAIL_CLOSED_REASONS }, count: 'count' },
   // Per Claude spawn: how many of the working folder's project settings files exist (0-2, never read) and whether
   // the seat was launched without them (scopedRoots). A count and a flag, never a path.
   'settings-sources': { agentId: 'agent', provider: { oneOf: ['claude'] }, projectFiles: 'count', dropped: 'bool' },
@@ -96,6 +98,7 @@ const REQUIRED: Record<string, string[]> = {
   'write-would-refuse': ['agentId', 'tool', 'via', 'pathClass'], 'write-own-settings': ['agentId', 'tool', 'via'],
   'write-observed': ['agentId', 'tool', 'shape', 'count'],
   'write-incomplete': ['agentId', 'state', 'reason', 'shed', 'burst'],
+  'write-fail-closed': ['reason', 'count'],
   'settings-sources': ['agentId', 'provider', 'projectFiles', 'dropped'],
   'hook-inventory': ['agentId', 'provider', 'sources', 'digest']
 };

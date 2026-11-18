@@ -431,6 +431,14 @@ export function refusedWrite(tool: unknown, input: unknown, ctx: RootsContext): 
   return hit ? hit.pathClass : null;
 }
 
+/** Why the hook shim refused a protected write it could not get checked (scoped roots): no socket to reach, another
+ *  connect error, no answer in time, an answer that is not a JSON object. */
+export const FAIL_CLOSED_REASONS = ['no-socket', 'connect-error', 'timeout', 'malformed'] as const;
+/** The folder, inside the app's private hook runtime folder, where the shim counts those refusals: one file per agent
+ *  and reason, `<agent id>.<reason>`, one byte per refusal (`_unknown` when the id is not a plain name). */
+export const FAIL_CLOSED_DIR = 'fail-closed';
+export const FAIL_CLOSED_FILE = new RegExp(`^([A-Za-z0-9][A-Za-z0-9._-]{0,127}|_unknown)\\.(${FAIL_CLOSED_REASONS.join('|')})$`);
+
 /** The roots context the hook holds a seat to, from what the app spawned it with: null when the seat's writes are not
  *  checked (spawned with scoped roots off, a provider the app does not give scoped roots, or an id it did not spawn). */
 export function enforcedRoots(root: string | null, agentId: string, spawned: { scoped?: boolean; provider: string; isGod: boolean; cwd: string } | undefined): RootsContext | null {

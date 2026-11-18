@@ -65,7 +65,7 @@ import { mailSender, PendingMail } from './mailLine';
 import { nodeLauncherScript } from './nodeLauncher';
 import { codexTrustEntry } from '../shared/codexTrust';
 import { withCodexWritableRoots, withOnlyCodexWritableRoots } from '../shared/codexWritableRoots';
-import { canonical, scopedRoots } from './writeRoots';
+import { canonical, FAIL_CLOSED_DIR, FAIL_CLOSED_FILE, PROTECTED_WRITE_TOOLS, scopedRoots } from './writeRoots';
 import { godNameFromRegistry } from '../shared/godIdentity';
 import { appendSession } from './codexActivity';
 import { isSafeMessageId, publishMessage, sweepInboxLeftovers } from './messageId';
@@ -614,6 +614,26 @@ export class HiveManager {
   seatSettingsPath(agentId: string): string {
     const root = this.root();
     return seatSettingsFile(this.seatSettingsDir, root ?? '', agentId);
+  }
+  /** Protected file writes the hook shim refused under scoped roots because it could not reach the app, as the shim
+   *  counted them in the hook runtime folder: written as count-only usage rows, and reset. Each file is moved aside
+   *  before it is read, so a refusal counted meanwhile starts a new file. Only a plain file's size is read: its name
+   *  must be an id and a known reason, and its contents are never read. */
+  drainFailClosedCounts(): void {
+    if (!this.hookRuntimeDir) return;
+    const dir = join(this.hookRuntimeDir, FAIL_CLOSED_DIR);
+    let names: string[];
+    try { names = readdirSync(dir); } catch { return; }
+    for (const name of names) {
+      const m = FAIL_CLOSED_FILE.exec(name);
+      if (!m) continue;
+      const taken = join(dir, `.read-${process.pid}-${shortRand()}`);
+      try { renameSync(join(dir, name), taken); } catch { continue; }
+      let count = 0;
+      try { const st = lstatSync(taken); if (st.isFile()) count = st.size; } catch { count = 0; }
+      try { rmSync(taken, { recursive: true, force: true }); } catch { /* removed on a later read */ }
+      if (count > 0) this.usage({ kind: 'write-fail-closed', ...(m[1] === '_unknown' ? {} : { agentId: m[1] }), reason: m[2], count });
+    }
   }
   /** Where usage rows go (the app's local usage log); unset, none are kept. */
   private usageSink: ((row: Record<string, unknown>) => void) | null = null;
@@ -1492,6 +1512,8 @@ export class HiveManager {
       // Scopes the hive-memory shim's recalls to this agent's own memories.
       HIVE_MEMORY_AGENT: meta.id
     };
+    // Tells the hook shim this seat's file writes are checked: one it cannot get checked is refused, not allowed.
+    if (scoped && this.hookKind(meta)) env.HIVE_SCOPED_ROOTS = '1';
     // The bundled-node launcher, so an agent can run the hive's .cjs helpers (KG
     // CLI, Slack reply helper) even when `node` is not on its PATH. Invoking the
     // Electron binary directly would open a second app window, so this must stay
@@ -4542,15 +4564,42 @@ process.stdin.on('end', () => {
     setTimeout(() => process.exit(0), 1500).unref();
     return;
   }
-  if (!sock) { process.exit(0); }
+  // Scoped write roots, set by the app per spawn: a protected file write that cannot be checked is refused, and the
+  // refusal counted (one byte per refusal) in the app's private folder this file runs from. Anything else exits 0.
+  const guarded = process.env.HIVE_SCOPED_ROOTS === '1' && payload.hook_event_name === 'PreToolUse'
+    && ${JSON.stringify(PROTECTED_WRITE_TOOLS)}.indexOf(payload.tool_name) !== -1;
+  const refuse = (why) => {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const dir = path.join(__dirname, ${JSON.stringify(FAIL_CLOSED_DIR)});
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      const id = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(process.env.AGENT_ID || '') ? process.env.AGENT_ID : '_unknown';
+      fs.appendFileSync(path.join(dir, id + '.' + why), '1', { mode: 0o600 });
+    } catch (_) {}
+    try {
+      require('fs').writeSync(1, JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny',
+        permissionDecisionReason: 'Refused: the hive app could not check this file write against the agent write roots (' + why + '). Try again shortly.' } }));
+    } catch (_) {}
+    process.exit(0);
+  };
+  if (!sock) { if (guarded) refuse('no-socket'); process.exit(0); }
   let resp = '';
-  const done = (code) => { if (resp) process.stdout.write(resp); process.exit(code); };
+  const done = (code) => {
+    if (guarded) {
+      let reply = null;
+      try { reply = JSON.parse(resp); } catch (_) {}
+      if (!reply || typeof reply !== 'object' || Array.isArray(reply)) refuse('malformed');
+    }
+    if (resp) process.stdout.write(resp);
+    process.exit(code);
+  };
   const c = net.createConnection(sock, () => c.write(JSON.stringify(payload) + '\\n'));
   c.setEncoding('utf8');
   c.on('data', (d) => { resp += d; });
   c.on('end', () => done(0));
-  c.on('error', () => process.exit(0));
-  setTimeout(() => process.exit(0), 5000).unref();
+  c.on('error', (e) => { if (guarded) refuse(e && (e.code === 'ENOENT' || e.code === 'ECONNREFUSED') ? 'no-socket' : 'connect-error'); process.exit(0); });
+  setTimeout(() => { if (guarded) refuse('timeout'); process.exit(0); }, 5000).unref();
 });
 `;
 

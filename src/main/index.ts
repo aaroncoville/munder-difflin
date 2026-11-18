@@ -5963,7 +5963,11 @@ function armAlwaysOnBeats(): void {
   // unbound looks exactly like "no workers have spawned yet" (#277). Verify it
   // — bound, and the path still ours — and re-bind when it is not.
   if (hookHealthTimer) clearInterval(hookHealthTimer);
-  hookHealthTimer = setInterval(() => { hookServer.ensureListening().catch((e) => console.error('[hooks beat]', e)); }, HOOK_HEALTH_MS);
+  // The same beat turns the shim's fail-closed counts (scoped roots: writes it refused while it could not reach the
+  // socket) into usage rows, so a dead socket shows up as a number; once now for any left from an earlier run.
+  const drainFailClosed = (): void => { try { hive.drainFailClosedCounts(); } catch (e) { console.error('[fail-closed counts]', e); } };
+  drainFailClosed();
+  hookHealthTimer = setInterval(() => { hookServer.ensureListening().catch((e) => console.error('[hooks beat]', e)); drainFailClosed(); }, HOOK_HEALTH_MS);
 }
 
 /** Wall-clock instant we last observed the machine suspend or lock, so a resume
