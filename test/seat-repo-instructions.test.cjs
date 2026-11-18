@@ -525,3 +525,27 @@ test('a seat the app does not sandbox that is still starting withholds every fil
   f.hive.spawnSettled('pty-gm1');
   assert.ok(promptOf((await spawnWorker(f, 'us2')).args).includes('ROOT FILE'), 'once it is no longer starting');
 });
+
+test('two overlapping spawns of one seat each keep their roots: a file only the earlier one can write is withheld while it is live', async (t) => {
+  const f = floor(t);
+  write(path.join(f.origin, 'CLAUDE.md'), 'ROOT FILE: present.\n');
+  const id = 'ov-live';
+  const settings = f.hive.seatSettingsPath(id);
+  const start = async (spawnId, cwd) => {
+    fs.mkdirSync(cwd, { recursive: true });
+    const inj = await f.hive.ensureAgent({ id, name: id, provider: 'claude', cwd }, { spawnId, launch: { argv: ['claude', '--settings', settings], env: {} } });
+    f.hive.markHookProvisioned(spawnId);
+    f.hive.confirmSpawn(spawnId, { id, provider: 'claude' }, ['claude', ...inj.args], {});
+    f.hive.spawnStarted(spawnId);
+  };
+  // The earlier spawn works in the origin checkout; the later one, still overlapping it, somewhere else.
+  await start('pty-ov-a', f.origin);
+  await start('pty-ov-b', path.join(f.base, 'elsewhere'));
+  f.hive.setLiveSeats(() => [{ agentId: id, provider: 'claude' }]);
+  const both = promptOf((await spawnWorker(f, 'ov1')).args);
+  assert.equal(both.includes('ROOT FILE'), false, 'withheld: the earlier spawn is still live and can write it');
+  // The earlier spawn's terminal goes; the later one, which cannot reach the checkout, is still live.
+  f.hive.retireSpawn('pty-ov-a');
+  const later = promptOf((await spawnWorker(f, 'ov2')).args);
+  assert.ok(later.includes('ROOT FILE'), 'included once the spawn that could write it is retired');
+});

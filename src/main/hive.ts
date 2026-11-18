@@ -656,13 +656,14 @@ export class HiveManager {
   /** Spawns whose terminal started, until they are retired: spawnSettled leaves their policy in place. */
   private startedSpawns = new Set<string>();
   /** The spawn is over (refused, rolled back, never started, or its terminal torn down): its policy and token go, so a
-   *  call still carrying the token is refused as an unknown one. By spawn id only, never the agent id: a newer spawn of
-   *  the same agent keeps its own. Retiring twice, or a spawn with no policy, does nothing. */
+   *  call still carrying the token is refused as an unknown one, and its roots stop counting as live. By spawn id only,
+   *  never the agent id: a newer spawn of the same agent keeps its own. Retiring twice, or an unknown spawn, does nothing. */
   retireSpawn(spawnId: string): void {
     const token = this.spawnScopes.get(spawnId)?.token;
     if (token && this.spawnTokens.get(token) === spawnId) this.spawnTokens.delete(token);
     this.spawnScopes.delete(spawnId);
     this.startedSpawns.delete(spawnId);
+    this.startedRoots.delete(spawnId);
   }
   /** The policy of the scoped spawn a hook call's token names, or undefined: a token the app did not issue. */
   spawnPolicy(token: unknown): SpawnPolicy | undefined {
@@ -1038,11 +1039,11 @@ export class HiveManager {
   }
   /** The terminal for this spawn started: nothing of it is rolled back any more. */
   spawnStarted(spawnId: string): void {
-    // The roots its decision was checked against, for as long as it is live (liveSeatRoots).
+    // The roots its decision was checked against, for as long as this spawn is live (liveSeatRoots), until retired.
     const started = this.startingSpawns.get(spawnId);
-    if (started) this.startedRoots.set(started.agentId, started.rootPaths);
+    if (started) this.startedRoots.set(spawnId, { agentId: started.agentId, roots: started.rootPaths });
     this.startingSpawns.delete(spawnId);
-    if (this.spawnScopes.has(spawnId)) this.startedSpawns.add(spawnId);
+    if (this.spawnScopes.has(spawnId) || started) this.startedSpawns.add(spawnId);
     // Running now, it is reported by the live seats instead.
     this.unconfinedStarting.delete(spawnId);
   }
@@ -1057,8 +1058,9 @@ export class HiveManager {
   setLiveSeats(fn: () => Array<{ agentId: string; provider: string }>): void {
     this.liveSeats = fn;
   }
-  /** Per agent, the write roots its last started spawn was checked against. */
-  private startedRoots = new Map<string, string[]>();
+  /** Per started spawn (its spawn id), its agent and the write roots its decision was checked against. Keyed by the
+   *  spawn, so two overlapping spawns of one agent each keep their own until each is retired. */
+  private startedRoots = new Map<string, { agentId: string; roots: string[] }>();
   /** The write roots of every live seat, or null when one of them may write anywhere: a seat the app does not sandbox,
    *  or one with no checked roots on record. A seat that is still starting (admitted, its terminal not yet up) counts,
    *  with the roots its admission was checked against. */
@@ -1067,9 +1069,11 @@ export class HiveManager {
     const out: string[] = [];
     for (const v of [...this.hookVerdicts.values(), ...this.startingSpawns.values()]) out.push(...v.rootPaths);
     for (const s of this.liveSeats()) {
-      const roots = this.hookKind({ provider: s.provider } as AgentMeta) ? this.startedRoots.get(s.agentId) : undefined;
-      if (!roots) return null;
-      out.push(...roots);
+      if (!this.hookKind({ provider: s.provider } as AgentMeta)) return null;
+      // Every started spawn of the seat that has not been retired: an earlier one can still be running.
+      const spawns = [...this.startedRoots.values()].filter((r) => r.agentId === s.agentId);
+      if (!spawns.length) return null;
+      for (const r of spawns) out.push(...r.roots);
     }
     return out;
   }
