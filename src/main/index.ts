@@ -2999,10 +2999,6 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // passes here, and with none stated gets the configs' own mode, or workspace-write when none is set.
   if (opts.hive && provider === 'codex' && hive.enabled()) opts.args = hive.withCodexSandboxStance(opts.args ?? [], opts.cwd, opts.command);
   let codexHomeFromApp = false;
-  // Read once per spawn: the roots the seat is given and every later step for it follow the same answer.
-  const scopedRootsOn = readConfig().scopedRoots === true;
-  // The folders granted besides the seat's role roots (the shared memory folder), kept with the spawn record.
-  let grantedDirs: string[] = [];
   if (opts.hive && hive.enabled()) {
     // Memory and knowledge settings are best-effort and not hook provisioning: read them outside the try below, so a
     // failure here never refuses the spawn and never reads as a hook provisioning error.
@@ -3027,7 +3023,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
           // W3 — default-MCP consent state + the bundled skills source dir.
           mcpDefaults: readConfig().mcpDefaults,
           agentPlugins: readConfig().agentPlugins,
-          scopedRoots: scopedRootsOn,
+          scopedRoots: readConfig().scopedRoots === true,
           skillsDir: skillsResourceDir(),
           // The launch as requested, with the environment the terminal will build, so the hook runtime
           // decision is made once, before anything for this agent is created.
@@ -3035,7 +3031,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
           spawnId: opts.id,
           // The shared palace is mutated by the agent's own `mempalace` calls, so
           // the OS sandbox must let it through (empty when memory is off).
-          extraWritableDirs: (grantedDirs = [memEnv.MEMPALACE_PALACE_PATH].filter((p): p is string => !!p))
+          extraWritableDirs: [memEnv.MEMPALACE_PALACE_PATH].filter((p): p is string => !!p)
         }
       );
       opts.args = [...(opts.args ?? []), ...inj.args];
@@ -3298,7 +3294,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       if (codexResumedSession) {
         let extra: string[] = [];
         try { extra = [memory.env().MEMPALACE_PALACE_PATH].filter((p): p is string => !!p); } catch { /* memory off */ }
-        hive.prepareResumedCodexHome(opts.hive.id, opts.cwd, home, extra, scopedRootsOn, opts.hive.isGod === true);
+        hive.prepareResumedCodexHome(opts.hive.id, opts.cwd, home, extra);
       }
     } catch (e) {
       const refusal = e instanceof CodexHomeRefused ? e : new CodexHomeRefused(`Codex home ${home} could not be prepared for ${opts.hive.id} (${(e as Error)?.message ?? e})`);
@@ -3334,7 +3330,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   if (res.ok && opts.hive?.id) {
     hive.spawnStarted(opts.id);
     ptyToAgent.set(opts.id, opts.hive.id);
-    spawnRoots.set(opts.hive.id, { cwd: opts.cwd, provider, isGod: opts.hive.isGod === true, args: [opts.command, ...(opts.args ?? [])], env: relocationEnv(buildPtyEnv(process.env, '', opts.env)), codexHomeFromApp, gen: ++spawnGeneration, scoped: scopedRootsOn, grants: grantedDirs });
+    spawnRoots.set(opts.hive.id, { cwd: opts.cwd, provider, isGod: opts.hive.isGod === true, args: [opts.command, ...(opts.args ?? [])], env: relocationEnv(buildPtyEnv(process.env, '', opts.env)), codexHomeFromApp, gen: ++spawnGeneration, ...hive.spawnScope(opts.hive.id) });
     // Where this worker's Codex rollouts will be written, now that any resume
     // has settled its CODEX_HOME.
     codexHomes.recordSpawn(opts.hive.id, opts.env?.CODEX_HOME, codexResumedSession);

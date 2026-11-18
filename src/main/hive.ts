@@ -635,6 +635,14 @@ export class HiveManager {
       if (count > 0) this.usage({ kind: 'write-fail-closed', ...(m[1] === '_unknown' ? {} : { agentId: m[1] }), reason: m[2], count });
     }
   }
+  /** Per agent, what its latest provisioning decided about scoped roots: whether they are on for it, its role and the
+   *  folders it was granted besides its role's roots. Held in memory, so a later step of the same spawn (a resumed
+   *  Codex home, the record the hook's write check reads) follows the same answer, never a setting changed meanwhile. */
+  private spawnScopes = new Map<string, { scoped: boolean; isGod: boolean; grants: string[] }>();
+  spawnScope(agentId: string): { scoped: boolean; isGod: boolean; grants: string[] } | undefined {
+    const s = this.spawnScopes.get(agentId);
+    return s ? { scoped: s.scoped, isGod: s.isGod, grants: [...s.grants] } : undefined;
+  }
   /** Where usage rows go (the app's local usage log); unset, none are kept. */
   private usageSink: ((row: Record<string, unknown>) => void) | null = null;
   setUsageSink(fn: ((row: Record<string, unknown>) => void) | null): void {
@@ -1433,6 +1441,7 @@ export class HiveManager {
     // Keyed by this spawn, so two overlapping spawns of one agent never share a decision.
     const verdictKey = opts.spawnId ?? meta.id;
     if (verdict) this.hookVerdicts.set(verdictKey, verdict); else this.hookVerdicts.delete(verdictKey);
+    this.spawnScopes.set(meta.id, { scoped, isGod: meta.isGod === true, grants: [...(opts.extraWritableDirs ?? [])] });
     if (!this.hookKind(meta)) this.unconfinedStarting.set(verdictKey, { agentId: meta.id, provider: meta.provider ?? 'custom' });
     mkdirSync(join(dir, 'inbox', '.done'), { recursive: true });
     mkdirSync(join(dir, 'outbox', '.sent'), { recursive: true });
@@ -3427,11 +3436,14 @@ export class HiveManager {
   /** A resume that runs this agent in the home of the agent that owns the session: that home's config.toml is
    *  written fresh for this spawn (its working folder, its write roots, the app's hooks) before the trust step,
    *  as a fresh spawn's own is. The caller has checked the home is one of the computed ones. */
-  prepareResumedCodexHome(agentId: string, cwd: string, home: string, extra: string[] = [], scoped = false, isGod = false): void {
+  prepareResumedCodexHome(agentId: string, cwd: string, home: string, extra: string[] = []): void {
     const root = this.root();
     if (!root) throw new Error('the hive folder is not known');
     const dir = this.agentDir(agentId);
-    this.writeCodexConfig(home, cwd, this.sandboxWritableDirs({ id: agentId, name: agentId, cwd, isGod } as AgentMeta, dir, root, extra, scoped), scoped);
+    // Scoped roots as this agent's provisioning decided them, not as the setting reads now.
+    const scope = this.spawnScope(agentId);
+    const scoped = scope?.scoped === true;
+    this.writeCodexConfig(home, cwd, this.sandboxWritableDirs({ id: agentId, name: agentId, cwd, isGod: scope?.isGod === true } as AgentMeta, dir, root, extra, scoped), scoped);
   }
 
   /** The generated config.toml for a Codex home: the owner's config, the app's lifecycle hooks, directory trust for

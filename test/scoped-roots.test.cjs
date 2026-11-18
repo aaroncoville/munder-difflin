@@ -143,3 +143,13 @@ test('replacing the owner\'s roots: a config with none gains exactly the seat\'s
     assert.equal(withOnlyCodexWritableRoots(user, ['/a', '/b']), withCodexWritableRoots(user, ['/a', '/b']));
   }
 });
+
+test('a resumed Codex home is written with the scoped roots its agent\'s provisioning decided', async (t) => {
+  const f = floor(t);
+  const inj = await codex(f, 'cres', { scopedRoots: true });
+  const home = inj.env.CODEX_HOME;
+  fs.writeFileSync(path.join(home, 'config.toml'), '');
+  f.hive.prepareResumedCodexHome('cres', f.work, home, [f.palace]);
+  assert.deepEqual(parseToml(codexConfig(inj)).sandbox_workspace_write.writable_roots, [f.agentDir('cres'), path.join(f.root, 'evidence'), f.work, f.palace]);
+  assert.deepEqual(f.hive.spawnScope('cres'), { scoped: true, isGod: false, grants: [f.palace] });
+});
