@@ -417,3 +417,64 @@ test('a file whose text holds the marker is withheld', (t) => {
   assert.ok(r.block.includes('DOT CLAUDE FILE'));
   assert.deepEqual({ included: r.included, withheld: r.withheld, reason: r.reason }, { included: 1, withheld: 1, reason: 'unreadable' });
 });
+
+const CAP = 64 * 1024;
+const none = () => false;
+
+test('the 64 KiB cap counts the whole block, framing included, at the exact boundary', (t) => {
+  const f = floor(t);
+  const marker = 'ef'.repeat(16);
+  const file = path.join(f.origin, 'CLAUDE.md');
+  write(file, 'x');
+  const overhead = Buffer.byteLength(repoInstructions(f.origin, f.home, none, marker).block) - 1;
+  write(file, 'x'.repeat(CAP - overhead));
+  const fits = repoInstructions(f.origin, f.home, none, marker);
+  assert.equal(fits.included, 1);
+  assert.equal(Buffer.byteLength(fits.block), CAP, 'exactly at the cap is passed whole');
+  write(file, 'x'.repeat(CAP - overhead + 1));
+  const over = repoInstructions(f.origin, f.home, none, marker);
+  assert.deepEqual({ included: over.included, withheld: over.withheld, reason: over.reason }, { included: 0, withheld: 1, reason: 'too-large' });
+  assert.ok(Buffer.byteLength(over.block) <= CAP);
+  // A body of exactly 64 KiB cannot fit once it is framed.
+  write(file, 'x'.repeat(CAP));
+  assert.equal(repoInstructions(f.origin, f.home, none, marker).reason, 'too-large');
+});
+
+test('long rule file names count toward the cap', (t) => {
+  const f = floor(t);
+  write(path.join(f.origin, 'CLAUDE.md'), 'y'.repeat(CAP - 4 * 1024));
+  for (let i = 0; i < 30; i++) write(path.join(f.origin, '.claude', 'rules', `${String(i).padStart(2, '0')}-${'n'.repeat(180)}.md`), '');
+  const r = repoInstructions(f.origin, f.home, none);
+  assert.equal(r.reason, 'too-large', 'the names and fences push it over');
+  assert.equal(r.included, 0);
+  assert.ok(Buffer.byteLength(r.block) <= CAP);
+});
+
+test('at most 32 rule files are read; more withholds the block as too large', (t) => {
+  const f = floor(t);
+  write(path.join(f.origin, 'CLAUDE.md'), 'ROOT FILE\n');
+  for (let i = 0; i < 32; i++) write(path.join(f.origin, '.claude', 'rules', `r${String(i).padStart(2, '0')}.md`), `RULE ${i}\n`);
+  assert.equal(repoInstructions(f.origin, f.home, none).included, 33);
+  write(path.join(f.origin, '.claude', 'rules', 'r32.md'), 'RULE 32\n');
+  const real = fs.openSync;
+  let opened = 0;
+  fs.openSync = function (p, ...rest) { if (String(p).includes(`${path.sep}rules${path.sep}`)) opened++; return real.call(this, p, ...rest); };
+  let r;
+  try { r = repoInstructions(f.origin, f.home, none); } finally { fs.openSync = real; }
+  assert.deepEqual({ included: r.included, reason: r.reason }, { included: 0, reason: 'too-large' });
+  assert.equal(opened, 0, 'no rule file is read when there are too many');
+});
+
+test('reading stops once the cap is passed', (t) => {
+  const f = floor(t);
+  write(path.join(f.origin, 'CLAUDE.md'), 'a'.repeat(40 * 1024));
+  write(path.join(f.origin, '.claude', 'CLAUDE.md'), 'b'.repeat(40 * 1024));
+  for (let i = 0; i < 10; i++) write(path.join(f.origin, '.claude', 'rules', `r${i}.md`), 'c'.repeat(1024));
+  const real = fs.openSync;
+  let rulesOpened = 0;
+  fs.openSync = function (p, ...rest) { if (String(p).includes(`${path.sep}rules${path.sep}`)) rulesOpened++; return real.call(this, p, ...rest); };
+  let r;
+  try { r = repoInstructions(f.origin, f.home, none); } finally { fs.openSync = real; }
+  assert.equal(r.reason, 'too-large');
+  assert.equal(rulesOpened, 0, 'nothing after the cap was passed is read');
+});
