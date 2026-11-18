@@ -54,3 +54,23 @@ test('a relative path with no working folder in the hook call is refused', (t) =
   }
   assert.equal(refusedWrite('Write', { file_path: path.join(f.work, 'a.ts') }, f.ctx()), null, 'an absolute path needs no working folder');
 });
+
+test('a write to an existing file with more than one hard link is refused, in every root', (t) => {
+  const f = floor(t);
+  const outside = path.join(f.base, 'outside.txt');
+  fs.writeFileSync(outside, 'theirs');
+  const tmp = path.join(f.base, 'tmp');
+  fs.mkdirSync(tmp);
+  const c = { ...f.ctx(), temp: [tmp] };
+  for (const dir of [f.me, path.join(f.root, 'evidence'), f.work, tmp]) {
+    const alias = path.join(dir, 'alias.txt');
+    fs.linkSync(outside, alias);
+    for (const tool of ['Write', 'Edit', 'MultiEdit']) assert.equal(refusedWrite(tool, { file_path: alias }, c), 'hard link', `${tool} in ${dir}`);
+    assert.equal(refusedWrite('apply_patch', { input: `*** Update File: ${alias}\n` }, c), 'hard link', `patch in ${dir}`);
+    const plain = path.join(dir, 'plain.txt');
+    fs.writeFileSync(plain, 'mine');
+    assert.equal(refusedWrite('Write', { file_path: plain }, c), null, `a file with one link in ${dir}`);
+    assert.equal(refusedWrite('Write', { file_path: path.join(dir, 'new.txt') }, c), null, `a new file in ${dir}`);
+    fs.rmSync(alias);
+  }
+});

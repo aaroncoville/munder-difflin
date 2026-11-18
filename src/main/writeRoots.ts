@@ -466,7 +466,7 @@ export const isProtectedWrite = (tool: unknown): boolean => typeof tool === 'str
  *  cannot all be read (past the path bounds, a patch with no file lines) reads `unknown` and is refused. A relative
  *  path is read against `callCwd`, the working folder the hook call reports, since the CLI may have moved since it was
  *  spawned; with no absolute call folder it cannot be read and is refused. Tools other than the protected ones are null. */
-export function refusedWrite(tool: unknown, input: unknown, ctx: RootsContext, callCwd?: unknown): PathClass | null {
+export function refusedWrite(tool: unknown, input: unknown, ctx: RootsContext, callCwd?: unknown): PathClass | 'hard link' | null {
   if (!isProtectedWrite(tool)) return null;
   return withMemo(() => {
     const r = rec(input);
@@ -483,6 +483,9 @@ export function refusedWrite(tool: unknown, input: unknown, ctx: RootsContext, c
       if (!isAbsolute(p) && !base) return 'unknown';
       const abs = canonical(isAbsolute(p) ? p : join(base as string, p));
       if (!allowed.some((a) => within(abs, a))) return pathClass(abs, ctx);
+      // A file with another hard link is the same object as a name that may sit outside every root: writing it would
+      // change that object too, so an existing target with more than one link is refused wherever it is.
+      try { const st = lstatSync(abs); if (st.isFile() && st.nlink > 1) return 'hard link'; } catch { /* not there yet */ }
     }
     return null;
   });
