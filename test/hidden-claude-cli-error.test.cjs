@@ -47,3 +47,10 @@ test('no assistant record at all is null, so the transcript race can still be re
   assert.equal(lastAssistantReply(jsonl(user)), null);
   assert.equal(lastAssistantReply(''), null);
 });
+
+test('a runaway CLI error message is cut to 500 characters', () => {
+  const long = { ...loginExpired, message: { ...loginExpired.message, content: [{ type: 'text', text: 'x'.repeat(5000) }] } };
+  const out = lastAssistantReply(jsonl(user, long));
+  assert.equal(out.error.length, 500);
+  assert.match(out.error, /^the CLI answered with an error instead of the model: authentication_failed: x+$/);
+});
