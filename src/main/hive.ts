@@ -4366,7 +4366,13 @@ process.stdin.on('data', (d) => { data += d; });
 process.stdin.on('end', () => {
   let payload = {};
   try { payload = JSON.parse(data || '{}'); } catch (_) {}
-  if (!payload.agent_id) payload.agent_id = process.env.AGENT_ID || null;
+  // The id goes first: an oversized frame is refused unread, and the app can
+  // name its sender only from the first few kilobytes.
+  if (!payload.agent_id) {
+    const rest = Object.assign({}, payload);
+    delete rest.agent_id;
+    payload = Object.assign({ agent_id: process.env.AGENT_ID || null }, rest);
+  }
   const sock = process.env.HIVE_SOCK;
   if (isStatus) {
     // Status-line mode: Claude Code pipes the session status JSON (incl.
