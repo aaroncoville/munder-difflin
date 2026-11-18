@@ -489,3 +489,36 @@ test('a file holding a NUL byte is withheld, so nothing after it is lost from th
   assert.ok(prompt.includes('DOT CLAUDE FILE'));
   assert.deepEqual(repoRows(f, 'nul1'), [{ kind: 'repo-instructions', agentId: 'nul1', included: 1, withheld: 1, reason: 'unreadable' }]);
 });
+
+test('a seat that is still starting counts as live, from its admission until its terminal is up', async (t) => {
+  const f = floor(t);
+  write(path.join(f.origin, 'CLAUDE.md'), 'ROOT FILE: present.\n');
+  f.hive.setLiveSeats(() => []);
+  const id = 'st-live';
+  const settings = f.hive.seatSettingsPath(id);
+  // Admitted: the decision is made, and its roots (the origin checkout) are on record.
+  const inj = await f.hive.ensureAgent({ id, name: id, provider: 'claude', cwd: f.origin }, { spawnId: `pty-${id}`, launch: { argv: ['claude', '--settings', settings], env: {} } });
+  const admitted = promptOf((await spawnWorker(f, 'st1')).args);
+  assert.equal(admitted.includes('ROOT FILE'), false, 'withheld while the seat is admitted');
+  assert.deepEqual(repoRows(f, 'st1'), [{ kind: 'repo-instructions', agentId: 'st1', included: 0, withheld: 1, reason: 'writable' }]);
+  // Past the late check, terminal not yet started.
+  f.hive.markHookProvisioned(`pty-${id}`);
+  f.hive.confirmSpawn(`pty-${id}`, { id, provider: 'claude' }, ['claude', ...inj.args], {});
+  const confirmed = promptOf((await spawnWorker(f, 'st2')).args);
+  assert.equal(confirmed.includes('ROOT FILE'), false, 'withheld while its terminal is starting');
+  // Its terminal never started: it is no longer starting, and not live.
+  f.hive.withdrawRefusedSpawn(`pty-${id}`, 'the terminal did not start');
+  const gone = promptOf((await spawnWorker(f, 'st3')).args);
+  assert.ok(gone.includes('ROOT FILE'));
+});
+
+test('a seat the app does not sandbox that is still starting withholds every file', async (t) => {
+  const f = floor(t);
+  write(path.join(f.origin, 'CLAUDE.md'), 'ROOT FILE: present.\n');
+  f.hive.setLiveSeats(() => []);
+  await f.hive.ensureAgent({ id: 'gm1', name: 'gm1', provider: 'gemini', cwd: f.base }, { spawnId: 'pty-gm1' });
+  const prompt = promptOf((await spawnWorker(f, 'us1')).args);
+  assert.equal(prompt.includes('ROOT FILE'), false);
+  f.hive.spawnSettled('pty-gm1');
+  assert.ok(promptOf((await spawnWorker(f, 'us2')).args).includes('ROOT FILE'), 'once it is no longer starting');
+});

@@ -1046,9 +1046,12 @@ export class HiveManager {
   /** Per agent, the write roots its last started spawn was checked against. */
   private startedRoots = new Map<string, string[]>();
   /** The write roots of every live seat, or null when one of them may write anywhere: a seat the app does not sandbox,
-   *  or one with no checked roots on record. */
+   *  or one with no checked roots on record. A seat that is still starting (admitted, its terminal not yet up) counts,
+   *  with the roots its admission was checked against. */
   private liveSeatRoots(): string[] | null {
+    if (this.unconfinedStarting.size) return null;
     const out: string[] = [];
+    for (const v of [...this.hookVerdicts.values(), ...this.startingSpawns.values()]) out.push(...v.rootPaths);
     for (const s of this.liveSeats()) {
       const roots = this.hookKind({ provider: s.provider } as AgentMeta) ? this.startedRoots.get(s.agentId) : undefined;
       if (!roots) return null;
