@@ -90,6 +90,7 @@ import { buildWorkerLaunch } from './workerLaunch';
 import { isFolderName, RefusedRosterId, RegistryUnreadable, shortTarget } from './messageTarget';
 import { HookRuntimeUnavailable } from './hookRuntime';
 import { PrivateDirRefused, registerPrivateDir } from './privateDirs';
+import { sourceCheckout } from './repoInstructions';
 import { SeatSettingsRefused } from './seatSettings';
 import { relocationEnv } from './launchLine';
 import { buildPtyEnv } from './ptyEnv';
@@ -3024,6 +3025,9 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
           mcpDefaults: readConfig().mcpDefaults,
           agentPlugins: readConfig().agentPlugins,
           scopedRoots: readConfig().scopedRoots === true,
+          // The checkout this seat was started from, as the app recorded it: an isolated worker's origin (never its
+          // worktree), else the cwd when it is a git checkout. With scopedRoots its repository's instructions come from there.
+          repoCheckout: readConfig().scopedRoots === true ? await sourceCheckout(worktreeOrigins.get(opts.id), opts.cwd, isRepo) : undefined,
           skillsDir: skillsResourceDir(),
           // The launch as requested, with the environment the terminal will build, so the hook runtime
           // decision is made once, before anything for this agent is created.

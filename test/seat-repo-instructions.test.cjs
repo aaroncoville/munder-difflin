@@ -1,0 +1,269 @@
+'use strict';
+/**
+ * With scopedRoots on, a Claude seat is told its repository's instructions by the app.
+ *
+ * `--setting-sources user` keeps a repository's settings and hooks away from the seat, and with them its CLAUDE.md and
+ * .claude/rules, so a seat started in a repository loses that repository's instructions. The app gives them back in
+ * the seat's appended system prompt, read from the checkout the seat was started from as the app recorded it (an
+ * isolated worker's origin checkout, never its worktree), from the working tree, never from git objects.
+ *
+ * A file any live seat, or this seat itself, can write is withheld; so is a link or anything that is not a regular
+ * file, and the whole block when it is over 64 KiB. Each spawn that found a repository writes one usage row of counts
+ * and classes. Off (the default), the prompt, the launch line and the rows are what they were.
+ */
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const vm = require('node:vm');
+const { execFileSync } = require('node:child_process');
+const loadTs = require('./load-ts.cjs');
+const { codexTestBase, jailHome } = require('./codex-test-home.cjs');
+const { withSeatSettings } = require('./seat-settings-dir.cjs');
+
+// config.ts reads the app's data folder through electron: a throwaway one here.
+const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'md-repoins-cfg-'));
+const electron = require.resolve('electron');
+require.cache[electron] = { id: electron, filename: electron, loaded: true, exports: { app: { getPath: () => userData } } };
+test.after(() => fs.rmSync(userData, { recursive: true, force: true }));
+
+const { HiveManager } = loadTs('src/main/hive.ts');
+const { sanitize } = loadTs('src/main/usageLog.ts');
+const { sourceCheckout } = loadTs('src/main/repoInstructions.ts');
+const { isRepo } = loadTs('src/main/git.ts');
+
+const HEADER = 'Repository instructions (';
+const WRITABLE_LINE = 'Some repository instructions were withheld because an agent can write them.';
+const LARGE_LINE = 'Some repository instructions were withheld because they are too large.';
+const PROSE = 'a kingfisher flashed low across the weir and vanished under the alder roots';
+
+/** A hive with a hook runtime, a jailed HOME, and an origin checkout at <home>/code/origin with one parent folder
+ *  (<home>/code) between it and HOME. An isolated worker's worktree sits apart, under <base>/wt. */
+function floor(t) {
+  const base = codexTestBase(t, 'mdri-');
+  const home = path.join(base, 'home');
+  const harness = path.join(base, 'h');
+  const parent = path.join(home, 'code');
+  const origin = path.join(parent, 'origin');
+  const worktree = path.join(base, 'wt', 'w1');
+  for (const d of [path.join(home, '.claude'), harness, path.join(origin, '.claude', 'rules'), worktree]) fs.mkdirSync(d, { recursive: true });
+  jailHome(t, home);
+  const runtime = fs.realpathSync(fs.mkdtempSync('/tmp/mdrir-'));
+  t.after(() => fs.rmSync(runtime, { recursive: true, force: true }));
+  const hive = withSeatSettings(new HiveManager(() => harness));
+  hive.setHookRuntime(runtime);
+  t.after(() => hive.setHookRuntime(null));
+  hive.managedClaudeSettings = path.join(base, 'managed', 'managed-settings.json');
+  const rows = [];
+  hive.setUsageSink((row) => rows.push(row));
+  hive.ensureHive();
+  return { base, home, harness, parent, origin, worktree, hive, rows };
+}
+
+/** An isolated worker: it runs in the worktree, and the app recorded the origin as the checkout it was started from. */
+const spawnWorker = (f, id, opts = {}) => f.hive.ensureAgent(
+  { id, name: id, provider: 'claude', cwd: f.worktree },
+  { spawnId: `pty-${id}`, scopedRoots: true, repoCheckout: f.origin, ...opts }
+);
+const promptOf = (args) => args[args.indexOf('--append-system-prompt') + 1];
+const repoRows = (f, id) => f.rows.filter((r) => r.kind === 'repo-instructions' && (id === undefined || r.agentId === id));
+const write = (file, text) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); };
+
+test('an isolated worker gets its origin checkout\'s CLAUDE.md, and an edit to the worktree\'s copy changes nothing', async (t) => {
+  const f = floor(t);
+  write(path.join(f.origin, 'CLAUDE.md'), 'ORIGIN RULE: run the linter before every commit.\n');
+  write(path.join(f.worktree, 'CLAUDE.md'), 'ORIGIN RULE: run the linter before every commit.\n');
+  const before = promptOf((await spawnWorker(f, 'w1')).args);
+  assert.ok(before.includes(`${HEADER}origin)`), 'the block names the checkout folder');
+  assert.ok(before.includes('ORIGIN RULE: run the linter before every commit.'));
+
+  // The seat edits its own (worktree) copy: the next spawn still reads the origin's.
+  write(path.join(f.worktree, 'CLAUDE.md'), `WORKTREE EDIT: skip the linter. ${PROSE}\n`);
+  const after = promptOf((await spawnWorker(f, 'w1')).args);
+  assert.equal(after.includes('WORKTREE EDIT'), false, 'the worktree copy is never read');
+  assert.ok(after.includes('ORIGIN RULE: run the linter before every commit.'));
+  assert.equal(after, before, 'the prompt is what it was');
+});
+
+test('the merge: root, .claude/CLAUDE.md, a parent, then rules without paths, in that order; nothing else', async (t) => {
+  const f = floor(t);
+  write(path.join(f.home, 'CLAUDE.md'), 'HOME FILE: never included.\n');
+  write(path.join(f.parent, 'CLAUDE.md'), 'PARENT FILE: the code folder.\n');
+  write(path.join(f.origin, 'CLAUDE.md'), 'ROOT FILE: first.\n@docs/imported.md\n');
+  write(path.join(f.origin, 'docs', 'imported.md'), 'IMPORTED FILE: must never appear.\n');
+  write(path.join(f.origin, '.claude', 'CLAUDE.md'), 'DOT CLAUDE FILE: second.\n');
+  write(path.join(f.origin, '.claude', 'rules', 'b-style.md'), '---\ndescription: style\n---\nRULE B: no paths field.\n');
+  write(path.join(f.origin, '.claude', 'rules', 'a-plain.md'), 'RULE A: no front matter.\n');
+  write(path.join(f.origin, '.claude', 'rules', 'c-scoped.md'), '---\npaths:\n  - "src/**/*.ts"\n---\nRULE C: scoped to paths.\n');
+  write(path.join(f.origin, '.claude', 'rules', 'notes.txt'), 'NOT MARKDOWN.\n');
+  write(path.join(f.origin, 'CLAUDE.local.md'), 'LOCAL FILE: never included.\n');
+  write(path.join(f.origin, 'pkg', 'CLAUDE.md'), 'SUBFOLDER FILE: never included.\n');
+
+  const prompt = promptOf((await spawnWorker(f, 'm1')).args);
+  const order = ['ROOT FILE', 'DOT CLAUDE FILE', 'PARENT FILE', 'RULE A', 'RULE B'].map((s) => prompt.indexOf(s));
+  assert.ok(order.every((i) => i > 0), `all five are included: ${order}`);
+  assert.deepEqual([...order].sort((a, b) => a - b), order, 'in the documented order');
+  for (const s of ['HOME FILE', 'RULE C', 'NOT MARKDOWN', 'LOCAL FILE', 'SUBFOLDER FILE', 'IMPORTED FILE']) assert.equal(prompt.includes(s), false, s);
+  assert.ok(prompt.includes('@docs/imported.md'), 'an import stays literal text');
+  // Each file is preceded by its path relative to the checkout.
+  for (const rel of ['CLAUDE.md', path.join('.claude', 'CLAUDE.md'), path.join('..', 'CLAUDE.md'), path.join('.claude', 'rules', 'a-plain.md')]) {
+    assert.ok(prompt.includes(rel), rel);
+  }
+  assert.equal(prompt.includes(f.origin), false, 'no absolute path of the checkout');
+  assert.equal(prompt.includes(WRITABLE_LINE), false, 'nothing was withheld');
+  assert.deepEqual(repoRows(f, 'm1'), [{ kind: 'repo-instructions', agentId: 'm1', included: 5, withheld: 0 }]);
+});
+
+test('a file a live seat can write is withheld, with the line and a row', async (t) => {
+  const f = floor(t);
+  write(path.join(f.origin, 'CLAUDE.md'), `ROOT FILE: ${PROSE}\n`);
+  write(path.join(f.parent, 'CLAUDE.md'), 'PARENT FILE: the code folder.\n');
+  // A seat runs in the origin checkout itself: its roots reach the checkout's files, not the parent folder's.
+  const settings = f.hive.seatSettingsPath('live1');
+  const launch = { argv: ['claude', '--settings', settings], env: {} };
+  const live = await f.hive.ensureAgent({ id: 'live1', name: 'live1', provider: 'claude', cwd: f.origin }, { spawnId: 'pty-live1', launch });
+  f.hive.markHookProvisioned('pty-live1');
+  f.hive.confirmSpawn('pty-live1', { id: 'live1', provider: 'claude' }, ['claude', ...live.args], {});
+  f.hive.spawnStarted('pty-live1');
+  let seats = [{ agentId: 'live1', provider: 'claude' }];
+  f.hive.setLiveSeats(() => seats);
+
+  const prompt = promptOf((await spawnWorker(f, 'w2')).args);
+  assert.equal(prompt.includes('ROOT FILE'), false, 'the file the live seat can write is withheld');
+  assert.ok(prompt.includes('PARENT FILE'), 'a file it cannot reach is still included');
+  assert.ok(prompt.includes(WRITABLE_LINE));
+  assert.deepEqual(repoRows(f, 'w2'), [{ kind: 'repo-instructions', agentId: 'w2', included: 1, withheld: 1, reason: 'writable' }]);
+
+  // Once that seat is no longer live, the file is included again.
+  seats = [];
+  const later = promptOf((await spawnWorker(f, 'w2')).args);
+  assert.ok(later.includes('ROOT FILE'));
+  assert.equal(later.includes(WRITABLE_LINE), false);
+});
+
+test('a live seat the app does not sandbox can write anything, so every file is withheld', async (t) => {
+  const f = floor(t);
+  write(path.join(f.origin, 'CLAUDE.md'), 'ROOT FILE: present.\n');
+  f.hive.setLiveSeats(() => [{ agentId: 'g1', provider: 'gemini' }]);
+  const prompt = promptOf((await spawnWorker(f, 'u1')).args);
+  assert.equal(prompt.includes('ROOT FILE'), false);
+  assert.ok(prompt.includes(WRITABLE_LINE));
+  assert.deepEqual(repoRows(f, 'u1'), [{ kind: 'repo-instructions', agentId: 'u1', included: 0, withheld: 1, reason: 'writable' }]);
+});
+
+test('a seat started in the checkout itself: its own roots reach the checkout\'s files, so they are withheld', async (t) => {
+  const f = floor(t);
+  write(path.join(f.origin, 'CLAUDE.md'), 'ROOT FILE: present.\n');
+  write(path.join(f.parent, 'CLAUDE.md'), 'PARENT FILE: the code folder.\n');
+  const { args } = await f.hive.ensureAgent({ id: 's1', name: 's1', provider: 'claude', cwd: f.origin }, { spawnId: 'pty-s1', scopedRoots: true, repoCheckout: f.origin });
+  const prompt = promptOf(args);
+  assert.equal(prompt.includes('ROOT FILE'), false);
+  assert.ok(prompt.includes('PARENT FILE'));
+  assert.deepEqual(repoRows(f, 's1'), [{ kind: 'repo-instructions', agentId: 's1', included: 1, withheld: 1, reason: 'writable' }]);
+});
+
+test('a link at CLAUDE.md is withheld', async (t) => {
+  const f = floor(t);
+  write(path.join(f.base, 'elsewhere.md'), `LINKED TEXT: ${PROSE}\n`);
+  fs.symlinkSync(path.join(f.base, 'elsewhere.md'), path.join(f.origin, 'CLAUDE.md'));
+  write(path.join(f.origin, '.claude', 'CLAUDE.md'), 'DOT CLAUDE FILE: included.\n');
+  const prompt = promptOf((await spawnWorker(f, 'l1')).args);
+  assert.equal(prompt.includes('LINKED TEXT'), false);
+  assert.ok(prompt.includes('DOT CLAUDE FILE'));
+  assert.ok(prompt.includes(WRITABLE_LINE));
+  assert.deepEqual(repoRows(f, 'l1'), [{ kind: 'repo-instructions', agentId: 'l1', included: 1, withheld: 1, reason: 'link' }]);
+});
+
+test('a FIFO at CLAUDE.md is withheld and does not block the spawn', { skip: process.platform === 'win32' }, async (t) => {
+  const f = floor(t);
+  execFileSync('mkfifo', [path.join(f.origin, 'CLAUDE.md')]);
+  write(path.join(f.origin, '.claude', 'CLAUDE.md'), 'DOT CLAUDE FILE: included.\n');
+  let timer;
+  const hung = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('the spawn blocked on a FIFO')), 5000); });
+  const { args } = await Promise.race([spawnWorker(f, 'p1'), hung]).finally(() => clearTimeout(timer));
+  const prompt = promptOf(args);
+  assert.ok(prompt.includes('DOT CLAUDE FILE'));
+  assert.ok(prompt.includes(WRITABLE_LINE));
+  assert.deepEqual(repoRows(f, 'p1'), [{ kind: 'repo-instructions', agentId: 'p1', included: 1, withheld: 1, reason: 'unreadable' }]);
+});
+
+test('over 64 KiB in total: nothing is included, and the block is withheld as too large', async (t) => {
+  const f = floor(t);
+  write(path.join(f.origin, 'CLAUDE.md'), `ROOT FILE START\n${'r'.repeat(40 * 1024)}\n`);
+  write(path.join(f.origin, '.claude', 'CLAUDE.md'), `DOT CLAUDE START\n${'d'.repeat(30 * 1024)}\n`);
+  const prompt = promptOf((await spawnWorker(f, 'big1')).args);
+  for (const s of ['ROOT FILE START', 'DOT CLAUDE START', 'rrrrrrrr', 'dddddddd']) assert.equal(prompt.includes(s), false, s);
+  assert.ok(prompt.includes(LARGE_LINE));
+  assert.deepEqual(repoRows(f, 'big1'), [{ kind: 'repo-instructions', agentId: 'big1', included: 0, withheld: 2, reason: 'too-large' }]);
+
+  // Just under the cap is included whole.
+  fs.rmSync(path.join(f.origin, '.claude', 'CLAUDE.md'));
+  const fits = promptOf((await spawnWorker(f, 'big1')).args);
+  assert.ok(fits.includes(`ROOT FILE START\n${'r'.repeat(40 * 1024)}`), 'never truncated');
+  assert.equal(fits.includes(LARGE_LINE), false);
+});
+
+test('rows pass the usage log allowlist, count what was included, and carry no path or text', async (t) => {
+  const f = floor(t);
+  write(path.join(f.origin, 'CLAUDE.md'), `${PROSE}\n`);
+  write(path.join(f.origin, '.claude', 'rules', 'one.md'), `${PROSE}\n`);
+  fs.symlinkSync(path.join(f.origin, 'CLAUDE.md'), path.join(f.origin, '.claude', 'CLAUDE.md'));
+  await spawnWorker(f, 'r1');
+  const rows = repoRows(f);
+  assert.deepEqual(rows, [{ kind: 'repo-instructions', agentId: 'r1', included: 2, withheld: 1, reason: 'link' }]);
+  for (const row of rows) {
+    assert.deepEqual(sanitize(row, { isAgent: (id) => id === 'r1', isCard: () => false }), row, 'written as it is');
+  }
+  for (const row of f.rows) {
+    const text = JSON.stringify(row);
+    for (const s of ['kingfisher', f.origin, f.base, 'CLAUDE.md', 'one.md']) assert.equal(text.includes(s), false, `${row.kind}: ${s}`);
+  }
+});
+
+test('flag off: the prompt and launch line are unchanged, and no row is written', async (t) => {
+  const f = floor(t);
+  write(path.join(f.origin, 'CLAUDE.md'), 'ROOT FILE: present.\n');
+  const plain = await f.hive.ensureAgent({ id: 'o1', name: 'o1', provider: 'claude', cwd: f.worktree }, { spawnId: 'pty-o1' });
+  const off = await spawnWorker(f, 'o1', { scopedRoots: false });
+  assert.deepEqual(off.args, plain.args);
+  assert.equal(promptOf(off.args).includes(HEADER), false);
+  assert.deepEqual(repoRows(f), []);
+});
+
+test('no repository: no block and no row', async (t) => {
+  const f = floor(t);
+  write(path.join(f.worktree, 'CLAUDE.md'), 'WORKTREE FILE: not a recorded checkout.\n');
+  const { args } = await spawnWorker(f, 'n1', { repoCheckout: undefined });
+  const prompt = promptOf(args);
+  assert.equal(prompt.includes(HEADER), false);
+  assert.equal(prompt.includes('WORKTREE FILE'), false);
+  assert.deepEqual(repoRows(f), []);
+});
+
+// The spawn core passes the checkout it recorded: an isolated worker's origin, else the cwd when it is a git checkout.
+// The expression is taken from index.ts as written and run against the real sourceCheckout and isRepo.
+async function recordedCheckout({ scopedRoots, origins, cwd, id = 'pty-1' }) {
+  const source = fs.readFileSync(path.resolve(__dirname, '..', 'src/main/index.ts'), 'utf8');
+  const call = source.indexOf('const inj = await hive.ensureAgent(');
+  const line = source.slice(call, source.indexOf('hive.markHookProvisioned(opts.id);', call)).split('\n').find((l) => /^\s*repoCheckout:/.test(l));
+  assert.ok(line, 'the spawn core passes repoCheckout to ensureAgent');
+  const run = vm.runInNewContext(`(async () => ({ ${line.trim().replace(/,$/, '')} }))`, {
+    opts: { id, cwd }, worktreeOrigins: origins, readConfig: () => ({ scopedRoots }), sourceCheckout, isRepo
+  });
+  return (await run()).repoCheckout;
+}
+
+test('the spawn core records the origin for an isolated worker, the cwd for a git checkout, and nothing otherwise', { skip: process.platform === 'win32' }, async (t) => {
+  const base = codexTestBase(t, 'mdrc-');
+  const repo = path.join(base, 'repo');
+  const plain = path.join(base, 'plain');
+  const worktree = path.join(base, 'wt');
+  for (const d of [repo, plain, worktree]) fs.mkdirSync(d);
+  execFileSync('git', ['init', '-q', repo]);
+  execFileSync('git', ['init', '-q', worktree]);
+  assert.equal(await recordedCheckout({ scopedRoots: true, origins: new Map([['pty-1', repo]]), cwd: worktree }), repo, 'the origin, not the worktree');
+  assert.equal(await recordedCheckout({ scopedRoots: true, origins: new Map(), cwd: repo }), repo);
+  assert.equal(await recordedCheckout({ scopedRoots: true, origins: new Map(), cwd: plain }), undefined, 'not a git checkout');
+  assert.equal(await recordedCheckout({ scopedRoots: false, origins: new Map([['pty-1', repo]]), cwd: repo }), undefined, 'flag off');
+});

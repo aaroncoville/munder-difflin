@@ -38,6 +38,7 @@ import { setAsideUnlessFolder } from './sentFolder';
 import { COMMAND_GROUPS } from '../shared/claudeCommands';
 import { codexShortHomeRoot } from '../shared/codexRemote';
 import { PrivateDirRefused, privateDirsReach, registerPrivateDir } from './privateDirs';
+import { repoInstructions } from './repoInstructions';
 import { checkSeatSettingsTarget, seatSettingsFile, writeSeatSettings } from './seatSettings';
 import { claudeFileHooks, claudeHookEntries, hookInventoryRow, type SourceHooks } from './hookInventory';
 import { ownerHooks } from './codexHookTrust';
@@ -1026,6 +1027,9 @@ export class HiveManager {
   }
   /** The terminal for this spawn started: nothing of it is rolled back any more. */
   spawnStarted(spawnId: string): void {
+    // The roots its decision was checked against, for as long as it is live (liveSeatRoots).
+    const started = this.startingSpawns.get(spawnId);
+    if (started) this.startedRoots.set(started.agentId, started.rootPaths);
     this.startingSpawns.delete(spawnId);
     // Running now, it is reported by the live seats instead.
     this.unconfinedStarting.delete(spawnId);
@@ -1038,6 +1042,36 @@ export class HiveManager {
   /** The app's running agents and their providers (the terminals it started), for the checks above. */
   setLiveSeats(fn: () => Array<{ agentId: string; provider: string }>): void {
     this.liveSeats = fn;
+  }
+  /** Per agent, the write roots its last started spawn was checked against. */
+  private startedRoots = new Map<string, string[]>();
+  /** The write roots of every live seat, or null when one of them may write anywhere: a seat the app does not sandbox,
+   *  or one with no checked roots on record. */
+  private liveSeatRoots(): string[] | null {
+    const out: string[] = [];
+    for (const s of this.liveSeats()) {
+      const roots = this.hookKind({ provider: s.provider } as AgentMeta) ? this.startedRoots.get(s.agentId) : undefined;
+      if (!roots) return null;
+      out.push(...roots);
+    }
+    return out;
+  }
+  /** With scopedRoots, the repository instructions a Claude seat is given in its prompt, from the checkout the app
+   *  recorded for it (repoInstructions.ts), and one usage row of counts. A file this seat or any live seat can write is
+   *  withheld. Never throws: a spawn is never refused for its repository's instructions. */
+  private repoInstructionsText(meta: AgentMeta, dir: string, root: string, checkout: string, verdict: HookVerdict | null, extra: string[] | undefined, launch: HookLaunch | undefined): string {
+    try {
+      let own: string[] | null = verdict ? verdict.rootPaths : null;
+      if (!verdict) {
+        const r = this.verdictRoots(meta, dir, root, extra, launch);
+        own = 'refuse' in r || r.roots.some((x) => x.path === null) ? null : r.roots.map((x) => x.path as string);
+      }
+      const live = this.liveSeatRoots();
+      const roots = own && live ? [...own, ...live] : null;
+      const r = repoInstructions(checkout, homedir(), (file) => roots === null || roots.some((p) => overlaps(file, p)));
+      this.usage({ kind: 'repo-instructions', agentId: meta.id, included: r.included, withheld: r.withheld, ...(r.reason ? { reason: r.reason } : {}) });
+      return r.block ? `\n\n${r.block}` : '';
+    } catch { return ''; }
   }
   /** Agents the app does not sandbox that are starting or running. */
   private unconfinedSeats(): Array<{ agentId: string; provider: string }> {
@@ -1458,6 +1492,9 @@ export class HiveManager {
       /** Launch Claude seats with `--setting-sources user`: no project or local settings files; and give Claude and Codex
        *  seats only the write roots their role needs (writeRoots.ts scopedRoots) instead of the whole hive (config scopedRoots). */
       scopedRoots?: boolean;
+      /** The checkout this seat was started from, as the app recorded it (an isolated worker's origin, else its cwd when
+       *  that is a git checkout). With scopedRoots, a Claude seat is given that repository's instructions. */
+      repoCheckout?: string;
     } = {}
   ): Promise<SpawnInjection> {
     // One read for the whole operation. registry() reads a failure as an empty roster, and this would then replace the
@@ -1790,7 +1827,10 @@ export class HiveManager {
     const args: string[] = [];
     if (!claudeProvider) return { args, env };
 
-    args.push('--append-system-prompt', this.injectedPrompt(meta, dir, root, opts.semanticMemory ?? false, opts.knowledgeGraph ?? false, opts.kgCliPath));
+    // With scopedRoots the seat does not load the repository's CLAUDE.md or rules itself, so the app passes them.
+    const repoText = opts.scopedRoots === true && opts.repoCheckout && isAbsolute(opts.repoCheckout)
+      ? this.repoInstructionsText(meta, dir, root, opts.repoCheckout, verdict, opts.extraWritableDirs, opts.launch) : '';
+    args.push('--append-system-prompt', this.injectedPrompt(meta, dir, root, opts.semanticMemory ?? false, opts.knowledgeGraph ?? false, opts.kgCliPath) + repoText);
 
     // Phase 1 — autonomy: attach lifecycle hooks via --settings (no edits to the
     // user's repo) so the agent reports activity and drains its inbox on Stop.
