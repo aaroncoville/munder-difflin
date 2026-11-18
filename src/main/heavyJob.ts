@@ -266,6 +266,9 @@ export interface HeavyCall {
   why?: string;
   /** The provider session that made the call, for providers that run several under one PTY. */
   session?: string;
+  /** The subagent that made the call, when it was not the agent's main thread. A subagent can run past its agent's
+   *  turn, so the turn ending says nothing about whether this call has finished. */
+  by?: string;
   since: number;
   /** Last acquire or sighting in a process listing: the TTL runs from here. */
   touched: number;
@@ -348,7 +351,7 @@ export class HeavyJobLock {
   }
 
   /** PreToolUse: a heavy call from `agentId`. Take a slot, or queue it. */
-  acquire(agentId: string, cls: HeavyClass, command: string, callId: string, background: boolean, session?: string): HeavyDecision {
+  acquire(agentId: string, cls: HeavyClass, command: string, callId: string, background: boolean, session?: string, by?: string): HeavyDecision {
     const limit = this.d.limit();
     if (limit === 'off' || !cls.heavy || !cls.kind) {
       if (limit === 'off') this.dropWaiting(agentId);
@@ -362,7 +365,7 @@ export class HeavyJobLock {
     if (!reserved && this.calls.size + this.reservations.size >= limit) return this.refuse(agentId, cls, limit);
     const now = this.now();
     const key = this.nextKey++;
-    this.calls.set(key, { key, agentId, callId, kind: cls.kind, label: cls.why ?? cls.kind, command: command.slice(0, COMMAND_KEEP), why: cls.why, session, since: now, touched: now, background, posted: false, seen: false, misses: 0 });
+    this.calls.set(key, { key, agentId, callId, kind: cls.kind, label: cls.why ?? cls.kind, command: command.slice(0, COMMAND_KEEP), why: cls.why, session, ...(by ? { by } : {}), since: now, touched: now, background, posted: false, seen: false, misses: 0 });
     // How long the agent queued for this slot, for the usage log (measure only).
     const waitMs = reserved && reservation?.queuedSince !== undefined ? now - reservation.queuedSince : undefined;
     this.log({ kind: 'heavy-lock', action: 'acquire', agentId, heavyKind: cls.kind, job: cls.why, background, limit, reserved, ...(waitMs !== undefined ? { waitMs } : {}) });
@@ -406,7 +409,8 @@ export class HeavyJobLock {
   /** PostToolUse of a heavy call. Calls that share an id share a command, and scans bind the oldest
    *  first, so the oldest is the one that can be running. */
   callDone(agentId: string, callId: string): void {
-    const call = this.callsOf(agentId).find((c) => c.callId === callId && !c.posted);
+    // A subagent's foreground call is marked posted when its agent's turn ends, and still ends with its own PostToolUse.
+    const call = this.callsOf(agentId).find((c) => c.callId === callId && (!c.posted || (c.by !== undefined && !c.background)));
     if (!call) return;
     if (call.background) call.posted = true;
     else this.release(call.key, 'posttool');
@@ -415,10 +419,21 @@ export class HeavyJobLock {
   /** The agent's turn ended, so no foreground call of its can still be running. This catches the
    *  calls that never get a PostToolUse: one the user rejected at the permission prompt (which
    *  comes after PreToolUse) and one that was interrupted. With `session`, only that provider
-   *  session's turn ended, and the agent's other sessions may still be running calls. */
+   *  session's turn ended, and the agent's other sessions may still be running calls. A subagent's call is left to its
+   *  own end (subagentDone, its PostToolUse) or the process scan, as a background call is: the subagent can still be
+   *  running it. */
   turnOver(agentId: string, session?: string): void {
     for (const c of this.callsOf(agentId)) {
       if (session !== undefined && c.session !== session) continue;
+      if (c.background || c.by !== undefined) c.posted = true;
+      else this.release(c.key, 'turn-end');
+    }
+  }
+
+  /** A subagent of the agent stopped: no foreground call it made can still be running. */
+  subagentDone(agentId: string, by: string): void {
+    for (const c of this.callsOf(agentId)) {
+      if (c.by !== by) continue;
       if (c.background) c.posted = true;
       else this.release(c.key, 'turn-end');
     }
@@ -564,19 +579,20 @@ function heavyCallId(p: HeavyHookPayload): string {
 /** PreToolUse: take a slot for a heavy call. Returns the reason to deny it with, or null to let it
  *  through. Call this only after any gate that can still deny the call: a denied call gets no
  *  PostToolUse, so a slot taken earlier would stay held. */
-export function gateHeavyCall(lock: HeavyJobLock, agentId: string, p: HeavyHookPayload): string | null {
+export function gateHeavyCall(lock: HeavyJobLock, agentId: string, p: HeavyHookPayload, by?: string): string | null {
   const cls = classifyHeavy(p.tool_name, p.tool_input);
   if (!cls.heavy) return null;
-  const d = lock.acquire(agentId, cls, commandFromToolInput(p.tool_input) ?? '', heavyCallId(p), isBackground(p.tool_input), p.tool_session_id);
+  const d = lock.acquire(agentId, cls, commandFromToolInput(p.tool_input) ?? '', heavyCallId(p), isBackground(p.tool_input), p.tool_session_id, by);
   return d.allow ? null : d.reason;
 }
 
 /** The hook events that end a call: its PostToolUse (a command that exits non-zero fires
  *  PostToolUseFailure instead), or the turn ending or being replaced by a new prompt. */
-export function settleHeavyCall(lock: HeavyJobLock, agentId: string, event: string, p: HeavyHookPayload): void {
+export function settleHeavyCall(lock: HeavyJobLock, agentId: string, event: string, p: HeavyHookPayload, by?: string): void {
   if (event === 'PostToolUse' || event === 'PostToolUseFailure') lock.callDone(agentId, heavyCallId(p));
   else if (event === 'Stop' || event === 'UserPromptSubmit') lock.turnOver(agentId, p.tool_session_id);
   else if (event === 'SubagentStop' && p.tool_session_id !== undefined) lock.turnOver(agentId, p.tool_session_id);
+  else if (event === 'SubagentStop' && by !== undefined) lock.subagentDone(agentId, by);
   else if (event === 'Notification' && (p.notification_type === 'idle' || p.notification_type === 'idle_prompt')) lock.turnOver(agentId);
 }
 

@@ -495,7 +495,9 @@ export class HookServer {
     // when the agent is halted or the hook answers with queued context.
     // Keyed by the seat, so a subagent's call frees the slot its seat took.
     const heavySeat = seatOf(p, agentId);
-    if (heavySeat && this.heavyLock) settleHeavyCall(this.heavyLock, heavySeat, event, p);
+    // The subagent that made this call, when not the seat's main thread: the seat's turn ending does not end its calls.
+    const heavyBy = agentId && agentId !== heavySeat ? agentId : undefined;
+    if (heavySeat && this.heavyLock) settleHeavyCall(this.heavyLock, heavySeat, event, p, heavyBy);
 
     // 7C.3 — a graceful operator HALT overrides everything (incl. the inbox
     // drain below): stop the agent CLEANLY at this hook boundary rather than
@@ -621,10 +623,10 @@ export class HookServer {
 
     // After the approval gate above: a call it denies gets no PostToolUse, so a slot taken earlier
     // would stay held. Slow approval at Claude's own prompt comes after this hook, and a rejection
-    // there is caught when the turn ends.
-    // A subagent's heavy call takes its seat's slot: a seat runs no more heavy jobs through subagents than on its own.
+    // there is caught when the turn ends (for a subagent's call, when that subagent stops).
+    // A subagent's heavy call counts against the same limit, under its seat.
     if (event === 'PreToolUse' && heavySeat && this.heavyLock) {
-      const reason = gateHeavyCall(this.heavyLock, heavySeat, p);
+      const reason = gateHeavyCall(this.heavyLock, heavySeat, p, heavyBy);
       if (reason) {
         this.emitControl(heavySeat, p.tool_name, reason);
         this.emit(agentId, event, p);

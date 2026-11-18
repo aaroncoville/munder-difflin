@@ -161,6 +161,55 @@ test('a PostToolUse from the subagent frees its seat\'s slot', async (t) => {
   assert.equal(decision(fire('a2', 'PreToolUse', 'npm test')), undefined);
 });
 
+// A subagent can run in the background, past its seat's turn: the seat's Stop, its next prompt or an idle notice says
+// nothing about whether the subagent's job has finished.
+const TURN_ENDS = [['Stop', {}], ['UserPromptSubmit', {}], ['Notification', { notification_type: 'idle_prompt' }]];
+
+test('the seat\'s turn ending does not free a slot its subagent\'s heavy call holds; the call ending does', async (t) => {
+  for (const [event, extra] of TURN_ENDS) {
+    const { hooks, lock, fire } = await server(t);
+    fireAs(hooks, sub('a1'), 'PreToolUse', 'npm test', { tool_use_id: 'u1' });
+    fireAs(hooks, { agent_id: 'a1', hive_seat_id: 'a1' }, event, 'x', extra);
+    assert.equal(decision(fire('a2', 'PreToolUse', 'npm test')), 'deny', `${event}: the subagent's suite still holds the slot`);
+    assert.deepEqual(lock.snapshot().map((h) => h.agentId), ['a1'], event);
+    fireAs(hooks, sub('a1'), 'PostToolUse', 'npm test', { tool_use_id: 'u1' });
+    assert.equal(lock.snapshot().length, 0, `${event}: freed by the subagent's PostToolUse`);
+  }
+});
+
+test('the seat\'s turn ending frees only the calls its main thread took', async (t) => {
+  const { hooks, lock } = await server(t, 2);
+  fireAs(hooks, sub('a1'), 'PreToolUse', 'npm test', { tool_use_id: 'u1' });
+  fireAs(hooks, { agent_id: 'a1', hive_seat_id: 'a1' }, 'PreToolUse', 'npm ci', { tool_use_id: 'u2' });
+  assert.equal(lock.snapshot().length, 2);
+  fireAs(hooks, { agent_id: 'a1', hive_seat_id: 'a1' }, 'Stop', 'x');
+  assert.deepEqual(lock.snapshot().map((h) => h.job), ['npm test'], 'the main thread\'s own call is freed, the subagent\'s is not');
+});
+
+test('a subagent\'s call held past its seat\'s turn is freed by the process scan once its processes are gone', async (t) => {
+  const { hooks, fire } = await server(t);
+  let procs = [{ pid: 11, parentPid: 10, commandLine: 'npm test' }];
+  const lock = new HeavyJobLock({ limit: () => 1, setTimer: () => ({}), clearTimer: () => {}, roots: () => [{ agentId: 'a1', pid: 10 }], probe: async () => procs });
+  hooks.setHeavyLock(lock);
+  fireAs(hooks, sub('a1'), 'PreToolUse', 'npm test', { tool_use_id: 'u1' });
+  fireAs(hooks, { agent_id: 'a1', hive_seat_id: 'a1' }, 'Stop', 'x');
+  await lock.scan();
+  assert.equal(decision(fire('a2', 'PreToolUse', 'npm test')), 'deny', 'still running under the seat\'s terminal');
+  procs = [];
+  await lock.scan();
+  await lock.scan();
+  assert.equal(lock.snapshot().length, 0, 'its processes are gone: freed');
+});
+
+test('a subagent\'s call that never gets a PostToolUse is freed when that subagent stops', async (t) => {
+  const { hooks, lock } = await server(t);
+  fireAs(hooks, sub('a1'), 'PreToolUse', 'npm test', { tool_use_id: 'u1' });
+  fireAs(hooks, sub('a1', 'other-sub'), 'SubagentStop', 'x');
+  assert.equal(lock.snapshot().length, 1, 'another subagent stopping frees nothing of it');
+  fireAs(hooks, sub('a1'), 'SubagentStop', 'x');
+  assert.equal(lock.snapshot().length, 0);
+});
+
 test('a frame with no seat id, or an empty one, takes and frees the slot under its agent_id as before', async (t) => {
   const { hooks, lock } = await server(t);
   for (const ids of [{ agent_id: 'a1' }, { agent_id: 'a1', hive_seat_id: '' }, { agent_id: 'a1', hive_seat_id: null }]) {
