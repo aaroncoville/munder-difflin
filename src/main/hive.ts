@@ -1701,7 +1701,7 @@ export class HiveManager {
       const rt = verdict?.rt ?? null;
       env.HIVE_SOCK = sock;
       // Written from what the app holds, to the app's own folder: the in-tree agents/<id>/settings.json is never opened.
-      const generated = this.hookSettings(rt ? hookCommandFor(rt, true) : null, meta.cwd, opts.mcpDefaults, opts.theme, writable, agentEnabledPlugins(knownPluginIds(claudeUserDir()), agentPluginList(opts.agentPlugins, (why) => { if (this.pluginSettingLogged.has(meta.id)) return; this.pluginSettingLogged.add(meta.id); this.appendLog({ kind: 'agent-plugins-setting', agentId: meta.id, why }); })));
+      const generated = this.hookSettings(rt ? hookCommandFor(rt, true) : null, meta.cwd, opts.mcpDefaults, opts.theme, writable, agentEnabledPlugins(knownPluginIds(claudeUserDir()), agentPluginList(opts.agentPlugins, (why) => { if (this.pluginSettingLogged.has(meta.id)) return; this.pluginSettingLogged.add(meta.id); this.appendLog({ kind: 'agent-plugins-setting', agentId: meta.id, why }); })), scoped);
       const settingsPath = writeSeatSettings(this.seatSettingsDir, root, meta.id, JSON.stringify(generated, null, 2));
       args.push('--settings', settingsPath);
       const dropped = opts.scopedRoots === true;
@@ -1983,7 +1983,7 @@ export class HiveManager {
     return meta.isGod === true && isAbsolute(cwd) ? [canonical(cwd), ...kept] : kept;
   }
 
-  private hookSettings(cmd: string | null, cwd: string, cfg: McpDefaultsMap, theme?: 'light' | 'dark', writableDirs: string[] = [], enabledPlugins?: Record<string, boolean>): unknown {
+  private hookSettings(cmd: string | null, cwd: string, cfg: McpDefaultsMap, theme?: 'light' | 'dark', writableDirs: string[] = [], enabledPlugins?: Record<string, boolean>, scoped = false): unknown {
     // `cmd` runs the shim under the bundled node, NOT bare `node` — see
     // nodeLauncherPath(). Claude runs each of these through `sh -c` with a
     // stripped PATH, where `node` is often absent.
@@ -2030,7 +2030,11 @@ export class HiveManager {
       // runs as before rather than refusing to spawn.
       ...(writableDirs.length
         ? {
-            sandbox: { enabled: true, filesystem: { allowWrite: writableDirs } },
+            sandbox: {
+              enabled: true, filesystem: { allowWrite: writableDirs },
+              // Scoped roots: no rerun with the sandbox off, except the listed commands (SCOPED_UNSANDBOXED_COMMANDS).
+              ...(scoped ? { allowUnsandboxedCommands: false, excludedCommands: [...SCOPED_UNSANDBOXED_COMMANDS] } : {})
+            },
             permissions: { additionalDirectories: writableDirs }
           }
         : {}),
@@ -4305,6 +4309,14 @@ function renderCommandsMd(): string {
   return lines.join('\n');
 }
 const COMMANDS_MD = renderCommandsMd();
+
+/** With scoped write roots on, the only commands a Claude seat may run outside its sandbox (sandbox.excludedCommands);
+ *  the per-call retry with the sandbox off is turned off. It does not stop a seat from editing a test or build file in
+ *  its working folder and then running the suite or the build: that code then runs unsandboxed. */
+const SCOPED_UNSANDBOXED_COMMANDS = [
+  'npm run test:focused', 'npm run build', 'npm run typecheck', 'git fetch *', 'git worktree add *', 'git worktree remove *',
+  'gh pr *', 'gh api *', 'glab mr *', 'glab api *',
+] as const;
 
 const PROTOCOL_MD = `${GENERATED_DOC_NOTICE}
 
