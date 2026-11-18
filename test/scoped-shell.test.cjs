@@ -18,7 +18,7 @@ const { withSeatSettings } = require('./seat-settings-dir.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 
-const EXCLUDED = ['npm run test:focused', 'npm run build', 'npm run typecheck', 'git fetch *', 'git worktree add *', 'git worktree remove *', 'gh pr *', 'gh api *', 'glab mr *', 'glab api *'];
+const EXCLUDED = ['npm run test:focused', 'npm run build', 'npm run typecheck', 'git fetch *', 'git worktree add *', 'git worktree remove *', 'gh pr *', 'gh api *', 'glab mr *', 'glab api *', 'npm --prefix * run test:focused', 'npm --prefix * run build', 'npm --prefix * run typecheck'];
 
 function floor(t) {
   const base = codexTestBase(t, 'mdsh-');

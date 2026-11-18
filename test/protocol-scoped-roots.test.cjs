@@ -14,7 +14,7 @@ const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 
-const EXCLUDED = ['npm run test:focused', 'npm run build', 'npm run typecheck', 'git fetch *', 'git worktree add *', 'git worktree remove *', 'gh pr *', 'gh api *', 'glab mr *', 'glab api *'];
+const EXCLUDED = ['npm run test:focused', 'npm run build', 'npm run typecheck', 'git fetch *', 'git worktree add *', 'git worktree remove *', 'gh pr *', 'gh api *', 'glab mr *', 'glab api *', 'npm --prefix * run test:focused', 'npm --prefix * run build', 'npm --prefix * run typecheck'];
 
 test('PROTOCOL.md says which commands may run outside the sandbox under scoped roots, and how to write them', async (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-protocol-scoped-'));
