@@ -449,6 +449,15 @@ export function cwdHoldsHive(root: string, cwd: string): boolean {
   return typeof cwd === 'string' && isAbsolute(cwd) && within(canonical(root), canonical(cwd));
 }
 
+/** True when a working folder is inside the hive but not inside the agent's own folder <hive>/agents/<id>. Both CLIs
+ *  let a seat write its working folder whatever its roots say, so for any seat but god such a folder is a part of the
+ *  hive its roles do not grant: another agent's folder, evidence/ or the agents folder. */
+export function cwdOutsideOwnFolder(root: string, agentId: string, cwd: string): boolean {
+  if (typeof cwd !== 'string' || !isAbsolute(cwd)) return false;
+  const c = canonical(cwd);
+  return within(c, canonical(root)) && !within(c, canonical(join(root, 'agents', agentId)));
+}
+
 /** Why an agent's own folder cannot be granted under scoped roots, or null. The folder must be a real folder, not a
  *  link, that resolves to exactly <hive>/agents/<id>; one not made yet must have a real agents folder to be made in.
  *  Before scoped roots every agent could write the whole hive, so a link there could point anywhere. */

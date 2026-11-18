@@ -92,7 +92,8 @@ test('flag on: an agent\'s Claude roots are its folder, evidence/, an outside wo
 
 test('flag on: a working folder inside the hive is not granted on its own', async (t) => {
   const f = floor(t);
-  const inside = path.join(f.root, 'research');
+  // Its own folder is the only place inside the hive a seat but god may work from (scoped-spawn-refusals).
+  const inside = path.join(f.agentDir('ag2'), 'research');
   fs.mkdirSync(inside, { recursive: true });
   const s = settingsOf(await claude(f, 'ag2', { scopedRoots: true, cwd: inside }));
   assert.deepEqual(s.sandbox.filesystem.allowWrite, [f.agentDir('ag2'), path.join(f.root, 'evidence'), f.palace]);
