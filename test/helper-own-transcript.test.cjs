@@ -157,3 +157,35 @@ test('a transcript written after the CLI exits is the retryable no-response case
   await new Promise((done) => setTimeout(done, 80));
   assert.ok(fs.existsSync(spawns[0].transcript), 'the reply did arrive, only late');
 });
+
+test('a FIFO at the transcript path is refused without blocking the process', (t) => {
+  // Opening a FIFO with no writer blocks until one appears, and the read runs on the app's main thread, so it is run
+  // in a child process that is killed if it hangs.
+  const { base, cwd } = sandbox(t);
+  const script = `
+    const fs = require('node:fs'), path = require('node:path'), cp = require('node:child_process');
+    const loadTs = require(${JSON.stringify(path.join(__dirname, 'load-ts.cjs'))});
+    const pty = require('node-pty');
+    pty.spawn = (file, args, opts) => {
+      const id = args[args.indexOf('--session-id') + 1];
+      const root = opts.env.CLAUDE_CONFIG_DIR || path.join(opts.env.HOME, '.claude');
+      const target = path.join(root, 'projects', fs.realpathSync(opts.cwd).replace(/[^a-zA-Z0-9]/g, '-'), id + '.jsonl');
+      let onExit = () => {};
+      setTimeout(() => {
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        cp.execFileSync('mkfifo', [target]);
+        onExit({ exitCode: 0 });
+      }, 20);
+      return { pid: undefined, onData: () => {}, onExit: (cb) => { onExit = cb; }, write: () => {}, kill: () => {} };
+    };
+    const hc = loadTs('src/main/hiddenClaude.ts');
+    hc.setHelperSettingsDir(${JSON.stringify(path.join(base, 'userData', 'helper-sessions'))}, () => ${JSON.stringify(path.join(base, 'hive'))});
+    hc.runHiddenClaude('hi', { model: 'm', cwd: ${JSON.stringify(cwd)}, timeoutMs: 5000 })
+      .then((r) => { process.stdout.write(JSON.stringify(r)); process.exit(0); });
+  `;
+  const run = require('node:child_process').spawnSync(process.execPath, ['-e', script], {
+    cwd: path.join(__dirname, '..'), env: { ...process.env }, timeout: 15000, encoding: 'utf8'
+  });
+  assert.equal(run.signal, null, 'the helper returned instead of blocking on the FIFO');
+  assert.deepEqual(JSON.parse(run.stdout), { ok: false, error: 'no assistant response found in transcript' });
+});
