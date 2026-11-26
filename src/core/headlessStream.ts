@@ -267,6 +267,16 @@ export function checkHeadlessOutput(seat: HeadlessSeatPlace, outputFile: string 
   }
 }
 
+/** Null when `outputFile` is still the file the done-check judged (same device and inode, not a link) with one name;
+ *  else why not. */
+export function sameOutputFile(outputFile: string, file: { dev: number; ino: number }): string | null {
+  let st;
+  try { st = lstatSync(outputFile); } catch { return `the output file ${outputFile} is no longer there`; }
+  if (st.dev !== file.dev || st.ino !== file.ino) return `the output file ${outputFile} is no longer the file that was checked`;
+  if (st.nlink !== 1) return `the output file ${outputFile} has more than one name (${st.nlink} hard links)`;
+  return null;
+}
+
 /** A message as an agent writes it into its outbox (PROTOCOL.md); the router fills in the rest. */
 export interface OutboxMessage {
   id: string;
@@ -350,6 +360,8 @@ export function writeOutboxMessage(hiveRoot: string, agentId: string, msg: Outbo
 export interface HeadlessStreamOptions extends HeadlessSeatOptions {
   /** The file the stream's brief says the run produces; the run is done only when it is in place. */
   outputFile: string;
+  /** Called just before the done message is published, after the done-check. Not for production use. */
+  beforePublish?: () => void;
 }
 
 export interface HeadlessStreamResult {
@@ -374,6 +386,10 @@ export async function runHeadlessStream(o: HeadlessStreamOptions): Promise<Headl
     : { done: false, reason: `the run did not succeed: ${run.error ?? `the CLI reported ${run.subtype ?? 'an error'}`}` };
   const result: HeadlessStreamResult = { run, cost, done: check.done, doneReason: check.reason, messageId: null, messageError: null };
   if (!check.done) return result;
+  // The file judged done must still be the file at that path, with one name, when god is told about it.
+  o.beforePublish?.();
+  const still = check.file ? sameOutputFile(o.outputFile, check.file) : 'the output file was not identified';
+  if (still) { result.done = false; result.doneReason = still; return result; }
   try {
     result.messageId = writeOutboxMessage(o.hiveRoot, o.agentId, headlessDoneMessage(o.agentId, run, o.outputFile, cost));
   } catch (e) {

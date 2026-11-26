@@ -192,3 +192,24 @@ test('Given an output file left by an earlier run and a run that writes nothing,
   assert.match(s.doneReason, /before the run started/);
   assert.deepEqual(fs.readdirSync(f.outbox), []);
 });
+
+// The file the done-check judged must still be the file at that path, with one name, when the done message is
+// published; otherwise nothing is published.
+
+for (const [name, change, why] of [
+  ['swapped for a link to an outside file', (f, out) => { fs.writeFileSync(path.join(f.base, 'x.md'), 'x\n'); fs.rmSync(out); fs.symlinkSync(path.join(f.base, 'x.md'), out); }, /no longer the file that was checked/],
+  ['replaced by another file', (f, out) => { fs.rmSync(out); fs.writeFileSync(out, 'another\n'); }, /no longer the file that was checked/],
+  ['given a second name outside the roots', (f, out) => fs.linkSync(out, path.join(f.base, 'twin.md')), /more than one name/],
+  ['removed', (f, out) => fs.rmSync(out), /no longer/],
+]) {
+  test(`Given the output file is ${name} after the done-check, when the message is about to be published, then the run is not done and nothing is published`, async (t) => {
+    const f = floor(t, { stdout: `${JSON.stringify(SUCCESS)}\n`, writes: { 'report.md': 'the report\n' } });
+    const out = path.join(f.cwd, 'report.md');
+    const s = await S.runHeadlessStream(f.opts({ beforePublish: () => change(f, out) }));
+    assert.equal(s.run.ok, true);
+    assert.equal(s.done, false);
+    assert.match(s.doneReason, why);
+    assert.equal(s.messageId, null);
+    assert.deepEqual(fs.readdirSync(f.outbox), []);
+  });
+}
