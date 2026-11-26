@@ -95,8 +95,8 @@ function isTouchOf(command, target) {
   return m[5] === undefined || /\$\?/.test(m[5]);
 }
 
-/** Whether a command only reads the recorded results back: `cat` of the rc and/or err file, or `ls` (with flags) of
- *  the allowed folder. Models asked for exit codes do this; nothing with a redirect, a pipe, a substitution or any
+/** Whether a command only reads the recorded results back: `cat` of the rc and/or err file, or `ls` (with flags that
+ *  take no argument) of the allowed folder. Models asked for exit codes do this; nothing with a redirect, a pipe, a substitution or any
  *  other operand counts. */
 function isLookAt(command, f) {
   const c = command.trim();
@@ -104,7 +104,12 @@ function isLookAt(command, f) {
   const [verb, ...rest] = c.split(/[ \t]+/);
   const dir = path.dirname(f.rc);
   if (verb === 'cat') return rest.length > 0 && rest.every((a) => a === f.rc || a === f.err);
-  if (verb === 'ls') return rest.every((a) => /^-[A-Za-z]+$/.test(a) || a === dir || a === `${dir}/`);
+  // Only flags that take no argument, so the folder cannot be swallowed as one (GNU `ls -I <dir>`), and the folder
+  // itself as the one operand, so the listing is never of the working folder.
+  if (verb === 'ls') {
+    const last = rest[rest.length - 1];
+    return (last === dir || last === `${dir}/`) && rest.slice(0, -1).every((a) => /^-[1AaFdGhlnoprRSst]+$/.test(a));
+  }
   return false;
 }
 

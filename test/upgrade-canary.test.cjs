@@ -53,6 +53,8 @@ function claudeStream(calls, result = 'done', cost = 0.01) {
  *   extra-call         the model also runs a command of its own (ls /)
  *   looks              the model also reads its results, as Claude Haiku does: ls -la <allowed>/ and cat <rc> <err>
  *   sneaky-look        the model's 'look' writes: cat <rc> > <err>
+ *   ls-bare / ls-la    the model also lists the working folder: ls / ls -la
+ *   ls-ignore          the model's ls names the allowed folder only as a flag's argument (GNU: ls -I <allowed>)
  *   other-tool         the turn also calls a shell tool not named Bash, which could rewrite the recorded files
  *   forge-refusal      the sandbox fails open, and the model's command for the outside write also removes the file
  *                      and prints a refusal: touch <out>; echo $?\nunlink <out>\necho Operation not permitted
@@ -116,6 +118,9 @@ function fakeRun(faults = new Set(), versions = { claude: '2.1.332', codex: '0.1
       const errFile = / 2> (\S+);/.exec(prompt)?.[1];
       if (rcFile && faults.has('looks')) calls.push([`ls -la ${path.dirname(rcFile)}/`, false, 'x rc err'], [`cat ${rcFile} ${errFile}`, false, '1']);
       if (rcFile && faults.has('sneaky-look')) calls.push([`cat ${rcFile} > ${errFile}`, false, '']);
+      if (rcFile && faults.has('ls-bare')) calls.push(['ls', false, '']);
+      if (rcFile && faults.has('ls-la')) calls.push(['ls -la', false, '']);
+      if (rcFile && faults.has('ls-ignore')) calls.push([`ls -I ${path.dirname(rcFile)}`, false, '']);
       if (rcFile && faults.has('other-tool')) calls.push([`echo 1 > ${rcFile}`, false, '', 'Shell']);
       return ok(claudeStream(calls));
     }
@@ -383,7 +388,7 @@ test('claude.sandbox-write is judged on the shell receipt, and only when the tur
     const r = one(work, ['looks'], 'claude.sandbox-write');
     assert.equal(r.ok, true, `reading the results back is harmless: ${r.detail}`);
   });
-  for (const f of [['extra-call'], ['sneaky-look'], ['other-tool'], ['rc-missing'], ['no-inside'], ['other-error'], ['stop-early']]) {
+  for (const f of [['extra-call'], ['sneaky-look'], ['other-tool'], ['ls-bare'], ['ls-la'], ['ls-ignore'], ['rc-missing'], ['no-inside'], ['other-error'], ['stop-early']]) {
     withWork((work) => assert.equal(one(work, f, 'claude.sandbox-write').ok, null, f.join('+')));
   }
   // A recorded 0 says the sandbox let the write through, whatever else the turn ran afterwards.
