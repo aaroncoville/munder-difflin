@@ -1,0 +1,49 @@
+'use strict';
+// A scheduler in a process of its own, for the tests that need a second process or a real crash. Its one argument is
+// JSON: { dbPath, hiveRoot, calls, started?, now?, leaseMs?, heartbeatMs?, crashAt?, mode, put? }.
+//  - mode "ok": the stub runner returns a finished run at once; "slow": after 200 ms; "hang": never returns;
+//    "block": blocks this process's event loop for good (alive, but it can no longer heartbeat).
+//  - crashAt names a point inside the scheduler where this process kills itself with SIGKILL, as a crash would.
+//  - put: a task definition to store before the tick.
+// The stub runner appends "<runId> <prompt>" to `calls` and, when `started` is given, creates that file.
+// Prints the tick's report as JSON and exits 0.
+
+const fs = require('node:fs');
+const path = require('node:path');
+const loadTs = require(path.join(__dirname, 'load-ts.cjs'));
+const { headlessRun } = require(path.join(__dirname, 'scheduler-fixtures.cjs'));
+
+const o = JSON.parse(process.argv[2]);
+const { openSchedulerStore } = loadTs('src/core/scheduler/store.ts');
+const { Scheduler } = loadTs('src/core/scheduler/scheduler.ts');
+
+const store = openSchedulerStore({ path: o.dbPath, hiveRoots: [o.hiveRoot] });
+if (o.put) store.putTask(o.put, o.putAt ?? Date.now());
+
+const runner = async (job) => {
+  fs.appendFileSync(o.calls, `${job.runId} ${job.snapshot.prompt}\n`);
+  if (o.started) fs.writeFileSync(o.started, String(process.pid));
+  if (o.mode === 'slow') await new Promise((r) => setTimeout(r, 200));
+  if (o.mode === 'hang') await new Promise(() => {});
+  if (o.mode === 'block') Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+  return { run: headlessRun(), done: true, doneReason: null };
+};
+
+const crash = () => process.kill(process.pid, 'SIGKILL');
+const hooks = o.crashAt ? { [o.crashAt]: crash } : {};
+
+const scheduler = new Scheduler({
+  store, hiveRoot: o.hiveRoot, runner, hooks,
+  ...(typeof o.now === 'number' ? { now: () => o.now } : {}),
+  ...(o.leaseMs ? { leaseMs: o.leaseMs } : {}),
+  ...(o.heartbeatMs ? { heartbeatMs: o.heartbeatMs } : {}),
+});
+
+scheduler.tick().then((report) => {
+  process.stdout.write(`${JSON.stringify(report)}\n`);
+  store.close();
+  process.exit(0);
+}, (e) => {
+  process.stderr.write(`${e && e.stack}\n`);
+  process.exit(1);
+});

@@ -1,0 +1,12 @@
+{
+  "id": "daily-scan",
+  "agentId": "scan-seat",
+  "prompt": "Read the brief in the working folder, follow it, and write today's digest to the output file. Then stop.",
+  "schedule": { "daily": "07:19" },
+  "model": "sonnet",
+  "maxBudgetUsd": 5,
+  "outputFile": "/srv/streams/daily-scan/digest.md",
+  "cwd": "/srv/streams/daily-scan",
+  "roots": ["/srv/streams/daily-scan"],
+  "timeoutMs": 3600000
+}
