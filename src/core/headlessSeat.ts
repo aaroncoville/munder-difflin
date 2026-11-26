@@ -27,6 +27,11 @@
  *
  * Output is read with --output-format json: one result object carrying the result text, the session id and
  * total_cost_usd. --max-budget-usd is passed through when asked for; deciding a cap is the caller's business.
+ *
+ * The CLI is started as the leader of its own process group, so a run that outlives its timeout is stopped whole:
+ * SIGTERM to the group, then SIGKILL to the group after a grace. Signalling only the CLI would leave the commands it
+ * started (a shell, a build, a server) running with nobody to stop them. A run stopped this way has no result object,
+ * so its cost is unknown: totalCostUsd is null, not 0.
  */
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { homedir } from 'node:os';
@@ -120,7 +125,14 @@ export interface HeadlessSeatOptions {
   maxOutputBytes?: number;
   /** The file the stream's brief says the run produces, returned with the result for a later done-check. */
   outputFile?: string;
+  /** Stop the run after this many milliseconds. No timeout when absent. */
+  timeoutMs?: number;
+  /** How long a timed-out run's process group has between SIGTERM and SIGKILL. Defaults to HEADLESS_KILL_GRACE_MS. */
+  killGraceMs?: number;
 }
+
+/** The default time between SIGTERM and SIGKILL for a run that timed out. */
+export const HEADLESS_KILL_GRACE_MS = 2000;
 
 export interface HeadlessLaunch {
   /** The CLI then its arguments. */
@@ -158,6 +170,10 @@ export interface HeadlessRun {
   cwd: string;
   settingsFile: string;
   outputFile: string | null;
+  /** True when the run was stopped because it outlived timeoutMs. */
+  timedOut: boolean;
+  /** The last signal sent to the run's process group: null when none was needed. */
+  killSignal: 'SIGTERM' | 'SIGKILL' | null;
 }
 
 /** Refuses a headless launch that cannot be confined or run as asked. */
@@ -226,6 +242,9 @@ export function buildHeadlessLaunch(o: HeadlessSeatOptions): HeadlessLaunch {
   if (o.maxOutputBytes !== undefined && !(Number.isSafeInteger(o.maxOutputBytes) && o.maxOutputBytes > 0)) {
     throw new HeadlessSeatRefused('the output bound is not a positive whole number of bytes');
   }
+  for (const [name, v] of [['timeout', o.timeoutMs], ['kill grace', o.killGraceMs]] as const) {
+    if (v !== undefined && !(typeof v === 'number' && Number.isFinite(v) && v > 0)) throw new HeadlessSeatRefused(`the ${name} is not a positive number of milliseconds`);
+  }
   if (typeof o.cwd !== 'string' || !isAbsolute(o.cwd)) throw new HeadlessSeatRefused('the working folder is not an absolute path');
   const ctx = { root: o.hiveRoot, agentId: o.agentId, isGod: o.isGod === true, cwd: o.cwd };
   if (!ownFolder(ctx)) throw new HeadlessSeatRefused(`the agent folder for ${o.agentId} is missing or not a real folder`);
@@ -284,29 +303,51 @@ export function headlessResultProblem(r: Record<string, unknown>): string | null
 
 const text = (x: unknown): string | null => (typeof x === 'string' ? x : null);
 
+/** Send `sig` to the process group led by `pid`; false when the group is already gone. Where there are no process
+ *  groups (Windows), only the process itself is signalled. */
+function signalGroup(child: ChildProcess, sig: NodeJS.Signals | 0): boolean {
+  const pid = child.pid;
+  if (pid === undefined) return false;
+  try {
+    if (process.platform === 'win32') { if (sig !== 0) child.kill(sig); return sig === 0 ? child.exitCode === null : true; }
+    process.kill(-pid, sig);
+    return true;
+  } catch { return false; }
+}
+
+/** How often a timed-out run's group is checked for having gone, before the grace runs out. */
+const GROUP_POLL_MS = 50;
+
 /** Build the launch, run the CLI to completion and read its result. Resolves (never rejects) once the CLI has
- *  exited or could not be started; a refused launch throws before anything runs. A CLI whose stdout or stderr passes
- *  the output bound is killed, and the run fails saying so. */
+ *  exited or could not be started, or, after a timeout, once its process group is gone or has been sent SIGKILL; a
+ *  refused launch throws before anything runs. A CLI whose stdout or stderr passes the output bound is killed with its
+ *  process group, and the run fails saying so. */
 export function runHeadlessSeat(o: HeadlessSeatOptions): Promise<HeadlessRun> {
   const launch = buildHeadlessLaunch(o);
   const spawn = o.spawn ?? nodeSpawn;
+  const grace = o.killGraceMs ?? HEADLESS_KILL_GRACE_MS;
   return new Promise<HeadlessRun>((resolveRun) => {
     const limit = o.maxOutputBytes ?? HEADLESS_MAX_OUTPUT_BYTES;
     const out = { stdout: '', stderr: '' };
     const bytes = { stdout: 0, stderr: 0 };
     let overflow: string | null = null;
     let settled = false;
+    let timedOut = false;
+    let killSignal: HeadlessRun['killSignal'] = null;
+    const timers: NodeJS.Timeout[] = [];
     const finish = (exitCode: number | null, signal: string | null, spawnError: string | null): void => {
       if (settled) return;
       settled = true;
+      for (const t of timers) { clearTimeout(t); clearInterval(t); }
       const { stdout, stderr } = out;
-      const r = spawnError || overflow ? null : parseHeadlessOutput(stdout).result;
+      const r = spawnError || overflow || timedOut ? null : parseHeadlessOutput(stdout).result;
       const cost = r && typeof r.total_cost_usd === 'number' && Number.isFinite(r.total_cost_usd) ? r.total_cost_usd : null;
       const subtype = r ? text(r.subtype) : null;
       const problem = r ? headlessResultProblem(r) : null;
       const budgetStop = subtype === BUDGET_STOP_SUBTYPE;
       let error = spawnError ?? overflow;
-      if (!error && !r) error = 'the CLI\'s output does not end with a JSON result object';
+      if (!error && timedOut) error = `the run timed out after ${o.timeoutMs} ms and its process group was sent ${killSignal}`;
+      else if (!error && !r) error = 'the CLI\'s output does not end with a JSON result object';
       else if (!error && problem) error = `the CLI's result is malformed: ${problem}`;
       else if (!error && budgetStop) error = 'the CLI stopped at its budget';
       else if (!error && exitCode !== 0) error = `the CLI exited with ${exitCode === null ? `signal ${signal}` : `code ${exitCode}`}`;
@@ -318,12 +359,19 @@ export function runHeadlessSeat(o: HeadlessSeatOptions): Promise<HeadlessRun> {
         exitCode, signal, result: r ? text(r.result) : null, sessionId: r ? text(r.session_id) : null, totalCostUsd: cost,
         subtype, error, stdout, stderr,
         argv: launch.argv, cwd: launch.cwd, settingsFile: launch.settingsFile, outputFile: o.outputFile ?? null,
+        timedOut, killSignal,
       });
     };
     let child: ChildProcess;
     try {
-      child = spawn(launch.argv[0], launch.argv.slice(1), { cwd: launch.cwd, env: launch.env, stdio: ['ignore', 'pipe', 'pipe'] });
+      // detached: the CLI leads a new process group, which its own children join, so the group can be stopped whole.
+      child = spawn(launch.argv[0], launch.argv.slice(1), { cwd: launch.cwd, env: launch.env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
     } catch (e) { finish(null, null, (e as Error).message); return; }
+    // After a timeout the run resolves only once the CLI has closed and its group is gone or has been sent SIGKILL,
+    // so nothing it started outlives the result.
+    let closed: { code: number | null; signal: string | null } | null = null;
+    let groupDone = false;
+    const settleAfterKill = (): void => { if (closed && groupDone) finish(closed.code, closed.signal, null); };
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
     const take = (stream: 'stdout' | 'stderr', d: string): void => {
@@ -331,7 +379,9 @@ export function runHeadlessSeat(o: HeadlessSeatOptions): Promise<HeadlessRun> {
       const n = Buffer.byteLength(d, 'utf8');
       if (bytes[stream] + n > limit) {
         overflow = `the CLI's ${stream} passed the output bound of ${limit} bytes, so it was killed`;
-        try { child.kill('SIGKILL'); } catch { /* it has already gone */ }
+        // The same group kill a timeout ends in, so nothing the CLI started outlives it either.
+        killSignal = 'SIGKILL';
+        signalGroup(child, 'SIGKILL');
         return;
       }
       bytes[stream] += n;
@@ -340,6 +390,33 @@ export function runHeadlessSeat(o: HeadlessSeatOptions): Promise<HeadlessRun> {
     child.stdout?.on('data', (d: string) => take('stdout', d));
     child.stderr?.on('data', (d: string) => take('stderr', d));
     child.on('error', (e) => finish(null, null, e.message));
-    child.on('close', (code, signal) => finish(code, signal, null));
+    child.on('close', (code, signal) => {
+      if (!timedOut) { finish(code, signal, null); return; }
+      closed = { code, signal };
+      settleAfterKill();
+    });
+    if (o.timeoutMs !== undefined) {
+      timers.push(setTimeout(() => {
+        if (settled || overflow) return;
+        timedOut = true;
+        killSignal = 'SIGTERM';
+        if (!signalGroup(child, 'SIGTERM')) groupDone = true;
+        const poll = setInterval(() => {
+          if (!signalGroup(child, 0)) { clearInterval(poll); groupDone = true; settleAfterKill(); }
+        }, GROUP_POLL_MS);
+        timers.push(poll);
+        timers.push(setTimeout(() => {
+          clearInterval(poll);
+          if (!groupDone) { killSignal = 'SIGKILL'; signalGroup(child, 'SIGKILL'); groupDone = true; }
+          settleAfterKill();
+          // Something outside the group may still hold the output pipes open; do not wait on it for ever.
+          timers.push(setTimeout(() => {
+            child.stdout?.destroy(); child.stderr?.destroy();
+            finish(closed?.code ?? child.exitCode, closed?.signal ?? child.signalCode, null);
+          }, grace));
+        }, grace));
+        settleAfterKill();
+      }, o.timeoutMs));
+    }
   });
 }

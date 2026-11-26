@@ -493,3 +493,98 @@ test('parseHeadlessOutput: the last JSON result line wins over earlier lines', (
   assert.equal(H.parseHeadlessOutput(JSON.stringify({ type: 'assistant' })).result, null);
   assert.equal(H.parseHeadlessOutput(`${JSON.stringify(SUCCESS)}\nnot json\n`).result, null, 'the result must be the last line');
 });
+
+// --- timeout -------------------------------------------------------------------------------------------------------
+// A run that outlives its timeout is stopped as a whole process group: SIGTERM first, SIGKILL after the grace, so a
+// CLI that ignores SIGTERM is still stopped and none of its subprocesses is left behind. The cost of a run stopped
+// this way is unknown, never a number.
+
+/** Replace the floor's stub with one that never finishes; returns a reader for the pids it records. Whatever the
+ *  outcome, both stub processes are sent SIGKILL when the test ends, so a failing test leaves nothing running. The
+ *  pids are kept outside the floor, which an earlier cleanup removes first. */
+function hanging(t, f, { ignoreTerm, print }) {
+  fs.copyFileSync(path.join(__dirname, 'headless-hang-stub.cjs'), f.cli);
+  fs.chmodSync(f.cli, 0o755);
+  const pidsFile = path.join(os.tmpdir(), `mdhang-${process.pid}-${Math.random().toString(16).slice(2)}.json`);
+  fs.writeFileSync(path.join(path.dirname(f.cli), 'hang.json'), JSON.stringify({ ignoreTerm, print, pidsFile }));
+  const pids = () => JSON.parse(fs.readFileSync(pidsFile, 'utf8'));
+  t.after(() => {
+    let p;
+    try { p = pids(); } catch { return; }
+    for (const pid of [p.child, p.grandchild]) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
+    fs.rmSync(pidsFile, { force: true });
+  });
+  return pids;
+}
+
+/** A hanging-stub test fails rather than waits for ever when the run is never stopped. */
+const HANG_LIMIT = { timeout: 15000 };
+
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code !== 'ESRCH'; } };
+
+/** Whether every pid is gone within `ms` (a killed process may take a moment to be reaped). */
+async function allGone(pids, ms = 2000) {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    if (!pids.some(alive)) return true;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  return !pids.some(alive);
+}
+
+test('Given a CLI that hangs, when its timeout expires, then the run resolves as timed out within the limit, its cost is unknown, and it and its subprocess are gone', HANG_LIMIT, async (t) => {
+  const f = floor(t);
+  const pids = hanging(t, f, { ignoreTerm: false });
+  const started = Date.now();
+  const r = await H.runHeadlessSeat(f.opts({ timeoutMs: 1000, killGraceMs: 5000 }));
+  const took = Date.now() - started;
+  assert.equal(r.ok, false);
+  assert.equal(r.timedOut, true);
+  assert.equal(r.totalCostUsd, null, 'a stopped run has no known cost');
+  assert.equal(r.killSignal, 'SIGTERM', 'SIGTERM was enough');
+  assert.match(r.error, /timed out after 1000 ms/);
+  assert.ok(took >= 1000, `it waited for the timeout (${took} ms)`);
+  assert.ok(took < 1000 + 4000, `it did not wait out the grace once the group was gone (${took} ms)`);
+  const p = pids();
+  assert.ok(await allGone([p.child, p.grandchild]), `no process is left behind: ${JSON.stringify(p)}`);
+});
+
+test('Given a CLI and subprocess that ignore SIGTERM, when the timeout expires, then the group is sent SIGKILL after the grace and both are gone', HANG_LIMIT, async (t) => {
+  const f = floor(t);
+  const pids = hanging(t, f, { ignoreTerm: true });
+  const started = Date.now();
+  const r = await H.runHeadlessSeat(f.opts({ timeoutMs: 1000, killGraceMs: 500 }));
+  const took = Date.now() - started;
+  assert.equal(r.ok, false);
+  assert.equal(r.timedOut, true);
+  assert.equal(r.killSignal, 'SIGKILL');
+  assert.equal(r.totalCostUsd, null);
+  assert.ok(took >= 1500, `SIGKILL waited for the grace (${took} ms)`);
+  const p = pids();
+  assert.ok(await allGone([p.child, p.grandchild]), `no process is left behind: ${JSON.stringify(p)}`);
+});
+
+test('Given a CLI that prints a result with a cost and then hangs, when its timeout expires, then the cost is still reported as unknown', HANG_LIMIT, async (t) => {
+  const f = floor(t);
+  hanging(t, f, { ignoreTerm: false, print: `${JSON.stringify(SUCCESS)}\n` });
+  const r = await H.runHeadlessSeat(f.opts({ timeoutMs: 1000 }));
+  assert.equal(r.timedOut, true);
+  assert.equal(r.ok, false);
+  assert.equal(r.totalCostUsd, null, 'a stopped run never reports a cost, even one it printed');
+});
+
+test('Given a run that finishes inside its timeout, when the seat runs, then it is not marked timed out and nothing was signalled', async (t) => {
+  const f = floor(t, { stdout: JSON.stringify(SUCCESS) });
+  const r = await H.runHeadlessSeat(f.opts({ timeoutMs: 30000 }));
+  assert.equal(r.ok, true);
+  assert.equal(r.timedOut, false);
+  assert.equal(r.killSignal, null);
+  assert.equal(r.totalCostUsd, 0.0042);
+});
+
+test('Given a timeout or grace that is not a positive number, when the launch is built, then it is refused', (t) => {
+  const f = floor(t);
+  assert.throws(() => H.buildHeadlessLaunch(f.opts({ timeoutMs: 0 })), /timeout/);
+  assert.throws(() => H.buildHeadlessLaunch(f.opts({ timeoutMs: Number.POSITIVE_INFINITY })), /timeout/);
+  assert.throws(() => H.buildHeadlessLaunch(f.opts({ killGraceMs: -1 })), /grace/);
+});
