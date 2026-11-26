@@ -22,7 +22,8 @@ import { agentEnabledPlugins, agentPluginList, claudeUserDir, knownPluginIds } f
 import {
   existsSync, mkdirSync, readFileSync, writeFileSync, renameSync,
   readdirSync, statSync, lstatSync, realpathSync, rmSync, appendFileSync,
-  symlinkSync, unlinkSync, copyFileSync, cpSync, chmodSync, openSync, fstatSync, closeSync, constants as fsConstants
+  symlinkSync, unlinkSync, copyFileSync, cpSync, chmodSync, openSync, fstatSync, closeSync, constants as fsConstants,
+  fchmodSync, writeSync
 } from 'node:fs';
 import { join, dirname, basename, isAbsolute, relative, resolve as resolvePath } from 'node:path';
 import { homedir } from 'node:os';
@@ -465,6 +466,11 @@ function putBackFields(now: RegistryAgent, before: RegistryAgent, wrote: Registr
 
 /** How long an app write to tasks.json waits for another holder of its lock. It runs on the main thread. */
 const TASK_LEDGER_WAIT_MS = 250;
+
+/** `text` as one sh word that sh takes literally: in single quotes, each `'` written as `'\''`. */
+function shSingleQuote(text: string): string {
+  return `'${text.replace(/'/g, "'\\''")}'`;
+}
 
 export class HiveManager {
   /**
@@ -1271,7 +1277,53 @@ export class HiveManager {
     } catch { /* no bundled shim to compare with */ }
     out.push({ name: 'hive-node', path: join(root, 'bin', 'hive-node'), expected: this.nodeLauncherContent() });
     out.push({ name: 'runtime-node', path: join(root, 'bin', 'runtime', 'node'), expected: this.runtimeNodeContent() });
+    out.push({ name: 'hive', path: join(root, 'bin', 'hive'), expected: this.hiveCliLauncherContent(root) });
     return out;
+  }
+
+  /** The `hive` command bundle (src/core/hiveCliMain.ts), built next to the main bundle. */
+  private hiveCliBundlePath(): string {
+    return join(__dirname, 'hiveCli.js');
+  }
+
+  /** `<root>/bin/hive`: runs the hive command bundle through the hive-node launcher, so it works
+   *  whatever node is on the caller's PATH, and defaults HIVE_ROOT to this hive. The paths are
+   *  single-quoted, so a space, quote, `$` or backtick in them is taken literally by sh. */
+  private hiveCliLauncherContent(root: string): string {
+    return [
+      '#!/bin/sh',
+      `if [ -z "\${HIVE_ROOT:-}" ]; then HIVE_ROOT=${shSingleQuote(root)}; fi`,
+      'export HIVE_ROOT',
+      `exec ${shSingleQuote(join(root, 'bin', 'hive-node'))} ${shSingleQuote(this.hiveCliBundlePath())} "$@"`,
+      ''
+    ].join('\n');
+  }
+
+  /** Installs `<root>/bin/hive`, the command agents use to edit tasks.json under its lock instead of
+   *  editing the file directly. POSIX only: it is a sh script. Best-effort, like the other helpers.
+   *
+   *  Agents can write `<root>/bin`, so bin/hive may be a symlink one planted. Writing to that name
+   *  would overwrite the file it points to and make it executable, so the launcher is written to a
+   *  new file (created exclusively, which never follows a link) and renamed over the name: the
+   *  rename replaces a link itself, not its target. */
+  private writeHiveCliLauncher(): void {
+    const root = this.root();
+    if (!root || process.platform === 'win32') return;
+    const target = join(root, 'bin', 'hive');
+    const tmp = join(root, 'bin', `.hive.tmp-${process.pid}-${randomBytes(6).toString('hex')}`);
+    try {
+      const fd = openSync(tmp, 'wx', 0o755);
+      try {
+        writeSync(fd, this.hiveCliLauncherContent(root));
+        fchmodSync(fd, 0o755);
+      } finally {
+        closeSync(fd);
+      }
+      renameSync(tmp, target);
+    } catch (e) {
+      try { unlinkSync(tmp); } catch { /* never created, or already renamed */ }
+      console.error('[hive] writeHiveCliLauncher failed:', e);
+    }
   }
 
   private writeMemoryShim(): void {
@@ -1446,6 +1498,7 @@ export class HiveManager {
     // written before any hook installer runs (they probe for it).
     this.writeNodeLauncher();
     this.writeMemoryShim();
+    this.writeHiveCliLauncher();
     // …and the PATH-visible `node` fallback for the agent's OWN subprocesses.
     this.writeRuntimeShims();
 

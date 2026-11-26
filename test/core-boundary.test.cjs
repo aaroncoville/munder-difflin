@@ -8,15 +8,23 @@
 //    src/shared; from a src/shared file it must land in src/shared. Anything
 //    else (src/main, src/preload, src/renderer, the @/ renderer alias, a folder
 //    elsewhere in the repository) is refused, and so is one that resolves to no
-//    file at all;
-//  - a bare import must be a Node builtin or an npm package, and never electron,
-//    an electron-* package, an @electron/* package, or node-pty (nor a subpath
-//    of one, such as electron/main);
+//    file at all. The file is judged where it really is, symlinks resolved, so a
+//    linked folder inside src/core that points at src/main does not count as
+//    src/core;
+//  - a bare import must be a Node builtin or one of the npm packages listed in
+//    PACKAGES below, so adding a package to core is a deliberate edit here: a
+//    package that wraps Electron need not be named electron-*. electron, an
+//    electron-* package, an @electron/* package and node-pty (or a subpath of
+//    one, such as electron/main) are named as such in the failure;
 //  - no file may use createRequire (from 'module' / 'node:module', in any
-//    form: named, renamed, through a namespace or default import, or
-//    destructured from require). It builds a require() whose specifiers the
+//    form: named, renamed, through a namespace or default import, destructured
+//    from require, or as a computed key that folds to the name, such as
+//    ['create' + 'Require']). It builds a require() whose specifiers the
 //    scanner cannot see, so createRequire(import.meta.url)('electron') would
-//    otherwise pass.
+//    otherwise pass;
+//  - require may only be called directly, as require('<literal>'). Any other
+//    use of it ((require)('x'), (0, require)('x'), require?.('x'),
+//    require.call(…), const r = require) hides its specifier from the scanner.
 //
 // src/core may import src/shared, so every shared file it reaches is held to the
 // same rule, transitively: otherwise core -> shared -> electron would pass.
@@ -24,24 +32,38 @@
 // every specifier is read with the TypeScript scanner, so static imports,
 // re-exports, `import type`, dynamic import() and require() all count, and a
 // specifier that only appears in a comment does not.
+//
+// Not closable by a static scan: a computed specifier (require(name),
+// module.require(name)), and starting a main-process file by path
+// (child_process.fork, a Worker). module.require('<literal>') and
+// process.mainModule.require('<literal>') are read like require('<literal>').
+//
+// Each way around the rule that the scan closes is kept as a probe below: a
+// file placed in the src/core of a temporary tree, which the scan must report.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { builtinModules } = require('node:module');
 const ts = require('typescript');
 
-const root = path.join(__dirname, '..');
-const coreDir = path.join(root, 'src', 'core');
-const sharedDir = path.join(root, 'src', 'shared');
+/** The folders the rule is about, in the repository whose root is `root`. */
+function treeAt(root) {
+  return { root, coreDir: path.join(root, 'src', 'core'), sharedDir: path.join(root, 'src', 'shared') };
+}
 const SCRIPT = /\.[cm]?[jt]sx?$/;
 const EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'];
 // An ESM-style specifier names the emitted file; the source has the TS extension.
 const TS_FOR_JS = { '.js': ['.ts', '.tsx'], '.jsx': ['.tsx'], '.mjs': ['.mts'], '.cjs': ['.cts'] };
 
+// The npm packages src/core and the src/shared files it reaches may import.
+const PACKAGES = new Set(['smol-toml']);
+
 const inside = (dir, p) => p === dir || p.startsWith(dir + path.sep);
-const rel = (p) => path.relative(root, p);
+const real = (p) => fs.realpathSync(p);
+const rel = (tree, p) => path.relative(tree.root, p);
 
 function scripts(dir) {
   const out = [];
@@ -64,11 +86,11 @@ function forbiddenPackage(pkg) {
 }
 
 /** Where a relative or aliased specifier points on disk; null for a bare one. */
-function target(file, spec) {
+function target(tree, file, spec) {
   if (spec.startsWith('.') || path.isAbsolute(spec)) return path.resolve(path.dirname(file), spec);
   // The path aliases (see electron.vite.config.ts).
-  if (spec.startsWith('@/')) return path.join(root, 'src/renderer/src', spec.slice(2));
-  if (spec.startsWith('@shared/')) return path.join(sharedDir, spec.slice('@shared/'.length));
+  if (spec.startsWith('@/')) return path.join(tree.root, 'src/renderer/src', spec.slice(2));
+  if (spec.startsWith('@shared/')) return path.join(tree.sharedDir, spec.slice('@shared/'.length));
   return null;
 }
 
@@ -84,20 +106,26 @@ function resolveFile(base) {
 }
 
 /** Why `spec`, imported by `file`, breaks the boundary (null if it does not), and the shared file to follow. */
-function judge(file, spec) {
-  const t = target(file, spec);
+function judge(tree, file, spec) {
+  const t = target(tree, file, spec);
   if (t === null) {
     if (spec.startsWith('node:') || builtinModules.includes(spec)) return {};
     const pkg = packageOf(spec);
-    return forbiddenPackage(pkg) ? { why: `${spec} is the forbidden package ${pkg}` } : {};
+    if (forbiddenPackage(pkg)) return { why: `${spec} is the forbidden package ${pkg}` };
+    return PACKAGES.has(pkg) ? {} : { why: `${spec} is the package ${pkg}, which is not on the allowlist of packages core may use` };
   }
-  const zones = inside(coreDir, file) ? [coreDir, sharedDir] : [sharedDir];
+  const zones = inside(tree.coreDir, file) ? [tree.coreDir, tree.sharedDir] : [tree.sharedDir];
+  const named = zones.map((z) => rel(tree, z)).join(' and ');
   if (!zones.some((z) => inside(z, t))) {
-    return { why: `${spec} resolves to ${rel(t)}, outside ${zones.map(rel).join(' and ')}` };
+    return { why: `${spec} resolves to ${rel(tree, t)}, outside ${named}` };
   }
   const resolved = resolveFile(t);
   if (!resolved) return { why: `${spec} resolves to no file` };
-  return { follow: inside(sharedDir, resolved) && SCRIPT.test(resolved) ? resolved : null };
+  const where = real(resolved);
+  if (!zones.some((z) => inside(real(z), where))) {
+    return { why: `${spec} resolves through a symlink to ${where}, outside ${named}` };
+  }
+  return { follow: inside(tree.sharedDir, resolved) && SCRIPT.test(resolved) ? resolved : null };
 }
 
 function specifiers(file) {
@@ -106,41 +134,149 @@ function specifiers(file) {
 
 const SCRIPT_KIND = { '.ts': ts.ScriptKind.TS, '.mts': ts.ScriptKind.TS, '.cts': ts.ScriptKind.TS, '.tsx': ts.ScriptKind.TSX, '.jsx': ts.ScriptKind.JSX };
 
-/** Lines where `file` names createRequire, as an identifier or as a ['createRequire'] key. */
-function createRequireLines(file) {
+/** The value of a string expression built only from literals ('a', `a`, 'a' + 'b', (…)), else undefined. */
+function constantString(node) {
+  if (ts.isStringLiteralLike(node)) return node.text;
+  if (ts.isParenthesizedExpression(node)) return constantString(node.expression);
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+    const left = constantString(node.left);
+    const right = constantString(node.right);
+    return left === undefined || right === undefined ? undefined : left + right;
+  }
+  if (ts.isTemplateExpression(node)) {
+    let text = node.head.text;
+    for (const span of node.templateSpans) {
+      const part = constantString(span.expression);
+      if (part === undefined) return undefined;
+      text += part + span.literal.text;
+    }
+    return text;
+  }
+  return undefined;
+}
+
+/** The names a member is declared or reached by: `x.require`, `{ require: … }`, a class or interface member. */
+function isMemberName(node) {
+  const p = node.parent;
+  return !!p && p.name === node && (ts.isPropertyAccessExpression(p) || ts.isPropertyAssignment(p)
+    || ts.isPropertyDeclaration(p) || ts.isMethodDeclaration(p) || ts.isPropertySignature(p) || ts.isMethodSignature(p));
+}
+
+/** require('<literal>'): the only use of require whose specifier the scanner reads. */
+function isDirectRequireCall(node) {
+  const call = node.parent;
+  return !!call && ts.isCallExpression(call) && call.expression === node && !call.questionDotToken
+    && call.arguments.length === 1 && ts.isStringLiteralLike(call.arguments[0]);
+}
+
+/**
+ * Where `file` reaches a loader the scanner cannot follow: createRequire named as an identifier or as an
+ * element key that folds to 'createRequire', and require used other than as require('<literal>').
+ */
+function loaderOffences(file) {
   const sf = ts.createSourceFile(file, fs.readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true,
     SCRIPT_KIND[path.extname(file)] ?? ts.ScriptKind.JS);
-  const lines = [];
+  const found = new Map();
+  const at = (node, what) => found.set(`${sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1}: ${what}`, true);
   const visit = (node) => {
-    const named = ts.isIdentifier(node) && node.text === 'createRequire';
-    const keyed = ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression)
-      && node.argumentExpression.text === 'createRequire';
-    if (named || keyed) lines.push(sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1);
+    if (ts.isIdentifier(node) && node.text === 'createRequire') at(node, 'uses createRequire');
+    if (ts.isElementAccessExpression(node) && constantString(node.argumentExpression) === 'createRequire') at(node, 'uses createRequire');
+    if (ts.isIdentifier(node) && node.text === 'require' && !isMemberName(node) && !isDirectRequireCall(node)) {
+      at(node, "uses require other than as require('<literal>')");
+    }
     ts.forEachChild(node, visit);
   };
   visit(sf);
-  return [...new Set(lines)];
+  return [...found.keys()];
 }
 
 /** Every offence reachable from `file`, following imports into src/shared. */
-function offendersFrom(file, chain, seen, offenders) {
-  const here = [...chain, rel(file)].join(' -> ');
-  for (const line of createRequireLines(file)) offenders.push(`${here}:${line}: uses createRequire`);
+function offendersFrom(tree, file, chain, seen, offenders) {
+  const here = [...chain, rel(tree, file)].join(' -> ');
+  for (const offence of loaderOffences(file)) offenders.push(`${here}:${offence}`);
   for (const spec of specifiers(file)) {
-    const { why, follow } = judge(file, spec);
-    if (why) offenders.push(`${[...chain, rel(file)].join(' -> ')}: ${why}`);
+    const { why, follow } = judge(tree, file, spec);
+    if (why) offenders.push(`${[...chain, rel(tree, file)].join(' -> ')}: ${why}`);
     else if (follow && !seen.has(follow)) {
       seen.add(follow);
-      offendersFrom(follow, [...chain, rel(file)], seen, offenders);
+      offendersFrom(tree, follow, [...chain, rel(tree, file)], seen, offenders);
     }
   }
   return offenders;
 }
 
-test('src/core reaches only src/core, src/shared, Node builtins and non-Electron packages, directly or through src/shared', () => {
-  const files = scripts(coreDir);
+/** Every offence in the src/core of the repository whose root is `root`. */
+function boundaryOffenders(root) {
+  const tree = treeAt(root);
+  const files = scripts(tree.coreDir);
   assert.ok(files.length > 0, 'src/core has no script files to check');
   const offenders = [];
-  for (const file of files) offendersFrom(file, [], new Set(), offenders);
-  assert.deepEqual(offenders, []);
+  for (const file of files) offendersFrom(tree, file, [], new Set(), offenders);
+  return offenders;
+}
+
+test('src/core reaches only src/core, src/shared, Node builtins and non-Electron packages, directly or through src/shared', () => {
+  assert.deepEqual(boundaryOffenders(path.join(__dirname, '..')), []);
+});
+
+/** A temporary repository tree with an empty src/core, src/shared and src/main/index.ts. */
+function scratchTree(t) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'md-core-boundary-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  for (const dir of ['src/core', 'src/shared', 'src/main', 'src/renderer/src']) fs.mkdirSync(path.join(root, dir), { recursive: true });
+  fs.writeFileSync(path.join(root, 'src/main/index.ts'), "import { app } from 'electron';\nexport const main = app;\n");
+  fs.writeFileSync(path.join(root, 'src/core/plain.ts'), 'export const plain = 1;\n');
+  return root;
+}
+
+// Each probe is one src/core file (and, for the link, a symlink beside it) and what the scan must say about it.
+const PROBES = [
+  { name: 'an import of electron', code: "import { app } from 'electron';", why: /electron is the forbidden package electron/ },
+  { name: 'an import of an electron-* package', code: "import 'electron-store';", why: /forbidden package electron-store/ },
+  { name: 'an import of src/main', code: "import { main } from '../main/index';", why: /resolves to src\/main\/index, outside src\/core and src\/shared/ },
+  { name: 'the @/ renderer alias', code: "import '@/thing';", why: /resolves to src\/renderer\/src\/thing, outside/ },
+  { name: 'an import that resolves to no file', code: "import './missing';", why: /resolves to no file/ },
+  { name: 'electron reached through src/shared', code: "import { s } from '../shared/s';", shared: { 's.ts': "import 'electron';\nexport const s = 1;\n" }, why: /src\/core\/probe\.ts -> src\/shared\/s\.ts: electron is the forbidden package/ },
+  { name: 'createRequire', code: "import { createRequire } from 'node:module';\ncreateRequire(__filename)('electron');", why: /uses createRequire/ },
+  { name: '(require)(…)', code: "(require)('electron');", why: /uses require other than as require\('<literal>'\)/ },
+  { name: '(0, require)(…)', code: "(0, require)('electron');", why: /uses require other than/ },
+  { name: 'require?.(…)', code: "require?.('electron');", why: /uses require other than/ },
+  { name: 'require.call(…)', code: "require.call(null, 'electron');", why: /uses require other than/ },
+  { name: 'require under another name', code: "const r = require;\nr('electron');", why: /uses require other than/ },
+  { name: 'a symlinked folder pointing at src/main', code: "import { main } from './zlink/index';", link: { 'zlink': '../main' }, why: /\.\/zlink\/index resolves through a symlink to .*src\/main\/index\.ts, outside src\/core and src\/shared/ },
+  { name: 'a package that wraps electron under another name', code: "import * as Sentry from '@sentry/electron';", why: /@sentry\/electron is the package @sentry\/electron, which is not on the allowlist/ },
+  { name: 'a computed createRequire key', code: "require('node:module')['create' + 'Require'](__filename)('electron');", why: /uses createRequire/ },
+  { name: 'a template-string createRequire key', code: "require('node:module')[`create${'Require'}`](__filename)('electron');", why: /uses createRequire/ },
+  { name: 'module.require with a literal', code: "module.require('electron');", why: /electron is the forbidden package electron/ },
+  { name: 'process.mainModule.require with a literal', code: "process.mainModule.require('electron');", why: /electron is the forbidden package electron/ }
+];
+
+for (const probe of PROBES) {
+  test(`the scan reports ${probe.name} in src/core`, (t) => {
+    const root = scratchTree(t);
+    const core = path.join(root, 'src/core');
+    for (const [name, text] of Object.entries(probe.shared || {})) fs.writeFileSync(path.join(root, 'src/shared', name), text);
+    for (const [name, to] of Object.entries(probe.link || {})) fs.symlinkSync(to, path.join(core, name));
+    fs.writeFileSync(path.join(core, 'probe.ts'), `${probe.code}\nexport {};\n`);
+    const offenders = boundaryOffenders(root);
+    assert.ok(offenders.some((o) => o.startsWith('src/core/probe.ts') && probe.why.test(o)), `expected ${probe.why} for probe.ts, got:\n${offenders.join('\n')}`);
+  });
+}
+
+test('the scan passes a src/core that uses only an allowed package, Node builtins, require(\'<literal>\') and src/shared', (t) => {
+  const root = scratchTree(t);
+  fs.writeFileSync(path.join(root, 'src/shared/s.ts'), "import { join } from 'node:path';\nexport const s = join('a', 'b');\n");
+  fs.writeFileSync(path.join(root, 'src/core/clean.ts'), [
+    "import { parse } from 'smol-toml';",
+    "import { readFileSync } from 'node:fs';",
+    "import * as os from 'os';",
+    "import { s } from '../shared/s';",
+    "import { plain } from './plain';",
+    "import { s as s2 } from '@shared/s';",
+    "const path = require('node:path');",
+    'const obj = { require: 1 };',
+    'export const all = [parse, readFileSync, os, s, s2, plain, path, obj.require];',
+    ''
+  ].join('\n'));
+  assert.deepEqual(boundaryOffenders(root), []);
 });
