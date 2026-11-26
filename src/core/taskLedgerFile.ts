@@ -70,6 +70,11 @@ export interface TaskLedgerFileOptions {
    * in a shape this code cannot read, which an empty ledger would replace.
    */
   unreadable?: 'throw' | 'empty';
+  /**
+   * When process `pid` started, or null when that cannot be read. Used for this writer's own record and to
+   * check a holder's. Default: processStart, from /proc or ps. A test can make it fail. Not for production use.
+   */
+  startTime?: (pid: number) => string | null;
   /** Called between the steps of taking the lock, so a test can interleave writers. Not for production use. */
   hooks?: TaskLedgerLockHooks;
 }
@@ -178,23 +183,24 @@ function processStart(pid: number): string | null {
 }
 
 let ownStart: string | null | undefined;
-/** This process's start time, read once. */
-function ownProcessStart(): string | null {
+/** When process `pid` started (see processStart), reading this process's own start time only once. */
+function defaultStartTime(pid: number): string | null {
+  if (pid !== process.pid) return processStart(pid);
   if (ownStart === undefined) ownStart = processStart(process.pid);
   return ownStart;
 }
 
 /** Whether running process `pid` is the one that recorded `started`: null when that cannot be told. */
-function sameProcess(pid: number, started: unknown): boolean | null {
+function sameProcess(pid: number, started: unknown, startTime: (pid: number) => string | null): boolean | null {
   if (typeof started !== 'string') return null;
-  const now = processStart(pid);
+  const now = startTime(pid);
   if (now === null) return null;
   const method = (value: string): string => value.slice(0, value.indexOf(':') + 1);
   if (method(now) !== method(started)) return null;
   return now === started;
 }
 
-interface StaleBounds { staleMs: number; liveStaleMs: number }
+interface StaleBounds { staleMs: number; liveStaleMs: number; startTime: (pid: number) => string | null }
 
 /**
  * `owners` remembers, for the length of one wait, whether a recorded holder is still the process that wrote
@@ -208,7 +214,7 @@ function isStale(lock: HeldLock, bounds: StaleBounds, owners: Map<string, boolea
   // A fresh lock with a running holder is never broken, so there is no need yet to ask which process it is.
   if (lock.ageMs <= bounds.staleMs) return false;
   const key = `${record.pid} ${String(record.started)}`;
-  if (!owners.has(key)) owners.set(key, sameProcess(record.pid, record.started));
+  if (!owners.has(key)) owners.set(key, sameProcess(record.pid, record.started, bounds.startTime));
   const same = owners.get(key);
   if (same === true) return false;
   if (same === false) return true;
@@ -251,10 +257,10 @@ interface OwnLock { token: string; dev: number; ino: number }
 
 function acquire(
   lock: string,
-  opts: Required<Pick<TaskLedgerFileOptions, 'waitMs' | 'staleMs' | 'liveStaleMs' | 'retryMs'>> & { hooks: TaskLedgerLockHooks }
+  opts: Required<Pick<TaskLedgerFileOptions, 'waitMs' | 'staleMs' | 'liveStaleMs' | 'retryMs' | 'startTime'>> & { hooks: TaskLedgerLockHooks }
 ): OwnLock {
   const token = randomBytes(12).toString('hex');
-  const started = ownProcessStart();
+  const started = opts.startTime(process.pid);
   const body = JSON.stringify({ pid: process.pid, host: hostname(), ...(started === null ? {} : { started }), acquiredAt: new Date().toISOString(), token });
   // A monotonic clock: a wall-clock step back would stretch the wait, a step forward would cut it short.
   const deadline = performance.now() + opts.waitMs;
@@ -408,6 +414,7 @@ export function updateTaskLedgerFile(
     staleMs: options.staleMs ?? 30_000,
     liveStaleMs: options.liveStaleMs ?? 300_000,
     retryMs: options.retryMs ?? 20,
+    startTime: options.startTime ?? defaultStartTime,
     hooks
   });
   try {
