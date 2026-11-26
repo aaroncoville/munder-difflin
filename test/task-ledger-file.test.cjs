@@ -116,10 +116,19 @@ test('a lock whose process has exited on this host is broken', (t) => {
   assert.deepEqual(leftovers(dir), []);
 });
 
-test('a lock older than the stale bound is broken even when its process is alive', (t) => {
+test('a lock from another host older than the stale bound is broken', (t) => {
+  const { file, lock } = hive(t, { tasks: [] });
+  holdLock(lock, { host: 'some-other-host', acquiredAt: new Date(Date.now() - 60_000).toISOString() });
+  updateTaskLedgerFile(file, (c) => [...c, { id: 'b' }], { waitMs: 300, staleMs: 30_000 });
+  assert.deepEqual(ids(file), ['b']);
+});
+
+test('a lock whose process is alive on this host is not broken on the stale bound, only on the much longer pid-reuse bound', (t) => {
   const { file, lock } = hive(t, { tasks: [] });
   holdLock(lock, { acquiredAt: new Date(Date.now() - 60_000).toISOString() });
-  updateTaskLedgerFile(file, (c) => [...c, { id: 'b' }], { waitMs: 300, staleMs: 30_000 });
+  assert.throws(() => updateTaskLedgerFile(file, (c) => [...c, { id: 'b' }], { waitMs: 200, staleMs: 30_000 }), TaskLedgerLockTimeout);
+  assert.deepEqual(ids(file), []);
+  updateTaskLedgerFile(file, (c) => [...c, { id: 'b' }], { waitMs: 200, staleMs: 30_000, liveStaleMs: 50_000 });
   assert.deepEqual(ids(file), ['b']);
 });
 
@@ -271,4 +280,40 @@ test('a lock never exists without its record', (t) => {
   updateTaskLedgerFile(file, (c) => { look(); return [...c, { id: 'a' }]; }, { hooks: { beforeLockRecorded: look } });
   assert.ok(records.length > 0);
   for (const text of records) assert.equal(typeof JSON.parse(text).token, 'string', `lock seen as ${JSON.stringify(text)}`);
+});
+
+test('a live holder slower than the stale bound is not broken, so a second writer loses nothing', async (t) => {
+  const { dir, file } = hive(t, { tasks: [] });
+  const sync = fs.mkdtempSync(path.join(os.tmpdir(), 'md-ledger-sync-'));
+  t.after(() => fs.rmSync(sync, { recursive: true, force: true }));
+  // The slow holder takes the lock and pauses inside its update for three times the stale bound.
+  const child = spawn(process.execPath, ['-e', `
+    const fs = require('node:fs'); const path = require('node:path');
+    const loadTs = require(${JSON.stringify(path.join(__dirname, 'load-ts.cjs'))});
+    const { updateTaskLedgerFile } = loadTs('src/core/taskLedgerFile.ts');
+    const [file, sync] = process.argv.slice(1);
+    updateTaskLedgerFile(file, (cur) => {
+      fs.writeFileSync(path.join(sync, 'holding'), '');
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 900);
+      return [...cur, { id: 'slow' }];
+    }, { staleMs: 300 });`, file, sync], { cwd: path.join(__dirname, '..'), stdio: ['ignore', 'ignore', 'pipe'] });
+  let err = '';
+  child.stderr.on('data', (d) => { err += d; });
+  const done = new Promise((resolve) => child.on('exit', (code) => resolve({ code, err })));
+  t.after(() => child.kill());
+  assert.ok(await waitForFile(path.join(sync, 'holding'), 10_000));
+  await new Promise((r) => setTimeout(r, 450));
+  let second = 'written';
+  try {
+    updateTaskLedgerFile(file, (c) => [...c, { id: 'fast' }], { staleMs: 300, waitMs: 10_000 });
+  } catch (e) {
+    second = `refused: ${e.message}`;
+  }
+  const slow = await done;
+  const cards = ids(file);
+  // Neither writer may report a card as written that the ledger then does not hold.
+  if (second === 'written') assert.ok(cards.includes('fast'), `the second writer's card was lost: ${cards}`);
+  if (slow.code === 0) assert.ok(cards.includes('slow'), `the slow holder's card was lost: ${cards}`);
+  assert.deepEqual(cards.sort(), ['fast', 'slow'], `second writer ${second}; slow holder exited ${slow.code} ${slow.err}`);
+  assert.deepEqual(leftovers(dir), []);
 });

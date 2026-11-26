@@ -15,8 +15,12 @@
  *    the old file or the new one, never a partial one;
  *  - releases the lock, if it is still its own, whatever happened.
  *
- * A lock is stale, and is broken, when its holder on this host has exited, or when it is older than
- * `staleMs` (a holder on another host can only be judged by age).
+ * A lock is stale, and is broken, when its holder on this host has exited. A holder on this host that is
+ * still running is never judged by `staleMs`: it may be slow (stopped in a debugger, a sleeping laptop, a
+ * stalled disk, a wall-clock step) and would go on to write after its lock was broken. Only after
+ * `liveStaleMs`, far longer than any real update, is such a lock broken, because by then the pid has more
+ * likely been reused by an unrelated process. A lock from another host, or one with no readable record,
+ * can only be judged by age, and is stale after `staleMs`.
  *
  * The lock is advisory. A writer that edits tasks.json without this function, such as an agent with a
  * file-edit tool, is not serialized with the others; the rename only means no reader sees a torn file.
@@ -34,8 +38,10 @@ export interface TaskLedgerFileOptions {
   now?: () => Date;
   /** How long to wait for another holder before giving up. Default 5 s. */
   waitMs?: number;
-  /** A lock older than this is stale whoever holds it. Default 30 s. */
+  /** A lock from another host, or with no readable record, is stale after this. Default 30 s. */
   staleMs?: number;
+  /** A lock whose holder on this host is still running is stale only after this (pid reuse). Default 5 min. */
+  liveStaleMs?: number;
   /** Pause between attempts to take the lock. Default 20 ms. */
   retryMs?: number;
   /** A ledger that is not valid JSON: refuse ('throw', the default), or treat it as empty ('empty'). */
@@ -99,11 +105,10 @@ function alive(pid: number): boolean {
   }
 }
 
-function isStale(lock: { record: LockRecord | null; ageMs: number }, staleMs: number): boolean {
-  if (lock.ageMs > staleMs) return true;
+function isStale(lock: HeldLock, staleMs: number, liveStaleMs: number): boolean {
   const { record } = lock;
-  if (!record || record.host !== hostname() || typeof record.pid !== 'number') return false;
-  return !alive(record.pid);
+  if (!record || record.host !== hostname() || typeof record.pid !== 'number') return lock.ageMs > staleMs;
+  return !alive(record.pid) || lock.ageMs > liveStaleMs;
 }
 
 function describe(record: LockRecord | null): string {
@@ -135,7 +140,7 @@ function breakStale(lock: string, judged: HeldLock): boolean {
 
 function acquire(
   lock: string,
-  opts: Required<Pick<TaskLedgerFileOptions, 'waitMs' | 'staleMs' | 'retryMs'>> & { hooks: TaskLedgerLockHooks }
+  opts: Required<Pick<TaskLedgerFileOptions, 'waitMs' | 'staleMs' | 'liveStaleMs' | 'retryMs'>> & { hooks: TaskLedgerLockHooks }
 ): string {
   const token = randomBytes(12).toString('hex');
   const body = JSON.stringify({ pid: process.pid, host: hostname(), acquiredAt: new Date().toISOString(), token });
@@ -155,7 +160,7 @@ function acquire(
       const held = readLock(lock);
       if (held) {
         last = held.record;
-        if (isStale(held, opts.staleMs)) {
+        if (isStale(held, opts.staleMs, opts.liveStaleMs)) {
           opts.hooks.beforeBreak?.();
           if (breakStale(lock, held)) continue;
         }
@@ -228,6 +233,7 @@ export function updateTaskLedgerFile(
   const token = acquire(lock, {
     waitMs: options.waitMs ?? 5_000,
     staleMs: options.staleMs ?? 30_000,
+    liveStaleMs: options.liveStaleMs ?? 300_000,
     retryMs: options.retryMs ?? 20,
     hooks: options.hooks ?? {}
   });
