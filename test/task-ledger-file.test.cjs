@@ -384,3 +384,19 @@ test('the ledger keeps its file mode when it is replaced', (t) => {
   assert.deepEqual(ids(file), ['a']);
   assert.equal((fs.statSync(file).mode & 0o7777).toString(8), '600');
 });
+
+test('leftover lock, break-aside and temporary files older than a minute are swept; fresh ones are kept', (t) => {
+  const { dir, file } = hive(t, { tasks: [] });
+  const names = ['.tasks.json.tmp-1-aaaaaa', 'tasks.json.lock.stale-aaaaaa', '.tasks.json.lock.tmp-1-aaaaaa'];
+  const old = new Date(Date.now() - 2 * 60_000);
+  for (const name of names) {
+    fs.writeFileSync(path.join(dir, `${name}-old`), 'x');
+    fs.utimesSync(path.join(dir, `${name}-old`), old, old);
+    fs.writeFileSync(path.join(dir, `${name}-new`), 'x');
+  }
+  // Not ours: left alone whatever its age.
+  fs.writeFileSync(path.join(dir, 'notes.tmp-1'), 'x');
+  fs.utimesSync(path.join(dir, 'notes.tmp-1'), old, old);
+  updateTaskLedgerFile(file, (c) => [...c, { id: 'a' }]);
+  assert.deepEqual(leftovers(dir).sort(), [...names.map((n) => `${n}-new`), 'notes.tmp-1'].sort());
+});

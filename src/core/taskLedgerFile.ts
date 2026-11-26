@@ -17,6 +17,11 @@
  *    TaskLedgerLockLost;
  *  - releases the lock, if it is still its own, whatever happened.
  *
+ * Holding the lock, it also removes files that a writer which died part-way left beside the ledger: its
+ * temporary ledger (`.tasks.json.tmp-*`), its temporary lock (`.tasks.json.lock.tmp-*`) and a lock it had
+ * set aside to break (`tasks.json.lock.stale-*`), once they are a minute old. Each of these exists for
+ * milliseconds while its writer is alive.
+ *
  * A lock is stale, and is broken, when its holder on this host has exited. A holder on this host that is
  * still running is never judged by `staleMs`: it may be slow (stopped in a debugger, a sleeping laptop, a
  * stalled disk, a wall-clock step) and would go on to write after its lock was broken. Only after
@@ -30,7 +35,7 @@
  * Writing never commits: committing the hive repository stays with the app.
  */
 import { randomBytes } from 'node:crypto';
-import { closeSync, fchmodSync, fstatSync, fsyncSync, linkSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, fchmodSync, fstatSync, fsyncSync, linkSync, lstatSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { mergeTaskLedger } from './taskLedger';
@@ -199,6 +204,25 @@ function release(lock: string, own: OwnLock): void {
   try { unlinkSync(lock); } catch { /* already gone */ }
 }
 
+const LEFTOVER_MS = 60_000;
+
+function sweepLeftovers(path: string): void {
+  const dir = dirname(path);
+  const name = basename(path);
+  const prefixes = [`.${name}.tmp-`, `.${name}.lock.tmp-`, `${name}.lock.stale-`];
+  let entries: string[];
+  try { entries = readdirSync(dir); } catch { return; }
+  const cutoff = Date.now() - LEFTOVER_MS;
+  for (const entry of entries) {
+    if (!prefixes.some((prefix) => entry.startsWith(prefix))) continue;
+    const file = join(dir, entry);
+    try {
+      const stat = lstatSync(file);
+      if (stat.isFile() && stat.mtimeMs < cutoff) unlinkSync(file);
+    } catch { /* gone already, or not ours to remove */ }
+  }
+}
+
 function readLedger(path: string, unreadable: 'throw' | 'empty'): Record<string, unknown> {
   let text: string;
   try { text = readFileSync(path, 'utf8'); } catch (e) {
@@ -278,6 +302,7 @@ export function updateTaskLedgerFile(
     hooks: options.hooks ?? {}
   });
   try {
+    sweepLeftovers(path);
     const ledger = readLedger(path, options.unreadable ?? 'throw');
     const current = Array.isArray(ledger.tasks) ? ledger.tasks : [];
     const next = mutate(current.slice());
