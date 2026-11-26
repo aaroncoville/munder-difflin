@@ -23,6 +23,8 @@ import {
   type OrgTriggerConfig,
   type WebhookTrigger
 } from '../shared/triggers';
+import type { CircuitBreakerConfig } from './breaker';
+export type { CircuitBreakerConfig };
 
 /** A recurring auto-dispatched mission fired on an interval by the scheduler. */
 export interface ScheduledMission {
@@ -151,26 +153,6 @@ export const COMPACT_MAINTENANCE_MISSION: ScheduledMission = {
  *  it. `migrateTriggersV1` bumps only missions still sitting on this EXACT value,
  *  so an interval the user tuned by hand is left exactly where they put it. */
 const LEGACY_COMPACT_MAINTENANCE_INTERVAL_MS = 3_600_000;
-
-/** Circuit-breaker thresholds (Lane A #6.6b). The breaker runs inside the
- *  heartbeat beat, so it only ticks when the heartbeat is enabled. Trip
- *  conditions are behavioral by default; `costCapUsd` is the only $-based one and
- *  is unset by default (a hardcoded dollar default would be arbitrary). Defaults
- *  are deliberately conservative and steer-first — `hardStop` is OFF unless the
- *  user opts in, so the breaker never auto-kills a healthy long-runner. */
-export interface CircuitBreakerConfig {
-  /** Master switch for breaker evaluation within the beat. Default true. */
-  enabled?: boolean;
-  /** Allow the top of the ladder (kill PTY + archive). Default false = the
-   *  breaker may steer/constrain but never hard-stops until the user opts in. */
-  hardStop?: boolean;
-  /** Consecutive identical tool calls (same name+input) before tripping. */
-  repeatedToolLimit?: number;
-  /** Consecutive api_error / retry events before tripping. */
-  errorStormLimit?: number;
-  /** Output-token velocity (tokens/min, diffed across beats) before tripping. */
-  tokenVelocityPerMin?: number;
-}
 
 /** Enterprise Knowledge Graph (multimodal context store + agent access tool).
  *  The user ingests their own documents/images/PDFs; agents query them on demand
