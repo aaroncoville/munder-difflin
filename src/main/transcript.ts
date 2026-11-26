@@ -1,7 +1,7 @@
 import { closeSync, cpSync, existsSync, fstatSync, mkdirSync, openSync, readSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { estimateCostUsd, normalizeModel } from './pricing';
+import { estimateCostUsd, normalizeModel } from '../core/pricing';
 
 /** Claude Code's project key: the absolute cwd with EVERY non-alphanumeric
  *  character turned into a dash — the leading slash and any dots included.

@@ -2,7 +2,7 @@
 /**
  * readAgentUsage incremental-cache tests. Self-contained, no framework — run
  * with `node test/transcript-usage.test.cjs` (mirrors test/breaker.test.cjs).
- * transcript.ts + its dependency pricing.ts are transpiled with the bundled
+ * transcript.ts + its dependency core/pricing.ts are transpiled with the bundled
  * `typescript` compiler.
  *
  * The breaker/cost beat calls readAgentUsage every ~30s per agent (transcript
@@ -24,15 +24,16 @@ const FAKE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'home-'));
 process.env.HOME = FAKE_HOME;
 process.env.USERPROFILE = FAKE_HOME;
 
-const SRC = path.join(__dirname, '..', 'src', 'main');
+const SRC = path.join(__dirname, '..', 'src');
 const out = fs.mkdtempSync(path.join(os.tmpdir(), 'transcript-'));
-for (const name of ['pricing', 'transcript']) {
-  const js = ts.transpileModule(fs.readFileSync(path.join(SRC, `${name}.ts`), 'utf8'), {
+for (const rel of ['core/pricing', 'main/transcript']) {
+  const js = ts.transpileModule(fs.readFileSync(path.join(SRC, `${rel}.ts`), 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true }
   }).outputText;
-  fs.writeFileSync(path.join(out, `${name}.js`), js, 'utf8');
+  fs.mkdirSync(path.dirname(path.join(out, rel)), { recursive: true });
+  fs.writeFileSync(path.join(out, `${rel}.js`), js, 'utf8');
 }
-const { readAgentUsage, projectDir } = require(path.join(out, 'transcript.js'));
+const { readAgentUsage, projectDir } = require(path.join(out, 'main', 'transcript.js'));
 
 /** A fake cwd whose projectDir we can write transcripts into. */
 function makeProject() {

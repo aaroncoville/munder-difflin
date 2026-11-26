@@ -8,7 +8,7 @@ const assert = require('node:assert/strict');
 const loadTs = require('./load-ts.cjs');
 
 const { askKeyOf } = loadTs('src/shared/askKey.ts');
-const U = loadTs('src/main/usageEvents.ts');
+const U = loadTs('src/core/usageEvents.ts');
 
 test('the key is the card id and the ask time in canonical ISO form', () => {
   assert.equal(askKeyOf('CARD-1', '2026-11-12T10:00:00Z'), 'CARD-1@2026-11-12T10:00:00.000Z');

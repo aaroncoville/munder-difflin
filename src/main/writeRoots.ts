@@ -44,7 +44,7 @@ import { closeSync, fstatSync, lstatSync, openSync, readdirSync, readSync, realp
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { isFolderName } from './messageTarget';
-import { TOOL_NAMES } from './usageEvents';
+import { TOOL_NAMES } from '../core/usageEvents';
 import { claudeLaunch, claudeRoots, codexHookStateKeys, codexLaunchSandbox, codexRoots, launchExecutable, launchPlaces, type CodexAppHooks, type RootsState } from './launchLine';
 export { claudeLaunch, claudeRoots, codexHookStateKeys, codexLaunchSandbox, codexRoots } from './launchLine';
 

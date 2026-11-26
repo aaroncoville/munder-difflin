@@ -12,7 +12,7 @@ const loadTs = require('./load-ts.cjs');
 const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
-const U = loadTs('src/main/usageEvents.ts');
+const U = loadTs('src/core/usageEvents.ts');
 const { HeavyJobLock } = loadTs('src/main/heavyJob.ts');
 const { HiveManager } = loadTs('src/main/hive.ts');
 const crypto = require('node:crypto');

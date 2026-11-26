@@ -32,9 +32,9 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { readAgentUsage } from './transcript';
 import { transcriptWrittenAt } from './transcriptWrittenAt';
-import { normalizeModel } from './pricing';
+import { normalizeModel } from '../core/pricing';
 import { rolloutFileFor } from './codexActivity';
-import { CodexUsageReader } from './codexUsage';
+import { CodexUsageReader } from '../core/codexUsage';
 
 // ─── The locked cross-lane contract (do not change without re-agreeing) ───────
 

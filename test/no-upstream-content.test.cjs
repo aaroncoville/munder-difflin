@@ -24,12 +24,14 @@ test('the hero card and the model catalog are answered from the build, not the n
 
 test('no main-process source fetches from the original project', () => {
   const offenders = [];
-  for (const f of fs.readdirSync(path.join(root, 'src/main'))) {
-    if (!/\.ts$/.test(f)) continue;
-    // The updater keeps its feed name as an identifier, but every path that
-    // would use it is gated off (update-feed-off.test.cjs).
-    if (f === 'updater.ts') continue;
-    if (/raw\.githubusercontent\.com\/chaitanyagiri|munderdiffl\.in/.test(code(`src/main/${f}`))) offenders.push(f);
+  for (const dir of ['src/main', 'src/core']) {
+    for (const f of fs.readdirSync(path.join(root, dir))) {
+      if (!/\.ts$/.test(f)) continue;
+      // The updater keeps its feed name as an identifier, but every path that
+      // would use it is gated off (update-feed-off.test.cjs).
+      if (f === 'updater.ts') continue;
+      if (/raw\.githubusercontent\.com\/chaitanyagiri|munderdiffl\.in/.test(code(`${dir}/${f}`))) offenders.push(f);
+    }
   }
   assert.deepEqual(offenders, []);
 });

@@ -11,7 +11,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const loadTs = require('./load-ts.cjs');
 
-const { priceFor, estimateCostUsd } = loadTs('src/main/pricing.ts');
+const { priceFor, estimateCostUsd } = loadTs('src/core/pricing.ts');
 
 test('Haiku 5.5 falls back to its own list price', () => {
   assert.deepEqual(priceFor('claude-haiku-5-5'), {

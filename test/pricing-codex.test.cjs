@@ -10,7 +10,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const loadTs = require('./load-ts.cjs');
 
-const { priceFor } = loadTs('src/main/pricing.ts');
+const { priceFor } = loadTs('src/core/pricing.ts');
 
 test('Codex models are priced at their own list price, not as Sonnet', () => {
   assert.deepEqual(priceFor('gpt-5.6-sol'), { inputPerM: 4, outputPerM: 20, cacheReadPerM: 0.4, cacheWritePerM: 0 });

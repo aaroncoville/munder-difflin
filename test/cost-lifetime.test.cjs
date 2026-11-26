@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 
-const { CostLedgerTotals } = loadTs('src/main/costLifetime.ts');
+const { CostLedgerTotals } = loadTs('src/core/costLifetime.ts');
 
 /** One ledger row in the exact shape appendCostLedger writes. */
 function row(agent, session, usd) {

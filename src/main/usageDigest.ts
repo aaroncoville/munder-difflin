@@ -7,7 +7,7 @@
  */
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { CARD_STATUSES } from './usageEvents';
+import { CARD_STATUSES } from '../core/usageEvents';
 import { VIEWS, deletedAt } from './usageLog';
 
 const DAY = 86_400_000;
