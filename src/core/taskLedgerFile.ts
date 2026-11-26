@@ -65,8 +65,9 @@ export interface TaskLedgerFileOptions {
   /** Pause between attempts to take the lock. Default 20 ms. */
   retryMs?: number;
   /**
-   * A ledger that is not valid JSON, or is valid JSON but not an object whose `tasks`, if present, is a
-   * list: refuse ('throw', the default), or treat it as empty ('empty').
+   * A ledger that is not valid JSON: refuse ('throw', the default), or treat it as empty ('empty'). Valid
+   * JSON that is not an object whose `tasks`, if present, is a list is always refused: it may hold cards
+   * in a shape this code cannot read, which an empty ledger would replace.
    */
   unreadable?: 'throw' | 'empty';
   /** Called between the steps of taking the lock, so a test can interleave writers. Not for production use. */
@@ -341,7 +342,6 @@ function readLedger(path: string, unreadable: 'throw' | 'empty'): Record<string,
   const isObject = !!parsed && typeof parsed === 'object' && !Array.isArray(parsed);
   const ledger = parsed as Record<string, unknown>;
   if (isObject && (!('tasks' in ledger) || Array.isArray(ledger.tasks))) return ledger;
-  if (unreadable === 'empty') return {};
   const shape = isObject ? '"tasks" is not a list' : 'it is not an object';
   throw new Error(`${path} is not a task ledger (${shape}), so it was left as it is`);
 }

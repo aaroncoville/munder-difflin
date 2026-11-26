@@ -207,14 +207,14 @@ test('an unreadable ledger is refused by default, and treated as empty only when
   assert.deepEqual(ids(file), ['b']);
 });
 
-test('valid JSON of the wrong shape is refused by default and left as it is, and treated as empty only when asked', (t) => {
+test('valid JSON of the wrong shape is refused and left as it is, even when unreadable JSON is to be treated as empty', (t) => {
   for (const text of ['[{"id":"legacy"}]', '{"tasks":{"x":1}}', '{"tasks":"a"}', '{"tasks":null}', 'null', '42', '"tasks"']) {
-    const { dir, file } = hive(t, text);
-    assert.throws(() => updateTaskLedgerFile(file, (c) => [...c, { id: 'b' }]), /tasks\.json is not a task ledger/, text);
-    assert.equal(fs.readFileSync(file, 'utf8'), text, `${text} is left alone`);
-    assert.deepEqual(leftovers(dir), [], `${text}: no lock or temporary file is left`);
-    updateTaskLedgerFile(file, (c) => [...c, { id: 'b' }], { unreadable: 'empty' });
-    assert.deepEqual(ids(file), ['b'], text);
+    for (const unreadable of ['throw', 'empty']) {
+      const { dir, file } = hive(t, text);
+      assert.throws(() => updateTaskLedgerFile(file, (c) => [...c, { id: 'b' }], { unreadable }), /tasks\.json is not a task ledger/, `${text} ${unreadable}`);
+      assert.equal(fs.readFileSync(file, 'utf8'), text, `${text} is left alone (${unreadable})`);
+      assert.deepEqual(leftovers(dir), [], `${text}: no lock or temporary file is left (${unreadable})`);
+    }
   }
 });
 
