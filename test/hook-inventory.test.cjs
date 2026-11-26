@@ -19,7 +19,7 @@ const { codexTestBase, jailHome } = require('./codex-test-home.cjs');
 const { withSeatSettings } = require('./seat-settings-dir.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
-const { sanitize } = loadTs('src/main/usageLog.ts');
+const { sanitize } = loadTs('src/core/usageLog.ts');
 
 const PROSE = 'a heron stood very still in the shallow green water of the millpond';
 const hookFile = (event, command) => JSON.stringify({ hooks: { [event]: [{ matcher: 'Bash', hooks: [{ type: 'command', command }] }] } });

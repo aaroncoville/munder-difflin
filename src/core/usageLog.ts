@@ -17,9 +17,9 @@
  */
 import { appendFileSync, chmodSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { FAIL_CLOSED_REASONS, LOG_TOOLS, PATH_CLASSES, PROVIDERS, SHAPES, START_SOURCES, VIAS } from '../core/writeRoots';
-import { HOOK_SOURCES } from '../core/hookInventory';
-import { WITHHELD_REASONS } from '../core/repoInstructions';
+import { FAIL_CLOSED_REASONS, LOG_TOOLS, PATH_CLASSES, PROVIDERS, SHAPES, START_SOURCES, VIAS } from './writeRoots';
+import { HOOK_SOURCES } from './hookInventory';
+import { WITHHELD_REASONS } from './repoInstructions';
 
 export const RETENTION_DAYS = 90;
 const SCHEMA = 1;

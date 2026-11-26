@@ -27,7 +27,7 @@ test.after(() => fs.rmSync(userData, { recursive: true, force: true }));
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { claudeLaunch } = loadTs('src/core/launchLine.ts');
 const W = loadTs('src/core/writeRoots.ts');
-const { sanitize } = loadTs('src/main/usageLog.ts');
+const { sanitize } = loadTs('src/core/usageLog.ts');
 const { readConfig } = loadTs('src/main/config.ts');
 
 const PROSE = 'the quick brown fox jumps over a lazy dog near the riverbank at dusk';

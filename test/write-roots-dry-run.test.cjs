@@ -13,7 +13,7 @@ const { withSeatSettings, seatFile } = require('./seat-settings-dir.cjs');
 const { codexTestBase, removeDir } = require('./codex-test-home.cjs');
 
 const W = loadTs('src/core/writeRoots.ts');
-const { UsageLog, sanitize } = loadTs('src/main/usageLog.ts');
+const { UsageLog, sanitize } = loadTs('src/core/usageLog.ts');
 const { withCodexWritableRoots } = loadTs('src/core/codexWritableRoots.ts');
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { HookServer } = loadTs('src/main/hooks.ts');

@@ -24,6 +24,8 @@ export * from './repoInstructions';
 export * from './seatSettings';
 export * from './transcript';
 export * from './usage';
+export * from './usageDigest';
 export * from './usageEvents';
+export * from './usageLog';
 export * from './usageRef';
 export * from './writeRoots';

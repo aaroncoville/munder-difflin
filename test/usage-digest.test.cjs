@@ -10,7 +10,7 @@ const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 
-const D = loadTs('src/main/usageDigest.ts');
+const D = loadTs('src/core/usageDigest.ts');
 
 const MON = Date.parse('2026-11-02T00:00:00Z'); // Monday of ISO week 2026-W45
 const H = 3600_000; const MIN = 60_000; const DAY_MS = 86_400_000;
@@ -191,7 +191,7 @@ test('a view still open when the app quit has unknown dwell, not zero; negative 
 
 // ── R1 review probes ─────────────────────────────────────────────────────────
 
-const { UsageLog } = loadTs('src/main/usageLog.ts');
+const { UsageLog } = loadTs('src/core/usageLog.ts');
 
 function hiveWith(t, { log = [], ledger = [], cards = ['CARD-1'] } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'md-digest-r1-hive-'));

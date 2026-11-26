@@ -29,7 +29,7 @@ require.cache[electron] = { id: electron, filename: electron, loaded: true, expo
 test.after(() => fs.rmSync(userData, { recursive: true, force: true }));
 
 const { HiveManager } = loadTs('src/main/hive.ts');
-const { sanitize } = loadTs('src/main/usageLog.ts');
+const { sanitize } = loadTs('src/core/usageLog.ts');
 const { sourceCheckout, repoInstructions } = loadTs('src/core/repoInstructions.ts');
 const { isRepo } = loadTs('src/main/git.ts');
 

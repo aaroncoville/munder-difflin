@@ -11,7 +11,7 @@ const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
-const { UsageLog, RETENTION_DAYS, recordFromRenderer } = loadTs('src/main/usageLog.ts');
+const { UsageLog, RETENTION_DAYS, recordFromRenderer } = loadTs('src/core/usageLog.ts');
 
 function setup(t, { enabled = true, now = Date.parse('2026-11-12T15:00:00Z') } = {}) {
   // The app's own data folder; the hive is a separate folder agents can write.
