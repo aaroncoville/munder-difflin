@@ -93,7 +93,7 @@ import { PrivateDirRefused, registerPrivateDir } from '../core/privateDirs';
 import { sourceCheckout } from '../core/repoInstructions';
 import { SeatSettingsRefused } from '../core/seatSettings';
 import { relocationEnv } from '../core/launchLine';
-import { CliPinRefused, cliVersion, judgePin, pinnedSeatEnv } from './cliPins';
+import { CliPinRefused, seatPin } from './cliPins';
 import { buildPtyEnv } from './ptyEnv';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WakeSkipLog, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
@@ -3279,13 +3279,12 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   }
   // A pinned CLI: the seat starts only on the pinned version (and model), before anything below runs the CLI.
   const pinCli = claudeProvider ? 'claude' : provider === 'codex' ? 'codex' : null;
-  const pin = pinCli && opts.hive?.id ? readConfig().cliPins?.[pinCli] : undefined;
-  if (pinCli && pin && opts.hive?.id) {
-    const env: NodeJS.ProcessEnv = { ...process.env, ...(opts.env ?? {}) };
-    const version = cliVersion(pinCli, resolveCliCommand(opts.command), env);
-    const verdict = judgePin(pinCli, pin, version, [opts.command, ...(opts.args ?? [])]);
-    if (!verdict.ok) return refuseSpawn(opts.id, opts.hive.id, provider, new CliPinRefused(`Agent ${opts.hive.id} was not started: ${verdict.reason}`));
-    opts.env = { ...(opts.env ?? {}), ...pinnedSeatEnv(pinCli, pin) };
+  if (pinCli && opts.hive?.id) {
+    const pinned = seatPin(pinCli, readConfig().cliPins,
+      { command: opts.command, args: opts.args ?? [], cwd: opts.cwd, env: opts.env ?? {} },
+      { commandPath: (c) => ptyManager.commandPath(c), launchEnv: (e) => ptyManager.launchEnv(e) });
+    if (!pinned.ok) return refuseSpawn(opts.id, opts.hive.id, provider, new CliPinRefused(`Agent ${opts.hive.id} was not started: ${pinned.reason}`));
+    if (Object.keys(pinned.env).length) opts.env = { ...(opts.env ?? {}), ...pinned.env };
   }
   // Codex Remote is daemon-based (there is no `/remote-control` slash command).
   // Start/enable the daemon under this agent's isolated CODEX_HOME and connect

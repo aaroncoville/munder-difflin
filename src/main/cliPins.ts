@@ -29,15 +29,34 @@ export function parseCliVersion(cli: PinnedCli, output: string): string | null {
   return re.exec(output ?? '')?.[1] ?? null;
 }
 
-/** The model a launch line asks for: the last `--model` (or Codex's `-m`) value, or null. */
+/** The model a launch line asks for: the last `--model` value (Codex also `-m`, and a `-c`/`--config` `model=`
+ *  override, whose value is TOML and so may be quoted), or null. */
 export function launchModel(cli: PinnedCli, argv: string[]): string | null {
   let model: string | null = null;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith('--model=')) model = a.slice('--model='.length);
     else if ((a === '--model' || (cli === 'codex' && a === '-m')) && i + 1 < argv.length) model = argv[++i];
+    else if (cli === 'codex' && (a === '-c' || a === '--config') && i + 1 < argv.length) {
+      const m = /^model\s*=\s*(.*)$/.exec(argv[++i]);
+      if (m) model = m[1].trim().replace(/^(["'])(.*)\1$/, '$2');
+    }
   }
   return model;
+}
+
+/** This CLI's pin from the config's `cliPins` value, or why that value cannot be used as one. */
+export function pinFor(pins: unknown, cli: PinnedCli): { pin: CliPin | undefined } | { malformed: string } {
+  if (pins === undefined || pins === null) return { pin: undefined };
+  if (typeof pins !== 'object' || Array.isArray(pins)) return { malformed: 'the config\'s cliPins is not an object' };
+  const entry = (pins as Record<string, unknown>)[cli];
+  if (entry === undefined) return { pin: undefined };
+  const e = entry as Record<string, unknown>;
+  if (typeof entry !== 'object' || entry === null || typeof e.version !== 'string' || !e.version
+    || (e.model !== undefined && (typeof e.model !== 'string' || !e.model))) {
+    return { malformed: `the config's cliPins.${cli} is malformed: expected { "version": "x.y.z", "model"?: "..." }` };
+  }
+  return { pin: e.model === undefined ? { version: e.version } : { version: e.version, model: e.model as string } };
 }
 
 export type PinVerdict = { ok: true; pinned: boolean } | { ok: false; reason: string };
@@ -62,20 +81,50 @@ export function pinnedSeatEnv(cli: PinnedCli, pin: CliPin | undefined): Record<s
   return pin && cli === 'claude' ? { DISABLE_AUTOUPDATER: '1' } : {};
 }
 
-type Run = (file: string, args: string[], opts: { encoding: 'utf8'; env: NodeJS.ProcessEnv; timeout: number }) => SpawnSyncReturns<string>;
-const versions = new Map<string, string | null>();
+type Run = (file: string, args: string[], opts: { encoding: 'utf8'; env: NodeJS.ProcessEnv; cwd?: string; timeout: number }) => Pick<SpawnSyncReturns<string>, 'stdout' | 'stderr'>;
+/** A version read, by path and mtime. A failed read is kept briefly: the read is synchronous, and a CLI that hangs on
+ *  --version must not stall the main process for the full timeout on every spawn attempt. */
+const versions = new Map<string, { version: string | null; at: number }>();
+const FAILED_READ_TTL_MS = 60_000;
 
-/** The version an executable reports, read once per path and modification time (an upgrade in place re-reads). */
-export function cliVersion(cli: PinnedCli, executable: string, env: NodeJS.ProcessEnv, run: Run = spawnSync): string | null {
+/** The version an executable reports, read once per path and modification time (an upgrade in place re-reads).
+ *  Run with the environment and folder the agent itself will start in: a version-manager shim chooses by both. */
+export function cliVersion(cli: PinnedCli, executable: string, where: { env?: NodeJS.ProcessEnv; cwd?: string },
+  run: Run = spawnSync, now: () => number = Date.now): string | null {
   let mtime: number;
   try { mtime = statSync(executable).mtimeMs; } catch { return null; }
-  const key = `${cli}\0${executable}\0${mtime}`;
-  if (versions.has(key)) return versions.get(key) ?? null;
+  const key = `${cli}\0${executable}\0${mtime}\0${where.cwd ?? ''}`;
+  const cached = versions.get(key);
+  if (cached && (cached.version || now() - cached.at < FAILED_READ_TTL_MS)) return cached.version;
   let version: string | null = null;
   try {
-    const res = run(executable, ['--version'], { encoding: 'utf8', env, timeout: 10_000 });
+    const res = run(executable, ['--version'], { encoding: 'utf8', env: where.env ?? process.env, cwd: where.cwd, timeout: 10_000 });
     version = parseCliVersion(cli, `${res.stdout ?? ''}\n${res.stderr ?? ''}`);
   } catch { version = null; }
-  if (version) versions.set(key, version);
+  versions.set(key, { version, at: now() });
   return version;
+}
+
+/** Where the PTY manager would launch from: its resolved path for a command and the environment it starts it with. */
+export interface LaunchDeps {
+  commandPath: (command: string) => string | null;
+  launchEnv: (agentEnv?: Record<string, string>) => Record<string, string>;
+  run?: Run;
+}
+
+/** The pin decision for one seat launch. The version is read from the executable the PTY manager will run, in the
+ *  environment and folder it will run in, so the binary judged is the binary started. ok carries the env to add. */
+export function seatPin(cli: PinnedCli, pins: unknown,
+  launch: { command: string; args: string[]; cwd: string; env: Record<string, string> },
+  deps: LaunchDeps): { ok: true; env: Record<string, string> } | { ok: false; reason: string } {
+  const p = pinFor(pins, cli);
+  if ('malformed' in p) return { ok: false, reason: p.malformed };
+  if (!p.pin) return { ok: true, env: {} };
+  const executable = deps.commandPath(launch.command);
+  const version = executable
+    ? cliVersion(cli, executable, { env: deps.launchEnv(launch.env), cwd: launch.cwd }, deps.run)
+    : null;
+  const verdict = judgePin(cli, p.pin, version, [launch.command, ...launch.args]);
+  if (!verdict.ok) return verdict;
+  return { ok: true, env: pinnedSeatEnv(cli, p.pin) };
 }

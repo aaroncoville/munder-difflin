@@ -13,7 +13,7 @@ const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 
-const { parseCliVersion, launchModel, judgePin, pinnedSeatEnv, cliVersion } = loadTs('src/main/cliPins.ts');
+const { parseCliVersion, launchModel, judgePin, pinnedSeatEnv, cliVersion, pinFor, seatPin } = loadTs('src/main/cliPins.ts');
 
 test('the version is read from each CLI\'s own --version line', () => {
   assert.equal(parseCliVersion('claude', '2.1.332 (Claude Code)\n'), '2.1.332');
@@ -73,13 +73,77 @@ test('cliVersion runs the executable once per path and mtime', () => {
   fs.writeFileSync(exe, '#!/bin/sh\necho "2.1.332 (Claude Code)"\n', { mode: 0o755 });
   let runs = 0;
   const run = (file, args) => { runs++; return require('node:child_process').spawnSync(file, args, { encoding: 'utf8' }); };
-  assert.equal(cliVersion('claude', exe, process.env, run), '2.1.332');
-  assert.equal(cliVersion('claude', exe, process.env, run), '2.1.332');
+  assert.equal(cliVersion('claude', exe, {}, run), '2.1.332');
+  assert.equal(cliVersion('claude', exe, {}, run), '2.1.332');
   assert.equal(runs, 1);
   fs.writeFileSync(exe, '#!/bin/sh\necho "2.1.340 (Claude Code)"\n', { mode: 0o755 });
   fs.utimesSync(exe, new Date(), new Date(Date.now() + 5000));
-  assert.equal(cliVersion('claude', exe, process.env, run), '2.1.340');
+  assert.equal(cliVersion('claude', exe, {}, run), '2.1.340');
   assert.equal(runs, 2);
-  assert.equal(cliVersion('claude', path.join(dir, 'missing'), process.env, run), null);
+  assert.equal(cliVersion('claude', path.join(dir, 'missing'), {}, run), null);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('a Codex -c model= / --config model= override is the launch model too', () => {
+  assert.equal(launchModel('codex', ['codex', '-m', 'a', '-c', 'model="b"']), 'b');
+  assert.equal(launchModel('codex', ['codex', '--config', "model='c'"]), 'c');
+  assert.equal(launchModel('codex', ['codex', '-c', 'model_reasoning_effort="low"']), null);
+  assert.equal(launchModel('claude', ['claude', '-c', 'model=x']), null);
+});
+
+test('a malformed cliPins entry is named as malformed, not judged as a pin', () => {
+  assert.deepEqual(pinFor(undefined, 'codex'), { pin: undefined });
+  assert.deepEqual(pinFor({}, 'codex'), { pin: undefined });
+  assert.deepEqual(pinFor({ codex: { version: '0.172.0', model: 'm' } }, 'codex'), { pin: { version: '0.172.0', model: 'm' } });
+  for (const bad of [{ codex: '0.172.0' }, { codex: { version: 172 } }, { codex: { version: '' } }, { codex: { version: '0.172.0', model: 5 } }, 'x']) {
+    const r = pinFor(bad, 'codex');
+    assert.ok(r.malformed, JSON.stringify(bad));
+    assert.match(r.malformed, /cliPins/);
+  }
+});
+
+test('a failed version read is cached for a short while, so a hung CLI does not stall every spawn', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-pins-'));
+  const exe = path.join(dir, 'codex');
+  fs.writeFileSync(exe, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  let runs = 0;
+  const run = () => { runs++; return { status: 1, stdout: '', stderr: '' }; };
+  let t = 1_000_000;
+  const now = () => t;
+  assert.equal(cliVersion('codex', exe, {}, run, now), null);
+  assert.equal(cliVersion('codex', exe, {}, run, now), null);
+  assert.equal(runs, 1);
+  t += 61_000;
+  assert.equal(cliVersion('codex', exe, {}, run, now), null);
+  assert.equal(runs, 2);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('the seat pin reads the version of the binary the PTY will launch, with the seat env and cwd', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-pins-'));
+  const launched = path.join(dir, 'launched-codex');
+  fs.writeFileSync(launched, '#!/bin/sh\n', { mode: 0o755 });
+  const seen = [];
+  const run = (file, args, opts) => { seen.push({ file, cwd: opts.cwd, marker: opts.env.SEAT_MARKER }); return { status: 0, stdout: 'codex-cli 0.172.0\n', stderr: '' }; };
+  const deps = {
+    commandPath: (cmd) => (cmd === 'codex' ? launched : null),
+    launchEnv: (env) => ({ ...env, SEAT_MARKER: 'from-launchEnv' }),
+    run
+  };
+  const r = seatPin('codex', { codex: { version: '0.172.0', model: 'm' } }, { command: 'codex', args: ['--model', 'm'], cwd: dir, env: { X: '1' } }, deps);
+  assert.deepEqual(r, { ok: true, env: {} });
+  assert.deepEqual(seen, [{ file: launched, cwd: dir, marker: 'from-launchEnv' }]);
+  // Not installed where the PTY looks: refused, never probed elsewhere.
+  const missing = seatPin('claude', { claude: { version: '2.1.332' } }, { command: 'claude', args: [], cwd: dir, env: {} }, deps);
+  assert.equal(missing.ok, false);
+  assert.match(missing.reason, /could not be read/);
+  // Malformed pins refuse with the config named.
+  const bad = seatPin('codex', { codex: '0.172.0' }, { command: 'codex', args: [], cwd: dir, env: {} }, deps);
+  assert.equal(bad.ok, false);
+  assert.match(bad.reason, /cliPins/);
+  // No pin: nothing probed, nothing added.
+  seen.length = 0;
+  assert.deepEqual(seatPin('codex', undefined, { command: 'codex', args: [], cwd: dir, env: {} }, deps), { ok: true, env: {} });
+  assert.equal(seen.length, 0);
   fs.rmSync(dir, { recursive: true, force: true });
 });

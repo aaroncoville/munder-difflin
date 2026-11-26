@@ -181,7 +181,8 @@ export interface HarnessConfig {
    *  launch-time hive picker. Maintained by writeConfig whenever harnessHome is
    *  set (onboarding finish, changeHome). Capped to a handful. */
   recentHives?: string[];
-  /** Provider CLI versions (and optionally models) seats may start with; see cliPins.ts. Unset = no pin. */
+  /** Provider CLI versions (and optionally models) seats may start with; see cliPins.ts. Unset = no pin. Hand-edited,
+   *  so it is validated where it is read (pinFor). */
   cliPins?: CliPins;
   /** Folders the user registered during onboarding (used as quick-picks). */
   registeredRepos: string[];
