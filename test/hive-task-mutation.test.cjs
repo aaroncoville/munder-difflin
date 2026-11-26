@@ -47,7 +47,7 @@ test('patching a stale UI card preserves a concurrently appended webhook card', 
     status: 'blocked',
     humanQA: [{ q: 'Which option?', askedAt: '2026-08-15T08:00:00.000Z' }]
   });
-  hive.writeTasks([question]);
+  hive.addTask(question);
 
   // The renderer still holds this one-card snapshot when the webhook arrives.
   const staleQuestion = structuredClone(tasks(hive)[0]);
@@ -67,7 +67,7 @@ test('patching a stale UI card preserves a concurrently appended webhook card', 
 
 test('atomic add is idempotent and delete removes only the named card', (t) => {
   const hive = floor(t);
-  hive.writeTasks([card('existing')]);
+  hive.addTask(card('existing'));
 
   assert.equal(hive.addTask(card('new')), true);
   assert.equal(hive.addTask(card('new', { title: 'duplicate' })), false);
@@ -80,7 +80,7 @@ test('atomic add is idempotent and delete removes only the named card', (t) => {
 
 test('patch refuses an unknown card without rewriting the ledger', (t) => {
   const hive = floor(t);
-  hive.writeTasks([card('existing')]);
+  hive.addTask(card('existing'));
   const before = tasks(hive);
 
   assert.equal(hive.patchTask('missing', { status: 'done' }), false);

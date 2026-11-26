@@ -38,6 +38,7 @@ import {
 import { linkWorktreeDeps, unlinkWorktreeDeps } from './worktreeDeps';
 import { saveAskAttachment } from './askAttachments';
 import { HiveManager, type AgentMeta, type HiveMessage, type HiveTask } from './hive';
+import { taskWriteResult } from './taskLedgerResult';
 import { archiveOrphanedAgents as archiveOrphans } from './orphanSweep';
 import { runCanaries, memoryCanary } from './canaries';
 import { TurnTracker, diffTasks, type UsageIds } from '../core/usageEvents';
@@ -3887,19 +3888,19 @@ ipcMain.handle('hive:addTask', (_evt, task: unknown) => {
     return { ok: false, error: 'invalid task' };
   }
   if (!hive.enabled()) return { ok: false, error: 'hive disabled (no harnessHome)' };
-  return { ok: hive.addTask(task as HiveTask) };
+  return taskWriteResult('addTask', () => hive.addTask(task as HiveTask));
 });
 ipcMain.handle('hive:patchTask', (_evt, id: unknown, patch: unknown) => {
   if (typeof id !== 'string' || !id || !patch || typeof patch !== 'object' || Array.isArray(patch)) {
     return { ok: false, error: 'invalid task patch' };
   }
   if (!hive.enabled()) return { ok: false, error: 'hive disabled (no harnessHome)' };
-  return { ok: hive.patchTask(id, patch as Partial<Omit<HiveTask, 'id'>>) };
+  return taskWriteResult('patchTask', () => hive.patchTask(id, patch as Partial<Omit<HiveTask, 'id'>>));
 });
 ipcMain.handle('hive:deleteTask', (_evt, id: unknown) => {
   if (typeof id !== 'string' || !id) return { ok: false, error: 'invalid task id' };
   if (!hive.enabled()) return { ok: false, error: 'hive disabled (no harnessHome)' };
-  return { ok: hive.deleteTask(id) };
+  return taskWriteResult('deleteTask', () => hive.deleteTask(id));
 });
 ipcMain.handle('hive:setArchived', (_evt, id: unknown, archived: unknown) => {
   if (typeof id !== 'string') return { ok: false, error: 'invalid id' };

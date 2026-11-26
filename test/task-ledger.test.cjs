@@ -132,16 +132,16 @@ test('a card without updatedAt gets one', () => {
   assert.equal(fresh.updatedAt, NOW);
 });
 
-test('hive.writeTasks stamps a card moved to doing', (t) => {
+test('hive.patchTask stamps a card moved to doing', (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-task-ledger-stamp-'));
   t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
   const hive = new HiveManager(() => home);
   const ledger = () => JSON.parse(fs.readFileSync(path.join(home, 'hive', 'tasks.json'), 'utf8')).tasks;
 
   const card = { id: 'a', title: 'A', status: 'todo', createdAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-10-01T00:00:00.000Z' };
-  hive.writeTasks([card]);
+  hive.addTask(card);
   const before = Date.now();
-  hive.writeTasks([{ ...card, status: 'doing' }]);
+  hive.patchTask('a', { status: 'doing' });
   const stamped = Date.parse(ledger()[0].updatedAt);
   assert.ok(stamped >= before - 1000 && stamped <= Date.now(), `updatedAt ${ledger()[0].updatedAt} is the write time`);
 });
@@ -171,7 +171,7 @@ test('patching one card leaves its neighbours byte-identical', () => {
 
 // ── end to end through the real persistence path ─────────────────────────────
 
-test('answering a question through hive.writeTasks preserves the whole board', (t) => {
+test('answering a question through hive.patchTask preserves the whole board', (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-task-ledger-'));
   t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
   const hive = new HiveManager(() => home);
@@ -180,19 +180,16 @@ test('answering a question through hive.writeTasks preserves the whole board', (
   const second = richCard();
   second.id = 'hive-delivery-pump-down';
   second.result = 'Root-caused and fixed; replied in thread.';
-  hive.writeTasks([richCard(), second]);
+  hive.addTask(richCard());
+  hive.addTask(second);
 
-  // The ASK ME view answers the question on the first card, sending the partial
-  // model it holds. The second card is sent as the view last read it.
-  hive.writeTasks([
-    {
-      id: 'vxr-onboarding-review',
-      title: 'Review the onboarding doc',
-      status: 'blocked',
-      humanQA: [{ q: 'Which branch should I read?', a: 'main', answeredAt: '2026-08-16T10:00:00.000Z' }]
-    },
-    { id: 'hive-delivery-pump-down', title: second.title, status: 'blocked' }
-  ]);
+  // The ASK ME view answers the question on the first card, sending only the
+  // fields of the partial model it holds.
+  hive.patchTask('vxr-onboarding-review', {
+    title: 'Review the onboarding doc',
+    status: 'blocked',
+    humanQA: [{ q: 'Which branch should I read?', a: 'main', answeredAt: '2026-08-16T10:00:00.000Z' }]
+  });
 
   const [answered, untouched] = ledger();
   assert.equal(answered.humanQA[0].a, 'main', 'the answer is recorded');
@@ -205,16 +202,17 @@ test('answering a question through hive.writeTasks preserves the whole board', (
   assert.deepEqual(untouched.deps, ['vxr-intake']);
 });
 
-test('hive.writeTasks can still empty the ledger', (t) => {
+test('hive.deleteTask can empty the ledger', (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-task-ledger-del-'));
   t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
   const hive = new HiveManager(() => home);
   const ledger = () => JSON.parse(fs.readFileSync(path.join(home, 'hive', 'tasks.json'), 'utf8')).tasks;
 
-  hive.writeTasks([richCard(), { id: 'other', title: 'Other', status: 'todo' }]);
-  hive.writeTasks([{ id: 'other', title: 'Other', status: 'todo' }]);
+  hive.addTask(richCard());
+  hive.addTask({ id: 'other', title: 'Other', status: 'todo' });
+  hive.deleteTask('vxr-onboarding-review');
   assert.deepEqual(ledger().map((t) => t.id), ['other']);
 
-  hive.writeTasks([]);
+  hive.deleteTask('other');
   assert.deepEqual(ledger(), []);
 });

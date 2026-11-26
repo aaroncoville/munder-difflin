@@ -56,7 +56,7 @@ import {
 import { MCP_CATALOG } from '../shared/mcpCatalog';
 import { selectBroadcastTargets } from '../shared/broadcast';
 import { preferredAgentRole } from '../shared/agentRole';
-import { mergeTaskLedger } from '../core/taskLedger';
+import { updateTaskLedgerFile } from '../core/taskLedgerFile';
 import { expandTilde } from './fs';
 import { refreshMineIgnoresOnce } from './hiveMineIgnore';
 import { carryHiveGitDir, excludeLine, hiveGitDirFor, hiveRepoPresent, SET_ASIDE_PREFIX, settleHiveGitDir, writeGitfile, writeMarker } from '../core/hiveGitDir';
@@ -158,7 +158,7 @@ export interface HiveTask {
   dependsOn: string[];
   priority: number;
   createdAt: string;
-  /** Last status change, stamped by writeTasks; ages a card that sits in 'doing'. */
+  /** Last status change, stamped when the ledger is written; ages a card that sits in 'doing'. */
   updatedAt?: string;
   /** First-class human feedback: the god appends {q} when a card can only
    *  proceed with the human's input (status goes blocked); the harness UI
@@ -462,6 +462,9 @@ function putBackFields(now: RegistryAgent, before: RegistryAgent, wrote: Registr
   }
   return out as unknown as RegistryAgent;
 }
+
+/** How long an app write to tasks.json waits for another holder of its lock. It runs on the main thread. */
+const TASK_LEDGER_WAIT_MS = 250;
 
 export class HiveManager {
   /**
@@ -1420,7 +1423,12 @@ export class HiveManager {
     // ignored anyway so a stray usage file can never enter the hive's history.
     // AGENT_ALLOWLIST_IGNORE_LINES: inside an agent's folder only its memory, identity and ignore file are hive state.
     // `.git.set-aside-*/`: a git folder found in the hive after its repository moved to the app data folder (hiveGitDir.ts).
-    const want = ['fleet.json', 'hooks.sock', 'cost-ledger.jsonl', 'crashes/', '.DS_Store', 'usage/', ...AGENT_ALLOWLIST_IGNORE_LINES, `${SET_ASIDE_PREFIX}*/`];
+    // `tasks.json.lock*`, `.tasks.json.tmp-*`, `.tasks.json.lock.tmp-*`: the task ledger's lock, a lock set aside
+    // while being broken, and the temporary files a writer renames or links into place (taskLedgerFile.ts). Each
+    // lives for milliseconds, but a commit can land while another process holds the lock, and a writer that dies
+    // leaves its temporary copy of the whole ledger behind.
+    const want = ['fleet.json', 'hooks.sock', 'cost-ledger.jsonl', 'crashes/', '.DS_Store', 'usage/', ...AGENT_ALLOWLIST_IGNORE_LINES, `${SET_ASIDE_PREFIX}*/`,
+      'tasks.json.lock', 'tasks.json.lock.stale-*', '.tasks.json.tmp-*', '.tasks.json.lock.tmp-*'];
     let lines: string[] = [];
     if (existsSync(gitignore)) { try { lines = readFileSync(gitignore, 'utf8').split('\n'); } catch { lines = []; } }
     const missing = want.filter((w) => !lines.includes(w));
@@ -3142,63 +3150,64 @@ export class HiveManager {
     return root ? this.readJson(join(root, 'tasks.json'), { tasks: [] }) : { tasks: [] };
   }
 
-  /** Persist the task ledger to hive/tasks.json and commit it. Mirrors the
-   *  board/message persist pattern: write JSON, log the change, single-commit.
+  /** Edit the ledger against its on-disk cards under the ledger lock, then log
+   *  and commit. `mutate` returning null leaves the ledger untouched. Returns
+   *  whether anything was written. An unreadable tasks.json is refused (throws)
+   *  and left as it is: edited as if empty, it would be replaced by a ledger
+   *  holding only this edit.
    *
-   *  MERGES by card id instead of clobbering. Callers hold PARTIAL models of a
-   *  card — the renderer's kanban parser knows nine fields, the god writes as
-   *  many as the work needs (`result`, the verbatim Slack reply posted back to
-   *  the user; `repo`; `scope`; `origin`; `commit`; …). A wholesale write meant
-   *  one small edit through the UI deleted every unmodelled field on EVERY card
-   *  on the board. Now an unmentioned field keeps its on-disk value.
+   *  The result MERGES over the on-disk cards by id instead of clobbering them.
+   *  Writers hold PARTIAL models of a card — the renderer's kanban parser knows
+   *  nine fields, the god writes as many as the work needs (`result`, the
+   *  verbatim Slack reply posted back to the user; `repo`; `scope`; `origin`;
+   *  `commit`; …) — so an unmentioned field keeps its on-disk value. The list
+   *  `mutate` returns is the membership: a card it leaves out is deleted.
    *
-   *  Deleting a card still works: the incoming list IS the membership, so a card
-   *  dropped from it (TasksKanban dismiss, the voice delete_task action) is
-   *  gone. Merging protects fields, never card membership. */
-  writeTasks(tasks: HiveTask[]): void {
+   *  There is deliberately no method that writes a whole list a caller read
+   *  earlier: that list deletes every card added since it was read. Edits go
+   *  through addTask, patchTask and deleteTask, which decide under the lock.
+   *
+   *  The wait for the lock is short (TASK_LEDGER_WAIT_MS). Every caller runs on
+   *  the app's main thread, where the wait blocks every window; a healthy
+   *  holder keeps the lock for milliseconds, so a longer wait only freezes the
+   *  app while a stuck holder is sorted out. The caller gets a
+   *  TaskLedgerLockTimeout naming the holder and can try again. */
+  private updateTasks(mutate: (current: HiveTask[]) => HiveTask[] | null): boolean {
     const root = this.root();
-    if (!root) return;
+    if (!root) return false;
     this.ensureHive();
-    const path = join(root, 'tasks.json');
-    const current = this.readJson<{ tasks?: unknown }>(path, { tasks: [] });
-    const merged = mergeTaskLedger(current?.tasks, tasks, new Date().toISOString());
-    this.writeJson(path, { tasks: merged });
+    const merged = updateTaskLedgerFile(join(root, 'tasks.json'), (current) => mutate(current as HiveTask[]), { waitMs: TASK_LEDGER_WAIT_MS });
+    if (!merged) return false;
     this.appendLog({ kind: 'tasks', count: merged.length });
     this.commit(`hive: tasks (${merged.length})`);
+    return true;
   }
 
   /** Append one card against the latest on-disk ledger. Renderer callers must
    *  use this instead of re-writing a collection they read before another
    *  source (webhook, Slack, god, voice) added work. Idempotent by task id. */
   addTask(task: HiveTask): boolean {
-    const ledger = this.tasks() as { tasks?: HiveTask[] };
-    const tasks = Array.isArray(ledger?.tasks) ? ledger.tasks : [];
-    if (tasks.some((current) => current?.id === task.id)) return false;
-    this.writeTasks([...tasks, task]);
-    return true;
+    return this.updateTasks((tasks) => (tasks.some((current) => current?.id === task.id) ? null : [...tasks, task]));
   }
 
   /** Patch one card against the latest on-disk ledger, preserving unrelated
    *  cards and fields (notably webhook.tokenHash and Slack thread metadata). */
   patchTask(id: string, patch: Partial<Omit<HiveTask, 'id'>>): boolean {
-    const ledger = this.tasks() as { tasks?: HiveTask[] };
-    const tasks = Array.isArray(ledger?.tasks) ? ledger.tasks : [];
-    const index = tasks.findIndex((task) => task?.id === id);
-    if (index < 0) return false;
-    const next = tasks.slice();
-    next[index] = { ...tasks[index], ...patch, id };
-    this.writeTasks(next);
-    return true;
+    return this.updateTasks((tasks) => {
+      const index = tasks.findIndex((task) => task?.id === id);
+      if (index < 0) return null;
+      const next = tasks.slice();
+      next[index] = { ...tasks[index], ...patch, id };
+      return next;
+    });
   }
 
   /** Delete only the named card from the latest on-disk ledger. */
   deleteTask(id: string): boolean {
-    const ledger = this.tasks() as { tasks?: HiveTask[] };
-    const tasks = Array.isArray(ledger?.tasks) ? ledger.tasks : [];
-    const next = tasks.filter((task) => task?.id !== id);
-    if (next.length === tasks.length) return false;
-    this.writeTasks(next);
-    return true;
+    return this.updateTasks((tasks) => {
+      const next = tasks.filter((task) => task?.id !== id);
+      return next.length === tasks.length ? null : next;
+    });
   }
   /** The roster id a caller's `id` means. Throws AgentIdError otherwise; IPC handlers run this so the caller sees why. */
   checkAgentId(id: unknown): string {

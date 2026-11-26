@@ -1,0 +1,142 @@
+'use strict';
+
+// HiveManager's task-ledger writes (addTask, patchTask, deleteTask) go through updateTaskLedgerFile: they take
+// tasks.json.lock, edit the ledger as it is on disk under that lock, and replace
+// the file by rename. So the app's own writes cannot interleave with another
+// process's, and a card that process adds is not lost to the app's write.
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { spawn, spawnSync } = require('node:child_process');
+const loadTs = require('./load-ts.cjs');
+const { allCommitsIdle } = loadTs('src/core/hiveCommit.ts');
+const { HiveManager } = loadTs('src/main/hive.ts');
+
+function floor(t) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-ledger-lock-'));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
+  const hive = new HiveManager(() => home);
+  hive.ensureHive();
+  return { hive, file: path.join(hive.root(), 'tasks.json') };
+}
+
+const card = (id) => ({ id, title: id, status: 'todo', createdAt: '2026-11-26T00:00:00.000Z' });
+const ids = (file) => JSON.parse(fs.readFileSync(file, 'utf8')).tasks.map((c) => c.id);
+
+function child(t, script, args) {
+  const proc = spawn(process.execPath, ['-e', script, ...args], { cwd: path.join(__dirname, '..'), stdio: ['ignore', 'pipe', 'pipe'] });
+  let err = '';
+  proc.stderr.on('data', (d) => { err += d; });
+  const done = new Promise((resolve, reject) => proc.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`child exited ${code}: ${err}`)))));
+  t.after(() => proc.kill());
+  return { proc, done };
+}
+
+test('addTask waits for a lock another process holds, then writes', async (t) => {
+  const { hive, file } = floor(t);
+  const lock = `${file}.lock`;
+  // The child takes the lock, reports it, holds it for 120 ms and releases it.
+  const { proc, done } = child(t, `
+    const fs = require('node:fs'); const os = require('node:os');
+    const lock = process.argv[1];
+    fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, host: os.hostname(), acquiredAt: new Date().toISOString() }), { flag: 'wx' });
+    process.stdout.write('held\\n');
+    setTimeout(() => { fs.unlinkSync(lock); process.exit(0); }, 120);`, [lock]);
+  await new Promise((resolve) => proc.stdout.once('data', resolve));
+  const started = Date.now();
+  hive.addTask(card('a'));
+  const waited = Date.now() - started;
+  await done;
+  assert.ok(waited >= 60, `addTask returned after ${waited} ms, while the lock was still held`);
+  assert.deepEqual(ids(file), ['a']);
+  assert.equal(fs.existsSync(lock), false, 'the lock is released');
+});
+
+test('addTask replaces tasks.json by rename and keeps its other top-level keys', (t) => {
+  const { hive, file } = floor(t);
+  fs.writeFileSync(file, JSON.stringify({ version: 2, tasks: [card('a')], owner: 'god' }, null, 2));
+  const before = fs.statSync(file).ino;
+  hive.addTask(card('b'));
+  assert.notEqual(fs.statSync(file).ino, before, 'written to a new file and renamed, not in place');
+  const disk = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.deepEqual(disk.tasks.map((c) => c.id), ['a', 'b']);
+  assert.equal(disk.version, 2);
+  assert.equal(disk.owner, 'god');
+});
+
+test('addTask from the app and another process adding cards at the same time lose none', async (t) => {
+  const { hive, file } = floor(t);
+  const N = 40;
+  const startAt = Date.now() + 1500;
+  const { done } = child(t, `
+    const loadTs = require(${JSON.stringify(path.join(__dirname, 'load-ts.cjs'))});
+    const { updateTaskLedgerFile } = loadTs('src/core/taskLedgerFile.ts');
+    const [file, n, startAt] = process.argv.slice(1);
+    while (Date.now() < Number(startAt)) {}
+    for (let i = 0; i < Number(n); i++) updateTaskLedgerFile(file, (cur) => [...cur, { id: 'svc-' + i }], { waitMs: 30000 });`,
+  [file, String(N), String(startAt)]);
+  while (Date.now() < startAt) { /* start together */ }
+  // The app waits only briefly for the lock and reports a busy ledger instead of freezing; like a user
+  // told the task list is busy, it tries again. A busy answer is never a silent loss.
+  let busy = 0;
+  for (let i = 0; i < N; i++) {
+    for (;;) {
+      try { assert.equal(hive.addTask(card(`app-${i}`)), true); break; } catch (e) {
+        if (e.name !== 'TaskLedgerLockTimeout') throw e;
+        busy++;
+      }
+    }
+  }
+  t.diagnostic(`the app was told the ledger was busy ${busy} times`);
+  await done;
+  const got = new Set(ids(file));
+  const lost = [];
+  for (const who of ['app', 'svc']) for (let i = 0; i < N; i++) if (!got.has(`${who}-${i}`)) lost.push(`${who}-${i}`);
+  assert.deepEqual(lost, [], `${lost.length} of ${2 * N} cards lost`);
+});
+
+test('the hive repository ignores the ledger lock, its break-aside copies and the temporary files', (t) => {
+  const { hive } = floor(t);
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'md-ledger-ignore-'));
+  t.after(() => fs.rmSync(repo, { recursive: true, force: true }));
+  fs.copyFileSync(path.join(hive.root(), '.gitignore'), path.join(repo, '.gitignore'));
+  assert.equal(spawnSync('git', ['init', '-q'], { cwd: repo }).status, 0);
+  const ignored = (name) => spawnSync('git', ['check-ignore', '-q', name], { cwd: repo }).status === 0;
+  for (const name of ['tasks.json.lock', 'tasks.json.lock.stale-0a1b2c3d4e5f', '.tasks.json.tmp-123-0a1b2c3d4e5f', '.tasks.json.lock.tmp-123-0a1b2c3d4e5f']) {
+    assert.ok(ignored(name), `${name} would be committed`);
+  }
+  assert.ok(!ignored('tasks.json'), 'the ledger itself is still committed');
+});
+
+test('add, patch and delete refuse an unreadable ledger instead of replacing it', (t) => {
+  const { hive, file } = floor(t);
+  const broken = '{ "tasks": [ {"id": "a"} ';
+  fs.writeFileSync(file, broken);
+  assert.throws(() => hive.addTask(card('b')), /tasks\.json/);
+  assert.throws(() => hive.patchTask('a', { status: 'done' }), /tasks\.json/);
+  assert.throws(() => hive.deleteTask('a'), /tasks\.json/);
+  assert.equal(fs.readFileSync(file, 'utf8'), broken, 'the unreadable ledger is left as it is');
+});
+
+test('add, patch and delete refuse a ledger that is valid JSON of the wrong shape instead of replacing it', (t) => {
+  const { hive, file } = floor(t);
+  const legacy = '[{"id":"a"}]';
+  fs.writeFileSync(file, legacy);
+  assert.throws(() => hive.addTask(card('b')), /tasks\.json is not a task ledger/);
+  assert.throws(() => hive.patchTask('a', { status: 'done' }), /tasks\.json is not a task ledger/);
+  assert.throws(() => hive.deleteTask('a'), /tasks\.json is not a task ledger/);
+  assert.equal(fs.readFileSync(file, 'utf8'), legacy, 'the ledger is left as it is');
+});
+
+test('a ledger write from the app gives up quickly when another process holds the lock', (t) => {
+  const { hive, file } = floor(t);
+  fs.writeFileSync(`${file}.lock`, JSON.stringify({ pid: process.pid, host: os.hostname(), acquiredAt: new Date().toISOString(), token: 'other' }));
+  const started = Date.now();
+  assert.throws(() => hive.addTask(card('a')), (e) => e.name === 'TaskLedgerLockTimeout');
+  const waited = Date.now() - started;
+  assert.ok(waited < 1000, `the app's main thread was blocked for ${waited} ms`);
+  assert.deepEqual(ids(file), []);
+});
