@@ -204,3 +204,14 @@ test('strict: an allowedDomains wildcard over everything or a whole public suffi
     assert.equal(f.judge({ sandbox: { network: { allowedDomains: [entry] } } }), null, entry);
   }
 });
+
+test('strict: an allowedDomains wildcard over a shared-hosting suffix, where every tenant is someone else, is refused', (t) => {
+  const f = floor(t);
+  for (const entry of ['*.github.io', '*.s3.amazonaws.com', '*.uk.com', '*.herokuapp.com:443', '*.GitHub.io']) {
+    const r = f.judge({ sandbox: { network: { allowedDomains: [entry] } } });
+    assert.ok(r && r.why.includes('managed settings: sandbox.network.allowedDomains'), `${entry} was admitted`);
+  }
+  for (const entry of ['owner.github.io', '*.owner.github.io', 'bucket.s3.amazonaws.com', '*.example.uk.com']) {
+    assert.equal(f.judge({ sandbox: { network: { allowedDomains: [entry] } } }), null, entry);
+  }
+});
