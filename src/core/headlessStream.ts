@@ -18,13 +18,14 @@
  * Like every service outside the app, this only writes files: one append, never a commit. The row goes out in one
  * write to a file opened for appending, so it cannot interleave with the app's rows, and never through a link.
  */
-import { closeSync, constants, linkSync, lstatSync, mkdirSync, openSync, realpathSync, rmSync, writeSync } from 'node:fs';
+import { closeSync, constants, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, realpathSync, rmSync, writeSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { basename, isAbsolute, join, relative } from 'node:path';
 import { parseHeadlessOutput, runHeadlessSeat, type HeadlessRun, type HeadlessSeatOptions } from './headlessSeat';
 import { isPlainObject } from './launchLine';
 import { isSafeMessageId } from './messageId';
 import { assertRealFolder } from './sentFolder';
+import { writeAllSync } from './taskLedgerFile';
 import { seatWriteRoots } from './writeRoots';
 
 export const COST_LEDGER_FILE = 'cost-ledger.jsonl';
@@ -192,9 +193,10 @@ export function headlessDoneMessage(agentId: string, run: HeadlessRun, outputFil
 const MAX_ID_ATTEMPTS = 100;
 
 /** Write `msg` into `<hiveRoot>/agents/<agentId>/outbox/<id>.json` and return the id used. The file appears whole
- *  (written under a name the router skips, then linked into place without replacing anything), and the agent
+ *  (written in full and flushed under a name the router skips, then linked into place without replacing anything;
+ *  a write that stops short throws and links nothing), and the agent
  *  folder and outbox must be real folders, never links. Throws when it cannot. */
-export function writeOutboxMessage(hiveRoot: string, agentId: string, msg: OutboxMessage): string {
+export function writeOutboxMessage(hiveRoot: string, agentId: string, msg: OutboxMessage, io: { writeSync?: typeof writeSync } = {}): string {
   const folder = join(hiveRoot, 'agents', agentId);
   assertRealFolder(folder);
   const outbox = join(folder, 'outbox');
@@ -206,7 +208,11 @@ export function writeOutboxMessage(hiveRoot: string, agentId: string, msg: Outbo
     for (let attempt = 0; attempt < MAX_ID_ATTEMPTS; attempt++, id = mintMessageId(Date.now())) {
       if (!isSafeMessageId(id)) continue;
       const fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o644);
-      try { writeSync(fd, JSON.stringify({ ...msg, id }, null, 2)); } finally { closeSync(fd); }
+      // All of it, flushed, before the router can see it: a short write throws here and nothing is linked.
+      try {
+        writeAllSync(fd, temp, Buffer.from(JSON.stringify({ ...msg, id }, null, 2), 'utf8'), io.writeSync);
+        fsyncSync(fd);
+      } finally { closeSync(fd); }
       try {
         linkSync(temp, join(outbox, `${id}.json`));
         return id;

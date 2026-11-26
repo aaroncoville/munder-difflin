@@ -273,3 +273,22 @@ test('Given a run whose reported cost is negative or not a finite number, when i
   }
   assert.equal(fs.existsSync(h.ledger), false, 'a negative row would lower the agent\'s lifetime spend');
 });
+
+// A message reaches the router's name only once all of it is on disk.
+
+test('Given a write that stops short, when a message is written, then it throws, no message id is returned and the outbox holds nothing', (t) => {
+  const s = seat(t);
+  const msg = S.headlessDoneMessage('ag1', run(), '/w/out.md', { costRecorded: true, costReason: null, row: null }, 0);
+  const short = (fd, buf, off, len) => (len > 1 ? fs.writeSync(fd, buf, off, len - 1) : 0);
+  assert.throws(() => S.writeOutboxMessage(s.root, 'ag1', msg, { writeSync: short }), /stopped after/);
+  assert.deepEqual(fs.readdirSync(path.join(s.root, 'agents', 'ag1', 'outbox')), []);
+});
+
+test('Given a write that completes a few bytes at a time, when a message is written, then the whole message lands', (t) => {
+  const s = seat(t);
+  const msg = S.headlessDoneMessage('ag1', run(), '/w/out.md', { costRecorded: true, costReason: null, row: null }, 0);
+  const trickle = (fd, buf, off, len) => fs.writeSync(fd, buf, off, Math.min(len, 7));
+  const id = S.writeOutboxMessage(s.root, 'ag1', msg, { writeSync: trickle });
+  const m = JSON.parse(fs.readFileSync(path.join(s.root, 'agents', 'ag1', 'outbox', `${id}.json`), 'utf8'));
+  assert.equal(m.body, msg.body);
+});
