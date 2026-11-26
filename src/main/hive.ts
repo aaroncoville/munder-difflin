@@ -22,12 +22,12 @@ import { agentEnabledPlugins, agentPluginList, claudeUserDir, knownPluginIds } f
 import {
   existsSync, mkdirSync, readFileSync, writeFileSync, renameSync,
   readdirSync, statSync, lstatSync, realpathSync, rmSync, appendFileSync,
-  symlinkSync, unlinkSync, copyFileSync, cpSync, chmodSync, openSync, fstatSync, closeSync, constants as fsConstants,
+  symlinkSync, unlinkSync, copyFileSync, cpSync, chmodSync, openSync, closeSync,
   fchmodSync, writeSync
 } from 'node:fs';
 import { join, dirname, basename, isAbsolute, relative, resolve as resolvePath } from 'node:path';
 import { homedir } from 'node:os';
-import { CLAUDE_USER_SOURCES, claudeLaunch, claudeRootEntries, claudeRoots, codexLaunchSandbox, codexRoots, launchExecutable, launchPlaces } from '../core/launchLine';
+import { CLAUDE_USER_SOURCES, claudeLaunch, claudeRoots, codexLaunchSandbox, codexRoots, launchExecutable, launchPlaces } from '../core/launchLine';
 import { HookRuntimeUnavailable, hookCommandFor, holds, overlaps, rootOverlap, stageHookRuntime, unsafePathReason, verifyHookRuntime, type StagedHookRuntime, type WriteRoot } from '../core/hookRuntime';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
@@ -41,6 +41,7 @@ import { codexShortHomeRoot } from '../shared/codexRemote';
 import { PrivateDirRefused, privateDirsReach, registerPrivateDir } from '../core/privateDirs';
 import { repoInstructions } from '../core/repoInstructions';
 import { checkSeatSettingsTarget, seatSettingsFile, writeSeatSettings } from '../core/seatSettings';
+import { claudeSettingsExcess, MANAGED_CLAUDE_SETTINGS, readSmallSettingsFile, settingsRootPath } from '../core/claudeSettingsAdmission';
 import { claudeFileHooks, claudeHookEntries, hookInventoryRow, type SourceHooks } from '../core/hookInventory';
 import { ownerHooks } from '../core/codexHookTrust';
 import { CodexHomeRefused, codexHomesReach, codexSeatHome, existingCodexHomes, migrateSeatHome } from '../core/codexSeatHome';
@@ -67,7 +68,7 @@ import { mailSender, PendingMail } from '../core/mailLine';
 import { nodeLauncherScript } from './nodeLauncher';
 import { codexTrustEntry } from '../shared/codexTrust';
 import { withCodexWritableRoots, withOnlyCodexWritableRoots } from '../core/codexWritableRoots';
-import { canonical, cwdHoldsHive, cwdOutsideOwnFolder, insideAny, FAIL_CLOSED_DIR, FAIL_CLOSED_FILE, ownFolderProblem, PROTECTED_WRITE_TOOLS, ScopedRootsRefused, seatRoots } from '../core/writeRoots';
+import { canonical, cwdHoldsHive, cwdOutsideOwnFolder, FAIL_CLOSED_DIR, FAIL_CLOSED_FILE, ownFolderProblem, PROTECTED_WRITE_TOOLS, SCOPED_SANDBOX_PINS, SCOPED_UNSANDBOXED_COMMANDS, ScopedRootsRefused, seatWriteRoots } from '../core/writeRoots';
 import { godNameFromRegistry } from '../shared/godIdentity';
 import { appendSession } from './codexActivity';
 import { isSafeMessageId, publishMessage, sweepInboxLeftovers } from '../core/messageId';
@@ -724,8 +725,7 @@ export class HiveManager {
     } catch { /* observe only: never fails a spawn */ }
   }
   /** The machine-wide Claude settings file (a field so a test can point it elsewhere). */
-  private managedClaudeSettings = process.platform === 'darwin' ? '/Library/Application Support/ClaudeCode/managed-settings.json'
-    : process.platform === 'win32' ? 'C:\\ProgramData\\ClaudeCode\\managed-settings.json' : '/etc/claude-code/managed-settings.json';
+  private managedClaudeSettings = MANAGED_CLAUDE_SETTINGS;
   setHookRuntime(dir: string | null): void {
     this.hookRuntimeDir = dir;
     this.hookRuntime = null;
@@ -802,27 +802,12 @@ export class HiveManager {
   /** A root as written in a settings file: ~ and $HOME expanded, relative ones against the cwd; any other
    *  variable or form is not understood (null). */
   private settingsRoot(x: unknown, cwd: string): string | null {
-    if (typeof x !== 'string' || !x) return null;
-    const home = homedir();
-    let v = x.replace(/^~(?=$|[\\/])/, home).replace(/^\$\{?HOME\}?(?=$|[\\/])/, home);
-    // A leading ~user is someone else's home and is not understood; a ~ inside a name (com~apple~CloudDocs) is just a name.
-    if (/^~/.test(v) || /[$%`]/.test(v)) return null;
-    if (!isAbsolute(v)) { if (!cwd) return null; v = join(cwd, v); }
-    return resolvePath(v);
+    return settingsRootPath(x, cwd, homedir());
   }
   /** A settings file's text: 'missing' when absent, null when it is a link, not a regular file, larger than 1 MB, or
    *  unreadable. Opened non-blocking and judged on the handle, so a file swapped for a pipe cannot hold the main process. */
   private readSmallFile(file: string): string | 'missing' | null {
-    let st;
-    try { st = lstatSync(file); } catch (e) { const c = (e as NodeJS.ErrnoException).code; return c === 'ENOENT' || c === 'ENOTDIR' ? 'missing' : null; }
-    if (st.isSymbolicLink() || !st.isFile() || st.size > 1024 * 1024) return null;
-    let fd: number | null = null;
-    try {
-      fd = openSync(file, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0));
-      const f = fstatSync(fd);
-      if (!f.isFile() || f.size > 1024 * 1024) return null;
-      return readFileSync(fd, 'utf8');
-    } catch { return null; } finally { if (fd !== null) closeSync(fd); }
+    return readSmallSettingsFile(file);
   }
   /** Write roots a Claude session merges: managed settings and its drop-in folder, the user's (in CLAUDE_CONFIG_DIR when
    *  that is set), and the project's. */
@@ -845,8 +830,10 @@ export class HiveManager {
     }
     return out;
   }
-  /** With scoped roots on, the first write root the owner's managed or user Claude settings add outside the seat's
-   *  scoped roots, grants and temp folders, as "<source> settings: <key>" (never the path); null when there is none.
+  /** With scoped roots on, the first setting in the owner's managed or user Claude settings that would widen the seat
+   *  beyond its scoped roots, grants and temp folders, as "<source> settings: <key>" (never the path); null when there is
+   *  none. The sandbox and permissions subtrees are judged as an allowlist (claudeSettingsExcess, strict): a key the check
+   *  does not understand refuses the seat too.
    *  Read with the same reader as every other Claude settings root (claudeRoots, through claudeRootEntries). A file that cannot be read or
    *  understood is named too: its roots cannot be shown to be inside. An Edit allow rule is read as the folder its
    *  pattern starts in: `//x` absolute, `~/x` in the home folder, `/x` beside the settings file, any other relative to
@@ -856,23 +843,8 @@ export class HiveManager {
     if (places && 'unknown' in places) return null; // the spawn check refuses this launch, saying why
     const cwd = meta.cwd ? expandTilde(meta.cwd) : '';
     const allowed = [...this.sandboxWritableDirs(meta, dir, root, extra, true), ...(places ? places.tmpDirs : [])];
-    const managed = this.managedClaudeSettings;
-    const dropDir = join(dirname(managed), 'managed-settings.d');
-    const dropIns: string[] = [];
-    try { for (const n of readdirSync(dropDir).sort()) if (n.endsWith('.json')) dropIns.push(join(dropDir, n)); } catch { /* none */ }
     const userDir = places ? places.claudeUserDir : (process.env.CLAUDE_CONFIG_DIR && isAbsolute(process.env.CLAUDE_CONFIG_DIR) ? process.env.CLAUDE_CONFIG_DIR : join(homedir(), '.claude'));
-    const files: Array<[string, string]> = [...[managed, ...dropIns].map((f): [string, string] => [f, 'managed settings']), [join(userDir, 'settings.json'), 'user settings']];
-    const inside = (p: string | null): boolean => !!p && insideAny(p, allowed);
-    for (const [file, source] of files) {
-      const text = this.readSmallFile(file);
-      if (text === 'missing') continue;
-      if (text === null) return `${source} (could not be read)`;
-      const c = claudeRootEntries(text);
-      if (!c) return `${source} (could not be understood)`;
-      for (const e of c.entries) if (!inside(this.settingsRoot(e.value, cwd))) return `${source}: ${e.key}`;
-      for (const rule of c.editRules) if (!inside(editRuleFolder(rule, dirname(file), cwd))) return `${source}: permissions.allow Edit`;
-    }
-    return null;
+    return claudeSettingsExcess({ managedFile: this.managedClaudeSettings, userDir, allowed, cwd, home: homedir(), strict: true })?.why ?? null;
   }
   /** Every writable_roots entry in one Codex config file, in any table (a profile, a dotted key, an
    *  inline table); [] when the file is absent. A link, a non-file, or an entry not fully understood
@@ -1613,7 +1585,7 @@ export class HiveManager {
     // would be added to its sandbox whatever the seat's settings say.
     if (scoped && this.hookKind(meta) === 'claude') {
       const why = this.claudeSettingsExcess(meta, dir, root, opts.extraWritableDirs, opts.launch);
-      if (why) throw new ScopedRootsRefused(`${shortTarget(meta.id)} cannot start: the owner's ${why} adds a write root outside its scoped roots`);
+      if (why) throw new ScopedRootsRefused(`${shortTarget(meta.id)} cannot start: the owner's ${why} would widen it beyond its scoped roots`);
     }
     // A Claude seat's settings file must have a home outside the hive, decided before anything for it is created.
     if (isClaudeProvider(meta.provider ?? 'claude') && this.sockPath()) checkSeatSettingsTarget(this.seatSettingsPath(meta.id));
@@ -2204,10 +2176,7 @@ export class HiveManager {
    *  could write the hive root would carry the grant wherever it points. */
   private scopedWritableDirs(meta: AgentMeta, dir: string, root: string): string[] {
     const cwd = meta.cwd ? expandTilde(meta.cwd) : '';
-    const roots = seatRoots({ root, agentId: meta.id, isGod: meta.isGod === true, cwd }, dir);
-    const evidence = join(canonical(root), 'evidence');
-    const realDir = (p: string): boolean => { try { const st = lstatSync(p); return st.isDirectory() && !st.isSymbolicLink(); } catch { return false; } };
-    return roots.filter((r) => r !== evidence || realDir(r));
+    return seatWriteRoots({ root, agentId: meta.id, isGod: meta.isGod === true, cwd }, dir);
   }
 
   private hookSettings(cmd: string | null, cwd: string, cfg: McpDefaultsMap, theme?: 'light' | 'dark', writableDirs: string[] = [], enabledPlugins?: Record<string, boolean>, scoped = false): unknown {
@@ -2259,8 +2228,12 @@ export class HiveManager {
         ? {
             sandbox: {
               enabled: true, filesystem: { allowWrite: writableDirs },
-              // Scoped roots: no rerun with the sandbox off, except the listed commands (SCOPED_UNSANDBOXED_COMMANDS).
-              ...(scoped ? { allowUnsandboxedCommands: false, excludedCommands: [...SCOPED_UNSANDBOXED_COMMANDS] } : {})
+              // Scoped roots: no rerun with the sandbox off, except the listed commands (SCOPED_UNSANDBOXED_COMMANDS),
+              // and sandboxed Bash and localhost binding pinned off (SCOPED_SANDBOX_PINS).
+              ...(scoped ? {
+                allowUnsandboxedCommands: false, excludedCommands: [...SCOPED_UNSANDBOXED_COMMANDS],
+                autoAllowBashIfSandboxed: SCOPED_SANDBOX_PINS.autoAllowBashIfSandboxed, network: { allowLocalBinding: SCOPED_SANDBOX_PINS.allowLocalBinding }
+              } : {})
             },
             permissions: { additionalDirectories: writableDirs }
           }
@@ -4542,17 +4515,6 @@ function renderCommandsMd(): string {
 }
 const COMMANDS_MD = renderCommandsMd();
 
-/** With scoped write roots on, the only commands a Claude seat may run outside its sandbox (sandbox.excludedCommands);
- *  the per-call retry with the sandbox off is turned off. An entry without a wildcard matches only that exact command,
- *  so the `npm --prefix *` forms are how a seat runs the suite, build or type check against a worktree without a
- *  leading `cd`. It does not stop a seat from editing a test or build file in its working folder and then running the
- *  suite or the build: that code then runs unsandboxed. */
-const SCOPED_UNSANDBOXED_COMMANDS = [
-  'npm run test:focused', 'npm run build', 'npm run typecheck', 'git fetch *', 'git worktree add *', 'git worktree remove *',
-  'gh pr *', 'gh api *', 'glab mr *', 'glab api *',
-  'npm --prefix * run test:focused', 'npm --prefix * run build', 'npm --prefix * run typecheck',
-] as const;
-
 const PROTOCOL_MD = `${GENERATED_DOC_NOTICE}
 
 # Hive protocol
@@ -4740,25 +4702,6 @@ const GENERATED_HIVE_DOCS = [
   { filename: 'PROTOCOL.md', contents: PROTOCOL_MD },
   { filename: 'COMMANDS.md', contents: COMMANDS_MD }
 ] as const;
-
-/** The folder an Edit(...) allow rule's pattern starts in, or null when it cannot be read (a bare `Edit` allows every
- *  path). `//x` is absolute, `~/x` in the home folder, `/x` relative to the settings file's folder, any other relative
- *  to the working folder. A pattern is cut at its first wildcard; a cut inside a name keeps the folder holding it. */
-function editRuleFolder(rule: string, settingsDir: string, cwd: string): string | null {
-  const m = /^\s*Edit\s*\((.*)\)\s*$/.exec(rule);
-  if (!m) return null;
-  const spec = m[1].trim();
-  if (!spec) return null;
-  let p: string;
-  if (spec.startsWith('//')) p = spec.slice(1);
-  else if (spec === '~' || spec.startsWith('~/')) p = join(homedir(), spec.slice(1));
-  else if (spec.startsWith('/')) p = join(settingsDir, spec);
-  else { if (!cwd || !isAbsolute(cwd)) return null; p = join(cwd, spec); }
-  const cut = p.search(/[*?[{]/);
-  if (cut === -1) return resolvePath(p);
-  const head = p.slice(0, cut);
-  return resolvePath(head.endsWith('/') ? head : dirname(head));
-}
 
 /** What one spawn's provisioning decided about scoped roots (HiveManager.spawnScopes). */
 export interface SpawnPolicy { agentId: string; scoped: boolean; isGod: boolean; provider: string; cwd: string; grants: string[]; env: Record<string, string>; token?: string }

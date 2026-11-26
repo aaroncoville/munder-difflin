@@ -166,9 +166,31 @@ function withWork(fn) {
   try { return fn(dir); } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }
 
+/** A stand-in Claude executable: the settings schema for these key paths, minified the way the CLI carries it, in a
+ *  bundled module that imports the zod builders, with some sub-objects built lazily and referred to by name. */
+const ANCHORED = { 'sandbox.network': 'Ja', 'sandbox.filesystem': 'Za', 'sandbox.credentials': 'el', 'sandbox.credentials.sigv4': 'Qa' };
+function schemaFor(paths) {
+  const tree = {};
+  for (const p of paths) { let n = tree; for (const part of p.split('.')) n = n[part] ??= {}; }
+  const defs = [];
+  const emit = (node, at) => `u({${Object.entries(node).map(([k, kids]) => {
+    const here = `${at}.${k}`;
+    if (ANCHORED[here]) { defs.push(`${ANCHORED[here]}=p(()=>${emit(kids, here)})`); return `${k}:${ANCHORED[here]}()`; }
+    return Object.keys(kids).length ? `${k}:${emit(kids, here)}.optional()` : `${k}:M().optional().describe("a, {b}")`;
+  }).join(',')}})`;
+  const sandbox = `DGo=p(()=>${emit(tree.sandbox ?? {}, 'sandbox')})`;
+  const perms = `function nr(e){return ${emit(tree.permissions ?? {}, 'permissions')}.passthrough()}`;
+  return `\0\0binary\n// @bun\nimport{M,u}from"/$bunfs/root/chunk-zod.js";${defs.join(';')};${sandbox};${perms};\n// @bun\nmore\0`;
+}
+const keyFixture = require('../tools/claude-settings-keys.json');
+const fakeBinaryDir = fs.mkdtempSync(path.join(os.tmpdir(), 'upgrade-canary-bin-'));
+test.after(() => fs.rmSync(fakeBinaryDir, { recursive: true, force: true }));
+const fakeBinary = (name, paths) => { const f = path.join(fakeBinaryDir, name); fs.writeFileSync(f, schemaFor(paths)); return f; };
+const PINNED_BINARY = fakeBinary('claude-pinned', keyFixture.paths);
+
 const base = (work, run, extra = {}) => ({
   claude: '/fake/claude', codex: '/fake/codex', claudeModel: 'm', codexModel: 'm', work, run, allowTempWork: true,
-  claudeVersion: '2.1.332', codexVersion: '0.172.0', ...extra
+  claudeVersion: '2.1.332', codexVersion: '0.172.0', claudeBinary: PINNED_BINARY, ...extra
 });
 const one = (work, faults, probe, extra) => canary.runCanary(base(work, fakeRun(new Set(faults)), { only: [probe], ...extra })).results[0];
 
@@ -315,6 +337,46 @@ test('a version other than the expected one fails its probe, naming the binary',
     assert.equal(r.ok, false);
     assert.match(r.detail, /\/fake\/claude is claude 2\.1\.333, expected 2\.1\.332/);
   });
+});
+
+test('claude.settings-keys passes when the installed CLI accepts exactly the keys the settings table classifies', () => {
+  withWork((work) => {
+    const r = canary.runCanary(base(work, fakeRun(), { only: ['claude.settings-keys'] })).results[0];
+    assert.equal(r.ok, true, r.detail);
+  });
+});
+
+test('claude.settings-keys fails, naming the keys, when the installed CLI accepts a key the table lacks or lacks one it has', () => {
+  withWork((work) => {
+    const changed = [...keyFixture.paths.filter((p) => p !== 'permissions.disableAutoMode'), 'sandbox.network.newThing'];
+    const r = canary.runCanary(base(work, fakeRun(), { only: ['claude.settings-keys'], claudeBinary: fakeBinary('claude-changed', changed) })).results[0];
+    assert.equal(r.ok, false, r.detail);
+    assert.match(r.detail, /sandbox\.network\.newThing/);
+    assert.match(r.detail, /permissions\.disableAutoMode/);
+  });
+});
+
+test('claude.settings-keys fails when the pinned version is not the one the table was read from', () => {
+  withWork((work) => {
+    const r = canary.runCanary(base(work, fakeRun(new Set(), { claude: '2.1.333', codex: '0.172.0' }), { only: ['claude.settings-keys'], claudeVersion: '2.1.333' })).results[0];
+    assert.equal(r.ok, false, r.detail);
+    assert.match(r.detail, /2\.1\.332/);
+  });
+});
+
+test('claude.settings-keys is inconclusive when the schema cannot be read from the executable', () => {
+  withWork((work) => {
+    const blank = path.join(fakeBinaryDir, 'claude-blank');
+    fs.writeFileSync(blank, 'no schema here');
+    for (const claudeBinary of [blank, path.join(fakeBinaryDir, 'missing')]) {
+      const r = canary.runCanary(base(work, fakeRun(), { only: ['claude.settings-keys'], claudeBinary })).results[0];
+      assert.equal(r.ok, null, r.detail);
+    }
+  });
+});
+
+test('--claude-binary names the executable the settings keys are read from', () => {
+  assert.equal(canary.parseArgs(['--codex-model', 'm', '--claude-version', '2', '--codex-version', '0', '--claude-binary', '/x/claude']).claudeBinary, '/x/claude');
 });
 
 test('a failed auth probe fails', () => {

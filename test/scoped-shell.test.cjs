@@ -53,6 +53,9 @@ test('flag on: no unsandboxed retry, and exactly the listed commands may run out
     assert.deepEqual(s.sandbox.excludedCommands, EXCLUDED, id);
     assert.equal(s.sandbox.enabled, true, id);
     assert.ok(Array.isArray(s.sandbox.filesystem.allowWrite) && s.sandbox.filesystem.allowWrite.length > 0, id);
-    assert.deepEqual(Object.keys(s.sandbox).sort(), ['allowUnsandboxedCommands', 'enabled', 'excludedCommands', 'filesystem'], id);
+    // Pinned rather than left to the CLI: its default for autoAllowBashIfSandboxed follows a feature gate.
+    assert.equal(s.sandbox.autoAllowBashIfSandboxed, false, id);
+    assert.deepEqual(s.sandbox.network, { allowLocalBinding: false }, id);
+    assert.deepEqual(Object.keys(s.sandbox).sort(), ['allowUnsandboxedCommands', 'autoAllowBashIfSandboxed', 'enabled', 'excludedCommands', 'filesystem', 'network'], id);
   }
 });

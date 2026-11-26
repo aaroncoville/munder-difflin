@@ -4,6 +4,11 @@
 /**
  * Upgrade canary for the provider CLIs seats run.
  *
+ * One probe reads no model at all: claude.settings-keys reads the settings schema the Claude executable carries
+ * (tools/claude-settings-keys.cjs) and fails when the keys it accepts under sandbox and permissions differ from the
+ * keys the owner-settings check classifies (src/core/claudeSettingsKeys.ts, recorded in tools/claude-settings-keys.json).
+ * --claude-binary names the executable when `claude` on PATH is a wrapper rather than the CLI itself.
+ *
  * Seats rely on behaviour the CLIs own: Claude's PreToolUse hooks gating a call (and blocking it when the hook
  * itself cannot run, with "onFailure": "block"), Claude's Bash sandbox, and Codex's workspace-write sandbox, in
  * the parent thread and in child threads it spawns. Each has changed between minor versions, so a pinned CLI should
@@ -33,9 +38,11 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { settingsKeyPathsOfFile } = require('./claude-settings-keys.cjs');
+const SETTINGS_KEYS = require('./claude-settings-keys.json');
 
 const PROBES = [
-  'claude.version', 'claude.auth', 'claude.spawn', 'claude.hook-gate', 'claude.hook-onfailure-block', 'claude.sandbox-write',
+  'claude.version', 'claude.settings-keys', 'claude.auth', 'claude.spawn', 'claude.hook-gate', 'claude.hook-onfailure-block', 'claude.sandbox-write',
   'codex.version', 'codex.auth', 'codex.spawn', 'codex.sandbox-write', 'codex.child-thread-roots'
 ];
 
@@ -283,6 +290,7 @@ function runCanary(o) {
 
   const probe = {
     'claude.version': () => version('claude', o.claude, o.claudeVersion),
+    'claude.settings-keys': () => settingsKeys(),
     'codex.version': () => version('codex', o.codex, o.codexVersion),
     'claude.auth': () => exitZero(run(o.claude, ['auth', 'status'], { timeout: deadline(30_000) }), 'claude auth status'),
     'codex.auth': () => exitZero(run(o.codex, ['login', 'status'], { timeout: deadline(30_000) }), 'codex login status'),
@@ -382,6 +390,26 @@ function runCanary(o) {
     if (got !== expected) return { ok: false, detail: `${where} is ${cli} ${got}, expected ${expected}` };
     return { ok: true, detail: `${where} is ${cli} ${got}` };
   }
+  /** The sandbox and permissions keys the installed CLI accepts, against the classified table. */
+  function settingsKeys() {
+    if (SETTINGS_KEYS.cli !== o.claudeVersion) {
+      return { ok: false, detail: `the settings-key table was read from Claude Code ${SETTINGS_KEYS.cli}, not the pinned ${o.claudeVersion}: re-read it with tools/claude-settings-keys.cjs and classify it` };
+    }
+    const where = o.claudeBinary ?? onPath(o.claude);
+    let file = null;
+    try { file = where ? fs.realpathSync(where) : null; } catch { /* not there */ }
+    if (!file) return { ok: null, detail: `the Claude executable ${where ?? o.claude} was not found; name it with --claude-binary` };
+    const got = settingsKeyPathsOfFile(file);
+    if (got.error) return { ok: null, detail: `the settings schema could not be read from ${file}: ${got.error}; name the CLI itself with --claude-binary` };
+    const want = new Set(SETTINGS_KEYS.paths);
+    const have = new Set(got.paths);
+    const added = got.paths.filter((p) => !want.has(p));
+    const gone = SETTINGS_KEYS.paths.filter((p) => !have.has(p));
+    if (added.length || gone.length) {
+      return { ok: false, detail: `${file} accepts keys the settings table does not classify (${added.join(', ') || 'none'}) and lacks keys it does (${gone.join(', ') || 'none'})` };
+    }
+    return { ok: true, detail: `${file} accepts exactly the ${got.paths.length} sandbox and permissions keys the settings table classifies` };
+  }
   function shellFiles(d) {
     return { inside: path.join(d.allowed, 'x'), outside: path.join(d.forbidden, 'x'), rc: path.join(d.allowed, 'rc'), err: path.join(d.allowed, 'err') };
   }
@@ -415,7 +443,7 @@ function runCanary(o) {
 function parseArgs(argv) {
   const o = { claude: 'claude', codex: 'codex', claudeModel: 'claude-haiku-5-5' };
   const map = { '--claude': 'claude', '--codex': 'codex', '--claude-version': 'claudeVersion', '--codex-version': 'codexVersion',
-    '--claude-model': 'claudeModel', '--codex-model': 'codexModel', '--work': 'work' };
+    '--claude-model': 'claudeModel', '--codex-model': 'codexModel', '--work': 'work', '--claude-binary': 'claudeBinary' };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--only') o.only = argv[++i].split(',');

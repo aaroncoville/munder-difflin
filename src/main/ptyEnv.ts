@@ -8,6 +8,7 @@
  *   2. the app's own defaults (PATH, terminal identity, locale)
  *   3. per-agent values (`opts.env`) — always win, even over the strip below
  */
+import { CLAUDE_CONFIG_KEEP } from '../core/claudeEnv';
 
 /**
  * The app is often launched from INSIDE a Claude Code session (`npm run dev`
@@ -28,20 +29,6 @@
  * Claude identity.
  */
 const CLAUDE_MARKER_RE = /^CLAUDE(CODE|_)/;
-
-/**
- * Configuration, not identity: these share the prefix but are the OPERATOR's
- * own choices — where the CLI keeps its config, how it authenticates, which
- * backend serves it. An operator who exported them wants agents to see them,
- * and stripping them breaks agents in exactly the quiet way the strip above
- * exists to prevent. Everything session-scoped stays out of this list.
- */
-const CLAUDE_CONFIG_KEEP = new Set([
-  'CLAUDE_CONFIG_DIR',
-  'CLAUDE_CODE_OAUTH_TOKEN',
-  'CLAUDE_CODE_USE_BEDROCK',
-  'CLAUDE_CODE_USE_VERTEX'
-]);
 
 export function buildPtyEnv(
   parentEnv: NodeJS.ProcessEnv,

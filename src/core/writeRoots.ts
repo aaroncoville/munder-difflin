@@ -190,6 +190,14 @@ export function seatRoots(ctx: RootsContext, own?: string): string[] {
   return ctx.isGod && cwd ? [...new Set([cwd, ...roots])] : roots;
 }
 
+/** The roots a scoped seat's sandbox is granted: seatRoots, with `evidence/` only while it is a real folder. A link
+ *  planted there while every agent could write the hive root would carry the grant wherever it points. */
+export function seatWriteRoots(ctx: RootsContext, own?: string): string[] {
+  const evidence = join(canonical(ctx.root), 'evidence');
+  const realDir = (p: string): boolean => { try { const st = lstatSync(p); return st.isDirectory() && !st.isSymbolicLink(); } catch { return false; } };
+  return seatRoots(ctx, own).filter((r) => r !== evidence || realDir(r));
+}
+
 function absolute(p: string, ctx: RootsContext): string {
   const base = cwdOf(ctx) || canonical(ctx.root);
   return canonical(isAbsolute(p) ? p : join(base, p));
@@ -478,6 +486,26 @@ export function ownFolderProblem(root: string, agentId: string): string | null {
 
 /** The tools whose writes the hook refuses outside scoped roots: Claude's file tools, which the OS sandbox does not
  *  govern, and Codex's patch tool. Every other tool is left to the sandbox. */
+/** With scoped write roots on, the only commands a Claude seat may run outside its sandbox (sandbox.excludedCommands);
+ *  the per-call retry with the sandbox off is turned off. An entry without a wildcard matches only that exact command,
+ *  so the `npm --prefix *` forms are how a seat runs the suite, build or type check against a worktree without a
+ *  leading `cd`. It does not stop a seat from editing a test or build file in its working folder and then running the
+ *  suite or the build: that code then runs unsandboxed. */
+export const SCOPED_UNSANDBOXED_COMMANDS = [
+  'npm run test:focused', 'npm run build', 'npm run typecheck', 'git fetch *', 'git worktree add *', 'git worktree remove *',
+  'gh pr *', 'gh api *', 'glab mr *', 'glab api *',
+  'npm --prefix * run test:focused', 'npm --prefix * run build', 'npm --prefix * run typecheck',
+] as const;
+
+/** Sandbox settings every scoped seat's generated settings set, so the CLI's own default never decides them:
+ *  - autoAllowBashIfSandboxed false: a sandboxed Bash command goes through the permission flow like any other. The
+ *    CLI documents false as the default, but Claude Code 2.1.332 falls back to a feature gate when it is unset;
+ *  - network.allowLocalBinding false: sandboxed commands cannot open localhost listeners, which other local
+ *    processes (another seat's included) could reach. Unset is false in Claude Code 2.1.332.
+ *  The generated settings are --settings (flag settings), which outrank user settings; managed settings outrank
+ *  them, so the owner-settings check refuses any other value there (claudeSettingsAdmission.ts). */
+export const SCOPED_SANDBOX_PINS = { autoAllowBashIfSandboxed: false, allowLocalBinding: false } as const;
+
 export const PROTECTED_WRITE_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'apply_patch'] as const;
 export const isProtectedWrite = (tool: unknown): boolean => typeof tool === 'string' && (PROTECTED_WRITE_TOOLS as readonly string[]).includes(tool);
 
