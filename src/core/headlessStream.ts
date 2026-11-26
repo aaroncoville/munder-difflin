@@ -222,6 +222,8 @@ export interface HeadlessDoneCheck {
   done: boolean;
   /** Why the run is not done; null when it is. */
   reason: string | null;
+  /** The file that was checked (device and inode), when the run is done. */
+  file?: { dev: number; ino: number };
 }
 
 const inside = (root: string, p: string): boolean => {
@@ -229,22 +231,38 @@ const inside = (root: string, p: string): boolean => {
   return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
 };
 
-/** Whether the run's output file is in place: see above. Never throws. */
-export function checkHeadlessOutput(seat: HeadlessSeatPlace, outputFile: string | null): HeadlessDoneCheck {
+/** Whether the run's output file is in place: see above. Never throws. The file is read through one descriptor
+ *  opened without following a link (and without waiting on a pipe): it must be a regular file with one name only (a
+ *  second name, a hard link, could be anywhere), and not empty; its path, resolved, must still be that same file
+ *  (device and inode) and lie inside the seat's write roots. `hooks` is for tests. */
+export function checkHeadlessOutput(seat: HeadlessSeatPlace, outputFile: string | null, hooks: { afterOpen?: () => void } = {}): HeadlessDoneCheck {
   const no = (reason: string): HeadlessDoneCheck => ({ done: false, reason });
   if (!outputFile) return no('no output file was named for the run');
   if (!isAbsolute(outputFile)) return no(`the output file ${outputFile} is not an absolute path`);
-  let st;
-  try { st = lstatSync(outputFile); } catch { return no(`the output file ${outputFile} does not exist`); }
-  if (st.isSymbolicLink()) return no(`the output file ${outputFile} is a link, not the file itself`);
-  if (!st.isFile()) return no(`the output file ${outputFile} is not a regular file`);
-  if (st.size === 0) return no(`the output file ${outputFile} is empty`);
-  let real: string;
-  try { real = realpathSync(outputFile); } catch { return no(`the output file ${outputFile} cannot be resolved`); }
-  const roots = seatWriteRoots({ root: seat.hiveRoot, agentId: seat.agentId, isGod: seat.isGod === true, cwd: seat.cwd });
-  const realRoots = roots.flatMap((r) => { try { return [realpathSync(r)]; } catch { return []; } });
-  if (!realRoots.some((r) => inside(r, real))) return no(`the output file ${outputFile} is outside the seat's write roots`);
-  return { done: true, reason: null };
+  let fd: number;
+  try { fd = openSync(outputFile, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === 'ELOOP') return no(`the output file ${outputFile} is a link, not the file itself`);
+    if (code === 'ENOENT') return no(`the output file ${outputFile} does not exist`);
+    return no(`the output file ${outputFile} cannot be opened (${code ?? (e as Error).message})`);
+  }
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile()) return no(`the output file ${outputFile} is not a regular file`);
+    if (st.nlink !== 1) return no(`the output file ${outputFile} has more than one name (${st.nlink} hard links)`);
+    if (st.size === 0) return no(`the output file ${outputFile} is empty`);
+    hooks.afterOpen?.();
+    let real: string;
+    let named;
+    try { real = realpathSync(outputFile); named = lstatSync(real); } catch { return no(`the output file ${outputFile} cannot be resolved`); }
+    if (named.dev !== st.dev || named.ino !== st.ino) return no(`the output file ${outputFile} changed while it was checked`);
+    const roots = seatWriteRoots({ root: seat.hiveRoot, agentId: seat.agentId, isGod: seat.isGod === true, cwd: seat.cwd });
+    const realRoots = roots.flatMap((r) => { try { return [realpathSync(r)]; } catch { return []; } });
+    if (!realRoots.some((r) => inside(r, real))) return no(`the output file ${outputFile} is outside the seat's write roots`);
+    return { done: true, reason: null, file: { dev: st.dev, ino: st.ino } };
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /** A message as an agent writes it into its outbox (PROTOCOL.md); the router fills in the rest. */

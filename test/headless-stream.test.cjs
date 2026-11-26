@@ -141,7 +141,9 @@ test('Given a non-empty output file in the working folder, the seat folder or ev
   const s = seat(t);
   for (const file of [path.join(s.cwd, 'out.md'), path.join(s.root, 'agents', 'ag1', 'out.md'), path.join(s.root, 'evidence', 'out.md')]) {
     fs.writeFileSync(file, 'findings\n');
-    assert.deepEqual(S.checkHeadlessOutput(s.ctx, file), { done: true, reason: null }, file);
+    const r = S.checkHeadlessOutput(s.ctx, file);
+    assert.equal(r.done, true, file);
+    assert.equal(r.reason, null);
   }
 });
 
@@ -378,4 +380,66 @@ test('Given several processes appending at once, a few bytes per write, when the
   assert.equal(lines.length, N * ROWS);
   const sessions = new Set(lines.map((l) => JSON.parse(l).session_id));
   assert.equal(sessions.size, N * ROWS, 'every row whole and distinct');
+});
+
+// The done-check reads the file through one descriptor opened without following a link, and the path must still name
+// that same file (device and inode) once resolved, so a link or a swap cannot stand in for it.
+
+test('Given an output file with a second name (a hard link), inside the roots or out, when the output is checked, then the run is not done', (t) => {
+  const s = seat(t);
+  fs.writeFileSync(path.join(s.base, 'outside.md'), 'not the run\'s\n');
+  fs.linkSync(path.join(s.base, 'outside.md'), path.join(s.cwd, 'out.md'));
+  const a = S.checkHeadlessOutput(s.ctx, path.join(s.cwd, 'out.md'));
+  assert.equal(a.done, false);
+  assert.match(a.reason, /more than one name/);
+  fs.writeFileSync(path.join(s.cwd, 'twin.md'), 'x\n');
+  fs.linkSync(path.join(s.cwd, 'twin.md'), path.join(s.root, 'evidence', 'twin.md'));
+  assert.equal(S.checkHeadlessOutput(s.ctx, path.join(s.cwd, 'twin.md')).done, false);
+});
+
+test('Given the output path is swapped for a link to an outside file while it is checked, when the output is checked, then the run is not done', (t) => {
+  const s = seat(t);
+  const out = path.join(s.cwd, 'out.md');
+  fs.writeFileSync(out, 'the run\'s\n');
+  fs.writeFileSync(path.join(s.base, 'outside.md'), 'not the run\'s\n');
+  const swap = () => { fs.rmSync(out); fs.symlinkSync(path.join(s.base, 'outside.md'), out); };
+  const r = S.checkHeadlessOutput(s.ctx, out, { afterOpen: swap });
+  assert.equal(r.done, false);
+  assert.match(r.reason, /changed while it was checked|outside/);
+});
+
+test('Given an output path that is a named pipe, when the output is checked, then the run is not done and the check does not wait on it', (t) => {
+  const s = seat(t);
+  const out = path.join(s.cwd, 'out.md');
+  const { execFileSync, spawnSync } = require('node:child_process');
+  execFileSync('mkfifo', [out]);
+  // In a child process with a deadline: an open that waits for a writer would block this test's own thread.
+  const script = `const S = require(${JSON.stringify(path.join(__dirname, 'load-ts.cjs'))})('src/core/headlessStream.ts');
+    process.stdout.write(JSON.stringify(S.checkHeadlessOutput(JSON.parse(process.argv[1]), process.argv[2])));`;
+  const c = spawnSync(process.execPath, ['-e', script, JSON.stringify(s.ctx), out], { cwd: path.join(__dirname, '..'), timeout: 10000, encoding: 'utf8' });
+  assert.equal(c.signal, null, 'the check returned instead of waiting on the pipe');
+  const r = JSON.parse(c.stdout);
+  assert.equal(r.done, false);
+  assert.match(r.reason, /not a regular file/);
+});
+
+test('Given a done output file, when the output is checked, then the result names the file it checked by device and inode', (t) => {
+  const s = seat(t);
+  const out = path.join(s.cwd, 'out.md');
+  fs.writeFileSync(out, 'x\n');
+  const r = S.checkHeadlessOutput(s.ctx, out);
+  const st = fs.statSync(out);
+  assert.equal(r.done, true);
+  assert.deepEqual(r.file, { dev: st.dev, ino: st.ino });
+});
+
+test('Given the output path is swapped for a link to another file inside the roots while it is checked, when the output is checked, then the run is not done', (t) => {
+  const s = seat(t);
+  const out = path.join(s.cwd, 'out.md');
+  fs.writeFileSync(out, 'the run\'s\n');
+  const other = path.join(s.root, 'evidence', 'old.md');
+  fs.writeFileSync(other, 'an older file\n');
+  const r = S.checkHeadlessOutput(s.ctx, out, { afterOpen: () => { fs.rmSync(out); fs.symlinkSync(other, out); } });
+  assert.equal(r.done, false);
+  assert.match(r.reason, /changed while it was checked/);
 });
