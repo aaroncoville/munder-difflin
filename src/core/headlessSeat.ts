@@ -33,11 +33,16 @@ import { privateDirsReach } from './privateDirs';
 import { writeSeatSettings } from './seatSettings';
 import { ownFolder, seatWriteRoots } from './writeRoots';
 
+/** Backend switches on the shared keep-list that a headless seat does not pass. Each needs its provider's own
+ *  credentials and region variables (AWS_*, ANTHROPIC_VERTEX_PROJECT_ID, CLOUD_ML_REGION, ...), which the allowlist
+ *  does not carry, so passing the switch alone could only turn a working launch into one that fails at sign-in. */
+const HEADLESS_UNSUPPORTED_BACKENDS: ReadonlySet<string> = new Set(['CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX']);
+
 /** Variables passed from the parent environment when present: the user's identity, shell, locale and temp folder,
  *  and the operator's Claude configuration and credentials. Nothing else passes. */
 export const HEADLESS_PARENT_ENV: readonly string[] = [
   'HOME', 'PATH', 'USER', 'LOGNAME', 'SHELL', 'TERM', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TMPDIR',
-  ...CLAUDE_CONFIG_KEEP, 'ANTHROPIC_API_KEY',
+  ...[...CLAUDE_CONFIG_KEEP].filter((k) => !HEADLESS_UNSUPPORTED_BACKENDS.has(k)), 'ANTHROPIC_API_KEY',
 ];
 
 /** The seat's own hive values a caller may set (the same names the app gives an interactive seat). */

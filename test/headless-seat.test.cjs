@@ -146,6 +146,15 @@ test('Given a parent env full of app-only and unrelated variables, when the laun
   });
 });
 
+test('Given a parent on Bedrock or Vertex, when the launch is built, then the backend switches do not pass, since the credentials they need do not either', (t) => {
+  const f = floor(t);
+  const parentEnv = { ...f.opts().parentEnv, CLAUDE_CODE_USE_BEDROCK: '1', CLAUDE_CODE_USE_VERTEX: '1', CLAUDE_CONFIG_DIR: '/cfg' };
+  const l = H.buildHeadlessLaunch(f.opts({ parentEnv }));
+  assert.equal(l.env.CLAUDE_CODE_USE_BEDROCK, undefined);
+  assert.equal(l.env.CLAUDE_CODE_USE_VERTEX, undefined);
+  assert.equal(l.env.CLAUDE_CONFIG_DIR, '/cfg', 'the rest of the shared keep-list still passes');
+});
+
 test('Given the seat\'s own hive values, when the launch is built, then they are set from the options, not from the parent', (t) => {
   const f = floor(t);
   const l = H.buildHeadlessLaunch(f.opts({ parentEnv: { ...f.opts().parentEnv, ...JUNK }, seatEnv: { AGENT_ID: 'ag1', HIVE_ROOT: f.hiveRoot } }));
