@@ -155,3 +155,120 @@ test('two processes adding 50 cards each at the same time lose none', async (t) 
   for (const who of ['p', 'q']) for (let i = 0; i < N; i++) if (!got.has(`${who}-${i}`)) lost.push(`${who}-${i}`);
   assert.equal(got.size, 2 * N, `${lost.length} of ${2 * N} cards lost: ${lost.slice(0, 10).join(', ')}`);
 });
+
+// Runs updateTaskLedgerFile in a child process that stops at each named step
+// until the test lets it go, so the order of two writers' steps is fixed.
+// Steps: 'break' (a lock was judged stale), 'record' (about to make the lock
+// its own, after breaking one) and 'mutate' (holding the lock). Each step stops
+// once. On entering
+// mutate the writer records whether the other writer was holding at that moment.
+const STEPPED_WRITER = `
+  const fs = require('node:fs'); const path = require('node:path');
+  const loadTs = require(${JSON.stringify(path.join(__dirname, 'load-ts.cjs'))});
+  const { updateTaskLedgerFile } = loadTs('src/core/taskLedgerFile.ts');
+  const [file, sync, who, other, opts] = process.argv.slice(1);
+  const nap = new Int32Array(new SharedArrayBuffer(4));
+  const flag = (name) => path.join(sync, name);
+  const seen = new Set();
+  const stop = (step) => {
+    if (seen.has(step)) return;
+    seen.add(step);
+    fs.writeFileSync(flag(who + '-at-' + step), '');
+    while (!fs.existsSync(flag(who + '-go-' + step))) Atomics.wait(nap, 0, 0, 5);
+  };
+  updateTaskLedgerFile(file, (cur) => {
+    const otherHolding = fs.existsSync(flag(other + '-in')) && !fs.existsSync(flag(other + '-out'));
+    fs.writeFileSync(flag(who + '-in'), String(otherHolding));
+    stop('mutate');
+    fs.writeFileSync(flag(who + '-out'), '');
+    return [...cur, { id: who }];
+  }, { waitMs: 30000, ...JSON.parse(opts || '{}'), hooks: { beforeBreak: () => stop('break'), beforeLockRecorded: () => { if (seen.has('break')) stop('record'); } } });`;
+
+function steppedWriter(t, file, sync, who, other, opts = {}) {
+  const child = spawn(process.execPath, ['-e', STEPPED_WRITER, file, sync, who, other, JSON.stringify(opts)],
+    { cwd: path.join(__dirname, '..'), stdio: ['ignore', 'ignore', 'pipe'] });
+  let err = '';
+  child.stderr.on('data', (d) => { err += d; });
+  const done = new Promise((resolve, reject) => child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`writer ${who} exited ${code}: ${err}`)))));
+  t.after(() => child.kill());
+  return {
+    done,
+    go: (step) => fs.writeFileSync(path.join(sync, `${who}-go-${step}`), ''),
+    reached: (step, ms = 10_000) => waitForFile(path.join(sync, `${who}-${step === 'in' ? 'in' : `at-${step}`}`), ms)
+  };
+}
+
+async function waitForFile(p, ms) {
+  const until = Date.now() + ms;
+  while (!fs.existsSync(p)) {
+    if (Date.now() > until) return false;
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  return true;
+}
+
+test('two writers breaking the same empty stale lock never both hold the lock', async (t) => {
+  const { dir, file, lock } = hive(t, { tasks: [] });
+  const sync = fs.mkdtempSync(path.join(os.tmpdir(), 'md-ledger-sync-'));
+  t.after(() => fs.rmSync(sync, { recursive: true, force: true }));
+  // A writer that died after creating the lock and before recording itself in it.
+  fs.writeFileSync(lock, '');
+  const old = new Date(Date.now() - 60_000);
+  fs.utimesSync(lock, old, old);
+
+  const a = steppedWriter(t, file, sync, 'a', 'b');
+  const b = steppedWriter(t, file, sync, 'b', 'a');
+  // Both judge the empty lock stale.
+  assert.ok(await a.reached('break'));
+  assert.ok(await b.reached('break'));
+  // A breaks it and is about to make the lock its own.
+  a.go('break');
+  assert.ok(await a.reached('record'));
+  // B acts on its earlier judgement, then takes the lock and holds it.
+  b.go('break');
+  assert.ok(await b.reached('record'));
+  b.go('record');
+  assert.ok(await b.reached('in'));
+  // A finishes taking the lock while B holds it.
+  a.go('record');
+  await a.reached('in', 1500);
+  b.go('mutate');
+  assert.ok(await a.reached('in'));
+  a.go('mutate');
+  await Promise.all([a.done, b.done]);
+
+  assert.equal(fs.readFileSync(path.join(sync, 'a-in'), 'utf8'), 'false', 'A entered its update while B held the lock');
+  assert.equal(fs.readFileSync(path.join(sync, 'b-in'), 'utf8'), 'false', 'B entered its update while A held the lock');
+  assert.deepEqual(ids(file).sort(), ['a', 'b']);
+  assert.deepEqual(leftovers(dir), []);
+});
+
+test('a breaker removes only the very lock it judged stale, even when another has the same content', (t) => {
+  const { file, lock } = hive(t, { tasks: [] });
+  fs.writeFileSync(lock, '');
+  const old = new Date(Date.now() - 60_000);
+  fs.utimesSync(lock, old, old);
+  let fresh = null;
+  const hooks = {
+    beforeBreak: () => {
+      if (fresh) return;
+      // Between the judgement and the break, another writer replaced the stale lock with a fresh one
+      // that has the same (empty) content.
+      fs.unlinkSync(lock);
+      fs.writeFileSync(lock, '');
+      fresh = fs.statSync(lock).ino;
+    }
+  };
+  assert.throws(() => updateTaskLedgerFile(file, (c) => [...c, { id: 'b' }], { waitMs: 200, hooks }), TaskLedgerLockTimeout);
+  assert.equal(fs.statSync(lock).ino, fresh, 'the fresh lock is still in place');
+  assert.deepEqual(ids(file), [], 'nothing was written');
+});
+
+test('a lock never exists without its record', (t) => {
+  const { file, lock } = hive(t, { tasks: [] });
+  const records = [];
+  const look = () => { if (fs.existsSync(lock)) records.push(fs.readFileSync(lock, 'utf8')); };
+  updateTaskLedgerFile(file, (c) => { look(); return [...c, { id: 'a' }]; }, { hooks: { beforeLockRecorded: look } });
+  assert.ok(records.length > 0);
+  for (const text of records) assert.equal(typeof JSON.parse(text).token, 'string', `lock seen as ${JSON.stringify(text)}`);
+});

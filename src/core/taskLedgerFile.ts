@@ -5,8 +5,10 @@
  * write from two of them at once loses whichever write lands first, and a file written in place can be read
  * half-written. So every update here:
  *
- *  - takes an exclusive lock file next to the ledger (`tasks.json.lock`, created with O_EXCL, holding the
- *    holder's pid, host and acquisition time), waiting a bounded time for a holder to finish;
+ *  - takes an exclusive lock file next to the ledger (`tasks.json.lock`, holding the holder's pid, host,
+ *    acquisition time and a random token), waiting a bounded time for a holder to finish. The record is
+ *    written to a temporary file first and hard-linked to the lock's name, which fails if the lock exists,
+ *    so a lock never exists without its record;
  *  - re-reads the ledger UNDER the lock, applies the caller's edit to that, and folds the result over the
  *    on-disk cards with mergeTaskLedger, so fields the caller does not model survive;
  *  - writes a temporary file in the same folder, fsyncs it and renames it over the ledger, so a reader sees
@@ -22,7 +24,7 @@
  * Writing never commits: committing the hive repository stays with the app.
  */
 import { randomBytes } from 'node:crypto';
-import { closeSync, fsyncSync, linkSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
+import { closeSync, fstatSync, fsyncSync, linkSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { mergeTaskLedger } from './taskLedger';
@@ -38,6 +40,16 @@ export interface TaskLedgerFileOptions {
   retryMs?: number;
   /** A ledger that is not valid JSON: refuse ('throw', the default), or treat it as empty ('empty'). */
   unreadable?: 'throw' | 'empty';
+  /** Called between the steps of taking the lock, so a test can interleave writers. Not for production use. */
+  hooks?: TaskLedgerLockHooks;
+}
+
+/** Points inside lock acquisition where a test can pause one writer while another runs. */
+export interface TaskLedgerLockHooks {
+  /** A lock was judged stale and is about to be broken. */
+  beforeBreak?: () => void;
+  /** The writer is about to make the lock its own, carrying its record. */
+  beforeLockRecorded?: () => void;
 }
 
 /** The lock stayed held by a live, fresh holder for the whole wait. */
@@ -55,18 +67,26 @@ function sleep(ms: number): void {
   Atomics.wait(sleeper, 0, 0, ms);
 }
 
-function readLock(lock: string): { record: LockRecord | null; text: string; ageMs: number } | null {
+/** The lock as read at one moment: its record, its age, and the file it was read from (`dev`/`ino`). */
+interface HeldLock { record: LockRecord | null; ageMs: number; dev: number; ino: number }
+
+function readLock(lock: string): HeldLock | null {
+  let fd: number;
+  try { fd = openSync(lock, 'r'); } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw e;
+  }
   try {
-    const text = readFileSync(lock, 'utf8');
+    const stat = fstatSync(fd);
+    const text = readFileSync(fd, 'utf8');
     let record: LockRecord | null = null;
     try { record = JSON.parse(text) as LockRecord; } catch { record = null; }
     const acquired = record && typeof record.acquiredAt === 'string' ? Date.parse(record.acquiredAt) : NaN;
-    // A lock read between its creation and its first write has no record yet: judge it by its mtime.
-    const since = Number.isFinite(acquired) ? acquired : statSync(lock).mtimeMs;
-    return { record, text, ageMs: Date.now() - since };
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw e;
+    // A lock with no readable record (one left by an older writer, or damaged): judge it by its mtime.
+    const since = Number.isFinite(acquired) ? acquired : stat.mtimeMs;
+    return { record, ageMs: Date.now() - since, dev: stat.dev, ino: stat.ino };
+  } finally {
+    closeSync(fd);
   }
 }
 
@@ -93,39 +113,58 @@ function describe(record: LockRecord | null): string {
 
 /**
  * Removes a stale lock without removing a fresh one another writer took in the meantime: the lock is
- * renamed aside first, and put back if what was renamed is not the lock judged stale.
+ * renamed aside first, and put back if what was renamed is not the very file judged stale. Files are
+ * compared by device and inode, never by content: two locks can have the same content, one file cannot
+ * be two locks. Returns whether the stale lock was removed; when it was not, the caller must not take the
+ * lock straight away, because the lock it saw may belong to a live holder.
  */
-function breakStale(lock: string, judgedText: string): void {
+function breakStale(lock: string, judged: HeldLock): boolean {
   const aside = `${lock}.stale-${randomBytes(6).toString('hex')}`;
-  try { renameSync(lock, aside); } catch { return; }
-  let text = '';
-  try { text = readFileSync(aside, 'utf8'); } catch { /* gone */ }
-  if (text !== judgedText) {
-    try { linkSync(aside, lock); } catch { /* a newer holder already took it */ }
+  try { renameSync(lock, aside); } catch { return false; }
+  const moved = statSync(aside, { throwIfNoEntry: false });
+  if (moved && moved.dev === judged.dev && moved.ino === judged.ino) {
+    try { unlinkSync(aside); } catch { /* already gone */ }
+    return true;
   }
+  // A newer holder's lock: put it back. If yet another writer took the name in the meantime this fails,
+  // and the newer holder finds before it writes that the lock is no longer its own.
+  try { linkSync(aside, lock); } catch { /* the name was taken again */ }
   try { unlinkSync(aside); } catch { /* already gone */ }
+  return false;
 }
 
-function acquire(lock: string, opts: Required<Pick<TaskLedgerFileOptions, 'waitMs' | 'staleMs' | 'retryMs'>>): string {
+function acquire(
+  lock: string,
+  opts: Required<Pick<TaskLedgerFileOptions, 'waitMs' | 'staleMs' | 'retryMs'>> & { hooks: TaskLedgerLockHooks }
+): string {
   const token = randomBytes(12).toString('hex');
   const body = JSON.stringify({ pid: process.pid, host: hostname(), acquiredAt: new Date().toISOString(), token });
   const deadline = Date.now() + opts.waitMs;
   let last: LockRecord | null = null;
-  for (;;) {
-    try {
-      const fd = openSync(lock, 'wx');
-      try { writeSync(fd, body); } finally { closeSync(fd); }
-      return token;
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+  const tmp = join(dirname(lock), `.${basename(lock)}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`);
+  writeFileSync(tmp, body, { flag: 'wx' });
+  try {
+    for (;;) {
+      opts.hooks.beforeLockRecorded?.();
+      try {
+        linkSync(tmp, lock);
+        return token;
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+      }
+      const held = readLock(lock);
+      if (held) {
+        last = held.record;
+        if (isStale(held, opts.staleMs)) {
+          opts.hooks.beforeBreak?.();
+          if (breakStale(lock, held)) continue;
+        }
+      }
+      if (Date.now() >= deadline) throw new TaskLedgerLockTimeout(lock, opts.waitMs, describe(last));
+      sleep(opts.retryMs);
     }
-    const held = readLock(lock);
-    if (held) {
-      last = held.record;
-      if (isStale(held, opts.staleMs)) { breakStale(lock, held.text); continue; }
-    }
-    if (Date.now() >= deadline) throw new TaskLedgerLockTimeout(lock, opts.waitMs, describe(last));
-    sleep(opts.retryMs);
+  } finally {
+    try { unlinkSync(tmp); } catch { /* already gone */ }
   }
 }
 
@@ -189,7 +228,8 @@ export function updateTaskLedgerFile(
   const token = acquire(lock, {
     waitMs: options.waitMs ?? 5_000,
     staleMs: options.staleMs ?? 30_000,
-    retryMs: options.retryMs ?? 20
+    retryMs: options.retryMs ?? 20,
+    hooks: options.hooks ?? {}
   });
   try {
     const ledger = readLedger(path, options.unreadable ?? 'throw');
