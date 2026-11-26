@@ -10,7 +10,8 @@
  * No pin = no check and no change to the launch.
  */
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
-import { statSync } from 'node:fs';
+import { realpathSync, statSync } from 'node:fs';
+import { sep } from 'node:path';
 
 export type PinnedCli = 'claude' | 'codex';
 export interface CliPin {
@@ -76,6 +77,12 @@ export function judgePin(cli: PinnedCli, pin: CliPin | undefined, version: strin
   return { ok: true, pinned: true };
 }
 
+/** The model pin judged again on the launch line exactly as it will start, after any later step added arguments.
+ *  The version was judged before the CLI first ran; this checks the model only. */
+export function judgeFinalLaunch(cli: PinnedCli, pin: CliPin | undefined, argv: string[]): PinVerdict {
+  return pin ? judgePin(cli, pin, pin.version, argv) : { ok: true, pinned: false };
+}
+
 /** Env a pinned seat starts with: a pinned Claude seat must not update itself away from its pin. */
 export function pinnedSeatEnv(cli: PinnedCli, pin: CliPin | undefined): Record<string, string> {
   return pin && cli === 'claude' ? { DISABLE_AUTOUPDATER: '1' } : {};
@@ -87,13 +94,23 @@ type Run = (file: string, args: string[], opts: { encoding: 'utf8'; env: NodeJS.
 const versions = new Map<string, { version: string | null; at: number }>();
 const FAILED_READ_TTL_MS = 60_000;
 
-/** The version an executable reports, read once per path and modification time (an upgrade in place re-reads).
- *  Run with the environment and folder the agent itself will start in: a version-manager shim chooses by both. */
+/** A version-manager shim (mise, asdf, pyenv, rbenv, nodenv: all under a `shims` folder) picks the real binary from
+ *  the working folder, so only for one does the folder change the answer. */
+function isShim(executable: string): boolean {
+  let real = executable;
+  try { real = realpathSync(executable); } catch { /* judge the path as given */ }
+  return `${sep}${real}`.includes(`${sep}shims${sep}`) || executable.includes(`${sep}shims${sep}`);
+}
+
+/** The version an executable reports, read once per path, modification time and PATH (a script's interpreter is
+ *  found on PATH), and per working folder only for a version-manager shim. Run with the environment and folder the
+ *  agent itself will start in, so the reading matches what the agent will run. */
 export function cliVersion(cli: PinnedCli, executable: string, where: { env?: NodeJS.ProcessEnv; cwd?: string },
   run: Run = spawnSync, now: () => number = Date.now): string | null {
   let mtime: number;
   try { mtime = statSync(executable).mtimeMs; } catch { return null; }
-  const key = `${cli}\0${executable}\0${mtime}\0${where.cwd ?? ''}`;
+  const path = (where.env ?? process.env).PATH ?? '';
+  const key = `${cli}\0${executable}\0${mtime}\0${path}\0${isShim(executable) ? where.cwd ?? '' : ''}`;
   const cached = versions.get(key);
   if (cached && (cached.version || now() - cached.at < FAILED_READ_TTL_MS)) return cached.version;
   let version: string | null = null;
@@ -116,7 +133,7 @@ export interface LaunchDeps {
  *  environment and folder it will run in, so the binary judged is the binary started. ok carries the env to add. */
 export function seatPin(cli: PinnedCli, pins: unknown,
   launch: { command: string; args: string[]; cwd: string; env: Record<string, string> },
-  deps: LaunchDeps): { ok: true; env: Record<string, string> } | { ok: false; reason: string } {
+  deps: LaunchDeps): { ok: true; env: Record<string, string>; pin?: CliPin } | { ok: false; reason: string } {
   const p = pinFor(pins, cli);
   if ('malformed' in p) return { ok: false, reason: p.malformed };
   if (!p.pin) return { ok: true, env: {} };
@@ -126,5 +143,5 @@ export function seatPin(cli: PinnedCli, pins: unknown,
     : null;
   const verdict = judgePin(cli, p.pin, version, [launch.command, ...launch.args]);
   if (!verdict.ok) return verdict;
-  return { ok: true, env: pinnedSeatEnv(cli, p.pin) };
+  return { ok: true, env: pinnedSeatEnv(cli, p.pin), pin: p.pin };
 }

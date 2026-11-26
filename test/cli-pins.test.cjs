@@ -13,7 +13,7 @@ const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 
-const { parseCliVersion, launchModel, judgePin, pinnedSeatEnv, cliVersion, pinFor, seatPin } = loadTs('src/main/cliPins.ts');
+const { parseCliVersion, launchModel, judgePin, pinnedSeatEnv, cliVersion, pinFor, seatPin, judgeFinalLaunch } = loadTs('src/main/cliPins.ts');
 
 test('the version is read from each CLI\'s own --version line', () => {
   assert.equal(parseCliVersion('claude', '2.1.332 (Claude Code)\n'), '2.1.332');
@@ -131,7 +131,7 @@ test('the seat pin reads the version of the binary the PTY will launch, with the
     run
   };
   const r = seatPin('codex', { codex: { version: '0.172.0', model: 'm' } }, { command: 'codex', args: ['--model', 'm'], cwd: dir, env: { X: '1' } }, deps);
-  assert.deepEqual(r, { ok: true, env: {} });
+  assert.deepEqual(r, { ok: true, env: {}, pin: { version: '0.172.0', model: 'm' } });
   assert.deepEqual(seen, [{ file: launched, cwd: dir, marker: 'from-launchEnv' }]);
   // Not installed where the PTY looks: refused, never probed elsewhere.
   const missing = seatPin('claude', { claude: { version: '2.1.332' } }, { command: 'claude', args: [], cwd: dir, env: {} }, deps);
@@ -146,4 +146,34 @@ test('the seat pin reads the version of the binary the PTY will launch, with the
   assert.deepEqual(seatPin('codex', undefined, { command: 'codex', args: [], cwd: dir, env: {} }, deps), { ok: true, env: {} });
   assert.equal(seen.length, 0);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('a binary is read once across seat folders; only a version-manager shim is read per folder', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-pins-'));
+  const plain = path.join(dir, 'bin', 'codex');
+  const shim = path.join(dir, 'shims', 'codex');
+  for (const p of [plain, shim]) { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, '#!/bin/sh\n', { mode: 0o755 }); }
+  let runs = 0;
+  const run = () => { runs++; return { status: 0, stdout: 'codex-cli 0.172.0\n', stderr: '' }; };
+  const env = { PATH: '/usr/bin' };
+  cliVersion('codex', plain, { env, cwd: path.join(dir, 'a') }, run);
+  cliVersion('codex', plain, { env, cwd: path.join(dir, 'b') }, run);
+  assert.equal(runs, 1);
+  // A different PATH can find a different interpreter for a script, so it is read again.
+  cliVersion('codex', plain, { env: { PATH: '/opt/bin' }, cwd: path.join(dir, 'b') }, run);
+  assert.equal(runs, 2);
+  cliVersion('codex', shim, { env, cwd: path.join(dir, 'a') }, run);
+  cliVersion('codex', shim, { env, cwd: path.join(dir, 'b') }, run);
+  assert.equal(runs, 4);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('the model pin is judged again on the launch line as it will finally start', () => {
+  const pin = { version: '0.172.0', model: 'gpt-5.6-sol' };
+  assert.deepEqual(judgeFinalLaunch('codex', pin, ['codex', '--remote', 'unix:///s', '--model', 'gpt-5.6-sol']), { ok: true, pinned: true });
+  const moved = judgeFinalLaunch('codex', pin, ['codex', '--model', 'gpt-5.6-sol', '-c', 'model="other"']);
+  assert.equal(moved.ok, false);
+  assert.match(moved.reason, /model other/);
+  assert.deepEqual(judgeFinalLaunch('codex', undefined, ['codex']), { ok: true, pinned: false });
+  assert.deepEqual(judgeFinalLaunch('claude', { version: '2.1.332' }, ['claude']), { ok: true, pinned: true });
 });

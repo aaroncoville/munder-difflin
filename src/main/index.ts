@@ -93,7 +93,7 @@ import { PrivateDirRefused, registerPrivateDir } from '../core/privateDirs';
 import { sourceCheckout } from '../core/repoInstructions';
 import { SeatSettingsRefused } from '../core/seatSettings';
 import { relocationEnv } from '../core/launchLine';
-import { CliPinRefused, seatPin } from './cliPins';
+import { CliPinRefused, judgeFinalLaunch, seatPin, type CliPin } from './cliPins';
 import { buildPtyEnv } from './ptyEnv';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WakeSkipLog, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
@@ -3279,12 +3279,14 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   }
   // A pinned CLI: the seat starts only on the pinned version (and model), before anything below runs the CLI.
   const pinCli = claudeProvider ? 'claude' : provider === 'codex' ? 'codex' : null;
+  let seatCliPin: CliPin | undefined;
   if (pinCli && opts.hive?.id) {
     const pinned = seatPin(pinCli, readConfig().cliPins,
       { command: opts.command, args: opts.args ?? [], cwd: opts.cwd, env: opts.env ?? {} },
       { commandPath: (c) => ptyManager.commandPath(c), launchEnv: (e) => ptyManager.launchEnv(e) });
     if (!pinned.ok) return refuseSpawn(opts.id, opts.hive.id, provider, new CliPinRefused(`Agent ${opts.hive.id} was not started: ${pinned.reason}`));
     if (Object.keys(pinned.env).length) opts.env = { ...(opts.env ?? {}), ...pinned.env };
+    seatCliPin = pinned.pin;
   }
   // Codex Remote is daemon-based (there is no `/remote-control` slash command).
   // Start/enable the daemon under this agent's isolated CODEX_HOME and connect
@@ -3331,6 +3333,11 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     }
     hive.appendLog({ kind: 'codex-hook-trust', agentId: opts.hive.id, ok: true, ms });
     await enableCodexRemoteForSpawn(opts, opts.hive.id);
+  }
+  // The model pin again, on the final launch line: steps since the pin check may have added arguments.
+  if (pinCli && seatCliPin && opts.hive?.id) {
+    const final = judgeFinalLaunch(pinCli, seatCliPin, [opts.command, ...(opts.args ?? [])]);
+    if (!final.ok) return refuseSpawn(opts.id, opts.hive.id, provider, new CliPinRefused(`Agent ${opts.hive.id} was not started: ${final.reason}`));
   }
   // The late check on the launch exactly as it will start; a refusal here rolls back what ensureAgent created.
   if (opts.hive?.id) {
