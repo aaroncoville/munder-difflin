@@ -28,3 +28,45 @@ export function taskWriteResult(
     return { ok: false, error: message };
   }
 }
+
+/** Pauses between attempts at a busy ledger: about 1.5 s in all, plus each attempt's own short wait. */
+export const TASK_WRITE_RETRY_DELAYS_MS: readonly number[] = [50, 100, 200, 400, 800];
+
+export interface TaskWriteRetryOptions {
+  /** The pause before each further attempt; one attempt is made per pause, after the first. */
+  delaysMs?: readonly number[];
+  sleep?: (ms: number) => Promise<void>;
+  log?: (line: string) => void;
+}
+
+/**
+ * taskWriteResult for an async IPC handler, trying a busy ledger again.
+ *
+ * The app waits for tasks.json.lock only briefly, because that wait blocks the main thread. A holder that
+ * keeps the lock a little longer (the hive command, a slow disk) would otherwise fail the user's edit. So
+ * when an attempt finds the ledger busy, this pauses without blocking and tries again, up to the given
+ * pauses, then answers with the busy error. A busy attempt wrote nothing, so trying again is safe. Any
+ * other failure (an unreadable ledger, a lock taken away mid-update, a disk error) is answered at once.
+ */
+export async function taskWriteResultWithRetry(
+  what: string,
+  write: () => boolean,
+  {
+    delaysMs = TASK_WRITE_RETRY_DELAYS_MS,
+    sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    log
+  }: TaskWriteRetryOptions = {}
+): Promise<TaskWriteResult> {
+  for (const delay of delaysMs) {
+    let ok: boolean;
+    try {
+      ok = write();
+    } catch (e) {
+      if (!(e instanceof TaskLedgerLockTimeout)) return taskWriteResult(what, () => { throw e; }, log);
+      await sleep(delay);
+      continue;
+    }
+    return { ok };
+  }
+  return taskWriteResult(what, write, log);
+}
