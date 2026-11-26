@@ -141,6 +141,12 @@ function lockWaitMs(env: Record<string, string | undefined>): number | undefined
 const idOf = (card: unknown): unknown => (isObject(card) ? card.id : undefined);
 
 /**
+ * Whether a string shows anything: not only whitespace and characters that render as nothing (zero-width
+ * spaces and joiners, the BOM, soft hyphens, fillers), which trim() keeps.
+ */
+const shows = (s: string): boolean => s.replace(/[\s\p{Default_Ignorable_Code_Point}]/gu, '') !== '';
+
+/**
  * Refuses a patch that breaks a rule the ledger's other writers rely on: a card keeps its id; once
  * assigned, a card always names an assignee; and humanQA, the record of questions to the operator and
  * their answers, only grows, through `ask` here and through the app when it records an answer. A
@@ -149,7 +155,7 @@ const idOf = (card: unknown): unknown => (isObject(card) ? card.id : undefined);
 function refuseLedgerRuleBreak(patch: Card, id: string): void {
   if (Object.hasOwn(patch, 'id') && patch.id !== id) throw new CliError(`a patch cannot change the card's "id"; this is card ${id}`);
   if (Object.hasOwn(patch, 'humanQA')) throw new CliError('a patch cannot set "humanQA": its history only grows; add a question with hive tasks ask');
-  if (Object.hasOwn(patch, 'assignee') && (typeof patch.assignee !== 'string' || !patch.assignee.trim())) {
+  if (Object.hasOwn(patch, 'assignee') && (typeof patch.assignee !== 'string' || !shows(patch.assignee))) {
     throw new CliError('a patch cannot clear "assignee": it may only name another assignee, as a string that is not blank');
   }
 }
