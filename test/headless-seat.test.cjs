@@ -258,6 +258,15 @@ test('Given the CLI prints a success result but exits non-zero, when the seat ru
   assert.equal(r.totalCostUsd, 0.0042, 'the cost it reported is still read');
 });
 
+test('Given the CLI exits 0 with a result that is not an error but is not a success either, when the seat runs, then the run is not ok and names the subtype', async (t) => {
+  const out = { ...SUCCESS, subtype: 'error_max_turns', is_error: false };
+  const f = floor(t, { stdout: JSON.stringify(out), exitCode: 0 });
+  const r = await H.runHeadlessSeat(f.opts());
+  assert.equal(r.ok, false);
+  assert.equal(r.subtype, 'error_max_turns');
+  assert.match(r.error, /error_max_turns/);
+});
+
 test('Given the CLI prints something that is not a JSON result, when the seat runs, then the run is not ok and says why', async (t) => {
   const f = floor(t, { stdout: 'Error: something went wrong\n', exitCode: 0 });
   const r = await H.runHeadlessSeat(f.opts());

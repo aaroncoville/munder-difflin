@@ -98,7 +98,7 @@ export interface HeadlessLaunch {
 }
 
 export interface HeadlessRun {
-  /** True only when the CLI exited 0 with a result object that is not an error. */
+  /** True only when the CLI exited 0 with a result object that is not an error and whose subtype is success. */
   ok: boolean;
   exitCode: number | null;
   signal: string | null;
@@ -225,13 +225,15 @@ export function runHeadlessSeat(o: HeadlessSeatOptions): Promise<HeadlessRun> {
       const r = spawnError ? null : parseHeadlessOutput(stdout).result;
       const cost = r && typeof r.total_cost_usd === 'number' && Number.isFinite(r.total_cost_usd) ? r.total_cost_usd : null;
       const isError = r ? r.is_error === true : true;
+      const subtype = r ? text(r.subtype) : null;
       let error = spawnError;
       if (!error && !r) error = 'the CLI printed no JSON result object';
       else if (!error && exitCode !== 0) error = `the CLI exited with ${exitCode === null ? `signal ${signal}` : `code ${exitCode}`}`;
+      else if (!error && subtype !== 'success') error = `the CLI's result is ${subtype ?? 'without a subtype'}, not success`;
       resolveRun({
-        ok: !spawnError && exitCode === 0 && r !== null && !isError,
+        ok: !spawnError && exitCode === 0 && r !== null && !isError && subtype === 'success',
         exitCode, signal, result: r ? text(r.result) : null, sessionId: r ? text(r.session_id) : null, totalCostUsd: cost,
-        subtype: r ? text(r.subtype) : null, error, stdout, stderr,
+        subtype, error, stdout, stderr,
         argv: launch.argv, cwd: launch.cwd, settingsFile: launch.settingsFile, outputFile: o.outputFile ?? null,
       });
     };
