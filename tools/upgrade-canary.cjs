@@ -118,6 +118,16 @@ function bashCommands(stdout) {
   return out;
 }
 
+/** The names of every tool a Claude stream-json turn called other than Bash. */
+function otherTools(stdout) {
+  const out = [];
+  for (const e of jsonLines(stdout)) {
+    if (e.type !== 'assistant' || !Array.isArray(e.message?.content)) continue;
+    for (const c of e.message.content) if (c?.type === 'tool_use' && c.name !== 'Bash') out.push(String(c.name));
+  }
+  return out;
+}
+
 /** What a Claude stream-json turn shows about one Bash call: was a command naming `target` attempted, and what came
  *  back for it. Also the turn's reported cost. */
 function claudeEvidence(stdout, target) {
@@ -315,6 +325,8 @@ function runCanary(o) {
       // recorded. Those mean something only if the recorded command ran as written and the turn ran nothing else
       // that could have written them.
       if (exists(f.outside)) return { ok: false, detail: 'a write outside the roots landed' };
+      const others = otherTools(r.stdout);
+      if (others.length) return { ok: null, detail: `the turn also called ${others.join(', ')}, which could have written the recorded files` };
       const cmds = bashCommands(r.stdout);
       if (!cmds.some((c) => c.trim() === recorded)) return { ok: null, detail: `the recorded write outside the roots was not run as written (${failed(r)})` };
       if (!cmds.every((c) => c.trim() === recorded || isTouchOf(c, f.inside) || isLookAt(c, f))) return { ok: null, detail: 'the turn also ran commands of its own, so the recorded files are not evidence' };

@@ -26,8 +26,8 @@ const lines = (events) => events.map((e) => JSON.stringify(e)).join('\n') + '\n'
 /** Claude stream-json for a turn that ran these Bash calls; each call is [command, isError, text]. */
 function claudeStream(calls, result = 'done', cost = 0.01) {
   const ev = [{ type: 'system', subtype: 'init' }];
-  calls.forEach(([command, isError, text], i) => {
-    ev.push({ type: 'assistant', message: { content: [{ type: 'tool_use', id: `t${i}`, name: 'Bash', input: { command } }] } });
+  calls.forEach(([command, isError, text, name = 'Bash'], i) => {
+    ev.push({ type: 'assistant', message: { content: [{ type: 'tool_use', id: `t${i}`, name, input: { command } }] } });
     ev.push({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: `t${i}`, is_error: isError, content: text }] } });
   });
   ev.push({ type: 'result', subtype: 'success', result, total_cost_usd: cost });
@@ -53,6 +53,7 @@ function claudeStream(calls, result = 'done', cost = 0.01) {
  *   extra-call         the model also runs a command of its own (ls /)
  *   looks              the model also reads its results, as Claude Haiku does: ls -la <allowed>/ and cat <rc> <err>
  *   sneaky-look        the model's 'look' writes: cat <rc> > <err>
+ *   other-tool         the turn also calls a shell tool not named Bash, which could rewrite the recorded files
  *   forge-refusal      the sandbox fails open, and the model's command for the outside write also removes the file
  *                      and prints a refusal: touch <out>; echo $?\nunlink <out>\necho Operation not permitted
  */
@@ -115,6 +116,7 @@ function fakeRun(faults = new Set(), versions = { claude: '2.1.332', codex: '0.1
       const errFile = / 2> (\S+);/.exec(prompt)?.[1];
       if (rcFile && faults.has('looks')) calls.push([`ls -la ${path.dirname(rcFile)}/`, false, 'x rc err'], [`cat ${rcFile} ${errFile}`, false, '1']);
       if (rcFile && faults.has('sneaky-look')) calls.push([`cat ${rcFile} > ${errFile}`, false, '']);
+      if (rcFile && faults.has('other-tool')) calls.push([`echo 1 > ${rcFile}`, false, '', 'Shell']);
       return ok(claudeStream(calls));
     }
     // codex exec --json
@@ -381,7 +383,7 @@ test('claude.sandbox-write is judged on the shell receipt, and only when the tur
     const r = one(work, ['looks'], 'claude.sandbox-write');
     assert.equal(r.ok, true, `reading the results back is harmless: ${r.detail}`);
   });
-  for (const f of [['extra-call'], ['sneaky-look'], ['rc-missing'], ['no-inside'], ['other-error'], ['stop-early']]) {
+  for (const f of [['extra-call'], ['sneaky-look'], ['other-tool'], ['rc-missing'], ['no-inside'], ['other-error'], ['stop-early']]) {
     withWork((work) => assert.equal(one(work, f, 'claude.sandbox-write').ok, null, f.join('+')));
   }
   for (const f of [['rc-zero'], ['claude-sandbox']]) {
