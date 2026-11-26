@@ -211,8 +211,21 @@ export function TasksKanban() {
         </span>
       </div>
 
+      {/* Not every failure here is followed by an edit that would clear it (a Slack message that could not
+          be added, say), so the user can close the line. */}
       {taskWriteError && (
-        <div style={{ fontSize: 12, color: 'var(--cth-coral)', padding: '6px 10px 0' }}>{taskWriteError}</div>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 12, color: 'var(--cth-coral)', padding: '6px 10px 0' }}>
+          <span style={{ flex: 1, minWidth: 0 }}>{taskWriteError}</span>
+          <button
+            onClick={() => setTaskWriteError('')}
+            title={t('kanban.closeNotice')}
+            aria-label={t('kanban.closeNotice')}
+            style={{
+              flexShrink: 0, padding: 0, border: 'none', cursor: 'pointer', background: 'transparent',
+              color: 'var(--cth-ink-500)', fontFamily: 'var(--cth-font-ui)', fontSize: 12, lineHeight: 1
+            }}
+          >✕</button>
+        </div>
       )}
 
       {/* Columns */}

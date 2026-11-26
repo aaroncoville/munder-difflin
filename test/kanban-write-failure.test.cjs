@@ -71,3 +71,21 @@ test('a card that was removed leaves no error behind', async () => {
 
   assert.ok(!shown(view.tree).includes('an earlier failure'));
 });
+
+test('a failure line on the board can be closed by the user', async () => {
+  // A Slack message that could not be added: no later edit on the board is bound to clear it.
+  useStore.setState({ taskWriteError: 'The Slack message "deploy?" was not added to the board' });
+  global.window = { cth: { hiveTasks: async () => ({ tasks: [] }) } };
+  const view = mount(TasksKanban, {});
+  mounted.push(view);
+  await settle();
+  view.render();
+  assert.ok(shown(view.tree).includes('deploy?'));
+
+  const close = find(view.tree, (n) => n.props && n.props['aria-label'] === 'close this message');
+  assert.ok(close, 'the line has a close control, found by its label');
+  close.props.onClick();
+  view.render();
+  assert.ok(!shown(view.tree).includes('deploy?'), `the line must be gone; got:\n${shown(view.tree)}`);
+  assert.equal(useStore.getState().taskWriteError, '');
+});

@@ -1186,6 +1186,7 @@
     "dismissTitle": "تجاهل هذه المهمة (تُزال من اللوحة)",
     "dismissAria": "تجاهل المهمة",
     "dismissNotSaved": "لم تُحذف \"{{title}}\": {{error}}",
+    "closeNotice": "إغلاق هذه الرسالة",
     "moveNotSaved": "لم تُنقل \"{{title}}\": {{error}}",
     "slackCardNotSaved": "لم تُضف رسالة Slack \"{{title}}\" إلى اللوحة، لذا لن يصل رد إلى سلسلتها عند إنجاز العمل: {{error}}",
     "taskTitle": "المهمة",

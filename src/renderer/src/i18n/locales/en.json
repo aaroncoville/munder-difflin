@@ -1186,6 +1186,7 @@
     "dismissTitle": "dismiss this task (removes it from the board)",
     "dismissAria": "dismiss task",
     "dismissNotSaved": "\"{{title}}\" was not removed: {{error}}",
+    "closeNotice": "close this message",
     "moveNotSaved": "\"{{title}}\" was not moved: {{error}}",
     "slackCardNotSaved": "The Slack message \"{{title}}\" was not added to the board, so its thread will not get a reply when the work is done: {{error}}",
     "taskTitle": "TASK",
