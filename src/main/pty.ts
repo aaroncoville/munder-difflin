@@ -408,6 +408,20 @@ export class PtyManager {
     return r.found ? r.path : null;
   }
 
+  /** The environment spawn() starts a process with, for these per-agent values. A caller that runs the agent's
+   *  executable first (e.g. to read its version) gets exactly what the agent will see. */
+  launchEnv(agentEnv?: Record<string, string>): Record<string, string> {
+    // Build a user-shell PATH so child can resolve subprocess deps. Cached
+    // for the session (shellEnv.userShellPath, fenced against rc-file noise) —
+    // the interactive-shell launch it replaces cost ~1s of main-thread freeze
+    // on EVERY spawn.
+    const userPath = withHiveRuntimeFallback(
+      process.platform === 'win32' ? (process.env.PATH || '') : userShellPath(),
+      agentEnv?.HIVE_ROOT
+    );
+    return buildPtyEnv(process.env, userPath, agentEnv);
+  }
+
   /** Session cache of SUCCESSFUL command resolutions. Each miss costs a full
    *  interactive-shell launch (`$SHELL -ilc which …` sources the user's whole
    *  zshrc — nvm/asdf init is routinely ~1s) run synchronously on the main
@@ -562,15 +576,6 @@ export class PtyManager {
     }
     const resolved = this.resolveCommand(opts.command).path;
     try {
-      // Build a user-shell PATH so child can resolve subprocess deps. Cached
-      // for the session (shellEnv.userShellPath, fenced against rc-file noise) —
-      // the interactive-shell launch it replaces cost ~1s of main-thread freeze
-      // on EVERY spawn.
-      const userPath = withHiveRuntimeFallback(
-        process.platform === 'win32' ? (process.env.PATH || '') : userShellPath(),
-        opts.env?.HIVE_ROOT
-      );
-
       // On Windows, .cmd/.bat files (and extensionless shims) cannot be executed
       // directly by CreateProcess — only .exe/.com can. Two ways out, in order of
       // preference: (1) decode an npm shim to the interpreter + script it wraps and
@@ -669,7 +674,7 @@ export class PtyManager {
         // Inherited env minus the parent Claude session's identity markers,
         // then the app's defaults and locale, then per-agent values — see
         // ptyEnv.ts for why the strip exists and why it is prefix-based.
-        env: buildPtyEnv(process.env, userPath, opts.env)
+        env: this.launchEnv(opts.env)
       });
 
       // Capture THIS session object so the proc's callbacks can tell whether the
