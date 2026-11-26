@@ -144,6 +144,17 @@ test('a lock on this host with no pid in its record is broken once older than th
   assert.deepEqual(ids(file), ['b']);
 });
 
+test('a lock on this host whose pid is not a positive integer is judged by age, like one with no pid', (t) => {
+  // kill(0, 0) and kill(-1, 0) ask about process groups and succeed, and kill(1.5, 0) throws something
+  // other than "no such process", so read as pids these would name a holder that is running for good.
+  for (const pid of [0, -1, 1.5, 1e300]) {
+    const { file, lock } = hive(t, { tasks: [] });
+    fs.writeFileSync(lock, JSON.stringify({ pid, host: os.hostname(), acquiredAt: new Date(Date.now() - 60_000).toISOString() }));
+    updateTaskLedgerFile(file, (c) => [...c, { id: 'b' }], { waitMs: 300, staleMs: 30_000, startTime: () => null });
+    assert.deepEqual(ids(file), ['b'], `pid ${pid}`);
+  }
+});
+
 /** The lock record a real writer in this process puts in the lock, read while it holds the lock. */
 function ownRecord(t, options) {
   const { file, lock } = hive(t, { tasks: [] });
