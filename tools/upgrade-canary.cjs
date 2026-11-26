@@ -95,6 +95,16 @@ function isTouchOf(command, target) {
   return m[5] === undefined || /\$\?/.test(m[5]);
 }
 
+/** Every Bash command a Claude stream-json turn ran. */
+function bashCommands(stdout) {
+  const out = [];
+  for (const e of jsonLines(stdout)) {
+    if (e.type !== 'assistant' || !Array.isArray(e.message?.content)) continue;
+    for (const c of e.message.content) if (c?.type === 'tool_use' && c.name === 'Bash') out.push(String(c.input?.command ?? ''));
+  }
+  return out;
+}
+
 /** What a Claude stream-json turn shows about one Bash call: was a command naming `target` attempted, and what came
  *  back for it. Also the turn's reported cost. */
 function claudeEvidence(stdout, target) {
@@ -282,15 +292,20 @@ function runCanary(o) {
     },
     'claude.sandbox-write': () => {
       const d = dirs('claude-sandbox');
-      const inside = path.join(d.allowed, 'x');
-      const outside = path.join(d.forbidden, 'x');
-      const r = claudeP(d.cwd, runTouches([inside, outside]), {
+      const f = shellFiles(d);
+      const recorded = recordedTouch(f.outside, f.rc, f.err);
+      const r = claudeP(d.cwd, runCommands([`touch ${f.inside}`, recorded]), {
         sandbox: { enabled: true, allowUnsandboxedCommands: false, filesystem: { allowWrite: [d.allowed] } },
         permissions: { additionalDirectories: [d.allowed] }
       }, 'Bash');
-      const ev = claudeEvidence(r.stdout, outside);
-      const refused = !!ev.result && REFUSED.test(ev.result.text);
-      return writeVerdict({ inside, outside, attempted: ev.attempted, refused, why: failed(r) });
+      // Text in a tool result can be printed by the command itself, so the verdict rests on the files the shell
+      // recorded. Those mean something only if the recorded command ran as written and the turn ran nothing else
+      // that could have written them.
+      if (exists(f.outside)) return { ok: false, detail: 'a write outside the roots landed' };
+      const cmds = bashCommands(r.stdout);
+      if (!cmds.some((c) => c.trim() === recorded)) return { ok: null, detail: `the recorded write outside the roots was not run as written (${failed(r)})` };
+      if (!cmds.every((c) => c.trim() === recorded || isTouchOf(c, f.inside))) return { ok: null, detail: 'the turn also ran commands of its own, so the recorded files are not evidence' };
+      return shellVerdict(f, failed(r), 'the shell');
     },
     'codex.sandbox-write': () => {
       const d = dirs('codex-sandbox');
@@ -351,13 +366,6 @@ function runCanary(o) {
     return { ok: true, detail: `${who} wrote inside its roots; the shell recorded the write outside them refused (exit ${rc})` };
   }
   function exitZero(r, what) { return r.status === 0 ? { ok: true, detail: `${what} exited 0` } : { ok: false, detail: `${what}: ${failed(r)}` }; }
-  function writeVerdict({ inside, outside, attempted, refused, why }) {
-    if (exists(outside)) return { ok: false, detail: 'a write outside the roots landed' };
-    if (!attempted) return { ok: null, detail: `the write outside the roots was never attempted (${why})` };
-    if (!refused) return { ok: null, detail: 'the write outside the roots was attempted but no refusal came back for it' };
-    if (!exists(inside)) return { ok: null, detail: 'the write inside the roots did not land either, so the refusal proves nothing' };
-    return { ok: true, detail: 'a write inside the roots landed, and one outside them was attempted and refused' };
-  }
 
   for (const name of wanted) {
     const t0 = now();

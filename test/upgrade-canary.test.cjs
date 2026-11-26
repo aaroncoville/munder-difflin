@@ -15,6 +15,9 @@ const path = require('node:path');
 
 const canary = require('../tools/upgrade-canary.cjs');
 
+/** The shell-recorded form of the touch of `t` in a prompt: sh -c 'touch <t> 2> <err>; echo $? > <rc>'. */
+const recordedFor = (prompt, t) =>
+  new RegExp(`sh -c 'touch ${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} 2> (\\S+); echo \\$\\? > (\\S+)'`).exec(prompt);
 const touches = (prompt) => [...prompt.matchAll(/touch (\S+)/g)].map((m) => m[1]);
 const write = (p) => { try { fs.writeFileSync(p, ''); return true; } catch { return false; } };
 const under = (p, root) => p === root || p.startsWith(root + path.sep);
@@ -47,6 +50,7 @@ function claudeStream(calls, result = 'done', cost = 0.01) {
  *   claims-refusal     the model's report says the write outside the roots was refused, whatever really ran
  *   rc-zero / rc-missing  the recorded exit code reads 0 / is not written, though the refusal text is
  *   no-inside          the write inside the roots is refused too
+ *   extra-call         the model also runs a command of its own (ls)
  *   forge-refusal      the sandbox fails open, and the model's command for the outside write also removes the file
  *                      and prints a refusal: touch <out>; echo $?\nunlink <out>\necho Operation not permitted
  */
@@ -74,7 +78,16 @@ function fakeRun(faults = new Set(), versions = { claude: '2.1.332', codex: '0.1
       const allow = settings.sandbox?.enabled ? [opts.cwd, ...settings.sandbox.filesystem.allowWrite] : null;
       const calls = [];
       for (const t of wanted) {
-        const cmd = `touch ${t}`;
+        const rec = recordedFor(prompt, t);
+        const cmd = rec ? rec[0] : `touch ${t}`;
+        const outsideT = t.includes(`${path.sep}forbidden${path.sep}`);
+        const record = (code, err) => {
+          if (!rec) return;
+          if (err) fs.writeFileSync(rec[1], err);
+          if (!faults.has('rc-missing')) fs.writeFileSync(rec[2], `${faults.has('rc-zero') ? 0 : code}\n`);
+        };
+        if (faults.has('no-inside') && !outsideT && !hook) { calls.push([cmd, true, `touch: ${t}: Operation not permitted`]); continue; }
+        if (faults.has('other-error') && rec) { record(1, `touch: ${t}: No such file or directory\n`); calls.push([cmd, false, '']); continue; }
         if (faults.has('other-error') && ((hook && hook.command !== 'exit 0') || t.includes(`${path.sep}forbidden${path.sep}`))) { calls.push([cmd, true, `touch: ${t}: No such file or directory`]); continue; }
         if (hook) {
           const denies = /exit 2/.test(hook.command);
@@ -87,10 +100,15 @@ function fakeRun(faults = new Set(), versions = { claude: '2.1.332', codex: '0.1
           write(t); fs.rmSync(t);
           calls.push([`touch ${t}; echo $?\nunlink ${t}\necho Operation not permitted`, false, '0\nOperation not permitted']); continue;
         }
-        if (allow && !faults.has('claude-sandbox') && !allow.some((r) => under(t, r))) { calls.push([cmd, true, `touch: ${t}: Operation not permitted`]); continue; }
+        if (allow && !faults.has('claude-sandbox') && !allow.some((r) => under(t, r))) {
+          if (rec) { record(1, `touch: ${t}: Operation not permitted\n`); calls.push([cmd, false, '']); continue; }
+          calls.push([cmd, true, `touch: ${t}: Operation not permitted`]); continue;
+        }
         write(t);
+        record(0, '');
         calls.push([cmd, false, '']);
       }
+      if (faults.has('extra-call')) calls.push(['ls /', false, 'bin']);
       return ok(claudeStream(calls));
     }
     // codex exec --json
@@ -345,4 +363,18 @@ test('a failed-open sandbox whose command removes the file and prints a refusal 
     const r = one(work, ['forge-refusal'], 'claude.sandbox-write');
     assert.notEqual(r.ok, true, r.detail);
   });
+});
+
+test('claude.sandbox-write is judged on the shell receipt, and only when the turn ran nothing but the generated commands', () => {
+  withWork((work) => {
+    const r = one(work, [], 'claude.sandbox-write');
+    assert.equal(r.ok, true, r.detail);
+    assert.match(r.detail, /shell recorded .*refused \(exit 1\)/);
+  });
+  for (const f of [['extra-call'], ['rc-missing'], ['no-inside'], ['other-error'], ['stop-early']]) {
+    withWork((work) => assert.equal(one(work, f, 'claude.sandbox-write').ok, null, f.join('+')));
+  }
+  for (const f of [['rc-zero'], ['claude-sandbox']]) {
+    withWork((work) => assert.equal(one(work, f, 'claude.sandbox-write').ok, false, f.join('+')));
+  }
 });
