@@ -10,7 +10,7 @@
 import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path';
 import { CLAUDE_FILE_WRITE_TOOLS, claudeRootEntries, isPlainObject, stringList } from './launchLine';
-import { insideAny } from './writeRoots';
+import { insideAny, SCOPED_UNSANDBOXED_COMMANDS } from './writeRoots';
 
 /** The machine-wide Claude settings file. */
 export const MANAGED_CLAUDE_SETTINGS = process.platform === 'darwin' ? '/Library/Application Support/ClaudeCode/managed-settings.json'
@@ -67,18 +67,27 @@ export function editRuleFolder(rule: string, settingsDir: string, cwd: string, h
   return resolvePath(head.endsWith('/') ? head : dirname(head));
 }
 
-/** What in one settings file's text cannot be judged, beyond the roots claudeRootEntries reads; null when nothing.
- *  A permissions allow, ask or deny list that is not a list of text is not understood: reading around it would skip a
- *  rule the CLI may still apply. */
-function settingsProblem(text: string): string | null {
+/** What else in one settings file widens a scoped seat, beyond the roots claudeRootEntries reads: `problem` when a
+ *  key cannot be judged, `key` when it widens the seat; null when nothing does.
+ *  - A permissions allow, ask or deny list that is not a list of text is not understood: reading around it would skip
+ *    a rule the CLI may still apply.
+ *  - sandbox.excludedCommands runs the commands it names outside the sandbox, where they can write anywhere; an entry
+ *    is admitted only when the scoped seat already runs it unsandboxed (SCOPED_UNSANDBOXED_COMMANDS). */
+function settingsExcess(text: string): { problem: string } | { key: string } | null {
   let v: unknown;
-  try { v = JSON.parse(text); } catch { return 'it is not JSON'; }
-  if (!isPlainObject(v)) return 'it is not an object';
+  try { v = JSON.parse(text); } catch { return { problem: 'it is not JSON' }; }
+  if (!isPlainObject(v)) return { problem: 'it is not an object' };
   const pm = v.permissions;
   if (isPlainObject(pm)) {
     for (const k of ['allow', 'ask', 'deny']) {
-      if (Object.hasOwn(pm, k) && !stringList(pm[k])) return `permissions.${k} is not a list of text`;
+      if (Object.hasOwn(pm, k) && !stringList(pm[k])) return { problem: `permissions.${k} is not a list of text` };
     }
+  }
+  const sb = v.sandbox;
+  if (isPlainObject(sb) && Object.hasOwn(sb, 'excludedCommands')) {
+    if (!stringList(sb.excludedCommands)) return { problem: 'sandbox.excludedCommands is not a list of text' };
+    const own: readonly string[] = SCOPED_UNSANDBOXED_COMMANDS;
+    if (!sb.excludedCommands.every((c) => own.includes(c))) return { key: 'sandbox.excludedCommands' };
   }
   return null;
 }
@@ -111,8 +120,9 @@ export function claudeSettingsExcess(p: ClaudeSettingsPlaces): { why: string; ro
     if (text === null) return { why: `${source} (could not be read)`, root: null };
     const c = claudeRootEntries(text);
     if (!c) return { why: `${source} (could not be understood)`, root: null };
-    const problem = settingsProblem(text);
-    if (problem) return { why: `${source} (could not be understood: ${problem})`, root: null };
+    const more = settingsExcess(text);
+    if (more && 'problem' in more) return { why: `${source} (could not be understood: ${more.problem})`, root: null };
+    if (more) return { why: `${source}: ${more.key}`, root: null };
     for (const e of c.entries) {
       const root = settingsRootPath(e.value, p.cwd, p.home);
       if (!inside(root)) return { why: `${source}: ${e.key}`, root };

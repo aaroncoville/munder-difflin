@@ -259,6 +259,12 @@ test('Given managed settings that add a root outside the seat, when the launch i
   assert.throws(() => H.buildHeadlessLaunch(f.opts()), /managed settings/);
 });
 
+test('Given user settings that run a command outside the sandbox, when the launch is built, then it is refused', (t) => {
+  const f = floor(t);
+  ownerSettings(f, path.join(f.base, '.claude'), { sandbox: { excludedCommands: ['cp *'] } });
+  assert.throws(() => H.buildHeadlessLaunch(f.opts()), /user settings: sandbox\.excludedCommands/);
+});
+
 test('Given user settings that cannot be read or understood, when the launch is built, then it is refused', (t) => {
   const f = floor(t);
   const cfg = path.join(f.base, 'cfg');

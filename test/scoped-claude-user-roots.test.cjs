@@ -88,6 +88,19 @@ test('flag on: a permissions allow, ask or deny list that is not a list of text 
   }
 });
 
+test('flag on: an owner sandbox.excludedCommands entry the scoped seat does not itself allow refuses the spawn', async (t) => {
+  const f = floor(t);
+  for (const [i, excludedCommands] of [['git *'], ['npm run build', 'cp *'], ['*']].entries()) {
+    f.user({ sandbox: { excludedCommands } });
+    await assert.rejects(f.spawn(`x${i}`, true), refusedFor(f, 'user settings', 'sandbox.excludedCommands'), JSON.stringify(excludedCommands));
+  }
+  f.user({ sandbox: { excludedCommands: 'git *' } });
+  await assert.rejects(f.spawn('x9', true), (e) => e instanceof ScopedRootsRefused && /could not be understood/.test(e.message));
+  // Commands the scoped seat already runs outside its sandbox add nothing.
+  f.user({ sandbox: { excludedCommands: ['npm run build', 'git fetch *'] } });
+  await f.spawn('xin', true);
+});
+
 test('the Claude file-writing tools the admission reads include every Claude write tool the gate protects', () => {
   const { CLAUDE_FILE_WRITE_TOOLS } = loadTs('src/core/launchLine.ts');
   const { PROTECTED_WRITE_TOOLS } = loadTs('src/core/writeRoots.ts');
