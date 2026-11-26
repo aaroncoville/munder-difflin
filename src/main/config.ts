@@ -23,7 +23,7 @@ import {
   type OrgTriggerConfig,
   type WebhookTrigger
 } from '../shared/triggers';
-import type { CircuitBreakerConfig } from './breaker';
+import type { CircuitBreakerConfig } from '../core/breaker';
 export type { CircuitBreakerConfig };
 
 /** A recurring auto-dispatched mission fired on an interval by the scheduler. */

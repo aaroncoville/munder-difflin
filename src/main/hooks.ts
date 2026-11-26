@@ -18,7 +18,7 @@ import type { HiveManager } from './hive';
 import { gateHeavyCall, settleHeavyCall, type HeavyJobLock } from './heavyJob';
 import type { HarnessConfig } from './config';
 import type { ControlRegistry } from './control';
-import type { CircuitBreaker } from './breaker';
+import type { CircuitBreaker } from '../core/breaker';
 import { estimateCostUsd } from '../core/pricing';
 import { validateHookEvent } from '../shared/hookEvents';
 import { frameIds } from '../core/usageEvents';

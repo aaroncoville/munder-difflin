@@ -25,7 +25,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import type { AgentUsageSample } from '../core/usage';
+import type { AgentUsageSample } from './usage';
 
 /** Circuit-breaker thresholds (Lane A #6.6b). The breaker runs inside the
  *  heartbeat beat, so it only ticks when the heartbeat is enabled. Trip

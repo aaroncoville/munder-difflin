@@ -48,7 +48,7 @@ import { writeWeeklyDigest } from './usageDigest';
 import { HookServer } from './hooks';
 import { HeavyJobLock, heavyLimit, heavySlotNotice, probeProcesses } from './heavyJob';
 import { suiteJobLimit } from './heavyJobRules';
-import { CircuitBreaker, type BreakerInput } from './breaker';
+import { CircuitBreaker, type BreakerInput } from '../core/breaker';
 import { shouldReengage, doingTaskTally, suppressionReason } from './heartbeatPolicy';
 import { CumulativeSampleGate, RunBaseline, snapshotUsageFor, usesCumulativeGate, type UsageProvider } from '../core/usage';
 import { MemoryManager } from './memory';
