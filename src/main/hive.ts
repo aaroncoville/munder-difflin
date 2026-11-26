@@ -56,7 +56,7 @@ import {
 import { MCP_CATALOG } from '../shared/mcpCatalog';
 import { selectBroadcastTargets } from '../shared/broadcast';
 import { preferredAgentRole } from '../shared/agentRole';
-import { mergeTaskLedger } from '../core/taskLedger';
+import { updateTaskLedgerFile } from '../core/taskLedgerFile';
 import { expandTilde } from './fs';
 import { refreshMineIgnoresOnce } from './hiveMineIgnore';
 import { carryHiveGitDir, excludeLine, hiveGitDirFor, hiveRepoPresent, SET_ASIDE_PREFIX, settleHiveGitDir, writeGitfile, writeMarker } from '../core/hiveGitDir';
@@ -3154,51 +3154,55 @@ export class HiveManager {
    *
    *  Deleting a card still works: the incoming list IS the membership, so a card
    *  dropped from it (TasksKanban dismiss, the voice delete_task action) is
-   *  gone. Merging protects fields, never card membership. */
+   *  gone. Merging protects fields, never card membership.
+   *
+   *  The write goes through updateTaskLedgerFile: under tasks.json.lock, merged
+   *  over the ledger as it is on disk at that moment, and renamed into place,
+   *  so it cannot interleave with another process's write. */
   writeTasks(tasks: HiveTask[]): void {
+    this.updateTasks(() => tasks);
+  }
+
+  /** Edit the ledger against its on-disk cards under the ledger lock, then log
+   *  and commit. `mutate` returning null leaves the ledger untouched. Returns
+   *  whether anything was written. An unreadable tasks.json is treated as empty,
+   *  as writeTasks always has. */
+  private updateTasks(mutate: (current: HiveTask[]) => HiveTask[] | null): boolean {
     const root = this.root();
-    if (!root) return;
+    if (!root) return false;
     this.ensureHive();
-    const path = join(root, 'tasks.json');
-    const current = this.readJson<{ tasks?: unknown }>(path, { tasks: [] });
-    const merged = mergeTaskLedger(current?.tasks, tasks, new Date().toISOString());
-    this.writeJson(path, { tasks: merged });
+    const merged = updateTaskLedgerFile(join(root, 'tasks.json'), (current) => mutate(current as HiveTask[]), { unreadable: 'empty' });
+    if (!merged) return false;
     this.appendLog({ kind: 'tasks', count: merged.length });
     this.commit(`hive: tasks (${merged.length})`);
+    return true;
   }
 
   /** Append one card against the latest on-disk ledger. Renderer callers must
    *  use this instead of re-writing a collection they read before another
    *  source (webhook, Slack, god, voice) added work. Idempotent by task id. */
   addTask(task: HiveTask): boolean {
-    const ledger = this.tasks() as { tasks?: HiveTask[] };
-    const tasks = Array.isArray(ledger?.tasks) ? ledger.tasks : [];
-    if (tasks.some((current) => current?.id === task.id)) return false;
-    this.writeTasks([...tasks, task]);
-    return true;
+    return this.updateTasks((tasks) => (tasks.some((current) => current?.id === task.id) ? null : [...tasks, task]));
   }
 
   /** Patch one card against the latest on-disk ledger, preserving unrelated
    *  cards and fields (notably webhook.tokenHash and Slack thread metadata). */
   patchTask(id: string, patch: Partial<Omit<HiveTask, 'id'>>): boolean {
-    const ledger = this.tasks() as { tasks?: HiveTask[] };
-    const tasks = Array.isArray(ledger?.tasks) ? ledger.tasks : [];
-    const index = tasks.findIndex((task) => task?.id === id);
-    if (index < 0) return false;
-    const next = tasks.slice();
-    next[index] = { ...tasks[index], ...patch, id };
-    this.writeTasks(next);
-    return true;
+    return this.updateTasks((tasks) => {
+      const index = tasks.findIndex((task) => task?.id === id);
+      if (index < 0) return null;
+      const next = tasks.slice();
+      next[index] = { ...tasks[index], ...patch, id };
+      return next;
+    });
   }
 
   /** Delete only the named card from the latest on-disk ledger. */
   deleteTask(id: string): boolean {
-    const ledger = this.tasks() as { tasks?: HiveTask[] };
-    const tasks = Array.isArray(ledger?.tasks) ? ledger.tasks : [];
-    const next = tasks.filter((task) => task?.id !== id);
-    if (next.length === tasks.length) return false;
-    this.writeTasks(next);
-    return true;
+    return this.updateTasks((tasks) => {
+      const next = tasks.filter((task) => task?.id !== id);
+      return next.length === tasks.length ? null : next;
+    });
   }
   /** The roster id a caller's `id` means. Throws AgentIdError otherwise; IPC handlers run this so the caller sees why. */
   checkAgentId(id: unknown): string {
