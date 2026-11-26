@@ -11,6 +11,7 @@ import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, re
 import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path';
 import { CLAUDE_FILE_WRITE_TOOLS, claudeRootEntries, isPlainObject, stringList } from './launchLine';
 import { insideAny, SCOPED_UNSANDBOXED_COMMANDS } from './writeRoots';
+import { CLAUDE_SETTINGS_CLI, CLAUDE_SETTINGS_KEYS, type SettingsKey } from './claudeSettingsKeys';
 
 /** The machine-wide Claude settings file. */
 export const MANAGED_CLAUDE_SETTINGS = process.platform === 'darwin' ? '/Library/Application Support/ClaudeCode/managed-settings.json'
@@ -116,109 +117,102 @@ export const ADMITTED_DEFAULT_MODES: readonly string[] = ['default', 'manual', '
 
 type Judged = { key: string; why?: string; root?: string | null } | null;
 
-/** The strict judgement of one settings object's `sandbox` and `permissions` subtrees: an allowlist. Every key there
- *  must be one listed below, with the type it expects, and must not widen what the seat can write, read or run beyond
- *  `inside`; the first that fails is returned with its key path (and the root it resolved to, for a root). Keys outside
- *  the two subtrees are not judged here.
- *
- *  sandbox: enabled (not false), failIfUnavailable (not false), allowUnsandboxedCommands (not true),
- *    enableWeakerNestedSandbox (not true), autoAllowBashIfSandboxed (boolean), excludedCommands (only entries the
- *    scoped seat already runs unsandboxed), filesystem.{disabled (not true), allowWrite (inside), denyWrite, denyRead},
- *    network.{allowedDomains, allowLocalBinding}.
- *  permissions: allow (a file-writing tool's rule must be inside; other rules leave the sandbox and roots as they are),
- *    ask, deny, additionalDirectories (inside), defaultMode (ADMITTED_DEFAULT_MODES), disableBypassPermissionsMode
- *    ("disable"). */
+interface JudgeContext { inside: (x: string | null) => boolean; cwd: string; home: string; settingsDir: string }
+type Judge = (value: unknown, path: string, c: JudgeContext) => Judged;
+
+const refuseWhen = (bad: boolean): Judge => (v, path) => (v === bad ? { key: path } : null);
+const rootsInside: Judge = (v, path, c) => {
+  for (const x of v as string[]) {
+    const root = settingsRootPath(x, c.cwd, c.home);
+    if (!c.inside(root)) return { key: path, root };
+  }
+  return null;
+};
+const emptyOnly: Judge = (v, path) => ((v as string[]).length === 0 ? null : { key: path });
+
+/** The judgement of each key the table classes as judged (other than objects, whose keys are judged in turn): the
+ *  values that would widen the seat are refused, the rest admitted. */
+const JUDGES: Readonly<Record<string, Judge>> = {
+  'permissions.additionalDirectories': rootsInside,
+  'permissions.allow': (v, _path, c) => {
+    for (const rule of v as string[]) {
+      const tool = writeRuleTool(rule);
+      if (tool === null) continue;
+      const root = editRuleFolder(rule, c.settingsDir, c.cwd, c.home);
+      if (!c.inside(root)) return { key: `permissions.allow ${tool}`, root };
+    }
+    return null;
+  },
+  'permissions.defaultMode': (v, path) => (ADMITTED_DEFAULT_MODES.includes(v as string) ? null : { key: path }),
+  'sandbox.allowAppleEvents': refuseWhen(true),
+  'sandbox.allowNestedUserNamespaces': refuseWhen(true),
+  'sandbox.allowUnsandboxedCommands': refuseWhen(true),
+  'sandbox.credentials.allowPlaintextInject': refuseWhen(true),
+  'sandbox.enableWeakerNestedSandbox': refuseWhen(true),
+  'sandbox.enableWeakerNetworkIsolation': refuseWhen(true),
+  'sandbox.enabled': refuseWhen(false),
+  'sandbox.excludedCommands': (v, path) => {
+    const own: readonly string[] = SCOPED_UNSANDBOXED_COMMANDS;
+    return (v as string[]).every((cmd) => own.includes(cmd)) ? null : { key: path };
+  },
+  'sandbox.failIfUnavailable': refuseWhen(false),
+  'sandbox.filesystem.allowRead': rootsInside,
+  'sandbox.filesystem.allowWrite': rootsInside,
+  'sandbox.filesystem.disabled': refuseWhen(true),
+  'sandbox.network.allowAllUnixSockets': refuseWhen(true),
+  'sandbox.network.allowMachLookup': emptyOnly,
+  'sandbox.network.allowUnixSockets': emptyOnly,
+  'sandbox.network.allowedDomains': () => null,
+};
+
+/** The keys JUDGES has a judgement for. */
+export const JUDGED_SETTINGS_KEYS: readonly string[] = Object.keys(JUDGES);
+
+/** Why `value` is not of `type`, or null. */
+function typeProblem(e: SettingsKey, value: unknown): string | null {
+  switch (e.type) {
+    case 'object': return isPlainObject(value) ? null : 'is not an object';
+    case 'boolean': return typeof value === 'boolean' ? null : 'is not a boolean';
+    case 'strings': return stringList(value) ? null : 'is not a list of text';
+    case 'string': return typeof value === 'string' ? null : 'is not text';
+    case 'enum': return typeof value === 'string' && (e.values ?? []).includes(value) ? null : `is not one of ${(e.values ?? []).join(', ')}`;
+    case 'array': return Array.isArray(value) ? null : 'is not a list';
+    case 'stringListMap': return isPlainObject(value) && Object.values(value).every(stringList) ? null : 'is not a map of lists of text';
+    case 'any': return null;
+  }
+}
+
+/** The strict judgement of one settings object's `sandbox` and `permissions` subtrees: an allowlist over the table of
+ *  the keys the pinned CLI accepts there (claudeSettingsKeys.ts). A key the table does not have is refused as unknown
+ *  to it; a refused key is refused whatever its value; every other key must have the type the table gives, and a
+ *  judged key must also pass its judgement (JUDGES). The first key that fails is returned with its path (and, for a
+ *  root, the path it resolved to). Keys outside the two subtrees are not judged here. */
 function strictExcess(v: Record<string, unknown>, inside: (x: string | null) => boolean, cwd: string, home: string, settingsDir: string): Judged {
-  const bool = (o: Record<string, unknown>, k: string, path: string, refused: boolean): Judged => {
-    if (!Object.hasOwn(o, k)) return null;
-    if (typeof o[k] !== 'boolean') return { key: path, why: 'is not a boolean' };
-    return o[k] === refused ? { key: path } : null;
-  };
-  const list = (o: Record<string, unknown>, k: string, path: string): Judged | string[] => {
-    if (!Object.hasOwn(o, k)) return [];
-    return stringList(o[k]) ? o[k] as string[] : { key: path, why: 'is not a list of text' };
-  };
-  const unknown = (o: Record<string, unknown>, known: string[], path: string): Judged => {
-    const k = Object.keys(o).find((x) => !known.includes(x));
-    return k === undefined ? null : { key: `${path}.${k}`, why: 'is not a key this check understands' };
-  };
-  const roots = (values: string[], path: string): Judged => {
-    for (const x of values) {
-      const root = settingsRootPath(x, cwd, home);
-      if (!inside(root)) return { key: path, root };
+  const c: JudgeContext = { inside, cwd, home, settingsDir };
+  const walk = (o: Record<string, unknown>, prefix: string | null): Judged => {
+    for (const [k, value] of Object.entries(o)) {
+      const path = prefix === null ? k : `${prefix}.${k}`;
+      if (prefix === null && k !== 'sandbox' && k !== 'permissions') continue;
+      const e = CLAUDE_SETTINGS_KEYS[path];
+      if (!e) return { key: path, why: `unknown to this build's settings table for CLI ${CLAUDE_SETTINGS_CLI}` };
+      if (e.cls === 'refused') return { key: path, why: e.why };
+      const bad = typeProblem(e, value);
+      if (bad) return { key: path, why: bad };
+      if (e.type === 'object') {
+        const inner = walk(value as Record<string, unknown>, path);
+        if (inner) return inner;
+        continue;
+      }
+      if (e.cls !== 'judged') continue;
+      const judge = JUDGES[path];
+      // A judged key without a judgement is refused: the table says some of its values widen the seat.
+      if (!judge) return { key: path, why: 'has no judgement in this build' };
+      const j = judge(value, path, c);
+      if (j) return j;
     }
     return null;
   };
-  if (Object.hasOwn(v, 'sandbox')) {
-    const sb = v.sandbox;
-    if (!isPlainObject(sb)) return { key: 'sandbox', why: 'is not an object' };
-    const u = unknown(sb, ['enabled', 'failIfUnavailable', 'allowUnsandboxedCommands', 'enableWeakerNestedSandbox', 'autoAllowBashIfSandboxed', 'excludedCommands', 'filesystem', 'network'], 'sandbox');
-    if (u) return u;
-    for (const [k, refused] of [['enabled', false], ['failIfUnavailable', false], ['allowUnsandboxedCommands', true], ['enableWeakerNestedSandbox', true]] as const) {
-      const j = bool(sb, k, `sandbox.${k}`, refused);
-      if (j) return j;
-    }
-    if (Object.hasOwn(sb, 'autoAllowBashIfSandboxed') && typeof sb.autoAllowBashIfSandboxed !== 'boolean') return { key: 'sandbox.autoAllowBashIfSandboxed', why: 'is not a boolean' };
-    const ex = list(sb, 'excludedCommands', 'sandbox.excludedCommands');
-    if (!Array.isArray(ex)) return ex;
-    const own: readonly string[] = SCOPED_UNSANDBOXED_COMMANDS;
-    if (!ex.every((c) => own.includes(c))) return { key: 'sandbox.excludedCommands' };
-    if (Object.hasOwn(sb, 'filesystem')) {
-      const fsx = sb.filesystem;
-      if (!isPlainObject(fsx)) return { key: 'sandbox.filesystem', why: 'is not an object' };
-      const uf = unknown(fsx, ['disabled', 'allowWrite', 'denyWrite', 'denyRead'], 'sandbox.filesystem');
-      if (uf) return uf;
-      const d = bool(fsx, 'disabled', 'sandbox.filesystem.disabled', true);
-      if (d) return d;
-      for (const k of ['denyWrite', 'denyRead']) {
-        const l = list(fsx, k, `sandbox.filesystem.${k}`);
-        if (!Array.isArray(l)) return l;
-      }
-      const aw = list(fsx, 'allowWrite', 'sandbox.filesystem.allowWrite');
-      if (!Array.isArray(aw)) return aw;
-      const r = roots(aw, 'sandbox.filesystem.allowWrite');
-      if (r) return r;
-    }
-    if (Object.hasOwn(sb, 'network')) {
-      const net = sb.network;
-      if (!isPlainObject(net)) return { key: 'sandbox.network', why: 'is not an object' };
-      const un = unknown(net, ['allowedDomains', 'allowLocalBinding'], 'sandbox.network');
-      if (un) return un;
-      const dom = list(net, 'allowedDomains', 'sandbox.network.allowedDomains');
-      if (!Array.isArray(dom)) return dom;
-      if (Object.hasOwn(net, 'allowLocalBinding') && typeof net.allowLocalBinding !== 'boolean') return { key: 'sandbox.network.allowLocalBinding', why: 'is not a boolean' };
-    }
-  }
-  if (Object.hasOwn(v, 'permissions')) {
-    const pm = v.permissions;
-    if (!isPlainObject(pm)) return { key: 'permissions', why: 'is not an object' };
-    const u = unknown(pm, ['allow', 'ask', 'deny', 'additionalDirectories', 'defaultMode', 'disableBypassPermissionsMode'], 'permissions');
-    if (u) return u;
-    for (const k of ['ask', 'deny']) {
-      const l = list(pm, k, `permissions.${k}`);
-      if (!Array.isArray(l)) return l;
-    }
-    const allow = list(pm, 'allow', 'permissions.allow');
-    if (!Array.isArray(allow)) return allow;
-    for (const rule of allow) {
-      const tool = writeRuleTool(rule);
-      if (tool === null) continue;
-      const root = editRuleFolder(rule, settingsDir, cwd, home);
-      if (!inside(root)) return { key: `permissions.allow ${tool}`, root };
-    }
-    const dirs = list(pm, 'additionalDirectories', 'permissions.additionalDirectories');
-    if (!Array.isArray(dirs)) return dirs;
-    const r = roots(dirs, 'permissions.additionalDirectories');
-    if (r) return r;
-    if (Object.hasOwn(pm, 'defaultMode')) {
-      if (typeof pm.defaultMode !== 'string') return { key: 'permissions.defaultMode', why: 'is not text' };
-      if (!ADMITTED_DEFAULT_MODES.includes(pm.defaultMode)) return { key: 'permissions.defaultMode' };
-    }
-    if (Object.hasOwn(pm, 'disableBypassPermissionsMode') && pm.disableBypassPermissionsMode !== 'disable') {
-      return { key: 'permissions.disableBypassPermissionsMode', why: 'is not "disable"' };
-    }
-  }
-  return null;
+  return walk(v, null);
 }
 
 export interface ClaudeSettingsPlaces {

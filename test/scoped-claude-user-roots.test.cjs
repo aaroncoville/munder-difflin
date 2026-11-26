@@ -139,6 +139,15 @@ test('flag on: a user setting under sandbox or permissions that the check does n
   await assert.rejects(f.spawn('n2', true), refusedFor(f, 'user settings', 'permissions.somethingNew'));
 });
 
+test('flag on: settings that only narrow access, in keys the pinned CLI supports, still start the seat', async (t) => {
+  const f = floor(t);
+  f.user({
+    sandbox: { network: { deniedDomains: ['evil.example'], allowManagedDomainsOnly: true }, filesystem: { allowManagedReadPathsOnly: true, allowRead: [] } },
+    permissions: { blockReadsOutsideWorkingDirectories: true, blockWritesOutsideWorkingDirectories: true },
+  });
+  await f.spawn('narrow', true);
+});
+
 test('flag on: ordinary rules that keep the seat inside its roots still start it', async (t) => {
   const f = floor(t);
   f.user({ model: 'opus', permissions: { allow: ['Bash', 'Read', 'WebFetch', 'mcp__x__y'], deny: ['Read(~/.ssh/**)'], defaultMode: 'acceptEdits' }, sandbox: { enabled: true, excludedCommands: ['npm run build'] } });
