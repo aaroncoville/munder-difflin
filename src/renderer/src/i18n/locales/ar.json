@@ -1185,6 +1185,7 @@
     "needsYouTitle": "بانتظار إجابتك — راجع تبويب \"اسألني\"",
     "dismissTitle": "تجاهل هذه المهمة (تُزال من اللوحة)",
     "dismissAria": "تجاهل المهمة",
+    "dismissNotSaved": "لم تُحذف \"{{title}}\": {{error}}",
     "taskTitle": "المهمة",
     "unassigned": "غير مُسنَدة",
     "noDescription": "(لا وصف على هذه البطاقة)",

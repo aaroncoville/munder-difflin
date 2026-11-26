@@ -159,13 +159,23 @@ export function TasksKanban() {
   // god's to write, but a person can clear a card they no longer want tracked.
   // Main removes the named id from its latest on-disk ledger, so a webhook or
   // god card added since this renderer's last poll cannot be lost.
-  const dismissTask = useCallback(async (id: string) => {
-    setTasks((prev) => prev.filter((t) => t.id !== id)); // optimistic
+  // A refusal (a busy or unreadable ledger) brings the card back and says why.
+  const taskWriteError = useStore((s) => s.taskWriteError);
+  const setTaskWriteError = useStore((s) => s.setTaskWriteError);
+  const dismissTask = useCallback(async (task: HiveTask) => {
+    setTasks((prev) => prev.filter((t) => t.id !== task.id)); // optimistic
     try {
-      const result = await window.cth.hiveDeleteTask(id);
-      if (!result.ok) void refresh();
-    } catch { /* keep last good; the next poll re-syncs from disk */ }
-  }, [refresh]);
+      const result = await window.cth.hiveDeleteTask(task.id);
+      if (result.ok) setTaskWriteError('');
+      else {
+        setTaskWriteError(t('kanban.dismissNotSaved', { title: task.title, error: result.error ?? '?' }));
+        void refresh();
+      }
+    } catch (e) {
+      // Keep last good; the next poll re-syncs from disk.
+      setTaskWriteError(t('kanban.dismissNotSaved', { title: task.title, error: e instanceof Error ? e.message : String(e) }));
+    }
+  }, [refresh, setTaskWriteError, t]);
 
   useEffect(() => {
     refresh();
@@ -201,6 +211,10 @@ export function TasksKanban() {
         </span>
       </div>
 
+      {taskWriteError && (
+        <div style={{ fontSize: 12, color: 'var(--cth-coral)', padding: '6px 10px 0' }}>{taskWriteError}</div>
+      )}
+
       {/* Columns */}
       <div style={{
         flex: 1, minHeight: 0, display: 'flex', gap: 8, padding: 10, overflowX: 'auto'
@@ -231,7 +245,7 @@ export function TasksKanban() {
                     accent={col.accent}
                     assigneeName={nameFor(t.assignee)}
                     onOpen={() => openTaskDetail(t.id)}
-                    onDismiss={() => dismissTask(t.id)}
+                    onDismiss={() => dismissTask(t)}
                   />
                 ))}
               </div>

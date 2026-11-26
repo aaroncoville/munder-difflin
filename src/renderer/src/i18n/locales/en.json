@@ -1185,6 +1185,7 @@
     "needsYouTitle": "waiting on YOUR answer — see the ASK ME tab",
     "dismissTitle": "dismiss this task (removes it from the board)",
     "dismissAria": "dismiss task",
+    "dismissNotSaved": "\"{{title}}\" was not removed: {{error}}",
     "taskTitle": "TASK",
     "unassigned": "unassigned",
     "noDescription": "(no description on this card)",
