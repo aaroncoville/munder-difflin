@@ -12,7 +12,9 @@
  *  - re-reads the ledger UNDER the lock, applies the caller's edit to that, and folds the result over the
  *    on-disk cards with mergeTaskLedger, so fields the caller does not model survive;
  *  - writes a temporary file in the same folder, fsyncs it and renames it over the ledger, so a reader sees
- *    the old file or the new one, never a partial one;
+ *    the old file or the new one, never a partial one. Just before the rename it checks that the lock is
+ *    still its own (same token, same file); if it was broken meanwhile, it writes nothing and throws
+ *    TaskLedgerLockLost;
  *  - releases the lock, if it is still its own, whatever happened.
  *
  * A lock is stale, and is broken, when its holder on this host has exited. A holder on this host that is
@@ -63,6 +65,14 @@ export class TaskLedgerLockTimeout extends Error {
   constructor(lock: string, waitedMs: number, holder: string) {
     super(`could not lock ${lock} within ${waitedMs} ms: held by ${holder}`);
     this.name = 'TaskLedgerLockTimeout';
+  }
+}
+
+/** The lock was broken and taken by another writer while this one held it, so nothing was written. */
+export class TaskLedgerLockLost extends Error {
+  constructor(lock: string, holder: string) {
+    super(`${lock} no longer holds this writer's record (now ${holder}), so tasks.json was not written`);
+    this.name = 'TaskLedgerLockLost';
   }
 }
 
@@ -138,22 +148,26 @@ function breakStale(lock: string, judged: HeldLock): boolean {
   return false;
 }
 
+/** The lock this writer holds: its token, and the file it created (`dev`/`ino`). */
+interface OwnLock { token: string; dev: number; ino: number }
+
 function acquire(
   lock: string,
   opts: Required<Pick<TaskLedgerFileOptions, 'waitMs' | 'staleMs' | 'liveStaleMs' | 'retryMs'>> & { hooks: TaskLedgerLockHooks }
-): string {
+): OwnLock {
   const token = randomBytes(12).toString('hex');
   const body = JSON.stringify({ pid: process.pid, host: hostname(), acquiredAt: new Date().toISOString(), token });
   const deadline = Date.now() + opts.waitMs;
   let last: LockRecord | null = null;
   const tmp = join(dirname(lock), `.${basename(lock)}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`);
   writeFileSync(tmp, body, { flag: 'wx' });
+  const { dev, ino } = statSync(tmp);
   try {
     for (;;) {
       opts.hooks.beforeLockRecorded?.();
       try {
         linkSync(tmp, lock);
-        return token;
+        return { token, dev, ino };
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
       }
@@ -173,11 +187,16 @@ function acquire(
   }
 }
 
-function release(lock: string, token: string): void {
+/** Throws TaskLedgerLockLost unless the lock is still the file this writer created, with its token. */
+function confirmOwn(lock: string, own: OwnLock): void {
   const held = readLock(lock);
-  if (held?.record?.token === token) {
-    try { unlinkSync(lock); } catch { /* already gone */ }
-  }
+  if (held && held.record?.token === own.token && held.dev === own.dev && held.ino === own.ino) return;
+  throw new TaskLedgerLockLost(lock, held ? describe(held.record) : 'no lock');
+}
+
+function release(lock: string, own: OwnLock): void {
+  try { confirmOwn(lock, own); } catch { return; }
+  try { unlinkSync(lock); } catch { /* already gone */ }
 }
 
 function readLedger(path: string, unreadable: 'throw' | 'empty'): Record<string, unknown> {
@@ -195,7 +214,7 @@ function readLedger(path: string, unreadable: 'throw' | 'empty'): Record<string,
   }
 }
 
-function writeAtomically(path: string, text: string): void {
+function writeAtomically(path: string, text: string, beforeRename: () => void): void {
   const tmp = join(dirname(path), `.${basename(path)}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`);
   try {
     const fd = openSync(tmp, 'wx');
@@ -205,6 +224,7 @@ function writeAtomically(path: string, text: string): void {
     } finally {
       closeSync(fd);
     }
+    beforeRename();
     renameSync(tmp, path);
   } catch (e) {
     try { unlinkSync(tmp); } catch { /* never created, or already renamed */ }
@@ -230,7 +250,7 @@ export function updateTaskLedgerFile(
   options: TaskLedgerFileOptions = {}
 ): unknown[] | null {
   const lock = `${path}.lock`;
-  const token = acquire(lock, {
+  const own = acquire(lock, {
     waitMs: options.waitMs ?? 5_000,
     staleMs: options.staleMs ?? 30_000,
     liveStaleMs: options.liveStaleMs ?? 300_000,
@@ -243,9 +263,9 @@ export function updateTaskLedgerFile(
     const next = mutate(current.slice());
     if (next === null) return null;
     const merged = mergeTaskLedger(current, next, (options.now ?? (() => new Date()))().toISOString());
-    writeAtomically(path, JSON.stringify({ ...ledger, tasks: merged }, null, 2));
+    writeAtomically(path, JSON.stringify({ ...ledger, tasks: merged }, null, 2), () => confirmOwn(lock, own));
     return merged;
   } finally {
-    release(lock, token);
+    release(lock, own);
   }
 }

@@ -317,3 +317,27 @@ test('a live holder slower than the stale bound is not broken, so a second write
   assert.deepEqual(cards.sort(), ['fast', 'slow'], `second writer ${second}; slow holder exited ${slow.code} ${slow.err}`);
   assert.deepEqual(leftovers(dir), []);
 });
+
+test('a writer whose lock was taken from it while it worked writes nothing and says so', (t) => {
+  const { file, lock } = hive(t, { tasks: [{ id: 'a' }] });
+  assert.throws(() => updateTaskLedgerFile(file, (c) => {
+    // Another writer broke this writer's lock and took its own.
+    fs.unlinkSync(lock);
+    holdLock(lock, { token: 'someone-else' });
+    return [...c, { id: 'b' }];
+  }), (e) => /no longer holds/.test(e.message) && /tasks\.json\.lock/.test(e.message));
+  assert.deepEqual(ids(file), ['a'], 'nothing was written');
+  assert.equal(JSON.parse(fs.readFileSync(lock, 'utf8')).token, 'someone-else', "the other writer's lock is left in place");
+});
+
+test('a lock put back in place by a breaker that took it aside by mistake is still its holder\'s', (t) => {
+  const { dir, file, lock } = hive(t, { tasks: [] });
+  updateTaskLedgerFile(file, (c) => {
+    fs.renameSync(lock, `${lock}.stale-test`);
+    fs.linkSync(`${lock}.stale-test`, lock);
+    fs.unlinkSync(`${lock}.stale-test`);
+    return [...c, { id: 'a' }];
+  });
+  assert.deepEqual(ids(file), ['a']);
+  assert.deepEqual(leftovers(dir), []);
+});
