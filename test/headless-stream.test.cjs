@@ -455,3 +455,44 @@ test('Given an output file last written before the run started, when the output 
   fs.writeFileSync(out, 'written now\n');
   assert.equal(S.checkHeadlessOutput(s.ctx, out, { notBefore: Date.now() - 1000 }).done, true);
 });
+
+// The ledger lock is the shared file lock (fileLock.ts), so it keeps that lock's guarantees: a volume without hard
+// links refuses it (no append), a live lock that replaced a stale one while it was being broken is never removed,
+// and the holder confirms the lock is still its own immediately before it appends.
+
+test('Given a volume that cannot make hard links, when a cost is recorded, then nothing is appended and the result says why', (t) => {
+  const h = hive(t);
+  const enotsup = () => { throw Object.assign(new Error('operation not supported'), { code: 'ENOTSUP' }); };
+  const c = S.recordHeadlessCost(h.root, 'ag1', run(), 5, { link: enotsup, lockWaitMs: 500 });
+  assert.equal(c.costRecorded, false);
+  assert.match(c.costReason, /hard links/);
+  assert.equal(fs.existsSync(h.ledger), false);
+});
+
+test('Given a stale lock replaced by a live holder\'s lock just as it is broken, when a cost is recorded, then the live lock stays and nothing is appended', (t) => {
+  const h = hive(t);
+  const lock = `${h.ledger}.lock`;
+  const { spawnSync } = require('node:child_process');
+  const dead = Number(spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))']).stdout.toString());
+  fs.writeFileSync(lock, JSON.stringify({ pid: dead, host: os.hostname(), acquiredAt: new Date().toISOString(), token: 'stale' }));
+  const live = JSON.stringify({ pid: process.pid, host: os.hostname(), acquiredAt: new Date().toISOString(), token: 'live' });
+  let replaced = false;
+  const beforeBreak = () => { if (replaced) return; replaced = true; fs.rmSync(lock); fs.writeFileSync(lock, live); };
+  const c = S.recordHeadlessCost(h.root, 'ag1', run(), 5, { hooks: { beforeBreak }, lockWaitMs: 300 });
+  assert.ok(replaced, 'the interleaving happened');
+  assert.equal(c.costRecorded, false);
+  assert.equal(fs.readFileSync(lock, 'utf8'), live, 'the live holder\'s lock is still in place');
+  assert.equal(fs.existsSync(h.ledger), false, 'and nothing was appended beside it');
+});
+
+test('Given the lock is taken from the holder after it acquired it, when it is about to append, then it checks, finds the lock is not its own, and appends nothing', (t) => {
+  const h = hive(t);
+  const lock = `${h.ledger}.lock`;
+  const other = JSON.stringify({ pid: process.pid, host: os.hostname(), acquiredAt: new Date().toISOString(), token: 'someone-else' });
+  const afterLock = () => { fs.rmSync(lock); fs.writeFileSync(lock, other); };
+  const c = S.recordHeadlessCost(h.root, 'ag1', run(), 5, { hooks: { afterLock } });
+  assert.equal(c.costRecorded, false);
+  assert.match(c.costReason, /no longer holds/);
+  assert.equal(fs.existsSync(h.ledger), false);
+  assert.equal(fs.readFileSync(lock, 'utf8'), other, 'the other holder\'s lock is left alone');
+});
