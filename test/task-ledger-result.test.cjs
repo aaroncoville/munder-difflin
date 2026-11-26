@@ -174,3 +174,49 @@ test('a write that fails, or rejects, does not stop the writes queued after it',
   await assert.rejects(rejected, /no timer/);
   assert.deepEqual(await last, { ok: true });
 });
+
+// The queue must not grow without bound, and against a holder that keeps the
+// lock, each queued edit must not spend its own few seconds of retries.
+
+test('once an edit gives up on a busy ledger, the edits queued behind it fail at once with the same error', async () => {
+  const writes = serialTaskWrites();
+  const pauses = [];
+  const sleep = async (ms) => { pauses.push(ms); };
+  let later = 0;
+  const first = writes('patchTask', () => { throw busy(); }, { delaysMs: [10, 20], sleep, log: () => {} });
+  const behind = [1, 2, 3].map(() => writes('patchTask', () => { later++; throw busy(); }, { delaysMs: [10, 20], sleep, log: () => {} }));
+  const given = await first;
+  assert.equal(given.ok, false);
+  assert.match(given.error, /busy/);
+  for (const answer of await Promise.all(behind)) assert.deepEqual(answer, given, 'answered with the same busy error');
+  assert.equal(later, 0, 'the edits queued behind it were not tried');
+  assert.deepEqual(pauses, [10, 20], 'only the first edit paused');
+  // An edit made after the failure is tried as usual.
+  assert.deepEqual(await writes('addTask', () => true), { ok: true });
+});
+
+test('at most 50 edits are held; past that an edit is answered busy at once', async () => {
+  const writes = serialTaskWrites();
+  let release = null;
+  let first = true;
+  const running = writes('patchTask', () => { if (first) { first = false; throw busy(); } return true; },
+    { delaysMs: [1], sleep: () => new Promise((resolve) => { release = resolve; }), log: () => {} });
+  for (let i = 0; i < 1000 && !release; i++) await new Promise((r) => setImmediate(r));
+  assert.ok(release, 'the first edit is waiting to try again');
+  let wrote = 0;
+  const queued = Array.from({ length: 60 }, () => writes('addTask', () => { wrote++; return true; }));
+  const settled = new Set();
+  queued.forEach((p, i) => p.then(() => settled.add(i)));
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual([...settled].sort((a, b) => a - b), Array.from({ length: 11 }, (_, i) => 49 + i),
+    'the edits past the 50th are answered at once; the others wait their turn');
+  for (const answer of await Promise.all(queued.slice(49))) {
+    assert.equal(answer.ok, false);
+    assert.match(answer.error, /busy/);
+  }
+  release();
+  assert.deepEqual(await running, { ok: true });
+  for (const answer of await Promise.all(queued.slice(0, 49))) assert.deepEqual(answer, { ok: true });
+  assert.equal(wrote, 49, 'only the edits that were held were written');
+  assert.deepEqual(await writes('addTask', () => true), { ok: true }, 'the queue takes edits again once it drains');
+});

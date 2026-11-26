@@ -71,6 +71,9 @@ export async function taskWriteResultWithRetry(
   return taskWriteResult(what, write, log);
 }
 
+/** The most task-ledger writes from the window held at once, the one being written included. */
+export const TASK_WRITE_QUEUE_LIMIT = 50;
+
 /**
  * A queue for task-ledger writes from the window: each write, its retries included, finishes before the
  * next one starts.
@@ -80,11 +83,47 @@ export async function taskWriteResultWithRetry(
  * otherwise land in the wrong order: the first pauses, the second finds the ledger free and writes, then
  * the first writes over it, and both answer `{ ok: true }`. The IPC handlers share one queue so that the
  * ledger keeps the last edit the user made.
+ *
+ * Against a holder that keeps the lock, the queue must neither grow without bound nor spend a few seconds
+ * of retries on every edit in turn, half of them blocking the main thread. So once a write gives up on a
+ * busy ledger, the writes already queued behind it are answered with the same busy error without being
+ * tried; writes made after that are tried as usual. And at most TASK_WRITE_QUEUE_LIMIT writes are held at
+ * once: past that a write is answered busy at once and never runs.
  */
 export function serialTaskWrites(): (what: string, write: () => boolean, options?: TaskWriteRetryOptions) => Promise<TaskWriteResult> {
   let tail: Promise<unknown> = Promise.resolve();
+  let queued = 0;
+  let held = 0;
+  // The last write that gave up on a busy ledger: its answer, and how many writes had been queued by then.
+  let gaveUp: { upTo: number; answer: TaskWriteResult } | null = null;
   return (what, write, options = {}) => {
-    const result = tail.then(() => taskWriteResultWithRetry(what, write, options));
+    const log = options.log ?? ((line: string) => console.warn(line));
+    if (held >= TASK_WRITE_QUEUE_LIMIT) {
+      log(`[hive] ${what}: not tried, ${held} task edits are already waiting for the task ledger`);
+      return Promise.resolve({ ok: false, error: `The task list is busy; try again in a moment. (${held} task edits are already waiting.)` });
+    }
+    held++;
+    const position = ++queued;
+    const run = async (): Promise<TaskWriteResult> => {
+      if (gaveUp && position <= gaveUp.upTo) {
+        log(`[hive] ${what}: not tried, the task ledger stayed busy for the edit before it`);
+        return gaveUp.answer;
+      }
+      let busy = false;
+      const answer = await taskWriteResultWithRetry(what, () => {
+        try {
+          const ok = write();
+          busy = false;
+          return ok;
+        } catch (e) {
+          busy = e instanceof TaskLedgerLockTimeout;
+          throw e;
+        }
+      }, options);
+      if (!answer.ok && busy) gaveUp = { upTo: queued, answer };
+      return answer;
+    };
+    const result = tail.then(run).finally(() => { held--; });
     tail = result.catch(() => undefined);
     return result;
   };
