@@ -148,19 +148,20 @@ test('flag on: settings that only narrow access, in keys the pinned CLI supports
   await f.spawn('narrow', true);
 });
 
-test('flag on: user or managed settings that auto-approve sandboxed Bash or allow localhost binding refuse the spawn; the pinned value starts it', async (t) => {
+test('flag on: managed settings that auto-approve sandboxed Bash or allow localhost binding refuse the spawn; the same user settings, which the seat\'s pinned --settings outrank, start it', async (t) => {
   const f = floor(t);
   const cases = [[{ autoAllowBashIfSandboxed: true }, 'sandbox.autoAllowBashIfSandboxed'], [{ network: { allowLocalBinding: true } }, 'sandbox.network.allowLocalBinding']];
   for (const [i, [sandbox, key]] of cases.entries()) {
-    f.user({ sandbox });
-    await assert.rejects(f.spawn(`p${i}`, true), refusedFor(f, 'user settings', key), `user ${key}`);
-    f.user({});
     fs.writeFileSync(f.managed, JSON.stringify({ sandbox }));
     await assert.rejects(f.spawn(`q${i}`, true), refusedFor(f, 'managed settings', key), `managed ${key}`);
     fs.rmSync(f.managed);
+    f.user({ sandbox });
+    await f.spawn(`p${i}`, true);
   }
-  f.user({ sandbox: { autoAllowBashIfSandboxed: false, network: { allowLocalBinding: false } } });
-  await f.spawn('pinned', true);
+  f.user({ sandbox: { autoAllowBashIfSandboxed: true, network: { allowLocalBinding: true } } });
+  await f.spawn('both', true);
+  f.user({ sandbox: { autoAllowBashIfSandboxed: 'yes' } });
+  await assert.rejects(f.spawn('typed', true), refusedFor(f, 'user settings', 'sandbox.autoAllowBashIfSandboxed'), 'a user value must still be well typed');
 });
 
 test('flag on: ordinary rules that keep the seat inside its roots still start it', async (t) => {

@@ -117,7 +117,11 @@ export const ADMITTED_DEFAULT_MODES: readonly string[] = ['default', 'manual', '
 
 type Judged = { key: string; why?: string; root?: string | null } | null;
 
-interface JudgeContext { inside: (x: string | null) => boolean; cwd: string; home: string; settingsDir: string }
+interface JudgeContext {
+  inside: (x: string | null) => boolean; cwd: string; home: string; settingsDir: string;
+  /** The file is one the seat's generated --settings outrank (user settings). */
+  outrankedBySeat: boolean;
+}
 type Judge = (value: unknown, path: string, c: JudgeContext) => Judged;
 
 const refuseWhen = (bad: boolean): Judge => (v, path) => (v === bad ? { key: path } : null);
@@ -149,6 +153,12 @@ function domainTooWide(entry: string): boolean {
   return labels.length === 2 && labels[1].length === 2 && GENERIC_SECOND_LEVEL.has(labels[0]);
 }
 
+/** A key every scoped seat's generated settings set (SCOPED_SANDBOX_PINS). Claude Code merges settings sources in the
+ *  order user < project < local < flag (--settings) < policy (managed), each overriding the ones before it, so the
+ *  seat's pin decides over any user value, which is then admitted whatever it is; a managed value decides over the
+ *  pin, so it must equal it (a boolean has nothing tighter). */
+const pinned = (pin: boolean): Judge => (v, path, c) => (c.outrankedBySeat || v === pin ? null : { key: path });
+
 const emptyOnly: Judge = (v, path) => ((v as string[]).length === 0 ? null : { key: path });
 
 /** The judgement of each key the table classes as judged (other than objects, whose keys are judged in turn): the
@@ -168,8 +178,7 @@ const JUDGES: Readonly<Record<string, Judge>> = {
   'sandbox.allowAppleEvents': refuseWhen(true),
   'sandbox.allowNestedUserNamespaces': refuseWhen(true),
   'sandbox.allowUnsandboxedCommands': refuseWhen(true),
-  // The seats pin these (SCOPED_SANDBOX_PINS): only the pinned value is admitted, since a boolean has nothing tighter.
-  'sandbox.autoAllowBashIfSandboxed': refuseWhen(!SCOPED_SANDBOX_PINS.autoAllowBashIfSandboxed),
+  'sandbox.autoAllowBashIfSandboxed': pinned(SCOPED_SANDBOX_PINS.autoAllowBashIfSandboxed),
   'sandbox.credentials.allowPlaintextInject': refuseWhen(true),
   'sandbox.credentials.envVars': denyEntriesOnly,
   'sandbox.credentials.files': denyEntriesOnly,
@@ -185,7 +194,7 @@ const JUDGES: Readonly<Record<string, Judge>> = {
   'sandbox.filesystem.allowWrite': rootsInside,
   'sandbox.filesystem.disabled': refuseWhen(true),
   'sandbox.network.allowAllUnixSockets': refuseWhen(true),
-  'sandbox.network.allowLocalBinding': refuseWhen(!SCOPED_SANDBOX_PINS.allowLocalBinding),
+  'sandbox.network.allowLocalBinding': pinned(SCOPED_SANDBOX_PINS.allowLocalBinding),
   'sandbox.network.allowMachLookup': emptyOnly,
   'sandbox.network.allowUnixSockets': emptyOnly,
   'sandbox.network.allowedDomains': (v, path) => {
@@ -216,8 +225,8 @@ function typeProblem(e: SettingsKey, value: unknown): string | null {
  *  to it; a refused key is refused whatever its value; every other key must have the type the table gives, and a
  *  judged key must also pass its judgement (JUDGES). The first key that fails is returned with its path (and, for a
  *  root, the path it resolved to). Keys outside the two subtrees are not judged here. */
-function strictExcess(v: Record<string, unknown>, inside: (x: string | null) => boolean, cwd: string, home: string, settingsDir: string): Judged {
-  const c: JudgeContext = { inside, cwd, home, settingsDir };
+function strictExcess(v: Record<string, unknown>, inside: (x: string | null) => boolean, cwd: string, home: string, settingsDir: string, outrankedBySeat: boolean): Judged {
+  const c: JudgeContext = { inside, cwd, home, settingsDir, outrankedBySeat };
   const walk = (o: Record<string, unknown>, prefix: string | null): Judged => {
     for (const [k, value] of Object.entries(o)) {
       const path = prefix === null ? k : `${prefix}.${k}`;
@@ -278,7 +287,7 @@ export function claudeSettingsExcess(p: ClaudeSettingsPlaces): { why: string; ro
       let v: unknown;
       try { v = JSON.parse(text); } catch { return { why: `${source} (could not be understood: it is not JSON)`, root: null }; }
       if (!isPlainObject(v)) return { why: `${source} (could not be understood: it is not an object)`, root: null };
-      const j = strictExcess(v, inside, p.cwd, p.home, dirname(file));
+      const j = strictExcess(v, inside, p.cwd, p.home, dirname(file), source === 'user settings');
       if (j) return { why: `${source}: ${j.key}${j.why ? ` (${j.why})` : ''}`, root: j.root ?? null };
       continue;
     }
