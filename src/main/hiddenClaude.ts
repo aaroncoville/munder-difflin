@@ -8,7 +8,7 @@ import { ensurePrivateDir, writeNoFollow } from './hookRuntime';
 import { registerPrivateDir } from './privateDirs';
 import { resolveCommand, userShellPath } from './shellEnv';
 import { expandTilde } from './fs';
-import { projectKey } from './transcript';
+import { projectKey } from '../core/transcript';
 import { ensureKilled } from './procKill';
 
 /**

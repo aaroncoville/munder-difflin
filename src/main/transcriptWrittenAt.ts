@@ -9,7 +9,7 @@
  */
 import { statSync } from 'node:fs';
 import { join } from 'node:path';
-import { projectDir } from './transcript';
+import { projectDir } from '../core/transcript';
 
 const SESSION_ID = /^[A-Za-z0-9_-]+$/;
 

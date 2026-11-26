@@ -67,7 +67,7 @@ test('no app source shows the old name, in full or short form', () => {
       }
     }
   };
-  for (const dir of ['src/main', 'src/preload', 'src/shared', 'src/renderer/src']) walk(dir);
+  for (const dir of ['src/core', 'src/main', 'src/preload', 'src/shared', 'src/renderer/src']) walk(dir);
   assert.deepEqual(offenders, []);
 });
 

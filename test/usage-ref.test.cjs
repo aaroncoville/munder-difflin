@@ -10,7 +10,7 @@ const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 
-const { loadUsageSecret, usageRef } = loadTs('src/main/usageRef.ts');
+const { loadUsageSecret, usageRef } = loadTs('src/core/usageRef.ts');
 
 function tmp(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-usage-ref-'));

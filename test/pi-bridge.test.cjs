@@ -10,7 +10,7 @@ const loadTs = require('./load-ts.cjs');
 const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
-const { CircuitBreaker } = loadTs('src/main/breaker.ts');
+const { CircuitBreaker } = loadTs('src/core/breaker.ts');
 
 async function installedPiBridge(t) {
   const hiveHome = fs.mkdtempSync(path.join(os.tmpdir(), 'md-pi-bridge-hive-'));

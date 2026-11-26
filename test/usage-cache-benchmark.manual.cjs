@@ -48,14 +48,23 @@ process.env.USERPROFILE = FAKE_HOME;
 
 const srcDir = path.dirname(transcriptTsPath);
 const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bench-out-'));
-for (const name of ['pricing', path.basename(transcriptTsPath, '.ts')]) {
-  const srcFile = path.join(srcDir, `${name}.ts`);
-  const js = ts.transpileModule(fs.readFileSync(srcFile, 'utf8'), {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true }
-  }).outputText;
-  fs.writeFileSync(path.join(outDir, `${name}.js`), js, 'utf8');
+const transpile = (srcFile) => ts.transpileModule(fs.readFileSync(srcFile, 'utf8'), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true }
+}).outputText;
+// Depending on the revision, pricing.ts sits beside transcript.ts (both in
+// src/main, or both in src/core) or in ../core while transcript.ts is still in
+// src/main. Emit it at both places so either `import ... from` resolves.
+const pricingTs = fs.existsSync(path.join(srcDir, 'pricing.ts'))
+  ? path.join(srcDir, 'pricing.ts')
+  : path.join(srcDir, '..', 'core', 'pricing.ts');
+const pricingJs = transpile(pricingTs);
+for (const dir of ['main', 'core']) {
+  fs.mkdirSync(path.join(outDir, dir), { recursive: true });
+  fs.writeFileSync(path.join(outDir, dir, 'pricing.js'), pricingJs, 'utf8');
 }
-const { readAgentUsage, projectDir } = require(path.join(outDir, path.basename(transcriptTsPath, '.ts') + '.js'));
+const transcriptJs = path.join(outDir, 'main', path.basename(transcriptTsPath, '.ts') + '.js');
+fs.writeFileSync(transcriptJs, transpile(transcriptTsPath), 'utf8');
+const { readAgentUsage, projectDir } = require(transcriptJs);
 
 const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'bench-proj-'));
 const dir = projectDir(cwd);

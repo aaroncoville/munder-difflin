@@ -30,7 +30,7 @@ process.env.USERPROFILE = FAKE_HOME;
 
 const loadTs = require('./load-ts.cjs');
 const { TelemetryCollector } = loadTs('src/main/telemetry.ts');
-const { CumulativeSampleGate } = loadTs('src/main/usage.ts');
+const { CumulativeSampleGate } = loadTs('src/core/usage.ts');
 
 const AGENT = 'ryan-mu1mcvvx';
 const CWD = '/Users/someone/dev/portfolio';

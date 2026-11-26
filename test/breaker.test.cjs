@@ -23,7 +23,7 @@ const os = require('node:os');
 const path = require('node:path');
 const ts = require('typescript');
 
-const SRC = path.join(__dirname, '..', 'src', 'main', 'breaker.ts');
+const SRC = path.join(__dirname, '..', 'src', 'core', 'breaker.ts');
 const out = fs.mkdtempSync(path.join(os.tmpdir(), 'breaker-'));
 const js = ts.transpileModule(fs.readFileSync(SRC, 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 }

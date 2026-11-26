@@ -25,8 +25,27 @@
  */
 
 import { createHash } from 'node:crypto';
-import type { CircuitBreakerConfig } from './config';
 import type { AgentUsageSample } from './usage';
+
+/** Circuit-breaker thresholds (Lane A #6.6b). The breaker runs inside the
+ *  heartbeat beat, so it only ticks when the heartbeat is enabled. Trip
+ *  conditions are behavioral by default; `costCapUsd` is the only $-based one and
+ *  is unset by default (a hardcoded dollar default would be arbitrary). Defaults
+ *  are deliberately conservative and steer-first — `hardStop` is OFF unless the
+ *  user opts in, so the breaker never auto-kills a healthy long-runner. */
+export interface CircuitBreakerConfig {
+  /** Master switch for breaker evaluation within the beat. Default true. */
+  enabled?: boolean;
+  /** Allow the top of the ladder (kill PTY + archive). Default false = the
+   *  breaker may steer/constrain but never hard-stops until the user opts in. */
+  hardStop?: boolean;
+  /** Consecutive identical tool calls (same name+input) before tripping. */
+  repeatedToolLimit?: number;
+  /** Consecutive api_error / retry events before tripping. */
+  errorStormLimit?: number;
+  /** Output-token velocity (tokens/min, diffed across beats) before tripping. */
+  tokenVelocityPerMin?: number;
+}
 
 export type BreakerLevel = 'healthy' | 'steering' | 'constrained' | 'stopped';
 

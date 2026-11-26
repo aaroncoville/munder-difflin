@@ -30,7 +30,7 @@ import { CLAUDE_USER_SOURCES, claudeLaunch, claudeRootEntries, claudeRoots, code
 import { HookRuntimeUnavailable, hookCommandFor, holds, overlaps, rootOverlap, stageHookRuntime, unsafePathReason, verifyHookRuntime, type StagedHookRuntime, type WriteRoot } from './hookRuntime';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
-import type { AgentUsageSample } from './usage';
+import type { AgentUsageSample } from '../core/usage';
 import { archiveOutboxFile, moveWithoutReplacing, quarantineOutboxFile, reportOutboxFailure, type OutboxStage } from './outboxFailure';
 import { stampSentCopy } from './sentStamp';
 import { RecentSends } from './outboxResend';

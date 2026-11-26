@@ -18,10 +18,10 @@ import type { HiveManager } from './hive';
 import { gateHeavyCall, settleHeavyCall, type HeavyJobLock } from './heavyJob';
 import type { HarnessConfig } from './config';
 import type { ControlRegistry } from './control';
-import type { CircuitBreaker } from './breaker';
-import { estimateCostUsd } from './pricing';
+import type { CircuitBreaker } from '../core/breaker';
+import { estimateCostUsd } from '../core/pricing';
 import { validateHookEvent } from '../shared/hookEvents';
-import { frameIds } from './usageEvents';
+import { frameIds } from '../core/usageEvents';
 import { isProtectedWrite, refusedWrite, type RootsContext } from './writeRoots';
 
 /** Maximum JSON payload bytes in one newline-delimited hook frame. */

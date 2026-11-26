@@ -24,9 +24,9 @@ const ts = require('typescript');
 
 const loadTs = require('./load-ts.cjs');
 const { TelemetryCollector } = loadTs('src/main/telemetry.ts');
-const { CumulativeSampleGate, RunBaseline, usesCumulativeGate, snapshotUsageFor } = loadTs('src/main/usage.ts');
-const { CircuitBreaker } = loadTs('src/main/breaker.ts');
-const { lifetimeUsdFromLedger } = loadTs('src/main/costLifetime.ts');
+const { CumulativeSampleGate, RunBaseline, usesCumulativeGate, snapshotUsageFor } = loadTs('src/core/usage.ts');
+const { CircuitBreaker } = loadTs('src/core/breaker.ts');
+const { lifetimeUsdFromLedger } = loadTs('src/core/costLifetime.ts');
 
 const AGENT = 'reviewer-mt1';
 const SESSION = '01a04adb-bf51-7fe0-9627-df7d0dd58837';
