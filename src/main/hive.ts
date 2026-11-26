@@ -830,8 +830,10 @@ export class HiveManager {
     }
     return out;
   }
-  /** With scoped roots on, the first write root the owner's managed or user Claude settings add outside the seat's
-   *  scoped roots, grants and temp folders, as "<source> settings: <key>" (never the path); null when there is none.
+  /** With scoped roots on, the first setting in the owner's managed or user Claude settings that would widen the seat
+   *  beyond its scoped roots, grants and temp folders, as "<source> settings: <key>" (never the path); null when there is
+   *  none. The sandbox and permissions subtrees are judged as an allowlist (claudeSettingsExcess, strict): a key the check
+   *  does not understand refuses the seat too.
    *  Read with the same reader as every other Claude settings root (claudeRoots, through claudeRootEntries). A file that cannot be read or
    *  understood is named too: its roots cannot be shown to be inside. An Edit allow rule is read as the folder its
    *  pattern starts in: `//x` absolute, `~/x` in the home folder, `/x` beside the settings file, any other relative to
@@ -842,7 +844,7 @@ export class HiveManager {
     const cwd = meta.cwd ? expandTilde(meta.cwd) : '';
     const allowed = [...this.sandboxWritableDirs(meta, dir, root, extra, true), ...(places ? places.tmpDirs : [])];
     const userDir = places ? places.claudeUserDir : (process.env.CLAUDE_CONFIG_DIR && isAbsolute(process.env.CLAUDE_CONFIG_DIR) ? process.env.CLAUDE_CONFIG_DIR : join(homedir(), '.claude'));
-    return claudeSettingsExcess({ managedFile: this.managedClaudeSettings, userDir, allowed, cwd, home: homedir() })?.why ?? null;
+    return claudeSettingsExcess({ managedFile: this.managedClaudeSettings, userDir, allowed, cwd, home: homedir(), strict: true })?.why ?? null;
   }
   /** Every writable_roots entry in one Codex config file, in any table (a profile, a dotted key, an
    *  inline table); [] when the file is absent. A link, a non-file, or an entry not fully understood
@@ -1583,7 +1585,7 @@ export class HiveManager {
     // would be added to its sandbox whatever the seat's settings say.
     if (scoped && this.hookKind(meta) === 'claude') {
       const why = this.claudeSettingsExcess(meta, dir, root, opts.extraWritableDirs, opts.launch);
-      if (why) throw new ScopedRootsRefused(`${shortTarget(meta.id)} cannot start: the owner's ${why} adds a write root outside its scoped roots`);
+      if (why) throw new ScopedRootsRefused(`${shortTarget(meta.id)} cannot start: the owner's ${why} would widen it beyond its scoped roots`);
     }
     // A Claude seat's settings file must have a home outside the hive, decided before anything for it is created.
     if (isClaudeProvider(meta.provider ?? 'claude') && this.sockPath()) checkSeatSettingsTarget(this.seatSettingsPath(meta.id));

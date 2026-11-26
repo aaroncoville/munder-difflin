@@ -7,6 +7,10 @@
  * sandbox whatever the seat's own settings say: one naming another seat's folder undid the scoping for every seat.
  * With the setting on, such a seat is refused at spawn, saying which settings source and key, never the path. God is
  * judged by the same rule against its own roots. With the setting off nothing changes.
+ *
+ * The `sandbox` and `permissions` subtrees are judged as an allowlist: a key that switches the sandbox off, runs a
+ * command outside it, or defaults to bypassing permissions refuses the seat, and so does any key the check does not
+ * understand.
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -84,7 +88,8 @@ test('flag on: a permissions allow, ask or deny list that is not a list of text 
   ];
   for (const [i, permissions] of cases.entries()) {
     f.user({ permissions });
-    await assert.rejects(f.spawn(`l${i}`, true), (e) => e instanceof ScopedRootsRefused && /user settings \(could not be understood/.test(e.message), JSON.stringify(permissions));
+    const key = `permissions.${Object.keys(permissions)[0]}`;
+    await assert.rejects(f.spawn(`l${i}`, true), (e) => e instanceof ScopedRootsRefused && e.message.includes(`user settings: ${key} (`), JSON.stringify(permissions));
   }
 });
 
@@ -95,21 +100,49 @@ test('flag on: an owner sandbox.excludedCommands entry the scoped seat does not 
     await assert.rejects(f.spawn(`x${i}`, true), refusedFor(f, 'user settings', 'sandbox.excludedCommands'), JSON.stringify(excludedCommands));
   }
   f.user({ sandbox: { excludedCommands: 'git *' } });
-  await assert.rejects(f.spawn('x9', true), (e) => e instanceof ScopedRootsRefused && /could not be understood/.test(e.message));
+  await assert.rejects(f.spawn('x9', true), (e) => e instanceof ScopedRootsRefused && e.message.includes('user settings: sandbox.excludedCommands (is not a list of text)'));
   // Commands the scoped seat already runs outside its sandbox add nothing.
   f.user({ sandbox: { excludedCommands: ['npm run build', 'git fetch *'] } });
   await f.spawn('xin', true);
 });
 
-test('flag on: managed settings that switch the sandbox off or allow an unsandboxed retry refuse the spawn; the same user settings, which the seat\'s own settings outrank, do not', async (t) => {
+test('flag on: managed or user settings that switch the sandbox off or allow an unsandboxed retry refuse the spawn', async (t) => {
   const f = floor(t);
   for (const [i, [sandbox, key]] of [[{ enabled: false }, 'sandbox.enabled'], [{ allowUnsandboxedCommands: true }, 'sandbox.allowUnsandboxedCommands']].entries()) {
     fs.writeFileSync(f.managed, JSON.stringify({ sandbox }));
     await assert.rejects(f.spawn(`s${i}`, true), refusedFor(f, 'managed settings', key), key);
+    fs.rmSync(f.managed);
+    f.user({ sandbox });
+    await assert.rejects(f.spawn(`u${i}`, true), refusedFor(f, 'user settings', key), `user ${key}`);
+    f.user({});
   }
-  fs.rmSync(f.managed);
-  f.user({ sandbox: { enabled: false, allowUnsandboxedCommands: true } });
-  await f.spawn('suser', true);
+});
+
+test('flag on: user settings that disable the filesystem sandbox or default to bypass refuse the spawn, naming the key', async (t) => {
+  const f = floor(t);
+  const cases = [
+    [{ sandbox: { filesystem: { disabled: true } }, permissions: { allow: ['Bash'] } }, 'sandbox.filesystem.disabled'],
+    [{ permissions: { defaultMode: 'bypassPermissions', allow: ['Bash'] } }, 'permissions.defaultMode'],
+    [{ sandbox: { failIfUnavailable: false } }, 'sandbox.failIfUnavailable'],
+  ];
+  for (const [i, [settings, key]] of cases.entries()) {
+    f.user(settings);
+    await assert.rejects(f.spawn(`k${i}`, true), refusedFor(f, 'user settings', key), key);
+  }
+});
+
+test('flag on: a user setting under sandbox or permissions that the check does not understand refuses the spawn, naming it', async (t) => {
+  const f = floor(t);
+  f.user({ sandbox: { network: { allowUnixSockets: ['/var/run/docker.sock'] } } });
+  await assert.rejects(f.spawn('n1', true), refusedFor(f, 'user settings', 'sandbox.network.allowUnixSockets'));
+  f.user({ permissions: { somethingNew: true } });
+  await assert.rejects(f.spawn('n2', true), refusedFor(f, 'user settings', 'permissions.somethingNew'));
+});
+
+test('flag on: ordinary rules that keep the seat inside its roots still start it', async (t) => {
+  const f = floor(t);
+  f.user({ model: 'opus', permissions: { allow: ['Bash', 'Read', 'WebFetch', 'mcp__x__y'], deny: ['Read(~/.ssh/**)'], defaultMode: 'acceptEdits' }, sandbox: { enabled: true, excludedCommands: ['npm run build'] } });
+  await f.spawn('ok1', true);
 });
 
 test('the Claude file-writing tools the admission reads include every Claude write tool the gate protects', () => {
