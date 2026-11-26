@@ -70,3 +70,22 @@ export async function taskWriteResultWithRetry(
   }
   return taskWriteResult(what, write, log);
 }
+
+/**
+ * A queue for task-ledger writes from the window: each write, its retries included, finishes before the
+ * next one starts.
+ *
+ * A write that finds the ledger busy pauses before trying again, and does not hold its place while it
+ * pauses. Two edits of one card made in quick succession (a status move to "doing", then to "done") could
+ * otherwise land in the wrong order: the first pauses, the second finds the ledger free and writes, then
+ * the first writes over it, and both answer `{ ok: true }`. The IPC handlers share one queue so that the
+ * ledger keeps the last edit the user made.
+ */
+export function serialTaskWrites(): (what: string, write: () => boolean, options?: TaskWriteRetryOptions) => Promise<TaskWriteResult> {
+  let tail: Promise<unknown> = Promise.resolve();
+  return (what, write, options = {}) => {
+    const result = tail.then(() => taskWriteResultWithRetry(what, write, options));
+    tail = result.catch(() => undefined);
+    return result;
+  };
+}

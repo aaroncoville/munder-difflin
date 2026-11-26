@@ -40,12 +40,14 @@ test('any other failure of the write also becomes { ok: false, error }', () => {
   assert.equal(lines.length, 1);
 });
 
-test('the three task IPC handlers answer through taskWriteResultWithRetry', () => {
+test('the three task IPC handlers answer through one shared queue of retried writes', () => {
   const main = sourceAssert.activeSource('src/main/index.ts');
   const handler = (channel, next) => sourceAssert.boundedSlice(main, `ipcMain.handle('${channel}'`, `ipcMain.handle('${next}'`);
-  assert.match(handler('hive:addTask', 'hive:patchTask'), /taskWriteResultWithRetry\(\s*'addTask',\s*\(\)\s*=>\s*hive\.addTask\(/);
-  assert.match(handler('hive:patchTask', 'hive:deleteTask'), /taskWriteResultWithRetry\(\s*'patchTask',\s*\(\)\s*=>\s*hive\.patchTask\(/);
-  assert.match(handler('hive:deleteTask', 'hive:setArchived'), /taskWriteResultWithRetry\(\s*'deleteTask',\s*\(\)\s*=>\s*hive\.deleteTask\(/);
+  assert.equal((main.match(/\bserialTaskWrites\(\)/g) || []).length, 1, 'one queue, made once');
+  assert.match(main, /^const taskWrites = serialTaskWrites\(\);$/m, 'made at module level, not per call');
+  assert.match(handler('hive:addTask', 'hive:patchTask'), /return taskWrites\(\s*'addTask',\s*\(\)\s*=>\s*hive\.addTask\(/);
+  assert.match(handler('hive:patchTask', 'hive:deleteTask'), /return taskWrites\(\s*'patchTask',\s*\(\)\s*=>\s*hive\.patchTask\(/);
+  assert.match(handler('hive:deleteTask', 'hive:setArchived'), /return taskWrites\(\s*'deleteTask',\s*\(\)\s*=>\s*hive\.deleteTask\(/);
 });
 
 // The app waits only 250 ms for tasks.json.lock, because that wait blocks the
@@ -127,4 +129,48 @@ test('a write that finds nothing to do is not tried again', async () => {
   const result = await taskWriteResultWithRetry('patchTask', () => { attempts++; return false; }, { sleep: async () => { throw new Error('must not pause'); } });
   assert.deepEqual(result, { ok: false });
   assert.equal(attempts, 1);
+});
+
+// A write that found the ledger busy waits without holding its place, so a later
+// edit of the same card could land first and then be overwritten by the earlier
+// one. The task IPC handlers share one queue, so each write, retries included,
+// finishes before the next one starts.
+
+const { serialTaskWrites } = loadTs('src/main/taskLedgerResult.ts');
+
+test('a busy write retried later cannot land after a later write to the same card', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-ledger-order-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'tasks.json');
+  fs.writeFileSync(file, JSON.stringify({ tasks: [{ id: 'c', status: 'todo' }] }));
+  const lock = `${file}.lock`;
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, host: os.hostname(), acquiredAt: new Date().toISOString(), token: 'other' }));
+  const move = (status) => () => updateTaskLedgerFile(file, (cards) => cards.map((c) => (c.id === 'c' ? { ...c, status } : c)), { waitMs: 20 }) !== null;
+  const status = () => JSON.parse(fs.readFileSync(file, 'utf8')).tasks[0].status;
+
+  const writes = serialTaskWrites();
+  let wake = null;
+  const sleep = () => new Promise((resolve) => { wake = resolve; });
+  // Move A finds the ledger busy and pauses before trying again.
+  const a = writes('patchTask', move('doing'), { sleep, log: () => {} });
+  for (let i = 0; i < 1000 && !wake; i++) await new Promise((r) => setImmediate(r));
+  assert.ok(wake, 'move A found the ledger busy and is waiting to try again');
+  // The holder lets go, and move B is issued after A.
+  fs.unlinkSync(lock);
+  const b = writes('patchTask', move('done'), { log: () => {} });
+  await new Promise((r) => setTimeout(r, 50));
+  wake();
+  assert.deepEqual(await a, { ok: true });
+  assert.deepEqual(await b, { ok: true });
+  assert.equal(status(), 'done', 'the later move B is the one the ledger keeps');
+});
+
+test('a write that fails, or rejects, does not stop the writes queued after it', async () => {
+  const writes = serialTaskWrites();
+  const failed = writes('deleteTask', () => { throw new Error('disk on fire'); }, { log: () => {} });
+  const rejected = writes('patchTask', () => { throw busy(); }, { sleep: async () => { throw new Error('no timer'); }, log: () => {} });
+  const last = writes('addTask', () => true);
+  assert.deepEqual(await failed, { ok: false, error: 'disk on fire' });
+  await assert.rejects(rejected, /no timer/);
+  assert.deepEqual(await last, { ok: true });
 });
