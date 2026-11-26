@@ -484,8 +484,6 @@ export function ownFolderProblem(root: string, agentId: string): string | null {
   return null;
 }
 
-/** The tools whose writes the hook refuses outside scoped roots: Claude's file tools, which the OS sandbox does not
- *  govern, and Codex's patch tool. Every other tool is left to the sandbox. */
 /** With scoped write roots on, the only commands a Claude seat may run outside its sandbox (sandbox.excludedCommands);
  *  the per-call retry with the sandbox off is turned off. An entry without a wildcard matches only that exact command,
  *  so the `npm --prefix *` forms are how a seat runs the suite, build or type check against a worktree without a
@@ -506,6 +504,8 @@ export const SCOPED_UNSANDBOXED_COMMANDS = [
  *  them, so the owner-settings check refuses any other value there (claudeSettingsAdmission.ts). */
 export const SCOPED_SANDBOX_PINS = { autoAllowBashIfSandboxed: false, allowLocalBinding: false } as const;
 
+/** The tools whose writes the hook refuses outside scoped roots: Claude's file tools, which the OS sandbox does not
+ *  govern, and Codex's patch tool. Every other tool is left to the sandbox. */
 export const PROTECTED_WRITE_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'apply_patch'] as const;
 export const isProtectedWrite = (tool: unknown): boolean => typeof tool === 'string' && (PROTECTED_WRITE_TOOLS as readonly string[]).includes(tool);
 
