@@ -14,7 +14,7 @@ const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 const { withSeatSettings } = require('./seat-settings-dir.cjs');
-const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
+const { allCommitsIdle } = loadTs('src/core/hiveCommit.ts');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { applyGitCommitsSetting, gitCommitsDisabled } = loadTs('src/main/hiveGitSetting.ts');

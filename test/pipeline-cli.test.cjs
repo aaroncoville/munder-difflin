@@ -12,7 +12,7 @@ const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
 const loadTs = require('./load-ts.cjs');
 const { withSeatSettings } = require('./seat-settings-dir.cjs');
-const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
+const { allCommitsIdle } = loadTs('src/core/hiveCommit.ts');
 const core = require('../src/main/pipeline/mr-core.cjs');
 
 const CLI = path.join(__dirname, '..', 'resources', 'hive-mr.cjs');

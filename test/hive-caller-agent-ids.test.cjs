@@ -15,7 +15,7 @@ const vm = require('node:vm');
 const ts = require('typescript');
 const loadTs = require('./load-ts.cjs');
 const { withSeatSettings } = require('./seat-settings-dir.cjs');
-const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
+const { allCommitsIdle } = loadTs('src/core/hiveCommit.ts');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { AgentIdError, shortTarget } = loadTs('src/core/messageTarget.ts');

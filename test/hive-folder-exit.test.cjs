@@ -20,7 +20,7 @@ const loadTs = require('./load-ts.cjs');
 const { withSeatSettings } = require('./seat-settings-dir.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
-const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
+const { allCommitsIdle } = loadTs('src/core/hiveCommit.ts');
 
 const REAL_GIT = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim();
 

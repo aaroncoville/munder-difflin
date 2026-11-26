@@ -16,7 +16,7 @@ const loadTs = require('./load-ts.cjs');
 
 // A hive commit can still be running after the call that asked for it returns, and removing the folder under it
 // fails with ENOTEMPTY, so every cleanup here waits for commits to finish first.
-const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
+const { allCommitsIdle } = loadTs('src/core/hiveCommit.ts');
 
 /**
  * Remove a test's folder from a cleanup, without ever throwing.

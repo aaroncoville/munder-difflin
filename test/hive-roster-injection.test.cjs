@@ -17,7 +17,7 @@ const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 const { withSeatSettings } = require('./seat-settings-dir.cjs');
-const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
+const { allCommitsIdle } = loadTs('src/core/hiveCommit.ts');
 
 // hooks.ts pulls Notification from electron; outside Electron that resolve gives
 // a path string, so seed the cache with the surface the server actually touches.

@@ -14,6 +14,8 @@ export * from './codexUsage';
 export * from './codexWritableRoots';
 export * from './heavyJob';
 export * from './heavyJobRules';
+export * from './hiveCommit';
+export * from './hiveGitDir';
 export * from './hookInventory';
 export * from './hookRuntime';
 export * from './launchLine';

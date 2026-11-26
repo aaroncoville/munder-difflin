@@ -17,7 +17,7 @@ const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { removeDir } = require('./codex-test-home.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
-const { allCommitsIdle, runGit } = loadTs('src/main/hiveCommit.ts');
+const { allCommitsIdle, runGit } = loadTs('src/core/hiveCommit.ts');
 
 const REAL_GIT = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim();
 
