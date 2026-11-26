@@ -456,6 +456,14 @@ test('Given an output file last written before the run started, when the output 
   assert.equal(S.checkHeadlessOutput(s.ctx, out, { notBefore: Date.now() - 1000 }).done, true);
 });
 
+test('Given an output file whose name starts with two dots, inside a root, when the output is checked, then the run is done', (t) => {
+  const s = seat(t);
+  const out = path.join(s.cwd, '..notes.md');
+  fs.writeFileSync(out, 'findings\n');
+  const r = S.checkHeadlessOutput(s.ctx, out);
+  assert.equal(r.done, true, r.reason);
+});
+
 // The ledger lock is the shared file lock (fileLock.ts), so it keeps that lock's guarantees: a volume without hard
 // links refuses it (no append), a live lock that replaced a stale one while it was being broken is never removed,
 // and the holder confirms the lock is still its own immediately before it appends.

@@ -23,7 +23,7 @@
  */
 import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, realpathSync, rmSync, writeSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { basename, isAbsolute, join, relative } from 'node:path';
+import { basename, isAbsolute, join, relative, sep } from 'node:path';
 import { parseHeadlessOutput, runHeadlessSeat, type HeadlessRun, type HeadlessSeatOptions } from './headlessSeat';
 import { appendCostLedgerRow, COST_LEDGER_FILE, LEDGER_LOCK_WAIT_MS, type CostLedgerIo } from './costLedgerFile';
 import { isPlainObject } from './launchLine';
@@ -136,7 +136,7 @@ export interface HeadlessDoneCheck {
 
 const inside = (root: string, p: string): boolean => {
   const rel = relative(root, p);
-  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 };
 
 /** Whether the run's output file is in place: see above. Never throws. The file is read through one descriptor
