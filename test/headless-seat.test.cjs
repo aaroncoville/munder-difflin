@@ -265,6 +265,22 @@ test('Given user settings that run a command outside the sandbox, when the launc
   assert.throws(() => H.buildHeadlessLaunch(f.opts()), /user settings: sandbox\.excludedCommands/);
 });
 
+test('Given managed or user settings that switch the sandbox off or allow an unsandboxed retry, when the launch is built, then it is refused', (t) => {
+  for (const [where, sandbox, key] of [
+    ['managed', { enabled: false }, 'managed settings: sandbox.enabled'],
+    ['managed', { allowUnsandboxedCommands: true }, 'managed settings: sandbox.allowUnsandboxedCommands'],
+    ['user', { enabled: false }, 'user settings: sandbox.enabled'],
+    ['user', { allowUnsandboxedCommands: true }, 'user settings: sandbox.allowUnsandboxedCommands'],
+  ]) {
+    const f = floor(t);
+    if (where === 'managed') {
+      fs.mkdirSync(path.join(f.base, 'managed'));
+      fs.writeFileSync(path.join(f.base, 'managed', 'managed-settings.json'), JSON.stringify({ sandbox }));
+    } else ownerSettings(f, path.join(f.base, '.claude'), { sandbox });
+    assert.throws(() => H.buildHeadlessLaunch(f.opts()), (e) => e.message.includes(key), key);
+  }
+});
+
 test('Given user settings that cannot be read or understood, when the launch is built, then it is refused', (t) => {
   const f = floor(t);
   const cfg = path.join(f.base, 'cfg');

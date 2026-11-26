@@ -223,7 +223,7 @@ export function buildHeadlessLaunch(o: HeadlessSeatOptions): HeadlessLaunch {
   if ('unknown' in places) throw new HeadlessSeatRefused(`where Claude will read the owner's settings cannot be told: ${places.unknown}`);
   const excess = claudeSettingsExcess({
     managedFile: o.managedSettingsFile ?? MANAGED_CLAUDE_SETTINGS, userDir: places.claudeUserDir,
-    allowed: [...roots, ...places.tmpDirs], cwd: o.cwd, home: places.home,
+    allowed: [...roots, ...places.tmpDirs], cwd: o.cwd, home: places.home, refuseUserSandboxOff: true,
   });
   if (excess) throw new HeadlessSeatRefused(`the owner's ${excess.why} adds a write root outside the seat's roots${excess.root ? `: ${excess.root}` : ''}`);
   const settings = headlessSeatSettings(roots, hookCommandFor(o.hookRuntime, true), o.enabledPlugins);

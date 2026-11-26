@@ -101,6 +101,17 @@ test('flag on: an owner sandbox.excludedCommands entry the scoped seat does not 
   await f.spawn('xin', true);
 });
 
+test('flag on: managed settings that switch the sandbox off or allow an unsandboxed retry refuse the spawn; the same user settings, which the seat\'s own settings outrank, do not', async (t) => {
+  const f = floor(t);
+  for (const [i, [sandbox, key]] of [[{ enabled: false }, 'sandbox.enabled'], [{ allowUnsandboxedCommands: true }, 'sandbox.allowUnsandboxedCommands']].entries()) {
+    fs.writeFileSync(f.managed, JSON.stringify({ sandbox }));
+    await assert.rejects(f.spawn(`s${i}`, true), refusedFor(f, 'managed settings', key), key);
+  }
+  fs.rmSync(f.managed);
+  f.user({ sandbox: { enabled: false, allowUnsandboxedCommands: true } });
+  await f.spawn('suser', true);
+});
+
 test('the Claude file-writing tools the admission reads include every Claude write tool the gate protects', () => {
   const { CLAUDE_FILE_WRITE_TOOLS } = loadTs('src/core/launchLine.ts');
   const { PROTECTED_WRITE_TOOLS } = loadTs('src/core/writeRoots.ts');

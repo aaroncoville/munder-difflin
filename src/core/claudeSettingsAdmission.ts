@@ -72,8 +72,11 @@ export function editRuleFolder(rule: string, settingsDir: string, cwd: string, h
  *  - A permissions allow, ask or deny list that is not a list of text is not understood: reading around it would skip
  *    a rule the CLI may still apply.
  *  - sandbox.excludedCommands runs the commands it names outside the sandbox, where they can write anywhere; an entry
- *    is admitted only when the scoped seat already runs it unsandboxed (SCOPED_UNSANDBOXED_COMMANDS). */
-function settingsExcess(text: string): { problem: string } | { key: string } | null {
+ *    is admitted only when the scoped seat already runs it unsandboxed (SCOPED_UNSANDBOXED_COMMANDS).
+ *  - With `sandboxOff` set, sandbox.enabled false or sandbox.allowUnsandboxedCommands true widens the seat: managed
+ *    settings outrank the seat's own settings file for these, so the sandbox would be off or a failed command rerun
+ *    outside it. */
+function settingsExcess(text: string, sandboxOff: boolean): { problem: string } | { key: string } | null {
   let v: unknown;
   try { v = JSON.parse(text); } catch { return { problem: 'it is not JSON' }; }
   if (!isPlainObject(v)) return { problem: 'it is not an object' };
@@ -84,6 +87,13 @@ function settingsExcess(text: string): { problem: string } | { key: string } | n
     }
   }
   const sb = v.sandbox;
+  if (isPlainObject(sb) && Object.hasOwn(sb, 'allowUnsandboxedCommands') && typeof sb.allowUnsandboxedCommands !== 'boolean') {
+    return { problem: 'sandbox.allowUnsandboxedCommands is not a boolean' };
+  }
+  if (sandboxOff && isPlainObject(sb)) {
+    if (sb.enabled === false) return { key: 'sandbox.enabled' };
+    if (sb.allowUnsandboxedCommands === true) return { key: 'sandbox.allowUnsandboxedCommands' };
+  }
   if (isPlainObject(sb) && Object.hasOwn(sb, 'excludedCommands')) {
     if (!stringList(sb.excludedCommands)) return { problem: 'sandbox.excludedCommands is not a list of text' };
     const own: readonly string[] = SCOPED_UNSANDBOXED_COMMANDS;
@@ -103,6 +113,9 @@ export interface ClaudeSettingsPlaces {
   cwd: string;
   /** The home folder ~ and $HOME stand for. */
   home: string;
+  /** Also refuse user settings that switch the sandbox off or allow an unsandboxed retry (managed ones always are).
+   *  The seat's own settings file outranks user settings for these, so this is a second layer, not the only one. */
+  refuseUserSandboxOff?: boolean;
 }
 
 /** The first write root the owner's managed or user Claude settings add outside `allowed`: `why` names it as
@@ -120,7 +133,7 @@ export function claudeSettingsExcess(p: ClaudeSettingsPlaces): { why: string; ro
     if (text === null) return { why: `${source} (could not be read)`, root: null };
     const c = claudeRootEntries(text);
     if (!c) return { why: `${source} (could not be understood)`, root: null };
-    const more = settingsExcess(text);
+    const more = settingsExcess(text, source === 'managed settings' || p.refuseUserSandboxOff === true);
     if (more && 'problem' in more) return { why: `${source} (could not be understood: ${more.problem})`, root: null };
     if (more) return { why: `${source}: ${more.key}`, root: null };
     for (const e of c.entries) {
