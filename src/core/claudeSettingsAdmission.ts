@@ -62,6 +62,8 @@ export function editRuleFolder(rule: string, settingsDir: string, cwd: string, h
   if (!m || writeTool(m[1]) === null) return null;
   const spec = m[2].trim();
   if (!spec) return null;
+  // As settingsRootPath: a variable or command substitution, or another user's home (~user), is not understood.
+  if (/[$%`]/.test(spec) || /^~(?!$|\/)/.test(spec)) return null;
   let p: string;
   if (spec.startsWith('//')) p = spec.slice(1);
   else if (spec === '~' || spec.startsWith('~/')) p = join(home, spec.slice(1));

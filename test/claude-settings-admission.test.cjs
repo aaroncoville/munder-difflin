@@ -112,3 +112,14 @@ test('the root reader lists a file-writing tool rule whatever the case of its to
   const rules = ['edit(//x/**)', 'WRITE', 'MultiEdit(//y)', 'notebookedit', 'Read(//z)', 'Editor(//w)'];
   assert.deepEqual(claudeRootEntries(JSON.stringify({ permissions: { allow: rules } })).editRules, ['edit(//x/**)', 'WRITE', 'MultiEdit(//y)', 'notebookedit']);
 });
+
+test('strict: a file-writing tool rule whose path has a variable, a backtick or another user\'s home is refused, as a root list entry is', (t) => {
+  const f = floor(t);
+  for (const spec of ['$HOME/**', '${HOME}/x', '%USERPROFILE%/x', 'a`id`/x', '~root/**', '~other', 'sub/$X']) {
+    for (const tool of ['Edit', 'Write']) {
+      const r = f.judge({ permissions: { allow: [`${tool}(${spec})`] } });
+      assert.ok(r && r.why.includes(`managed settings: permissions.allow ${tool}`), `${tool}(${spec}) was admitted`);
+    }
+  }
+  assert.equal(f.judge({ permissions: { allow: ['Edit(sub/com~apple~x/**)'] } }), null, 'a ~ inside a name is just a name');
+});
