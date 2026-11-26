@@ -475,6 +475,17 @@ test('Given a file system that keeps whole seconds, when an output file written 
   assert.equal(S.checkHeadlessOutput(s.ctx, out, { notBefore: (second + 1) * 1000 }).done, false, 'a file from the second before is still refused');
 });
 
+test('Given a checked output file emptied in place before the message, when it is re-checked, then it no longer counts', (t) => {
+  const s = seat(t);
+  const out = path.join(s.cwd, 'out.md');
+  fs.writeFileSync(out, 'findings\n');
+  const r = S.checkHeadlessOutput(s.ctx, out);
+  assert.equal(r.done, true);
+  assert.equal(S.sameOutputFile(out, r.file), null);
+  fs.truncateSync(out, 0);
+  assert.match(S.sameOutputFile(out, r.file) ?? '', /empty/);
+});
+
 // The ledger lock is the shared file lock (fileLock.ts), so it keeps that lock's guarantees: a volume without hard
 // links refuses it (no append), a live lock that replaced a stale one while it was being broken is never removed,
 // and the holder confirms the lock is still its own immediately before it appends.

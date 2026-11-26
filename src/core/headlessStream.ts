@@ -176,13 +176,14 @@ export function checkHeadlessOutput(seat: HeadlessSeatPlace, outputFile: string 
   }
 }
 
-/** Null when `outputFile` is still the file the done-check judged (same device and inode, not a link) with one name;
- *  else why not. */
+/** Null when `outputFile` is still the file the done-check judged (same device and inode, not a link) with one name,
+ *  and not empty; else why not. */
 export function sameOutputFile(outputFile: string, file: { dev: number; ino: number }): string | null {
   let st;
   try { st = lstatSync(outputFile); } catch { return `the output file ${outputFile} is no longer there`; }
   if (st.dev !== file.dev || st.ino !== file.ino) return `the output file ${outputFile} is no longer the file that was checked`;
   if (st.nlink !== 1) return `the output file ${outputFile} has more than one name (${st.nlink} hard links)`;
+  if (st.size === 0) return `the output file ${outputFile} is empty`;
   return null;
 }
 
