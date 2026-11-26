@@ -12,6 +12,8 @@ export * from './codexHookTrust';
 export * from './codexSeatHome';
 export * from './codexUsage';
 export * from './codexWritableRoots';
+export * from './heavyJob';
+export * from './heavyJobRules';
 export * from './hookRuntime';
 export * from './launchLine';
 export * from './pricing';

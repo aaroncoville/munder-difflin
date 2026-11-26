@@ -8,8 +8,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 
-const { classifyCommand, HeavyJobLock, HEAVY_SCAN_MISSES, HEAVY_RESERVE_MS } = loadTs('src/main/heavyJob.ts');
-const { carriesCommand, suiteJobLimit, SUITE_DEFAULT_LIMIT } = loadTs('src/main/heavyJobRules.ts');
+const { classifyCommand, HeavyJobLock, HEAVY_SCAN_MISSES, HEAVY_RESERVE_MS } = loadTs('src/core/heavyJob.ts');
+const { carriesCommand, suiteJobLimit, SUITE_DEFAULT_LIMIT } = loadTs('src/core/heavyJobRules.ts');
 
 function lock(limit, suites, extra = {}) {
   let now = 1_000_000; const logs = []; const told = [];

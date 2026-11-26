@@ -15,7 +15,7 @@ import { existsSync, rmSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { Notification, type WebContents } from 'electron';
 import type { HiveManager } from './hive';
-import { gateHeavyCall, settleHeavyCall, type HeavyJobLock } from './heavyJob';
+import { gateHeavyCall, settleHeavyCall, type HeavyJobLock } from '../core/heavyJob';
 import type { HarnessConfig } from './config';
 import type { ControlRegistry } from './control';
 import type { CircuitBreaker } from '../core/breaker';

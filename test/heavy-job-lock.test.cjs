@@ -9,7 +9,7 @@ const loadTs = require('./load-ts.cjs');
 const {
   classifyCommand, classifyHeavy, isBackground, heavyLimit, parsePsOutput, heavySlotNotice, HeavyJobLock,
   HEAVY_TTL_MS, HEAVY_SCAN_MISSES, HEAVY_RESERVE_MS
-} = loadTs('src/main/heavyJob.ts');
+} = loadTs('src/core/heavyJob.ts');
 
 // ── classifier ───────────────────────────────────────────────────────────────
 
