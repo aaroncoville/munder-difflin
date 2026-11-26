@@ -53,7 +53,7 @@ const LIMITS = {
 const OK_WORD = 'canary-ok';
 const reply = `Reply with exactly: ${OK_WORD}`;
 const runCommands = (cmds) =>
-  `Use the shell to run each of these commands once, separately, exactly as written with nothing added, and report each exit code. ` +
+  `Use the shell to run each of these commands once, separately, exactly as written with nothing added, and report each exit code. Run no other commands. ` +
   `Do not retry a command that fails and do not ask for approval:\n${cmds.map((c, i) => `${i + 1}. ${c}`).join('\n')}`;
 const runTouches = (paths) => runCommands(paths.map((p) => `touch ${p}`));
 /** A write outside the roots whose outcome the shell itself records inside them: touch's exit code in `rc` and its
@@ -93,6 +93,19 @@ function isTouchOf(command, target) {
   const m = /^touch[ \t]+(?:'([^'\r\n]*)'|"([^"\r\n]*)"|([^\s;&|]+))([ \t]+2>&1)?(?:[ \t]*(?:;|&&)[ \t]*echo[ \t]+([^;&|`<>()\r\n]*))?$/.exec(command.trim());
   if (!m || (m[1] ?? m[2] ?? m[3]) !== target) return false;
   return m[5] === undefined || /\$\?/.test(m[5]);
+}
+
+/** Whether a command only reads the recorded results back: `cat` of the rc and/or err file, or `ls` (with flags) of
+ *  the allowed folder. Models asked for exit codes do this; nothing with a redirect, a pipe, a substitution or any
+ *  other operand counts. */
+function isLookAt(command, f) {
+  const c = command.trim();
+  if (/[;&|`$<>()\\'"*?\r\n]/.test(c)) return false;
+  const [verb, ...rest] = c.split(/[ \t]+/);
+  const dir = path.dirname(f.rc);
+  if (verb === 'cat') return rest.length > 0 && rest.every((a) => a === f.rc || a === f.err);
+  if (verb === 'ls') return rest.every((a) => /^-[A-Za-z]+$/.test(a) || a === dir || a === `${dir}/`);
+  return false;
 }
 
 /** Every Bash command a Claude stream-json turn ran. */
@@ -304,7 +317,7 @@ function runCanary(o) {
       if (exists(f.outside)) return { ok: false, detail: 'a write outside the roots landed' };
       const cmds = bashCommands(r.stdout);
       if (!cmds.some((c) => c.trim() === recorded)) return { ok: null, detail: `the recorded write outside the roots was not run as written (${failed(r)})` };
-      if (!cmds.every((c) => c.trim() === recorded || isTouchOf(c, f.inside))) return { ok: null, detail: 'the turn also ran commands of its own, so the recorded files are not evidence' };
+      if (!cmds.every((c) => c.trim() === recorded || isTouchOf(c, f.inside) || isLookAt(c, f))) return { ok: null, detail: 'the turn also ran commands of its own, so the recorded files are not evidence' };
       return shellVerdict(f, failed(r), 'the shell');
     },
     'codex.sandbox-write': () => {
