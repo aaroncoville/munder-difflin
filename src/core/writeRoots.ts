@@ -486,6 +486,17 @@ export function ownFolderProblem(root: string, agentId: string): string | null {
 
 /** The tools whose writes the hook refuses outside scoped roots: Claude's file tools, which the OS sandbox does not
  *  govern, and Codex's patch tool. Every other tool is left to the sandbox. */
+/** With scoped write roots on, the only commands a Claude seat may run outside its sandbox (sandbox.excludedCommands);
+ *  the per-call retry with the sandbox off is turned off. An entry without a wildcard matches only that exact command,
+ *  so the `npm --prefix *` forms are how a seat runs the suite, build or type check against a worktree without a
+ *  leading `cd`. It does not stop a seat from editing a test or build file in its working folder and then running the
+ *  suite or the build: that code then runs unsandboxed. */
+export const SCOPED_UNSANDBOXED_COMMANDS = [
+  'npm run test:focused', 'npm run build', 'npm run typecheck', 'git fetch *', 'git worktree add *', 'git worktree remove *',
+  'gh pr *', 'gh api *', 'glab mr *', 'glab api *',
+  'npm --prefix * run test:focused', 'npm --prefix * run build', 'npm --prefix * run typecheck',
+] as const;
+
 export const PROTECTED_WRITE_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'apply_patch'] as const;
 export const isProtectedWrite = (tool: unknown): boolean => typeof tool === 'string' && (PROTECTED_WRITE_TOOLS as readonly string[]).includes(tool);
 
