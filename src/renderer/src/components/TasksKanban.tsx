@@ -172,8 +172,8 @@ export function TasksKanban() {
         void refresh();
       }
     } catch (e) {
-      // Keep last good; the next poll re-syncs from disk.
       setTaskWriteError(t('kanban.dismissNotSaved', { title: task.title, error: e instanceof Error ? e.message : String(e) }));
+      void refresh();
     }
   }, [refresh, setTaskWriteError, t]);
 

@@ -89,3 +89,22 @@ test('a failure line on the board can be closed by the user', async () => {
   assert.ok(!shown(view.tree).includes('deploy?'), `the line must be gone; got:\n${shown(view.tree)}`);
   assert.equal(useStore.getState().taskWriteError, '');
 });
+
+test('a removal whose call itself fails brings the card back at once', async () => {
+  global.window = {
+    cth: {
+      hiveTasks: async () => ({ tasks: [{ id: 'K-3', title: 'keep me', status: 'todo' }] }),
+      hiveDeleteTask: async () => { throw new Error('the window lost its connection to the app'); }
+    }
+  };
+  const view = mount(TasksKanban, {});
+  mounted.push(view);
+  await settle();
+  view.render();
+
+  await card(view.tree, 'K-3').props.onDismiss();
+  await settle();
+  view.render();
+  assert.ok(card(view.tree, 'K-3'), 'the card is back without waiting for the next poll');
+  assert.ok(shown(view.tree).includes('lost its connection'));
+});
