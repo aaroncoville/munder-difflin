@@ -223,15 +223,17 @@ function describe(held: HeldLock | null): string {
 /**
  * Removes a stale lock without removing a fresh one another writer took in the meantime: the lock is
  * renamed aside first, and put back if what was renamed is not the very file judged stale. Files are
- * compared by device and inode, never by content: two locks can have the same content, one file cannot
- * be two locks. Returns whether the stale lock was removed; when it was not, the caller must not take the
+ * compared by device and inode, not by content alone: two locks can have the same content, one file cannot
+ * be two locks. The token is compared as well, because a filesystem can give a new lock the inode number
+ * of the one just removed. Returns whether the stale lock was removed; when it was not, the caller must not take the
  * lock straight away, because the lock it saw may belong to a live holder.
  */
 function breakStale(lock: string, judged: HeldLock): boolean {
   const aside = `${lock}.stale-${randomBytes(6).toString('hex')}`;
   try { renameSync(lock, aside); } catch { return false; }
-  const moved = statSync(aside, { throwIfNoEntry: false });
-  if (moved && moved.dev === judged.dev && moved.ino === judged.ino) {
+  let moved: HeldLock | null = null;
+  try { moved = readLock(aside); } catch { /* unreadable: not the lock judged */ }
+  if (moved && moved.dev === judged.dev && moved.ino === judged.ino && moved.record?.token === judged.record?.token) {
     try { unlinkSync(aside); } catch { /* already gone */ }
     return true;
   }

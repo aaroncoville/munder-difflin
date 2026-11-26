@@ -358,6 +358,24 @@ test('a breaker removes only the very lock it judged stale, even when another ha
   assert.deepEqual(ids(file), [], 'nothing was written');
 });
 
+test('a breaker leaves a lock that has the judged file\'s inode but another holder\'s token', (t) => {
+  const { file, lock } = hive(t, { tasks: [] });
+  holdLock(lock, { pid: deadPid(), token: 'dead-holder' });
+  let rewritten = false;
+  const hooks = {
+    beforeBreak: () => {
+      if (rewritten) return;
+      rewritten = true;
+      // The judged lock was replaced by a live holder's lock on a file with the same device and inode (an
+      // inode number reused at once, here made by writing the file in place).
+      fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, host: os.hostname(), acquiredAt: new Date().toISOString(), token: 'live-holder' }));
+    }
+  };
+  assert.throws(() => updateTaskLedgerFile(file, (c) => [...c, { id: 'b' }], { waitMs: 200, hooks }), TaskLedgerLockTimeout);
+  assert.equal(JSON.parse(fs.readFileSync(lock, 'utf8')).token, 'live-holder', "the live holder's lock is still in place");
+  assert.deepEqual(ids(file), [], 'nothing was written');
+});
+
 test('a lock never exists without its record', (t) => {
   const { file, lock } = hive(t, { tasks: [] });
   const records = [];
