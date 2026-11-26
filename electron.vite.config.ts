@@ -1,6 +1,7 @@
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite';
+import { build as viteBuild } from 'vite';
 import react from '@vitejs/plugin-react';
-import { resolve, dirname } from 'node:path';
+import { resolve, dirname, basename } from 'node:path';
 import { readFileSync, copyFileSync, mkdirSync, statSync } from 'node:fs';
 
 // Single source of truth for the displayed app version: package.json.
@@ -52,9 +53,39 @@ function copyMainSidecars() {
   };
 }
 
+// The `hive` command agents run to edit the task ledger under its lock (src/core/hiveCli.ts). It is a
+// separate build, not a second input of the main build: rollup would move the modules it shares with
+// the app (the ledger code) into a chunk file, and the hive's bin/hive launcher runs this one file with
+// the bundled node, which may be a plain node. So: one CommonJS file, Node builtins only, no electron.
+export async function buildHiveCliBundle(outFile: string): Promise<void> {
+  await viteBuild({
+    configFile: false,
+    logLevel: 'warn',
+    resolve: { alias: { '@shared': resolve(__dirname, 'src/shared') } },
+    ssr: { noExternal: true },
+    build: {
+      ssr: resolve(__dirname, 'src/core/hiveCliMain.ts'),
+      outDir: dirname(outFile),
+      emptyOutDir: false,
+      minify: false,
+      target: 'node18',
+      rollupOptions: { output: { format: 'cjs', entryFileNames: basename(outFile), inlineDynamicImports: true } }
+    }
+  });
+}
+
+function buildHiveCli() {
+  return {
+    name: 'build-hive-cli',
+    async writeBundle() {
+      await buildHiveCliBundle(resolve(__dirname, 'out/main/hiveCli.js'));
+    }
+  };
+}
+
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin(), copyMainSidecars()],
+    plugins: [externalizeDepsPlugin(), copyMainSidecars(), buildHiveCli()],
     define: defineMain,
     build: {
       rollupOptions: {
