@@ -12,11 +12,11 @@ const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 const { withSeatSettings } = require('./seat-settings-dir.cjs');
-const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
+const { allCommitsIdle } = loadTs('src/core/hiveCommit.ts');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
-const { moveWithoutReplacing } = loadTs('src/main/outboxFailure.ts');
-const { RecentSends } = loadTs('src/main/outboxResend.ts');
+const { moveWithoutReplacing } = loadTs('src/core/outboxFailure.ts');
+const { RecentSends } = loadTs('src/core/outboxResend.ts');
 
 async function floor(t) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-sent-link-'));

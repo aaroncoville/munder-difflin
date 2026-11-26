@@ -253,7 +253,7 @@ test('steer is counted at the IPC seam, not inside control.steer', () => {
   assert.match(main, /control\.steer\(agentId, text\);\n(?:\s*\/\/.*\n)*\s*analytics\.trackMessageSent\('steer'\);/);
   // closingTime and the voice action layer call control.steer directly and are
   // not a person typing; counting inside control.ts would sweep them in.
-  const control = read('src/main/control.ts');
+  const control = read('src/core/control.ts');
   assert.ok(!control.includes('trackMessageSent'), 'control.ts must not count');
 });
 

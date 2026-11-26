@@ -25,7 +25,7 @@
  */
 import type { WebContents } from 'electron';
 import type { HiveManager, HiveMessage } from './hive';
-import type { ControlRegistry } from './control';
+import type { ControlRegistry } from '../core/control';
 
 export type ClosingTimePhase =
   | 'started' | 'progress' | 'complete' | 'timeout' | 'cancelled';

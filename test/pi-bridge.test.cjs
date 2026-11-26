@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const loadTs = require('./load-ts.cjs');
-const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
+const { allCommitsIdle } = loadTs('src/core/hiveCommit.ts');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { CircuitBreaker } = loadTs('src/core/breaker.ts');

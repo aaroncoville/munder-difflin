@@ -22,7 +22,7 @@ require.cache[electron] = {
 };
 
 const { HookServer } = loadTs('src/main/hooks.ts');
-const { ControlRegistry } = loadTs('src/main/control.ts');
+const { ControlRegistry } = loadTs('src/core/control.ts');
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { removeDir } = require('./codex-test-home.cjs');
@@ -171,7 +171,7 @@ test('a failure building the line never breaks the hook reply', async (t) => {
 });
 
 // Bounds: the summary is constant-space per agent and exists only for an agent that can take it.
-const { PendingMail } = loadTs('src/main/mailLine.ts');
+const { PendingMail } = loadTs('src/core/mailLine.ts');
 const entries = (hive) => hive.pendingMail.byAgent;
 
 test('50,000 distinct senders to one agent stay within a fixed bound', () => {

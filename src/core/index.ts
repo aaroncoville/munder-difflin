@@ -7,6 +7,7 @@
  * that, so the folder stays usable outside the app process.
  */
 export * from './breaker';
+export * from './control';
 export * from './costLifetime';
 export * from './codexHookTrust';
 export * from './codexSeatHome';
@@ -14,14 +15,23 @@ export * from './codexUsage';
 export * from './codexWritableRoots';
 export * from './heavyJob';
 export * from './heavyJobRules';
+export * from './hiveCommit';
+export * from './hiveGitDir';
 export * from './hookInventory';
 export * from './hookRuntime';
 export * from './launchLine';
+export * from './inboxClaims';
+export * from './mailLine';
+export * from './messageId';
 export * from './messageTarget';
+export * from './outboxFailure';
+export * from './outboxResend';
 export * from './pricing';
 export * from './privateDirs';
 export * from './repoInstructions';
 export * from './seatSettings';
+export * from './sentFolder';
+export * from './taskLedger';
 export * from './transcript';
 export * from './usage';
 export * from './usageDigest';

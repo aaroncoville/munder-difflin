@@ -1,31 +1,44 @@
 'use strict';
 
 // src/core holds logic that must run without Electron, so it can be reused
-// outside the app process. That only holds while nothing in it reaches back
-// into the app: an import of src/main, src/preload or src/renderer, or of
-// electron / node-pty, would drag the app (or a native module) along with it.
-// Every module specifier is read with the TypeScript scanner, so static
-// imports, re-exports, `import type`, dynamic import() and require() all count,
-// and a specifier that only appears in a comment does not.
+// outside the app process. The rule is an allowlist, so a new way of reaching
+// out of the folder fails by default:
 //
-// src/core may import src/shared, so a shared file it imports is held to the
-// same rule, and so is every shared file that one imports in turn: otherwise
-// core -> shared -> electron would pass. Every script type is scanned
-// (.ts .tsx .mts .cts .js .jsx .mjs .cjs), not only TypeScript.
+//  - a relative or aliased import from a src/core file must land in src/core or
+//    src/shared; from a src/shared file it must land in src/shared. Anything
+//    else (src/main, src/preload, src/renderer, the @/ renderer alias, a folder
+//    elsewhere in the repository) is refused, and so is one that resolves to no
+//    file at all;
+//  - a bare import must be a Node builtin or an npm package, and never electron,
+//    an electron-* package, an @electron/* package, or node-pty (nor a subpath
+//    of one, such as electron/main);
+//  - no file may use createRequire (from 'module' / 'node:module', in any
+//    form: named, renamed, through a namespace or default import, or
+//    destructured from require). It builds a require() whose specifiers the
+//    scanner cannot see, so createRequire(import.meta.url)('electron') would
+//    otherwise pass.
+//
+// src/core may import src/shared, so every shared file it reaches is held to the
+// same rule, transitively: otherwise core -> shared -> electron would pass.
+// Every script type is scanned (.ts .tsx .mts .cts .js .jsx .mjs .cjs), and
+// every specifier is read with the TypeScript scanner, so static imports,
+// re-exports, `import type`, dynamic import() and require() all count, and a
+// specifier that only appears in a comment does not.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { builtinModules } = require('node:module');
 const ts = require('typescript');
 
 const root = path.join(__dirname, '..');
 const coreDir = path.join(root, 'src', 'core');
 const sharedDir = path.join(root, 'src', 'shared');
-const FORBIDDEN_DIRS = ['src/main', 'src/preload', 'src/renderer'].map((d) => path.join(root, d));
-const FORBIDDEN_PACKAGES = ['electron', 'node-pty'];
 const SCRIPT = /\.[cm]?[jt]sx?$/;
 const EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'];
+// An ESM-style specifier names the emitted file; the source has the TS extension.
+const TS_FOR_JS = { '.js': ['.ts', '.tsx'], '.jsx': ['.tsx'], '.mjs': ['.mts'], '.cjs': ['.cts'] };
 
 const inside = (dir, p) => p === dir || p.startsWith(dir + path.sep);
 const rel = (p) => path.relative(root, p);
@@ -40,50 +53,91 @@ function scripts(dir) {
   return out;
 }
 
-/** Where a specifier points on disk, before resolution: null for a package. */
+/** The package a bare specifier names: `@scope/name` or `name`, without any subpath. */
+function packageOf(spec) {
+  const parts = spec.split('/');
+  return spec.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
+}
+
+function forbiddenPackage(pkg) {
+  return pkg === 'electron' || pkg.startsWith('electron-') || pkg.startsWith('@electron/') || pkg === 'node-pty';
+}
+
+/** Where a relative or aliased specifier points on disk; null for a bare one. */
 function target(file, spec) {
-  if (spec.startsWith('.')) return path.resolve(path.dirname(file), spec);
+  if (spec.startsWith('.') || path.isAbsolute(spec)) return path.resolve(path.dirname(file), spec);
   // The path aliases (see electron.vite.config.ts).
   if (spec.startsWith('@/')) return path.join(root, 'src/renderer/src', spec.slice(2));
   if (spec.startsWith('@shared/')) return path.join(sharedDir, spec.slice('@shared/'.length));
   return null;
 }
 
-/** The script file a specifier loads, as the bundler would find it; null if none. */
+const isFile = (p) => fs.existsSync(p) && fs.statSync(p).isFile();
+
+/** The file a specifier loads, as the bundler would find it; null if none. */
 function resolveFile(base) {
-  const candidates = [base, ...EXTENSIONS.map((x) => base + x), ...EXTENSIONS.map((x) => path.join(base, 'index' + x))];
-  return candidates.find((c) => SCRIPT.test(c) && fs.existsSync(c) && fs.statSync(c).isFile()) || null;
+  if (isFile(base)) return base;
+  const ext = path.extname(base);
+  const tsFirst = (TS_FOR_JS[ext] || []).map((x) => base.slice(0, -ext.length) + x);
+  const candidates = [...tsFirst, ...EXTENSIONS.map((x) => base + x), ...EXTENSIONS.map((x) => path.join(base, 'index' + x))];
+  return candidates.find(isFile) || null;
 }
 
-function violation(file, spec) {
-  const pkg = spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0];
-  if (FORBIDDEN_PACKAGES.includes(pkg)) return `${spec} is ${pkg}`;
+/** Why `spec`, imported by `file`, breaks the boundary (null if it does not), and the shared file to follow. */
+function judge(file, spec) {
   const t = target(file, spec);
-  if (t === null) return null;
-  const hit = FORBIDDEN_DIRS.find((d) => inside(d, t));
-  return hit ? `${spec} resolves into ${rel(hit)}` : null;
+  if (t === null) {
+    if (spec.startsWith('node:') || builtinModules.includes(spec)) return {};
+    const pkg = packageOf(spec);
+    return forbiddenPackage(pkg) ? { why: `${spec} is the forbidden package ${pkg}` } : {};
+  }
+  const zones = inside(coreDir, file) ? [coreDir, sharedDir] : [sharedDir];
+  if (!zones.some((z) => inside(z, t))) {
+    return { why: `${spec} resolves to ${rel(t)}, outside ${zones.map(rel).join(' and ')}` };
+  }
+  const resolved = resolveFile(t);
+  if (!resolved) return { why: `${spec} resolves to no file` };
+  return { follow: inside(sharedDir, resolved) && SCRIPT.test(resolved) ? resolved : null };
 }
 
 function specifiers(file) {
   return ts.preProcessFile(fs.readFileSync(file, 'utf8'), true, true).importedFiles.map((i) => i.fileName);
 }
 
-/** Every forbidden import reachable from `file`, following imports into src/shared. */
+const SCRIPT_KIND = { '.ts': ts.ScriptKind.TS, '.mts': ts.ScriptKind.TS, '.cts': ts.ScriptKind.TS, '.tsx': ts.ScriptKind.TSX, '.jsx': ts.ScriptKind.JSX };
+
+/** Lines where `file` names createRequire, as an identifier or as a ['createRequire'] key. */
+function createRequireLines(file) {
+  const sf = ts.createSourceFile(file, fs.readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true,
+    SCRIPT_KIND[path.extname(file)] ?? ts.ScriptKind.JS);
+  const lines = [];
+  const visit = (node) => {
+    const named = ts.isIdentifier(node) && node.text === 'createRequire';
+    const keyed = ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression)
+      && node.argumentExpression.text === 'createRequire';
+    if (named || keyed) lines.push(sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1);
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return [...new Set(lines)];
+}
+
+/** Every offence reachable from `file`, following imports into src/shared. */
 function offendersFrom(file, chain, seen, offenders) {
+  const here = [...chain, rel(file)].join(' -> ');
+  for (const line of createRequireLines(file)) offenders.push(`${here}:${line}: uses createRequire`);
   for (const spec of specifiers(file)) {
-    const why = violation(file, spec);
-    if (why) { offenders.push(`${[...chain, rel(file)].join(' -> ')}: ${why}`); continue; }
-    const t = target(file, spec);
-    const next = t && inside(sharedDir, t) ? resolveFile(t) : null;
-    if (next && !seen.has(next)) {
-      seen.add(next);
-      offendersFrom(next, [...chain, rel(file)], seen, offenders);
+    const { why, follow } = judge(file, spec);
+    if (why) offenders.push(`${[...chain, rel(file)].join(' -> ')}: ${why}`);
+    else if (follow && !seen.has(follow)) {
+      seen.add(follow);
+      offendersFrom(follow, [...chain, rel(file)], seen, offenders);
     }
   }
   return offenders;
 }
 
-test('src/core imports nothing from the app or from Electron, directly or through src/shared', () => {
+test('src/core reaches only src/core, src/shared, Node builtins and non-Electron packages, directly or through src/shared', () => {
   const files = scripts(coreDir);
   assert.ok(files.length > 0, 'src/core has no script files to check');
   const offenders = [];

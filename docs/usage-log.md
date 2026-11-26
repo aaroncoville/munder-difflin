@@ -100,7 +100,7 @@ These events have their own daily files, so they can be switched off and deleted
 | **Where** | `<userData>/usage/`, the app's own data folder (on macOS `~/Library/Application Support/<app name>/usage/`), folder `0700`, files `0600`. Never the hive: the hive is a git repository that agents can read and write, so rows kept there could be read, changed or redirected by an agent and would be committed into its history. The hive's `.gitignore` also lists `usage/` |
 | **Retention** | Day files and weekly digests older than 90 days are removed at start and daily |
 | **Off switch and delete** | Settings → General → *Local usage log*; the switch takes effect when Settings is saved. **Delete usage log** removes what the app wrote in that folder: the daily `YYYY-MM-DD.jsonl` files and the weekly `digest-YYYY-Www.md` files. Any other file there is left alone, since the app did not write it. Delete also records its time in `.deleted-at`, and no digest is ever written for a week that began before it, so a delete stays a delete |
-| **Allowlist** | `src/main/usageLog.ts`. Unknown kinds are refused and unknown fields dropped. Every string must be a known enum, a known view, or an agent or card id the app holds, so typed text cannot be written even by a buggy caller |
+| **Allowlist** | `src/core/usageLog.ts`. Unknown kinds are refused and unknown fields dropped. Every string must be a known enum, a known view, or an agent or card id the app holds, so typed text cannot be written even by a buggy caller |
 | **Outbound** | None. `test/usage-log-not-outbound.test.cjs` proves the analytics module drops every one of these kinds |
 
 Every row carries `ts`, `v` (schema version), `session` (one id per app run), `win` (window id) and `focused`.
