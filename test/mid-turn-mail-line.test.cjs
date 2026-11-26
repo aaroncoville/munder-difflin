@@ -171,7 +171,7 @@ test('a failure building the line never breaks the hook reply', async (t) => {
 });
 
 // Bounds: the summary is constant-space per agent and exists only for an agent that can take it.
-const { PendingMail } = loadTs('src/main/mailLine.ts');
+const { PendingMail } = loadTs('src/core/mailLine.ts');
 const entries = (hive) => hive.pendingMail.byAgent;
 
 test('50,000 distinct senders to one agent stay within a fixed bound', () => {

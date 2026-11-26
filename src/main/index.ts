@@ -96,7 +96,7 @@ import { relocationEnv } from '../core/launchLine';
 import { buildPtyEnv } from './ptyEnv';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WakeSkipLog, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
-import { inboxDeliveredAt, inboxLine, openTurnClaimAt, splitInbox } from './inboxClaims';
+import { inboxDeliveredAt, inboxLine, openTurnClaimAt, splitInbox } from '../core/inboxClaims';
 import { shouldReapIdle, workerHasLiveJob } from './workerIdleJobs';
 import { afterWorkerDone } from './workerDoneGrace';
 import { noticeDelivered, stopFailedAgain, stopRetryDue, stuckWorkerNotice, type StopRetry } from './workerStopRetry';

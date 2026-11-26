@@ -26,7 +26,7 @@
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { isFolderName } from '../core/messageTarget';
+import { isFolderName } from './messageTarget';
 
 /** How long an open turn keeps the stall rule off with no further hook. A
  *  turn is open from the hook that starts one (a prompt, a tool call, a

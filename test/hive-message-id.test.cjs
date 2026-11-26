@@ -16,7 +16,7 @@ const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { allCommitsIdle } = loadTs('src/core/hiveCommit.ts');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
-const { isSafeMessageId, publishMessage, sweepInboxLeftovers } = loadTs('src/main/messageId.ts');
+const { isSafeMessageId, publishMessage, sweepInboxLeftovers } = loadTs('src/core/messageId.ts');
 const { CodexThreads, continuesThread } = loadTs('src/main/codexThread.ts');
 
 async function floor(t) {

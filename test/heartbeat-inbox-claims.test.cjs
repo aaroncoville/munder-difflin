@@ -18,7 +18,7 @@ const vm = require('node:vm');
 const ts = require('typescript');
 const loadTs = require('./load-ts.cjs');
 
-const claims = loadTs('src/main/inboxClaims.ts');
+const claims = loadTs('src/core/inboxClaims.ts');
 const { WorkerWakeWatchdog, WORKER_WAKE_TURN_CEILING_MS } = loadTs('src/main/workerWake.ts');
 const REPO = path.resolve(__dirname, '..');
 // Whole seconds, so a file's mtime lands exactly on the time it was given.

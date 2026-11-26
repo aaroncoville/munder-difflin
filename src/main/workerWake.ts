@@ -35,7 +35,7 @@
  * No electron import — unit-testable (mirrors ControlRegistry).
  */
 
-import { WORKER_WAKE_TURN_CEILING_MS } from './inboxClaims';
+import { WORKER_WAKE_TURN_CEILING_MS } from '../core/inboxClaims';
 export { WORKER_WAKE_TURN_CEILING_MS };
 
 /** The exact nudge the renderer's inbox-wake loop would have typed. */
