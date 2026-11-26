@@ -90,7 +90,13 @@ test('Given no model and no budget, when the launch is built, then neither optio
   const l = H.buildHeadlessLaunch(f.opts());
   assert.ok(!l.argv.includes('--model'));
   assert.ok(!l.argv.includes('--max-budget-usd'));
-  assert.ok(!l.argv.includes('--permission-mode'));
+});
+
+test('Given no permission mode, when the launch is built, then dontAsk is passed, so the owner\'s default mode never decides', (t) => {
+  const f = floor(t);
+  const l = H.buildHeadlessLaunch(f.opts());
+  assert.equal(l.argv.filter((a) => a === '--permission-mode').length, 1);
+  assert.equal(l.argv[l.argv.indexOf('--permission-mode') + 1], 'dontAsk');
 });
 
 test('Given a built launch, when the app\'s launch-line reader reads it, then every option is understood and the settings file is the generated one', (t) => {

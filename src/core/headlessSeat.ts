@@ -61,6 +61,11 @@ export const HEADLESS_SEAT_ENV: readonly string[] = [
  *  such a write instead. */
 export const HEADLESS_PERMISSION_MODES: readonly string[] = ['default', 'acceptEdits', 'plan', 'dontAsk'];
 
+/** The mode passed when the caller names none. A mode is always passed: without one the session would take the
+ *  owner's permissions.defaultMode, which may be bypassPermissions. dontAsk refuses anything not already allowed,
+ *  which is the right answer when nobody is there to be asked. */
+export const HEADLESS_DEFAULT_PERMISSION_MODE = 'dontAsk';
+
 /** The default bound on each of the CLI's stdout and stderr, in bytes. The JSON result of one turn is far smaller; a
  *  stream past this is a CLI gone wrong, and keeping all of it would grow the app's memory without limit. */
 export const HEADLESS_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
@@ -89,7 +94,7 @@ export interface HeadlessSeatOptions {
   model?: string;
   /** Passed to --max-budget-usd. */
   maxBudgetUsd?: number;
-  /** Passed to --permission-mode; one of HEADLESS_PERMISSION_MODES. */
+  /** Passed to --permission-mode; one of HEADLESS_PERMISSION_MODES. Defaults to HEADLESS_DEFAULT_PERMISSION_MODE. */
   permissionMode?: string;
   /** The seat's own hive values (names on HEADLESS_SEAT_ENV only). */
   seatEnv?: Record<string, string>;
@@ -232,7 +237,7 @@ export function buildHeadlessLaunch(o: HeadlessSeatOptions): HeadlessLaunch {
   const argv = [o.cliPath ?? 'claude', '-p', '--output-format', 'json', '--settings', settingsFile, '--setting-sources', CLAUDE_USER_SOURCES];
   if (o.model) argv.push('--model', o.model);
   if (o.maxBudgetUsd !== undefined) argv.push('--max-budget-usd', String(o.maxBudgetUsd));
-  if (o.permissionMode !== undefined) argv.push('--permission-mode', o.permissionMode);
+  argv.push('--permission-mode', o.permissionMode ?? HEADLESS_DEFAULT_PERMISSION_MODE);
   argv.push(o.prompt);
   return { argv, env, cwd: o.cwd, settingsFile, roots };
 }
