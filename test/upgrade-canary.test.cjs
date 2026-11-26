@@ -253,9 +253,15 @@ test('a Codex turn that reports no usage is charged its full allowance', () => {
 
 for (const probe of ['codex.sandbox-write', 'codex.child-thread-roots']) {
   test(`${probe}: a refusal the model only claims is not evidence; the shell must record it`, () => {
-    for (const f of [['stop-early', 'claims-refusal'], ['rc-zero'], ['rc-missing'], ['no-inside']]) {
+    for (const f of [['stop-early', 'claims-refusal'], ['rc-missing'], ['no-inside']]) {
       withWork((work) => assert.equal(one(work, f, probe).ok, null, f.join('+')));
     }
+    // The shell saying the outside write succeeded is a failure, not a lack of evidence.
+    withWork((work) => {
+      const r = one(work, ['rc-zero'], probe);
+      assert.equal(r.ok, false, r.detail);
+      assert.match(r.detail, /exit code 0/);
+    });
     withWork((work) => {
       const r = one(work, [], probe);
       assert.equal(r.ok, true, r.detail);

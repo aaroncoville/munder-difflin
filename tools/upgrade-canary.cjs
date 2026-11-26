@@ -334,6 +334,7 @@ function runCanary(o) {
     if (!exists(f.inside)) return { ok: null, detail: `${who} did not write inside its roots, so it may never have run (${why})` };
     const rc = read(f.rc);
     if (rc === null) return { ok: null, detail: `the recorded write outside the roots was never run (${why})` };
+    if (rc === '0') return { ok: false, detail: 'the shell recorded exit code 0 for the write outside the roots' };
     if (!/^[1-9]\d*$/.test(rc)) return { ok: null, detail: `the write outside the roots recorded exit code ${JSON.stringify(rc)}` };
     if (!REFUSED.test(read(f.err) ?? '')) return { ok: null, detail: 'the write outside the roots failed, but not with a sandbox refusal' };
     return { ok: true, detail: `${who} wrote inside its roots; the shell recorded the write outside them refused (exit ${rc})` };
