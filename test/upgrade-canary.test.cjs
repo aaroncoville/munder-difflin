@@ -303,6 +303,18 @@ test('only a touch of the target counts as the attempted call, not a command tha
   const stream = (command) => claudeStream([[command, true, 'PreToolUse:Bash hook error: denied by canary']]);
   assert.equal(canary.claudeEvidence(stream('touch /w/t'), '/w/t').attempted, true);
   assert.equal(canary.claudeEvidence(stream('echo touch /w/t'), '/w/t').attempted, false);
+  assert.equal(canary.claudeEvidence(stream('touch /w/t-other'), '/w/t').attempted, false);
+  assert.equal(canary.claudeEvidence(stream('touch /elsewhere; echo /w/t'), '/w/t').attempted, false);
+  assert.equal(canary.claudeEvidence(stream('touch /w/t /w/u'), '/w/t').attempted, false);
+  assert.equal(canary.claudeEvidence(stream("touch '/w/t'"), '/w/t').attempted, true);
+  assert.equal(canary.claudeEvidence(stream('  touch /w/t\n'), '/w/t').attempted, true);
+  // A model asked for exit codes may echo $? after the touch; nothing else may follow it.
+  for (const ok of ['touch /w/t; echo "exit=$?"', 'touch /w/t && echo $?', 'touch /w/t 2>&1; echo $?']) {
+    assert.equal(canary.claudeEvidence(stream(ok), '/w/t').attempted, true, ok);
+  }
+  for (const bad of ['touch /w/t; touch /w/u', 'touch /w/t; echo $(cat /etc/hosts)', 'touch /w/t; echo $?; rm -f /w/t', 'touch /w/t | tee /w/u']) {
+    assert.equal(canary.claudeEvidence(stream(bad), '/w/t').attempted, false, bad);
+  }
 });
 
 test("a work folder that already holds files is refused: a previous run's files could pass a probe", () => {
