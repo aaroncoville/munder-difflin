@@ -44,9 +44,10 @@ const path = require('node:path');
 const { builtinModules } = require('node:module');
 const ts = require('typescript');
 
-const root = path.join(__dirname, '..');
-const coreDir = path.join(root, 'src', 'core');
-const sharedDir = path.join(root, 'src', 'shared');
+/** The folders the rule is about, in the repository whose root is `root`. */
+function treeAt(root) {
+  return { root, coreDir: path.join(root, 'src', 'core'), sharedDir: path.join(root, 'src', 'shared') };
+}
 const SCRIPT = /\.[cm]?[jt]sx?$/;
 const EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'];
 // An ESM-style specifier names the emitted file; the source has the TS extension.
@@ -57,7 +58,7 @@ const PACKAGES = new Set(['smol-toml']);
 
 const inside = (dir, p) => p === dir || p.startsWith(dir + path.sep);
 const real = (p) => fs.realpathSync(p);
-const rel = (p) => path.relative(root, p);
+const rel = (tree, p) => path.relative(tree.root, p);
 
 function scripts(dir) {
   const out = [];
@@ -80,11 +81,11 @@ function forbiddenPackage(pkg) {
 }
 
 /** Where a relative or aliased specifier points on disk; null for a bare one. */
-function target(file, spec) {
+function target(tree, file, spec) {
   if (spec.startsWith('.') || path.isAbsolute(spec)) return path.resolve(path.dirname(file), spec);
   // The path aliases (see electron.vite.config.ts).
-  if (spec.startsWith('@/')) return path.join(root, 'src/renderer/src', spec.slice(2));
-  if (spec.startsWith('@shared/')) return path.join(sharedDir, spec.slice('@shared/'.length));
+  if (spec.startsWith('@/')) return path.join(tree.root, 'src/renderer/src', spec.slice(2));
+  if (spec.startsWith('@shared/')) return path.join(tree.sharedDir, spec.slice('@shared/'.length));
   return null;
 }
 
@@ -100,25 +101,26 @@ function resolveFile(base) {
 }
 
 /** Why `spec`, imported by `file`, breaks the boundary (null if it does not), and the shared file to follow. */
-function judge(file, spec) {
-  const t = target(file, spec);
+function judge(tree, file, spec) {
+  const t = target(tree, file, spec);
   if (t === null) {
     if (spec.startsWith('node:') || builtinModules.includes(spec)) return {};
     const pkg = packageOf(spec);
     if (forbiddenPackage(pkg)) return { why: `${spec} is the forbidden package ${pkg}` };
     return PACKAGES.has(pkg) ? {} : { why: `${spec} is the package ${pkg}, which is not on the allowlist of packages core may use` };
   }
-  const zones = inside(coreDir, file) ? [coreDir, sharedDir] : [sharedDir];
+  const zones = inside(tree.coreDir, file) ? [tree.coreDir, tree.sharedDir] : [tree.sharedDir];
+  const named = zones.map((z) => rel(tree, z)).join(' and ');
   if (!zones.some((z) => inside(z, t))) {
-    return { why: `${spec} resolves to ${rel(t)}, outside ${zones.map(rel).join(' and ')}` };
+    return { why: `${spec} resolves to ${rel(tree, t)}, outside ${named}` };
   }
   const resolved = resolveFile(t);
   if (!resolved) return { why: `${spec} resolves to no file` };
   const where = real(resolved);
   if (!zones.some((z) => inside(real(z), where))) {
-    return { why: `${spec} resolves through a symlink to ${where}, outside ${zones.map(rel).join(' and ')}` };
+    return { why: `${spec} resolves through a symlink to ${where}, outside ${named}` };
   }
-  return { follow: inside(sharedDir, resolved) && SCRIPT.test(resolved) ? resolved : null };
+  return { follow: inside(tree.sharedDir, resolved) && SCRIPT.test(resolved) ? resolved : null };
 }
 
 function specifiers(file) {
@@ -184,24 +186,30 @@ function loaderOffences(file) {
 }
 
 /** Every offence reachable from `file`, following imports into src/shared. */
-function offendersFrom(file, chain, seen, offenders) {
-  const here = [...chain, rel(file)].join(' -> ');
+function offendersFrom(tree, file, chain, seen, offenders) {
+  const here = [...chain, rel(tree, file)].join(' -> ');
   for (const offence of loaderOffences(file)) offenders.push(`${here}:${offence}`);
   for (const spec of specifiers(file)) {
-    const { why, follow } = judge(file, spec);
-    if (why) offenders.push(`${[...chain, rel(file)].join(' -> ')}: ${why}`);
+    const { why, follow } = judge(tree, file, spec);
+    if (why) offenders.push(`${[...chain, rel(tree, file)].join(' -> ')}: ${why}`);
     else if (follow && !seen.has(follow)) {
       seen.add(follow);
-      offendersFrom(follow, [...chain, rel(file)], seen, offenders);
+      offendersFrom(tree, follow, [...chain, rel(tree, file)], seen, offenders);
     }
   }
   return offenders;
 }
 
-test('src/core reaches only src/core, src/shared, Node builtins and non-Electron packages, directly or through src/shared', () => {
-  const files = scripts(coreDir);
+/** Every offence in the src/core of the repository whose root is `root`. */
+function boundaryOffenders(root) {
+  const tree = treeAt(root);
+  const files = scripts(tree.coreDir);
   assert.ok(files.length > 0, 'src/core has no script files to check');
   const offenders = [];
-  for (const file of files) offendersFrom(file, [], new Set(), offenders);
-  assert.deepEqual(offenders, []);
+  for (const file of files) offendersFrom(tree, file, [], new Set(), offenders);
+  return offenders;
+}
+
+test('src/core reaches only src/core, src/shared, Node builtins and non-Electron packages, directly or through src/shared', () => {
+  assert.deepEqual(boundaryOffenders(path.join(__dirname, '..')), []);
 });
