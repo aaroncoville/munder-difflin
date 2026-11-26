@@ -18,10 +18,14 @@
  * Like every service outside the app, this only writes files: one append, never a commit. The row goes out in one
  * write to a file opened for appending, so it cannot interleave with the app's rows, and never through a link.
  */
-import { closeSync, constants, openSync, writeSync } from 'node:fs';
-import { join } from 'node:path';
+import { closeSync, constants, linkSync, lstatSync, mkdirSync, openSync, realpathSync, rmSync, writeSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { basename, isAbsolute, join, relative } from 'node:path';
 import { parseHeadlessOutput, type HeadlessRun } from './headlessSeat';
 import { isPlainObject } from './launchLine';
+import { isSafeMessageId } from './messageId';
+import { assertRealFolder } from './sentFolder';
+import { seatWriteRoots } from './writeRoots';
 
 export const COST_LEDGER_FILE = 'cost-ledger.jsonl';
 
@@ -97,4 +101,119 @@ export function recordHeadlessCost(hiveRoot: string, agentId: string, run: Headl
   } finally {
     if (fd !== null) closeSync(fd);
   }
+}
+
+/*
+ * The done-check. A stream's brief names the file its run produces, and the run is done only when that file is
+ * there: a regular file (not a link, wherever it points), not empty, and inside the seat's write roots
+ * (seatWriteRoots), judged on its real path so a linked folder cannot lead the check out of them. Otherwise the
+ * result says why it is not done.
+ *
+ * Only a done run tells god, with one message in the hive's mail format, written into the seat's own outbox for the
+ * app to deliver like any agent's mail: a JSON file named by its own id, with to, act ("done", which is terminal, so
+ * god does not reply), subject and body. Writing into god's inbox directly would bypass the router, which is the
+ * only writer of inboxes.
+ */
+
+export interface HeadlessSeatPlace {
+  hiveRoot: string;
+  agentId: string;
+  isGod?: boolean;
+  /** The seat's working folder. */
+  cwd: string;
+}
+
+export interface HeadlessDoneCheck {
+  done: boolean;
+  /** Why the run is not done; null when it is. */
+  reason: string | null;
+}
+
+const inside = (root: string, p: string): boolean => {
+  const rel = relative(root, p);
+  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+};
+
+/** Whether the run's output file is in place: see above. Never throws. */
+export function checkHeadlessOutput(seat: HeadlessSeatPlace, outputFile: string | null): HeadlessDoneCheck {
+  const no = (reason: string): HeadlessDoneCheck => ({ done: false, reason });
+  if (!outputFile) return no('no output file was named for the run');
+  if (!isAbsolute(outputFile)) return no(`the output file ${outputFile} is not an absolute path`);
+  let st;
+  try { st = lstatSync(outputFile); } catch { return no(`the output file ${outputFile} does not exist`); }
+  if (st.isSymbolicLink()) return no(`the output file ${outputFile} is a link, not the file itself`);
+  if (!st.isFile()) return no(`the output file ${outputFile} is not a regular file`);
+  if (st.size === 0) return no(`the output file ${outputFile} is empty`);
+  let real: string;
+  try { real = realpathSync(outputFile); } catch { return no(`the output file ${outputFile} cannot be resolved`); }
+  const roots = seatWriteRoots({ root: seat.hiveRoot, agentId: seat.agentId, isGod: seat.isGod === true, cwd: seat.cwd });
+  const realRoots = roots.flatMap((r) => { try { return [realpathSync(r)]; } catch { return []; } });
+  if (!realRoots.some((r) => inside(r, real))) return no(`the output file ${outputFile} is outside the seat's write roots`);
+  return { done: true, reason: null };
+}
+
+/** A message as an agent writes it into its outbox (PROTOCOL.md); the router fills in the rest. */
+export interface OutboxMessage {
+  id: string;
+  to: string;
+  act: 'done' | 'inform';
+  subject: string;
+  body: string;
+  created_at: string;
+}
+
+/** A message id in the router's own form (time stamp, then random hex), always a safe file name. */
+function mintMessageId(now: number): string {
+  return `${new Date(now).toISOString().replace(/[:.]/g, '-')}-headless-${randomBytes(4).toString('hex')}`;
+}
+
+/** At most this much of the run's result text goes into the message. */
+const RESULT_EXCERPT = 2000;
+
+/** The message that tells god a run is done: what produced what, at what cost. */
+export function headlessDoneMessage(agentId: string, run: HeadlessRun, outputFile: string, cost: { costRecorded: boolean; costReason: string | null }, now = Date.now()): OutboxMessage {
+  const usd = run.totalCostUsd === null ? 'unknown' : `$${run.totalCostUsd}`;
+  const ledger = cost.costRecorded ? 'recorded in cost-ledger.jsonl' : `not recorded: ${cost.costReason ?? 'no reason given'}`;
+  const result = run.result === null ? '' : run.result.length > RESULT_EXCERPT ? `${run.result.slice(0, RESULT_EXCERPT)}...` : run.result;
+  const body = [
+    `The headless run for ${agentId} is done: its output file is in place.`,
+    `Output: ${outputFile}`,
+    `Exit: exit ${run.exitCode ?? 'none'}${run.subtype ? ` (${run.subtype})` : ''}`,
+    `Cost: ${usd} (${ledger})`,
+    `Session: ${run.sessionId ?? 'none'}`,
+    ...(result ? ['', 'Result:', result] : []),
+  ].join('\n');
+  return { id: mintMessageId(now), to: 'god', act: 'done', subject: `Headless run done: ${basename(outputFile)}`.replace(/[\r\n]+/g, ' '), body, created_at: new Date(now).toISOString() };
+}
+
+/** How many fresh ids to try when a name is already taken. */
+const MAX_ID_ATTEMPTS = 100;
+
+/** Write `msg` into `<hiveRoot>/agents/<agentId>/outbox/<id>.json` and return the id used. The file appears whole
+ *  (written under a name the router skips, then linked into place without replacing anything), and the agent
+ *  folder and outbox must be real folders, never links. Throws when it cannot. */
+export function writeOutboxMessage(hiveRoot: string, agentId: string, msg: OutboxMessage): string {
+  const folder = join(hiveRoot, 'agents', agentId);
+  assertRealFolder(folder);
+  const outbox = join(folder, 'outbox');
+  try { mkdirSync(outbox); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e; }
+  assertRealFolder(outbox);
+  const temp = join(outbox, `.headless-${randomBytes(6).toString('hex')}.tmp`);
+  let id = msg.id;
+  try {
+    for (let attempt = 0; attempt < MAX_ID_ATTEMPTS; attempt++, id = mintMessageId(Date.now())) {
+      if (!isSafeMessageId(id)) continue;
+      const fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o644);
+      try { writeSync(fd, JSON.stringify({ ...msg, id }, null, 2)); } finally { closeSync(fd); }
+      try {
+        linkSync(temp, join(outbox, `${id}.json`));
+        return id;
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+      }
+    }
+  } finally {
+    rmSync(temp, { force: true });
+  }
+  throw new Error('no free message id in the outbox');
 }

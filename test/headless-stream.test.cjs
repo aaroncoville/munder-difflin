@@ -123,3 +123,143 @@ test('Given the ledger path is a link to a file elsewhere, when a cost is record
   assert.match(c.costReason, /append failed/);
   assert.equal(fs.readFileSync(elsewhere, 'utf8'), 'keep\n');
 });
+
+// --- done-check ----------------------------------------------------------------------------------------------------
+// A run is done only when the output file its brief names exists, is a regular file (not a link, whatever it points
+// at), is not empty, and lies inside the seat's write roots (writeRoots.ts seatWriteRoots), judged on its real path.
+
+/** A hive with the seat's folder and evidence/, and a working folder outside it. */
+function seat(t) {
+  const h = hive(t);
+  fs.mkdirSync(path.join(h.root, 'evidence'));
+  const cwd = path.join(h.base, 'work');
+  fs.mkdirSync(cwd);
+  return { ...h, cwd, ctx: { hiveRoot: h.root, agentId: 'ag1', isGod: false, cwd } };
+}
+
+test('Given a non-empty output file in the working folder, the seat folder or evidence/, when the output is checked, then the run is done', (t) => {
+  const s = seat(t);
+  for (const file of [path.join(s.cwd, 'out.md'), path.join(s.root, 'agents', 'ag1', 'out.md'), path.join(s.root, 'evidence', 'out.md')]) {
+    fs.writeFileSync(file, 'findings\n');
+    assert.deepEqual(S.checkHeadlessOutput(s.ctx, file), { done: true, reason: null }, file);
+  }
+});
+
+test('Given no output file was named, or it is missing, when the output is checked, then the run is not done', (t) => {
+  const s = seat(t);
+  const a = S.checkHeadlessOutput(s.ctx, null);
+  assert.equal(a.done, false);
+  assert.match(a.reason, /no output file/);
+  const b = S.checkHeadlessOutput(s.ctx, path.join(s.cwd, 'missing.md'));
+  assert.equal(b.done, false);
+  assert.match(b.reason, /does not exist/);
+});
+
+test('Given an empty output file, when the output is checked, then the run is not done', (t) => {
+  const s = seat(t);
+  fs.writeFileSync(path.join(s.cwd, 'out.md'), '');
+  const r = S.checkHeadlessOutput(s.ctx, path.join(s.cwd, 'out.md'));
+  assert.equal(r.done, false);
+  assert.match(r.reason, /empty/);
+});
+
+test('Given an output path that is a folder, when the output is checked, then the run is not done', (t) => {
+  const s = seat(t);
+  fs.mkdirSync(path.join(s.cwd, 'out.md'));
+  const r = S.checkHeadlessOutput(s.ctx, path.join(s.cwd, 'out.md'));
+  assert.equal(r.done, false);
+  assert.match(r.reason, /not a regular file/);
+});
+
+test('Given an output file outside the seat\'s write roots (elsewhere, or another hive file), when the output is checked, then the run is not done', (t) => {
+  const s = seat(t);
+  for (const file of [path.join(s.base, 'elsewhere.md'), path.join(s.root, 'tasks.json')]) {
+    fs.writeFileSync(file, 'x\n');
+    const r = S.checkHeadlessOutput(s.ctx, file);
+    assert.equal(r.done, false, file);
+    assert.match(r.reason, /outside the seat's write roots/);
+  }
+});
+
+test('Given an output path that is a link, even to a real file inside the roots, when the output is checked, then the run is not done', (t) => {
+  const s = seat(t);
+  fs.writeFileSync(path.join(s.base, 'elsewhere.md'), 'x\n');
+  fs.writeFileSync(path.join(s.cwd, 'real.md'), 'x\n');
+  fs.symlinkSync(path.join(s.base, 'elsewhere.md'), path.join(s.cwd, 'out.md'));
+  fs.symlinkSync(path.join(s.cwd, 'real.md'), path.join(s.cwd, 'alias.md'));
+  for (const name of ['out.md', 'alias.md']) {
+    const r = S.checkHeadlessOutput(s.ctx, path.join(s.cwd, name));
+    assert.equal(r.done, false, name);
+    assert.match(r.reason, /link/);
+  }
+});
+
+test('Given an output file reached through a linked folder that leads out of the roots, when the output is checked, then the run is not done', (t) => {
+  const s = seat(t);
+  fs.mkdirSync(path.join(s.base, 'outside'));
+  fs.writeFileSync(path.join(s.base, 'outside', 'out.md'), 'x\n');
+  fs.symlinkSync(path.join(s.base, 'outside'), path.join(s.cwd, 'linked'));
+  const r = S.checkHeadlessOutput(s.ctx, path.join(s.cwd, 'linked', 'out.md'));
+  assert.equal(r.done, false);
+  assert.match(r.reason, /outside the seat's write roots/);
+});
+
+test('Given a relative output path, when the output is checked, then the run is not done', (t) => {
+  const s = seat(t);
+  const r = S.checkHeadlessOutput(s.ctx, 'out.md');
+  assert.equal(r.done, false);
+  assert.match(r.reason, /absolute/);
+});
+
+// --- done message --------------------------------------------------------------------------------------------------
+// A done run sends god one message in the hive's mail format, written into the seat's own outbox for the app to
+// deliver: a JSON file named by its own safe id, with to, act, subject and body.
+
+const { isSafeMessageId } = loadTs('src/core/messageId.ts');
+
+test('Given a done run, when its message is written, then the seat\'s outbox holds exactly one well-formed message to god and nothing else', (t) => {
+  const s = seat(t);
+  const out = path.join(s.cwd, 'out.md');
+  const cost = { costRecorded: true, costReason: null, row: null };
+  const msg = S.headlessDoneMessage('ag1', run({ outputFile: out }), out, cost, Date.UTC(2026, 10, 26, 12));
+  const id = S.writeOutboxMessage(s.root, 'ag1', msg);
+  const outbox = path.join(s.root, 'agents', 'ag1', 'outbox');
+  assert.deepEqual(fs.readdirSync(outbox), [`${id}.json`], 'one message, and no temporary file left behind');
+  assert.ok(isSafeMessageId(id));
+  const m = JSON.parse(fs.readFileSync(path.join(outbox, `${id}.json`), 'utf8'));
+  assert.deepEqual(Object.keys(m).sort(), ['act', 'body', 'created_at', 'id', 'subject', 'to']);
+  assert.equal(m.id, id);
+  assert.equal(m.to, 'god');
+  assert.equal(m.act, 'done', 'a terminal act: god does not reply to it');
+  assert.equal(m.created_at, '2026-11-26T12:00:00.000Z');
+  assert.match(m.subject, /out\.md/);
+  assert.ok(!m.subject.includes('\n'), 'the subject is one line');
+  assert.match(m.body, new RegExp(out.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(m.body, /exit 0/);
+  assert.match(m.body, /\$0\.0042/);
+  assert.match(m.body, new RegExp(SESSION));
+});
+
+test('Given a done run whose cost was not recorded, when its message is built, then the body says the cost and why it is not in the ledger', () => {
+  const m = S.headlessDoneMessage('ag1', run({ totalCostUsd: null }), '/w/out.md', { costRecorded: false, costReason: 'the CLI reported no cost', row: null }, 0);
+  assert.match(m.body, /unknown/);
+  assert.match(m.body, /the CLI reported no cost/);
+});
+
+test('Given two messages written in the same instant, when both are written, then each gets its own file', (t) => {
+  const s = seat(t);
+  const msg = S.headlessDoneMessage('ag1', run(), '/w/out.md', { costRecorded: true, costReason: null, row: null }, 0);
+  const a = S.writeOutboxMessage(s.root, 'ag1', msg);
+  const b = S.writeOutboxMessage(s.root, 'ag1', msg);
+  assert.notEqual(a, b);
+  assert.equal(fs.readdirSync(path.join(s.root, 'agents', 'ag1', 'outbox')).length, 2);
+});
+
+test('Given the seat\'s outbox is a link to a folder elsewhere, when a message is written, then it is refused and nothing lands through the link', (t) => {
+  const s = seat(t);
+  fs.mkdirSync(path.join(s.base, 'elsewhere'));
+  fs.symlinkSync(path.join(s.base, 'elsewhere'), path.join(s.root, 'agents', 'ag1', 'outbox'));
+  const msg = S.headlessDoneMessage('ag1', run(), '/w/out.md', { costRecorded: true, costReason: null, row: null }, 0);
+  assert.throws(() => S.writeOutboxMessage(s.root, 'ag1', msg), /not a real folder/);
+  assert.deepEqual(fs.readdirSync(path.join(s.base, 'elsewhere')), []);
+});
