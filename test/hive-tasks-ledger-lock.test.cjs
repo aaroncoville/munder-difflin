@@ -10,7 +10,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const loadTs = require('./load-ts.cjs');
 const { allCommitsIdle } = loadTs('src/core/hiveCommit.ts');
 const { HiveManager } = loadTs('src/main/hive.ts');
@@ -85,4 +85,17 @@ test('addTask from the app and another process adding cards at the same time los
   const lost = [];
   for (const who of ['app', 'svc']) for (let i = 0; i < N; i++) if (!got.has(`${who}-${i}`)) lost.push(`${who}-${i}`);
   assert.deepEqual(lost, [], `${lost.length} of ${2 * N} cards lost`);
+});
+
+test('the hive repository ignores the ledger lock, its break-aside copies and the temporary files', (t) => {
+  const { hive } = floor(t);
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'md-ledger-ignore-'));
+  t.after(() => fs.rmSync(repo, { recursive: true, force: true }));
+  fs.copyFileSync(path.join(hive.root(), '.gitignore'), path.join(repo, '.gitignore'));
+  assert.equal(spawnSync('git', ['init', '-q'], { cwd: repo }).status, 0);
+  const ignored = (name) => spawnSync('git', ['check-ignore', '-q', name], { cwd: repo }).status === 0;
+  for (const name of ['tasks.json.lock', 'tasks.json.lock.stale-0a1b2c3d4e5f', '.tasks.json.tmp-123-0a1b2c3d4e5f', '.tasks.json.lock.tmp-123-0a1b2c3d4e5f']) {
+    assert.ok(ignored(name), `${name} would be committed`);
+  }
+  assert.ok(!ignored('tasks.json'), 'the ledger itself is still committed');
 });
