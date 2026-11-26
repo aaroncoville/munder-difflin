@@ -6,7 +6,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const loadTs = require('./load-ts.cjs');
 
-const { classifyCommand, classifyHeavy } = loadTs('src/main/heavyJob.ts');
+const { classifyCommand, classifyHeavy } = loadTs('src/core/heavyJob.ts');
 
 const SUITES = [
   './gradlew test', 'gradle test', 'gradle check', './gradlew build', 'cd api && ./gradlew test -q > ../api.log 2>&1',

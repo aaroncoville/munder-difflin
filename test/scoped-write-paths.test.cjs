@@ -14,7 +14,7 @@ const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 const { codexTestBase } = require('./codex-test-home.cjs');
 
-const { refusedWrite } = loadTs('src/main/writeRoots.ts');
+const { refusedWrite } = loadTs('src/core/writeRoots.ts');
 
 function floor(t) {
   const base = codexTestBase(t, 'mdwp-');

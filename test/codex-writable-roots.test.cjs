@@ -8,7 +8,7 @@ const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 const { codexTestBase, removeDir } = require('./codex-test-home.cjs');
 
-const { withCodexWritableRoots } = loadTs('src/shared/codexWritableRoots.ts');
+const { withCodexWritableRoots } = loadTs('src/core/codexWritableRoots.ts');
 const { HiveManager } = loadTs('src/main/hive.ts');
 
 /** Codex rejects `--add-dir` (and `-c sandbox_workspace_write.writable_roots`)

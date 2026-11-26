@@ -65,9 +65,9 @@ async function setup(t, result) {
     ptyManager: { spawn: () => result },
     analytics: { track: (...a) => calls.push(['analytics', a[0]]) },
     spawnFailReason: () => 'spawn_error',
-    relocationEnv: loadTs('src/main/launchLine.ts').relocationEnv,
+    relocationEnv: loadTs('src/core/launchLine.ts').relocationEnv,
     buildPtyEnv: loadTs('src/main/ptyEnv.ts').buildPtyEnv,
-    HookRuntimeUnavailable: loadTs('src/main/hookRuntime.ts').HookRuntimeUnavailable,
+    HookRuntimeUnavailable: loadTs('src/core/hookRuntime.ts').HookRuntimeUnavailable,
     refuseSpawn: async () => ({ ok: false, error: 'refused' }),
   };
   const run = vm.runInNewContext(liveTail(), context);

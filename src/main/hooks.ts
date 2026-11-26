@@ -15,14 +15,14 @@ import { existsSync, rmSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { Notification, type WebContents } from 'electron';
 import type { HiveManager } from './hive';
-import { gateHeavyCall, settleHeavyCall, type HeavyJobLock } from './heavyJob';
+import { gateHeavyCall, settleHeavyCall, type HeavyJobLock } from '../core/heavyJob';
 import type { HarnessConfig } from './config';
 import type { ControlRegistry } from './control';
 import type { CircuitBreaker } from '../core/breaker';
 import { estimateCostUsd } from '../core/pricing';
 import { validateHookEvent } from '../shared/hookEvents';
 import { frameIds } from '../core/usageEvents';
-import { isProtectedWrite, refusedWrite, type RootsContext } from './writeRoots';
+import { isProtectedWrite, refusedWrite, type RootsContext } from '../core/writeRoots';
 
 /** Maximum JSON payload bytes in one newline-delimited hook frame. */
 const MAX_HOOK_FRAME_BYTES = 256 * 1024;

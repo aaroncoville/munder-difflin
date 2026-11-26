@@ -20,7 +20,7 @@ const { codexTestBase, jailHome } = require('./codex-test-home.cjs');
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { setHelperSettingsDir } = loadTs('src/main/hiddenClaude.ts');
 let registry = null;
-try { registry = loadTs('src/main/privateDirs.ts'); } catch { /* none yet */ }
+try { registry = loadTs('src/core/privateDirs.ts'); } catch { /* none yet */ }
 const needRegistry = () => { if (!registry) assert.fail('there is no registry of the app\'s private folders'); return registry; };
 
 /** HOME, the hive and the working folders are outside the app's data folder, as on a real machine. */

@@ -298,7 +298,7 @@ test('a thread record that is not exactly the app\'s shape is not carried over, 
 });
 
 test('an interrupted migration leaves no partial file, writes no marker, and the next start finishes it', (t) => {
-  const { migrateSeatHome } = loadTs('src/main/codexSeatHome.ts');
+  const { migrateSeatHome } = loadTs('src/core/codexSeatHome.ts');
   const root = codexTestBase(t, 'mdsi-');
   const agent = path.join(root, 'agent');
   const legacy = path.join(agent, '.codex');
@@ -324,7 +324,7 @@ test('an interrupted migration leaves no partial file, writes no marker, and the
 });
 
 test('migration caps each file and never follows a link', (t) => {
-  const { migrateSeatHome } = loadTs('src/main/codexSeatHome.ts');
+  const { migrateSeatHome } = loadTs('src/core/codexSeatHome.ts');
   const root = fs.realpathSync(fs.mkdtempSync('/tmp/mdsm-'));
   t.after(async () => removeDir(root));
   const agent = path.join(root, 'agent');
@@ -373,7 +373,7 @@ let codex = null;
 try { codex = execFileSync('/bin/sh', ['-c', 'command -v codex'], { encoding: 'utf8' }).trim() || null; } catch { /* not installed */ }
 
 test('with the real CLI: generated hooks get trusted, a planted project hook refuses the start', { skip: !codex && 'codex CLI not installed', timeout: 30_000 }, async (t) => {
-  const { seedCodexHookTrust } = loadTs('src/main/codexHookTrust.ts');
+  const { seedCodexHookTrust } = loadTs('src/core/codexHookTrust.ts');
   const f = fixture(t);
   // Another agent's plant at the old home location: no effect on trust.
   fs.mkdirSync(path.join(f.agentDir('c'), '.codex'), { recursive: true });
@@ -402,7 +402,7 @@ test('with the real CLI: generated hooks get trusted, a planted project hook ref
 });
 
 test('with the real CLI: a planted hook whose hash is already trusted in the home still refuses the start', { skip: !codex && 'codex CLI not installed', timeout: 30_000 }, async (t) => {
-  const { seedCodexHookTrust } = loadTs('src/main/codexHookTrust.ts');
+  const { seedCodexHookTrust } = loadTs('src/core/codexHookTrust.ts');
   const f = fixture(t);
   const inj = await f.spawn('pre');
   const ctx = { home: inj.env.CODEX_HOME, cwd: f.cwd, executable: codex, env: { ...process.env, ...inj.env }, written: f.hive.codexConfigWritten(inj.env.CODEX_HOME) };
@@ -419,7 +419,7 @@ test('with the real CLI: a planted hook whose hash is already trusted in the hom
 });
 
 test('with the real CLI: generated commands replaced in the home after it was written are not trusted', { skip: !codex && 'codex CLI not installed', timeout: 30_000 }, async (t) => {
-  const { seedCodexHookTrust } = loadTs('src/main/codexHookTrust.ts');
+  const { seedCodexHookTrust } = loadTs('src/core/codexHookTrust.ts');
   const f = fixture(t);
   const inj = await f.spawn('swap');
   const ctx = { home: inj.env.CODEX_HOME, cwd: f.cwd, executable: codex, env: { ...process.env, ...inj.env }, written: f.hive.codexConfigWritten(inj.env.CODEX_HOME) };
@@ -432,7 +432,7 @@ test('with the real CLI: generated commands replaced in the home after it was wr
 });
 
 test('with the real CLI: the owner\'s own trusted hooks are allowed, an untrusted one refuses', { skip: !codex && 'codex CLI not installed', timeout: 60_000 }, async (t) => {
-  const { seedCodexHookTrust } = loadTs('src/main/codexHookTrust.ts');
+  const { seedCodexHookTrust } = loadTs('src/core/codexHookTrust.ts');
   const f = fixture(t);
   const ownerHome = path.join(f.root, '.codex');
   fs.mkdirSync(ownerHome, { recursive: true });
@@ -482,7 +482,7 @@ function listHooks({ home, cwd, executable, env }) {
 }
 
 test('the write-roots dry run reads the computed home as the config the app generated', async (t) => {
-  const W = loadTs('src/main/writeRoots.ts');
+  const W = loadTs('src/core/writeRoots.ts');
   const f = fixture(t);
   const inj = await f.spawn('dr');
   const home = inj.env.CODEX_HOME;
@@ -502,7 +502,7 @@ test('the write-roots dry run reads the computed home as the config the app gene
 });
 
 test('a source that changes while it is copied leaves no marker, and the next start copies it', (t) => {
-  const { migrateSeatHome } = loadTs('src/main/codexSeatHome.ts');
+  const { migrateSeatHome } = loadTs('src/core/codexSeatHome.ts');
   const root = codexTestBase(t, 'mdsc-');
   const agent = path.join(root, 'agent');
   const legacy = path.join(agent, '.codex');
@@ -528,7 +528,7 @@ test('a source that changes while it is copied leaves no marker, and the next st
 });
 
 test('history over a sane size is a named skip, and the migration still finishes', (t) => {
-  const { migrateSeatHome, MIGRATE_HISTORY_MAX_BYTES } = loadTs('src/main/codexSeatHome.ts');
+  const { migrateSeatHome, MIGRATE_HISTORY_MAX_BYTES } = loadTs('src/core/codexSeatHome.ts');
   assert.ok(MIGRATE_HISTORY_MAX_BYTES <= 64 * 1024 * 1024, `history cap ${MIGRATE_HISTORY_MAX_BYTES}`);
   const root = codexTestBase(t, 'mdsb-');
   const agent = path.join(root, 'agent');
@@ -582,7 +582,7 @@ test('a Codex agent cannot start while an agent the app does not sandbox is star
 });
 
 test('a source rewritten to the same size while it is copied leaves no marker, and the next start copies it whole', (t) => {
-  const { migrateSeatHome } = loadTs('src/main/codexSeatHome.ts');
+  const { migrateSeatHome } = loadTs('src/core/codexSeatHome.ts');
   const root = codexTestBase(t, 'mdss-');
   const agent = path.join(root, 'agent');
   const legacy = path.join(agent, '.codex');

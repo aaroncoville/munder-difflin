@@ -19,7 +19,7 @@ const { codexTestBase, jailHome } = require('./codex-test-home.cjs');
 const { withSeatSettings } = require('./seat-settings-dir.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
-const { sanitize } = loadTs('src/main/usageLog.ts');
+const { sanitize } = loadTs('src/core/usageLog.ts');
 
 const PROSE = 'a heron stood very still in the shallow green water of the millpond';
 const hookFile = (event, command) => JSON.stringify({ hooks: { [event]: [{ matcher: 'Bash', hooks: [{ type: 'command', command }] }] } });
@@ -131,7 +131,7 @@ test('a source that cannot be read is counted as null, and the spawn goes on', a
 });
 
 test('a source file that is a folder, a pipe or a link reads as null, without blocking or following it', { skip: process.platform === 'win32' }, (t) => {
-  const { claudeFileHooks, hookInventoryRow } = loadTs('src/main/hookInventory.ts');
+  const { claudeFileHooks, hookInventoryRow } = loadTs('src/core/hookInventory.ts');
   const base = codexTestBase(t, 'mdhiu-');
   const ok = path.join(base, 'ok.json');
   fs.writeFileSync(ok, hookFile('Stop', 'x'));

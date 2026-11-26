@@ -12,9 +12,9 @@ const loadTs = require('./load-ts.cjs');
 const { withSeatSettings, seatFile } = require('./seat-settings-dir.cjs');
 const { codexTestBase, removeDir } = require('./codex-test-home.cjs');
 
-const W = loadTs('src/main/writeRoots.ts');
-const { UsageLog, sanitize } = loadTs('src/main/usageLog.ts');
-const { withCodexWritableRoots } = loadTs('src/shared/codexWritableRoots.ts');
+const W = loadTs('src/core/writeRoots.ts');
+const { UsageLog, sanitize } = loadTs('src/core/usageLog.ts');
+const { withCodexWritableRoots } = loadTs('src/core/codexWritableRoots.ts');
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { HookServer } = loadTs('src/main/hooks.ts');
 
@@ -744,7 +744,7 @@ test('every row of READ_SITES has a case here, and each case holds', (t) => {
       const macTmp = path.join(home, 'var-folders-T'); fs.mkdirSync(macTmp, { recursive: true });
       const r = W.rootsReport(W.effectiveRoots('claude', dir, '', home, { args: ok, claudeSettings: seatOf(dir), platform: 'darwin', env: { TMPDIR: macTmp } }), ctx);
       assert.ok(r.effective.includes('temp') && r.excess.includes('temp') && !r.excess.includes('outside hive'), 'outside the hive it is temp, not an outside-hive grant: ' + JSON.stringify(r)); assert.ok(W.effectiveRoots('codex', dir, '', home, { args: ['codex -s workspace-write'], platform: 'darwin', env: { ...cx, TMPDIR: path.join(root, 'research') }, codexHomeFromApp: true }).roots.includes(path.join(root, 'research'))); assert.ok(W.effectiveRoots('claude', dir, '', home, { args: ok, claudeSettings: seatOf(dir), platform: 'darwin', env: { CLAUDE_CODE_TMPDIR: path.join(root, 'bin') } }).roots.includes(path.join(root, 'bin'))); assert.equal(W.effectiveRoots('claude', dir, '', home, { args: ok, claudeSettings: seatOf(dir), platform: 'darwin', env: { TMPDIR: 'rel' } }).state, 'unknown'); },
-    'launch-executable-name': () => { const L = loadTs('src/main/launchLine.ts'); assert.equal(L.launchExecutable(['/opt/anything/bin/claude --x']), 'claude', 'judged by name'); assert.equal(L.launchExecutable(['claude-wrapper']), null); },
+    'launch-executable-name': () => { const L = loadTs('src/core/launchLine.ts'); assert.equal(L.launchExecutable(['/opt/anything/bin/claude --x']), 'claude', 'judged by name'); assert.equal(L.launchExecutable(['claude-wrapper']), null); },
     'relative-roots': () => { const wt = path.join(home, 'wt2'); fs.mkdirSync(path.join(wt, '.claude'), { recursive: true }); fs.writeFileSync(path.join(wt, '.claude/settings.json'), JSON.stringify({ permissions: { additionalDirectories: ['../hive/bin'] } })); const e = W.effectiveRoots('claude', dir, wt, home, { args: ok, claudeSettings: seatOf(dir), platform: 'darwin', env: {} }); assert.ok(e.roots.includes(path.join(wt, '../hive/bin')), 'against the spawn cwd'); fs.writeFileSync(path.join(wt, '.claude/settings.json'), JSON.stringify({ permissions: { additionalDirectories: ['$X/y'] } })); assert.equal(W.effectiveRoots('claude', dir, wt, home, { args: ok, claudeSettings: seatOf(dir), platform: 'darwin', env: {} }).state, 'unknown'); fs.writeFileSync(path.join(home, '.claude-rel.json'), '{}'); assert.equal(W.effectiveRoots('codex', dir, '', home, { args: ['codex -s workspace-write', '--add-dir', 'rel'], platform: 'darwin', env: cx, codexHomeFromApp: true }).state, 'unknown', 'relative with no cwd'); fs.rmSync(wt, { recursive: true }); },
     'strict-decoders': () => { assert.deepEqual(W.codexRoots('[sandbox_workspace_write]\n"writable\\u005froots" = ["/"]\n').roots, ['/'], 'an escaped key is the key it spells'); assert.equal(W.codexRoots('[sandbox_workspace_write]\nwritable_roots = "/"\n').state, 'unknown'); assert.equal(W.claudeRoots(JSON.stringify({ sandbox: { enabled: true, filesystem: 'x' } })), null); },
     'launch-wrapper': () => { for (const w of ['env X=1 claude', 'sh -c "claude"', 'npx claude']) assert.equal(W.effectiveRoots('claude', dir, '', home, { args: [w, '--settings', seatOf(dir)], platform: 'darwin', env: {} }).state, 'unknown', w); assert.equal(W.effectiveRoots('codex', dir, '', home, { args: ['npx codex -s workspace-write'], platform: 'darwin', env: cx, codexHomeFromApp: true }).state, 'unknown'); },
@@ -766,7 +766,7 @@ test('every row of READ_SITES has a case here, and each case holds', (t) => {
       assert.equal(at({ CODEX_HOME: 'cx' }, true).state, 'unknown');
     },
     'env-xdg-config-home': () => assert.equal(W.effectiveRoots('claude', dir, '', home, { args: ok, claudeSettings: seatOf(dir), platform: 'darwin', env: { XDG_CONFIG_HOME: home } }).state, 'unknown'),
-    'env-claude-unmodelled': () => { const L = loadTs('src/main/launchLine.ts'); const env = L.relocationEnv({ CLAUDE_CODE_MCP_SERVE_SETTINGS: '/x', CLAUDE_CODE_OAUTH_TOKEN: 'secret', PATH: '/bin' }); assert.deepEqual(env, { CLAUDE_CODE_MCP_SERVE_SETTINGS: '' }, 'recorded by name only; secrets and others never kept'); assert.equal(W.effectiveRoots('claude', dir, '', home, { args: ok, claudeSettings: seatOf(dir), platform: 'darwin', env }).state, 'unknown'); },
+    'env-claude-unmodelled': () => { const L = loadTs('src/core/launchLine.ts'); const env = L.relocationEnv({ CLAUDE_CODE_MCP_SERVE_SETTINGS: '/x', CLAUDE_CODE_OAUTH_TOKEN: 'secret', PATH: '/bin' }); assert.deepEqual(env, { CLAUDE_CODE_MCP_SERVE_SETTINGS: '' }, 'recorded by name only; secrets and others never kept'); assert.equal(W.effectiveRoots('claude', dir, '', home, { args: ok, claudeSettings: seatOf(dir), platform: 'darwin', env }).state, 'unknown'); },
     'claude-unknown-option': () => { assert.equal(claude(...ok, '--weird').state, 'unknown'); assert.equal(W.effectiveRoots('claude', dir, '', home, { platform: 'darwin', env: {} }).state, 'unknown', 'no launch line'); },
   };
   assert.deepEqual(Object.keys(CASES).sort(), W.READ_SITES.map((r) => r.id).sort(), 'a row with no case, or a case with no row');

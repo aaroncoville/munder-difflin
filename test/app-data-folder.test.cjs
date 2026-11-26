@@ -48,7 +48,7 @@ test('the pin runs before any other main-process module loads', () => {
 
 test('nothing renames the app at run time (it would move userData and the keychain entry)', () => {
   const offenders = [];
-  for (const dir of ['src/main', 'src/shared']) {
+  for (const dir of ['src/core', 'src/main', 'src/shared']) {
     for (const f of fs.readdirSync(path.join(root, dir))) {
       if (/\.ts$/.test(f) && /\bapp\.setName\s*\(|\bapp\.name\s*=/.test(code(`${dir}/${f}`))) offenders.push(`${dir}/${f}`);
     }

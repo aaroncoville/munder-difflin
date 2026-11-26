@@ -19,7 +19,7 @@ const loadTs = require('./load-ts.cjs');
 const { codexTestBase, jailHome } = require('./codex-test-home.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
-const { registerPrivateDir } = loadTs('src/main/privateDirs.ts');
+const { registerPrivateDir } = loadTs('src/core/privateDirs.ts');
 
 /** The file name the seat's settings must have, computed here from the two inputs alone. */
 const expectedName = (root, id) => `${crypto.createHash('sha256').update(`${fs.realpathSync(root)}\0${id}`).digest('hex')}.json`;

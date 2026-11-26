@@ -330,7 +330,7 @@ function runFleetSnapshot({ root, registry, usage, homes, pull = () => null, pty
   )(
     hive, telemetry, costTotals, breaker, hookServer, path.join,
     fleetLastActiveAt, codexAgentActiveAt, homes, new ReadingCache(30_000),
-    usageProvider, snapshotUsageFor, ptyForAgent, loadTs('src/main/codexSeatHome.ts').codexSeatHome
+    usageProvider, snapshotUsageFor, ptyForAgent, loadTs('src/core/codexSeatHome.ts').codexSeatHome
   );
   assert.ok(written, 'writeFleetSnapshot wrote a snapshot');
   return Object.fromEntries(written.agents.map((a) => [a.id, a]));

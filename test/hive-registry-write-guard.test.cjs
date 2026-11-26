@@ -19,7 +19,7 @@ const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
-const { RegistryUnreadable } = loadTs('src/main/messageTarget.ts');
+const { RegistryUnreadable } = loadTs('src/core/messageTarget.ts');
 
 async function setup(t) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-registry-guard-'));

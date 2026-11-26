@@ -3,7 +3,7 @@ import { existsSync, statSync, readdirSync, readFileSync, writeFileSync } from '
 import { join } from 'node:path';
 import { MemPalaceAdapter } from './memPalaceAdapter';
 import { HindsightAdapter } from './hindsightAdapter';
-import { registerPrivateDir } from './privateDirs';
+import { registerPrivateDir } from '../core/privateDirs';
 import type { BackendId, MemoryBackend, MemorySettings } from './memoryBackend';
 import { MINE_INTERVAL_MS } from './memoryBackend';
 export type { MemorySettings } from './memoryBackend';

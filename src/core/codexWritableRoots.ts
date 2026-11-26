@@ -1,5 +1,5 @@
 import { parse as parseToml } from 'smol-toml';
-import { tomlBasicString } from './codexTrust';
+import { tomlBasicString } from '../shared/codexTrust';
 
 /** Extra writable roots for Codex's `workspace-write` sandbox, written into a
  *  config.toml.

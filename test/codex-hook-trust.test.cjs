@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 const { codexTestBase, removeDir } = require('./codex-test-home.cjs');
-const { prepareCodexHookTrust } = loadTs('src/main/codexHookTrust.ts');
+const { prepareCodexHookTrust } = loadTs('src/core/codexHookTrust.ts');
 const { HiveManager } = loadTs('src/main/hive.ts');
 
 async function fixture(t, ownerToml) {
@@ -137,13 +137,13 @@ test('persisted trust must be acknowledged by the resolver', async t => {
 
 test('a missing CLI reports failure instead of throwing', async t => {
   const f = await fixture(t);
-  const { seedCodexHookTrust } = loadTs('src/main/codexHookTrust.ts');
+  const { seedCodexHookTrust } = loadTs('src/core/codexHookTrust.ts');
   assert.equal(await seedCodexHookTrust({ ...f.ctx, executable: path.join(f.ctx.cwd, 'missing'), env: process.env }), false);
 });
 
 test('an unresponsive CLI is terminated within the preparation budget', { skip: process.platform === 'win32' }, async t => {
   const f = await fixture(t);
-  const { seedCodexHookTrust } = loadTs('src/main/codexHookTrust.ts');
+  const { seedCodexHookTrust } = loadTs('src/core/codexHookTrust.ts');
   const executable = path.join(f.ctx.cwd, 'silent-cli');
   fs.writeFileSync(executable, `#!${process.execPath}\nprocess.stdin.resume();\n`, { mode: 0o700 });
   const start = Date.now();

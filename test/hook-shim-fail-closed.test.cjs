@@ -23,7 +23,7 @@ const { codexTestBase, jailHome, removeDir } = require('./codex-test-home.cjs');
 const { withSeatSettings } = require('./seat-settings-dir.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
-const { sanitize } = loadTs('src/main/usageLog.ts');
+const { sanitize } = loadTs('src/core/usageLog.ts');
 
 const PROSE = 'the quick brown fox jumps over a lazy dog near the riverbank at dusk';
 

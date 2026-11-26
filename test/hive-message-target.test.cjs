@@ -16,7 +16,7 @@ const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
-const { isKnownTarget, isRosterId, rosterIdFor } = loadTs('src/main/messageTarget.ts');
+const { isKnownTarget, isRosterId, rosterIdFor } = loadTs('src/core/messageTarget.ts');
 
 async function floor(t, emit) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-message-target-'));

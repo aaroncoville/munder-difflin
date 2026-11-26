@@ -26,8 +26,8 @@ import {
 } from 'node:fs';
 import { join, dirname, basename, isAbsolute, relative, resolve as resolvePath } from 'node:path';
 import { homedir } from 'node:os';
-import { CLAUDE_USER_SOURCES, claudeLaunch, claudeRootEntries, claudeRoots, codexLaunchSandbox, codexRoots, launchExecutable, launchPlaces } from './launchLine';
-import { HookRuntimeUnavailable, hookCommandFor, holds, overlaps, rootOverlap, stageHookRuntime, unsafePathReason, verifyHookRuntime, type StagedHookRuntime, type WriteRoot } from './hookRuntime';
+import { CLAUDE_USER_SOURCES, claudeLaunch, claudeRootEntries, claudeRoots, codexLaunchSandbox, codexRoots, launchExecutable, launchPlaces } from '../core/launchLine';
+import { HookRuntimeUnavailable, hookCommandFor, holds, overlaps, rootOverlap, stageHookRuntime, unsafePathReason, verifyHookRuntime, type StagedHookRuntime, type WriteRoot } from '../core/hookRuntime';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
 import type { AgentUsageSample } from '../core/usage';
@@ -37,12 +37,12 @@ import { RecentSends } from './outboxResend';
 import { setAsideUnlessFolder } from './sentFolder';
 import { COMMAND_GROUPS } from '../shared/claudeCommands';
 import { codexShortHomeRoot } from '../shared/codexRemote';
-import { PrivateDirRefused, privateDirsReach, registerPrivateDir } from './privateDirs';
-import { repoInstructions } from './repoInstructions';
-import { checkSeatSettingsTarget, seatSettingsFile, writeSeatSettings } from './seatSettings';
-import { claudeFileHooks, claudeHookEntries, hookInventoryRow, type SourceHooks } from './hookInventory';
-import { ownerHooks } from './codexHookTrust';
-import { CodexHomeRefused, codexHomesReach, codexSeatHome, existingCodexHomes, migrateSeatHome } from './codexSeatHome';
+import { PrivateDirRefused, privateDirsReach, registerPrivateDir } from '../core/privateDirs';
+import { repoInstructions } from '../core/repoInstructions';
+import { checkSeatSettingsTarget, seatSettingsFile, writeSeatSettings } from '../core/seatSettings';
+import { claudeFileHooks, claudeHookEntries, hookInventoryRow, type SourceHooks } from '../core/hookInventory';
+import { ownerHooks } from '../core/codexHookTrust';
+import { CodexHomeRefused, codexHomesReach, codexSeatHome, existingCodexHomes, migrateSeatHome } from '../core/codexSeatHome';
 import {
   argsWithSandboxStance,
   hasSandboxStance,
@@ -61,12 +61,12 @@ import { expandTilde } from './fs';
 import { refreshMineIgnoresOnce } from './hiveMineIgnore';
 import { carryHiveGitDir, excludeLine, hiveGitDirFor, hiveRepoPresent, SET_ASIDE_PREFIX, settleHiveGitDir, writeGitfile, writeMarker } from './hiveGitDir';
 import { AGENT_ALLOWLIST_IGNORE_LINES, CommitQueue, HIVE_MAINTENANCE_EVERY_MS, HIVE_MAINTENANCE_IDLE_MS, HIVE_MAINTENANCE_TASKS, HIVE_MAINTENANCE_TIMEOUT_MS, HIVE_STALE_LOCK_MS, HIVE_STALE_MAINTENANCE_LOCK_MS, maintenanceArgs, runGit, stopRunningGits, untrackIgnored, type GitResult } from './hiveCommit';
-import { agentFolderId, hasExactFolder, isAppSender, isFolderName, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, RegistryUnreadable, rosterIdFor, shortTarget } from './messageTarget';
+import { agentFolderId, hasExactFolder, isAppSender, isFolderName, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, RegistryUnreadable, rosterIdFor, shortTarget } from '../core/messageTarget';
 import { mailSender, PendingMail } from './mailLine';
 import { nodeLauncherScript } from './nodeLauncher';
 import { codexTrustEntry } from '../shared/codexTrust';
-import { withCodexWritableRoots, withOnlyCodexWritableRoots } from '../shared/codexWritableRoots';
-import { canonical, cwdHoldsHive, cwdOutsideOwnFolder, insideAny, FAIL_CLOSED_DIR, FAIL_CLOSED_FILE, ownFolderProblem, PROTECTED_WRITE_TOOLS, ScopedRootsRefused, seatRoots } from './writeRoots';
+import { withCodexWritableRoots, withOnlyCodexWritableRoots } from '../core/codexWritableRoots';
+import { canonical, cwdHoldsHive, cwdOutsideOwnFolder, insideAny, FAIL_CLOSED_DIR, FAIL_CLOSED_FILE, ownFolderProblem, PROTECTED_WRITE_TOOLS, ScopedRootsRefused, seatRoots } from '../core/writeRoots';
 import { godNameFromRegistry } from '../shared/godIdentity';
 import { appendSession } from './codexActivity';
 import { isSafeMessageId, publishMessage, sweepInboxLeftovers } from './messageId';

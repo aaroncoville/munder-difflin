@@ -16,7 +16,7 @@ const ts = require('typescript');
 const loadTs = require('./load-ts.cjs');
 const { codexTestBase, jailHome } = require('./codex-test-home.cjs');
 
-const seat = loadTs('src/main/codexSeatHome.ts');
+const seat = loadTs('src/core/codexSeatHome.ts');
 const { providerPreset } = loadTs('src/shared/agentProvider.ts');
 const SID = '01a1d072-5747-7e83-a08f-03389a2cac3f';
 

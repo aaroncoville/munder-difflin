@@ -12,7 +12,7 @@ const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 const { codexTestBase, removeDir } = require('./codex-test-home.cjs');
 
-const T = loadTs('src/main/codexHookTrust.ts');
+const T = loadTs('src/core/codexHookTrust.ts');
 const POSIX = process.platform !== 'win32';
 
 /** A stand-in for `codex app-server`: each start is logged with its time; it then behaves as `mode` says. */

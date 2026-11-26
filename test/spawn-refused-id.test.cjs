@@ -22,7 +22,7 @@ const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { codexTestBase, jailHome, removeDir } = require('./codex-test-home.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
-const { RefusedRosterId, RegistryUnreadable } = loadTs('src/main/messageTarget.ts');
+const { RefusedRosterId, RegistryUnreadable } = loadTs('src/core/messageTarget.ts');
 
 function liveProvisioning() {
   const source = fs.readFileSync(path.resolve(__dirname, '..', 'src/main/index.ts'), 'utf8');
@@ -65,8 +65,8 @@ async function setup(t, overrides = {}) {
     analytics: { track: (name, props) => events.push([name, { ...props }]) },
     worktreePaths, worktreeOrigins,
     removeWorktree: (origin, wt) => { removed.push([origin, wt]); return removal(); },
-    relocationEnv: loadTs('src/main/launchLine.ts').relocationEnv, buildPtyEnv: loadTs('src/main/ptyEnv.ts').buildPtyEnv, process,
-    RefusedRosterId, RegistryUnreadable, HookRuntimeUnavailable: loadTs('src/main/hookRuntime.ts').HookRuntimeUnavailable, CodexHomeRefused: loadTs('src/main/codexSeatHome.ts').CodexHomeRefused, PrivateDirRefused: loadTs('src/main/privateDirs.ts').PrivateDirRefused, SeatSettingsRefused: loadTs('src/main/seatSettings.ts').SeatSettingsRefused, ScopedRootsRefused: loadTs('src/main/writeRoots.ts').ScopedRootsRefused, shortTarget: loadTs('src/main/messageTarget.ts').shortTarget, isFolderName: loadTs('src/main/messageTarget.ts').isFolderName
+    relocationEnv: loadTs('src/core/launchLine.ts').relocationEnv, buildPtyEnv: loadTs('src/main/ptyEnv.ts').buildPtyEnv, process,
+    RefusedRosterId, RegistryUnreadable, HookRuntimeUnavailable: loadTs('src/core/hookRuntime.ts').HookRuntimeUnavailable, CodexHomeRefused: loadTs('src/core/codexSeatHome.ts').CodexHomeRefused, PrivateDirRefused: loadTs('src/core/privateDirs.ts').PrivateDirRefused, SeatSettingsRefused: loadTs('src/core/seatSettings.ts').SeatSettingsRefused, ScopedRootsRefused: loadTs('src/core/writeRoots.ts').ScopedRootsRefused, shortTarget: loadTs('src/core/messageTarget.ts').shortTarget, isFolderName: loadTs('src/core/messageTarget.ts').isFolderName
   };
   const run = vm.runInNewContext(liveProvisioning(), context);
   const spawn = (id) => run({ id: `pty-${id}`, cwd: home, hive: { id, name: 'x' } }, 'claude');
@@ -180,7 +180,7 @@ test('a Codex spawn refused after provisioning wrote its registry row leaves no 
   t.after(async () => removeDir(rt));
   f.real.setHookRuntime(rt);
   // Its computed home is a link, which is refused while the home is prepared: after the row was written.
-  const { codexSeatHome } = loadTs('src/main/codexSeatHome.ts');
+  const { codexSeatHome } = loadTs('src/core/codexSeatHome.ts');
   const id = 'cx1';
   const home = codexSeatHome(path.join(f.real.root(), 'agents', id), id);
   fs.mkdirSync(path.dirname(home), { recursive: true });

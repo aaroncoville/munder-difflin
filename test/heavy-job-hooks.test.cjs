@@ -19,7 +19,7 @@ require.cache[electron] = {
   exports: { Notification: class { show() {} static isSupported() { return false; } } }
 };
 
-const { HeavyJobLock } = loadTs('src/main/heavyJob.ts');
+const { HeavyJobLock } = loadTs('src/core/heavyJob.ts');
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { HookServer } = loadTs('src/main/hooks.ts');
 const REPO = path.resolve(__dirname, '..');
