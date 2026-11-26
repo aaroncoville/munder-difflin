@@ -24,7 +24,7 @@ const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 const { allCommitsIdle } = loadTs('src/core/hiveCommit.ts');
 
-const { mergeTaskLedger, patchTaskInLedger } = loadTs('src/shared/taskLedger.ts');
+const { mergeTaskLedger, patchTaskInLedger } = loadTs('src/core/taskLedger.ts');
 const { HiveManager } = loadTs('src/main/hive.ts');
 
 /** A card as the god actually writes one — most of it outside any UI model. */

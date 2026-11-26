@@ -56,7 +56,7 @@ import {
 import { MCP_CATALOG } from '../shared/mcpCatalog';
 import { selectBroadcastTargets } from '../shared/broadcast';
 import { preferredAgentRole } from '../shared/agentRole';
-import { mergeTaskLedger } from '../shared/taskLedger';
+import { mergeTaskLedger } from '../core/taskLedger';
 import { expandTilde } from './fs';
 import { refreshMineIgnoresOnce } from './hiveMineIgnore';
 import { carryHiveGitDir, excludeLine, hiveGitDirFor, hiveRepoPresent, SET_ASIDE_PREFIX, settleHiveGitDir, writeGitfile, writeMarker } from '../core/hiveGitDir';
