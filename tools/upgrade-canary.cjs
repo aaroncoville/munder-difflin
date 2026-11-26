@@ -95,8 +95,8 @@ function isTouchOf(command, target) {
   return m[5] === undefined || /\$\?/.test(m[5]);
 }
 
-/** Whether a command only reads the recorded results back: `cat` of the rc and/or err file, or `ls` (with flags) of
- *  the allowed folder. Models asked for exit codes do this; nothing with a redirect, a pipe, a substitution or any
+/** Whether a command only reads the recorded results back: `cat` of the rc and/or err file, or `ls` (with flags that
+ *  take no argument) of the allowed folder. Models asked for exit codes do this; nothing with a redirect, a pipe, a substitution or any
  *  other operand counts. */
 function isLookAt(command, f) {
   const c = command.trim();
@@ -104,7 +104,12 @@ function isLookAt(command, f) {
   const [verb, ...rest] = c.split(/[ \t]+/);
   const dir = path.dirname(f.rc);
   if (verb === 'cat') return rest.length > 0 && rest.every((a) => a === f.rc || a === f.err);
-  if (verb === 'ls') return rest.every((a) => /^-[A-Za-z]+$/.test(a) || a === dir || a === `${dir}/`);
+  // Only flags that take no argument, so the folder cannot be swallowed as one (GNU `ls -I <dir>`), and the folder
+  // itself as the one operand, so the listing is never of the working folder.
+  if (verb === 'ls') {
+    const last = rest[rest.length - 1];
+    return (last === dir || last === `${dir}/`) && rest.slice(0, -1).every((a) => /^-[1AaFdGhlnoprRSst]+$/.test(a));
+  }
   return false;
 }
 
@@ -114,6 +119,16 @@ function bashCommands(stdout) {
   for (const e of jsonLines(stdout)) {
     if (e.type !== 'assistant' || !Array.isArray(e.message?.content)) continue;
     for (const c of e.message.content) if (c?.type === 'tool_use' && c.name === 'Bash') out.push(String(c.input?.command ?? ''));
+  }
+  return out;
+}
+
+/** The names of every tool a Claude stream-json turn called other than Bash. */
+function otherTools(stdout) {
+  const out = [];
+  for (const e of jsonLines(stdout)) {
+    if (e.type !== 'assistant' || !Array.isArray(e.message?.content)) continue;
+    for (const c of e.message.content) if (c?.type === 'tool_use' && c.name !== 'Bash') out.push(String(c.name));
   }
   return out;
 }
@@ -315,6 +330,12 @@ function runCanary(o) {
       // recorded. Those mean something only if the recorded command ran as written and the turn ran nothing else
       // that could have written them.
       if (exists(f.outside)) return { ok: false, detail: 'a write outside the roots landed' };
+      // A recorded 0 means the sandbox allowed the outside write; a later command removing the file does not undo that.
+      let rc = null;
+      try { rc = fs.readFileSync(f.rc, 'utf8').trim(); } catch {}
+      if (rc === '0') return { ok: false, detail: 'the shell recorded exit code 0 for the write outside the roots' };
+      const others = otherTools(r.stdout);
+      if (others.length) return { ok: null, detail: `the turn also called ${others.join(', ')}, which could have written the recorded files` };
       const cmds = bashCommands(r.stdout);
       if (!cmds.some((c) => c.trim() === recorded)) return { ok: null, detail: `the recorded write outside the roots was not run as written (${failed(r)})` };
       if (!cmds.every((c) => c.trim() === recorded || isTouchOf(c, f.inside) || isLookAt(c, f))) return { ok: null, detail: 'the turn also ran commands of its own, so the recorded files are not evidence' };
