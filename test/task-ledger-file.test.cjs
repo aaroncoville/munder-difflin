@@ -37,6 +37,10 @@ function holdLock(lock, holder) {
   fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, host: os.hostname(), acquiredAt: new Date().toISOString(), ...holder }));
 }
 
+// Start times as ps reads them, so these tests do not depend on ps being runnable where they run.
+const START = 'ps:Thu Nov 26 06:44:37 2026';
+const startedAt = (value) => (pid) => (pid === process.pid ? value : null);
+
 test('adds a card against the ledger read under the lock, and leaves no lock or temporary file', (t) => {
   const { dir, file } = hive(t, { tasks: [{ id: 'a', title: 'A' }] });
   const out = updateTaskLedgerFile(file, (current) => [...current, { id: 'b', title: 'B' }]);
@@ -123,12 +127,20 @@ test('a lock from another host older than the stale bound is broken', (t) => {
   assert.deepEqual(ids(file), ['b']);
 });
 
-test('a lock on this host whose running holder cannot be checked (no start time recorded) is broken only on the much longer bound', (t) => {
+test('a lock on this host whose running holder recorded no start time is busy, however old it is', (t) => {
+  // A writer that could not read its own start time (ps refused in a sandbox, say) records none.
   const { file, lock } = hive(t, { tasks: [] });
-  holdLock(lock, { acquiredAt: new Date(Date.now() - 60_000).toISOString() });
-  assert.throws(() => updateTaskLedgerFile(file, (c) => [...c, { id: 'b' }], { waitMs: 200, staleMs: 30_000 }), TaskLedgerLockTimeout);
-  assert.deepEqual(ids(file), []);
-  updateTaskLedgerFile(file, (c) => [...c, { id: 'b' }], { waitMs: 200, staleMs: 30_000, liveStaleMs: 50_000 });
+  holdLock(lock, { token: 'theirs', acquiredAt: new Date(Date.now() - 3_600_000).toISOString() });
+  assert.throws(() => updateTaskLedgerFile(file, (c) => [...c, { id: 'b' }], { waitMs: 200, staleMs: 1_000, startTime: startedAt(START) }),
+    TaskLedgerLockTimeout);
+  assert.deepEqual(ids(file), [], 'nothing was written');
+  assert.equal(JSON.parse(fs.readFileSync(lock, 'utf8')).token, 'theirs', "the running holder's lock is left in place");
+});
+
+test('a lock on this host with no pid in its record is broken once older than the stale bound', (t) => {
+  const { file, lock } = hive(t, { tasks: [] });
+  fs.writeFileSync(lock, JSON.stringify({ host: os.hostname(), acquiredAt: new Date(Date.now() - 60_000).toISOString() }));
+  updateTaskLedgerFile(file, (c) => [...c, { id: 'b' }], { waitMs: 300, staleMs: 30_000 });
   assert.deepEqual(ids(file), ['b']);
 });
 
@@ -140,10 +152,6 @@ function ownRecord(t, options) {
   return record;
 }
 
-// Start times as ps reads them, so these tests do not depend on ps being runnable where they run.
-const START = 'ps:Thu Nov 26 06:44:37 2026';
-const startedAt = (value) => (pid) => (pid === process.pid ? value : null);
-
 test("the lock record carries its writer's start time", (t) => {
   assert.equal(ownRecord(t, { startTime: startedAt(START) }).started, START);
 });
@@ -152,7 +160,7 @@ test('a live holder on this host is never broken, however old its lock', (t) => 
   const { file, lock } = hive(t, { tasks: [] });
   holdLock(lock, { started: START, acquiredAt: new Date(Date.now() - 3_600_000).toISOString() });
   assert.throws(() => updateTaskLedgerFile(file, (c) => [...c, { id: 'b' }],
-    { waitMs: 200, staleMs: 1_000, liveStaleMs: 2_000, startTime: startedAt(START) }),
+    { waitMs: 200, staleMs: 1_000, startTime: startedAt(START) }),
   TaskLedgerLockTimeout);
   assert.deepEqual(ids(file), [], 'nothing was written');
   assert.ok(fs.existsSync(lock), "the live holder's lock is left in place");
@@ -165,6 +173,36 @@ test('a lock whose pid is alive but belongs to a later process (pid reused) is b
   updateTaskLedgerFile(file, (c) => [...c, { id: 'b' }], { waitMs: 300, staleMs: 30_000, startTime: startedAt(START) });
   assert.deepEqual(ids(file), ['b']);
   assert.deepEqual(leftovers(dir), []);
+});
+
+test('a waiter that cannot read start times treats a running holder on this host as busy, however old its lock', (t) => {
+  const { file, lock } = hive(t, { tasks: [] });
+  holdLock(lock, { started: START, token: 'theirs', acquiredAt: new Date(Date.now() - 10 * 60_000).toISOString() });
+  assert.throws(() => updateTaskLedgerFile(file, (c) => [...c, { id: 'b' }], { waitMs: 200, startTime: () => null }),
+    TaskLedgerLockTimeout);
+  assert.deepEqual(ids(file), [], 'nothing was written');
+  assert.equal(JSON.parse(fs.readFileSync(lock, 'utf8')).token, 'theirs', "the holder's lock is left in place");
+});
+
+test('a holder on this host that this process may signal-check but not inspect is busy, however old its lock', (t) => {
+  // A sandboxed process (macOS Seatbelt, say) asking about a process outside its sandbox gets EPERM from
+  // kill(pid, 0), so the process exists, while ps shows nothing, so its start time cannot be read.
+  const pid = deadPid();
+  const realKill = process.kill;
+  t.after(() => { process.kill = realKill; });
+  process.kill = function (target, signal) {
+    if (target === pid) throw Object.assign(new Error('kill EPERM'), { code: 'EPERM', errno: -1, syscall: 'kill' });
+    return realKill.call(process, target, signal);
+  };
+  const { file, lock } = hive(t, { tasks: [] });
+  holdLock(lock, { pid, started: START, token: 'theirs', acquiredAt: new Date(Date.now() - 10 * 60_000).toISOString() });
+  assert.throws(() => updateTaskLedgerFile(file, (c) => [...c, { id: 'b' }], { waitMs: 200, startTime: () => null }),
+    (e) => e instanceof TaskLedgerLockTimeout
+      && e.message.includes(`pid ${pid} on ${os.hostname()}`)
+      && e.message.includes(`if pid ${pid} is not a hive process, deleting ${lock} by hand frees it`),
+    'the writer is told the ledger is busy, by whom, and how to free a lock held by a reused pid');
+  assert.deepEqual(ids(file), [], 'nothing was written');
+  assert.equal(JSON.parse(fs.readFileSync(lock, 'utf8')).token, 'theirs', "the holder's lock is left in place");
 });
 
 test('a holder paused between its ownership check and its rename keeps the lock, so no card is lost', async (t) => {
@@ -190,7 +228,7 @@ test('a holder paused between its ownership check and its rename keeps the lock,
   // B arrives once A's lock is past every age bound B uses.
   await new Promise((r) => setTimeout(r, 300));
   assert.throws(() => updateTaskLedgerFile(file, (c) => [...c, { id: 'b' }],
-    { waitMs: 200, staleMs: 50, liveStaleMs: 100, startTime: (pid) => `ps:started ${pid}` }),
+    { waitMs: 200, staleMs: 50, startTime: (pid) => `ps:started ${pid}` }),
     (e) => e instanceof TaskLedgerLockTimeout
       && new RegExp(`pid ${child.pid}\\b`).test(e.message)
       && e.message.includes(os.hostname())

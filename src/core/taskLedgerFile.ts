@@ -33,10 +33,17 @@
  * the pid, so the lock is broken. A live holder that never finishes keeps the lock; every waiter then times
  * out with an error naming it (pid, host, how long it has held the lock), and stopping that process frees it.
  *
- * Only a lock that cannot be checked is judged by age: a lock from another host, or one with no readable
- * record, is stale after `staleMs`; a lock on this host whose holder is running but whose start time cannot
- * be compared (a record without one, or a start time this process cannot read) is stale after
- * `liveStaleMs`, far longer than any real update.
+ * A holder on this host whose pid is running but whose start time cannot be compared is also taken to be
+ * alive, however old its lock: the start time is used only to prove that a pid was reused, which needs a
+ * start time in the record and one read now, by the same method. A process in a sandbox (macOS Seatbelt,
+ * for one) usually has neither: kill(pid, 0) fails with EPERM, so the pid exists, but ps cannot be run or
+ * does not show the process, and the records such a process writes carry no start time. Judging those
+ * locks by age would let a sandboxed writer break the lock of a live writer outside the sandbox, or the
+ * other way round, and both would write. The cost is that a pid reused by an unrelated process keeps the
+ * lock held; the timeout error then says that deleting the lock file by hand frees it.
+ *
+ * Only a lock whose holder cannot be identified is judged by age: a lock from another host, or one with no
+ * readable record or no pid in it, is stale after `staleMs`.
  *
  * The lock is advisory. A writer that edits tasks.json without this function, such as an agent with a
  * file-edit tool, is not serialized with the others; the rename only means no reader sees a torn file.
@@ -57,11 +64,6 @@ export interface TaskLedgerFileOptions {
   waitMs?: number;
   /** A lock from another host, or with no readable record, is stale after this. Default 30 s. */
   staleMs?: number;
-  /**
-   * A lock whose holder on this host is running, but whose start time cannot be compared with the one in
-   * the record, is stale after this. A holder whose start time matches is never stale. Default 5 min.
-   */
-  liveStaleMs?: number;
   /** Pause between attempts to take the lock. Default 20 ms. */
   retryMs?: number;
   /**
@@ -200,7 +202,7 @@ function sameProcess(pid: number, started: unknown, startTime: (pid: number) => 
   return now === started;
 }
 
-interface StaleBounds { staleMs: number; liveStaleMs: number; startTime: (pid: number) => string | null }
+interface StaleBounds { staleMs: number; startTime: (pid: number) => string | null }
 
 /**
  * `owners` remembers, for the length of one wait, whether a recorded holder is still the process that wrote
@@ -216,9 +218,8 @@ function isStale(lock: HeldLock, bounds: StaleBounds, owners: Map<string, boolea
   const key = `${record.pid} ${String(record.started)}`;
   if (!owners.has(key)) owners.set(key, sameProcess(record.pid, record.started, bounds.startTime));
   const same = owners.get(key);
-  if (same === true) return false;
-  if (same === false) return true;
-  return lock.ageMs > bounds.liveStaleMs;
+  // null: running, but which process cannot be told (see the header). Never broken on age.
+  return same === false;
 }
 
 function describe(held: HeldLock | null): string {
@@ -257,7 +258,7 @@ interface OwnLock { token: string; dev: number; ino: number }
 
 function acquire(
   lock: string,
-  opts: Required<Pick<TaskLedgerFileOptions, 'waitMs' | 'staleMs' | 'liveStaleMs' | 'retryMs' | 'startTime'>> & { hooks: TaskLedgerLockHooks }
+  opts: Required<Pick<TaskLedgerFileOptions, 'waitMs' | 'staleMs' | 'retryMs' | 'startTime'>> & { hooks: TaskLedgerLockHooks }
 ): OwnLock {
   const token = randomBytes(12).toString('hex');
   const started = opts.startTime(process.pid);
@@ -287,8 +288,11 @@ function acquire(
         }
       }
       if (performance.now() >= deadline) {
-        const here = last?.record?.host === hostname();
-        throw new TaskLedgerLockTimeout(lock, opts.waitMs, `${describe(last)}${here ? '; if that process is stuck, stopping it frees the lock' : ''}`);
+        const pid = last?.record?.host === hostname() ? last.record.pid : undefined;
+        const advice = typeof pid === 'number'
+          ? `; if that process is stuck, stopping it frees the lock; if pid ${pid} is not a hive process, deleting ${lock} by hand frees it`
+          : '';
+        throw new TaskLedgerLockTimeout(lock, opts.waitMs, `${describe(last)}${advice}`);
       }
       sleep(opts.retryMs);
     }
@@ -412,7 +416,6 @@ export function updateTaskLedgerFile(
   const own = acquire(lock, {
     waitMs: options.waitMs ?? 5_000,
     staleMs: options.staleMs ?? 30_000,
-    liveStaleMs: options.liveStaleMs ?? 300_000,
     retryMs: options.retryMs ?? 20,
     startTime: options.startTime ?? defaultStartTime,
     hooks
