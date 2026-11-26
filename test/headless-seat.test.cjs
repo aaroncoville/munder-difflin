@@ -543,11 +543,11 @@ test('parseHeadlessOutput: the last JSON result line wins over earlier lines', (
 /** Replace the floor's stub with one that never finishes; returns a reader for the pids it records. Whatever the
  *  outcome, both stub processes are sent SIGKILL when the test ends, so a failing test leaves nothing running. The
  *  pids are kept outside the floor, which an earlier cleanup removes first. */
-function hanging(t, f, { ignoreTerm, print }) {
+function hanging(t, f, { ignoreTerm, print, ...more }) {
   fs.copyFileSync(path.join(__dirname, 'headless-hang-stub.cjs'), f.cli);
   fs.chmodSync(f.cli, 0o755);
   const pidsFile = path.join(os.tmpdir(), `mdhang-${process.pid}-${Math.random().toString(16).slice(2)}.json`);
-  fs.writeFileSync(path.join(path.dirname(f.cli), 'hang.json'), JSON.stringify({ ignoreTerm, print, pidsFile }));
+  fs.writeFileSync(path.join(path.dirname(f.cli), 'hang.json'), JSON.stringify({ ignoreTerm, print, ...more, pidsFile }));
   const pids = () => JSON.parse(fs.readFileSync(pidsFile, 'utf8'));
   t.after(() => {
     let p;
@@ -628,4 +628,28 @@ test('Given a timeout or grace that is not a positive number, when the launch is
   assert.throws(() => H.buildHeadlessLaunch(f.opts({ timeoutMs: 0 })), /timeout/);
   assert.throws(() => H.buildHeadlessLaunch(f.opts({ timeoutMs: Number.POSITIVE_INFINITY })), /timeout/);
   assert.throws(() => H.buildHeadlessLaunch(f.opts({ killGraceMs: -1 })), /grace/);
+});
+
+// A run is over when the CLI exits: its result line is printed by then. A subprocess that keeps the CLI's stdout open
+// must not hold the result back, or turn a finished run into a timed-out one with its cost lost.
+
+test('Given a CLI that prints its result and exits while a subprocess keeps its stdout open, when the seat runs, then it resolves soon after the exit with the cost it printed', HANG_LIMIT, async (t) => {
+  const f = floor(t);
+  hanging(t, f, { ignoreTerm: false, print: `${JSON.stringify(SUCCESS)}\n`, exitAfterMs: 200 });
+  const started = Date.now();
+  const r = await H.runHeadlessSeat(f.opts({ timeoutMs: 8000 }));
+  const took = Date.now() - started;
+  assert.equal(r.timedOut, false, 'a run that exited is not timed out');
+  assert.equal(r.ok, true, r.error);
+  assert.equal(r.exitCode, 0);
+  assert.equal(r.totalCostUsd, 0.0042);
+  assert.ok(took < 5000, `it did not wait for the open pipe (${took} ms)`);
+});
+
+test('Given the same run with no timeout, when the seat runs, then it still resolves', HANG_LIMIT, async (t) => {
+  const f = floor(t);
+  hanging(t, f, { ignoreTerm: false, print: `${JSON.stringify(SUCCESS)}\n`, exitAfterMs: 200 });
+  const r = await H.runHeadlessSeat(f.opts());
+  assert.equal(r.ok, true, r.error);
+  assert.equal(r.totalCostUsd, 0.0042);
 });

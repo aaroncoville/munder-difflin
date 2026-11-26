@@ -330,11 +330,14 @@ function signalGroup(child: ChildProcess, sig: NodeJS.Signals | 0): boolean {
   } catch { return false; }
 }
 
+/** How long output already written may take to arrive after the CLI has exited, before the pipes are closed. */
+export const HEADLESS_DRAIN_MS = 250;
+
 /** How often a timed-out run's group is checked for having gone, before the grace runs out. */
 const GROUP_POLL_MS = 50;
 
 /** Build the launch, run the CLI to completion and read its result. Resolves (never rejects) once the CLI has
- *  exited or could not be started, or, after a timeout, once its process group is gone or has been sent SIGKILL; a
+ *  exited (and its output drained, see HEADLESS_DRAIN_MS) or could not be started, or, after a timeout, once its process group is gone or has been sent SIGKILL; a
  *  refused launch throws before anything runs. A CLI whose stdout or stderr passes the output bound is killed with its
  *  process group, and the run fails saying so. */
 export function runHeadlessSeat(o: HeadlessSeatOptions): Promise<HeadlessRun> {
@@ -405,10 +408,17 @@ export function runHeadlessSeat(o: HeadlessSeatOptions): Promise<HeadlessRun> {
     child.stdout?.on('data', (d: string) => take('stdout', d));
     child.stderr?.on('data', (d: string) => take('stderr', d));
     child.on('error', (e) => finish(null, null, e.message));
-    child.on('close', (code, signal) => {
+    const ended = (code: number | null, signal: string | null): void => {
       if (!timedOut) { finish(code, signal, null); return; }
       closed = { code, signal };
       settleAfterKill();
+    };
+    // The run is over when the CLI exits: its result line is written by then. Output still in the pipes gets a short
+    // drain; a subprocess that keeps the pipes open after that does not hold the result back.
+    child.on('exit', (code, signal) => {
+      const drain = setTimeout(() => { child.stdout?.destroy(); child.stderr?.destroy(); ended(code, signal); }, HEADLESS_DRAIN_MS);
+      timers.push(drain);
+      child.once('close', () => { clearTimeout(drain); ended(code, signal); });
     });
     if (o.timeoutMs !== undefined) {
       timers.push(setTimeout(() => {
