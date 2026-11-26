@@ -1187,6 +1187,7 @@
     "dismissAria": "忽略任务",
     "dismissNotSaved": "未能移除\"{{title}}\"：{{error}}",
     "moveNotSaved": "未能移动\"{{title}}\"：{{error}}",
+    "slackCardNotSaved": "Slack 消息\"{{title}}\"未能添加到看板，因此工作完成时不会在其会话中回复：{{error}}",
     "taskTitle": "任务",
     "unassigned": "未分配",
     "noDescription": "（此卡片没有描述）",

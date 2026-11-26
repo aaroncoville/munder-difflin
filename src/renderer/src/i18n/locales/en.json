@@ -1187,6 +1187,7 @@
     "dismissAria": "dismiss task",
     "dismissNotSaved": "\"{{title}}\" was not removed: {{error}}",
     "moveNotSaved": "\"{{title}}\" was not moved: {{error}}",
+    "slackCardNotSaved": "The Slack message \"{{title}}\" was not added to the board, so its thread will not get a reply when the work is done: {{error}}",
     "taskTitle": "TASK",
     "unassigned": "unassigned",
     "noDescription": "(no description on this card)",

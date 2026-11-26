@@ -1187,6 +1187,7 @@
     "dismissAria": "تجاهل المهمة",
     "dismissNotSaved": "لم تُحذف \"{{title}}\": {{error}}",
     "moveNotSaved": "لم تُنقل \"{{title}}\": {{error}}",
+    "slackCardNotSaved": "لم تُضف رسالة Slack \"{{title}}\" إلى اللوحة، لذا لن يصل رد إلى سلسلتها عند إنجاز العمل: {{error}}",
     "taskTitle": "المهمة",
     "unassigned": "غير مُسنَدة",
     "noDescription": "(لا وصف على هذه البطاقة)",

@@ -1,4 +1,5 @@
-import type { QueuedMessage } from '@/store/store';
+import i18n from '@/i18n';
+import { useStore, type QueuedMessage } from '@/store/store';
 
 // Promote a genuine Slack-origin work item to a stamped kanban card the first
 // time it's dispatched to the office. The card carries slack:{channel,thread_ts}
@@ -6,6 +7,9 @@ import type { QueuedMessage } from '@/store/store';
 // reply in-thread once the card later reaches 'done'. ADDITIVE + idempotent +
 // best-effort: a failure here never affects the dispatch that already happened,
 // and only dispatched work items land here (slash commands/acks never do).
+// A card that could not be written (a busy or unreadable task ledger, after the
+// main process's own retries) is reported on the task board, because nothing
+// tries it again and its thread would otherwise never get its reply.
 type SlackTaskCard = Parameters<typeof window.cth.hiveAddTask>[0];
 
 export async function ensureSlackCard(m: QueuedMessage): Promise<void> {
@@ -30,6 +34,16 @@ export async function ensureSlackCard(m: QueuedMessage): Promise<void> {
       createdAt: new Date().toISOString(),
       slack
     };
-    await window.cth.hiveAddTask(card);
-  } catch { /* best-effort: card promotion must never sink dispatch */ }
+    const result = await window.cth.hiveAddTask(card);
+    if (!result.ok) notSaved(m.text, result.error ?? '?');
+  } catch (e) {
+    // Best-effort: card promotion must never sink dispatch.
+    notSaved(m.text, e instanceof Error ? e.message : String(e));
+  }
+}
+
+function notSaved(text: string, error: string): void {
+  const title = text.length > 80 ? `${text.slice(0, 79)}…` : text;
+  console.warn(`[slack] the Slack message "${title}" was not added to the task board: ${error}`);
+  useStore.getState().setTaskWriteError(i18n.t('kanban.slackCardNotSaved', { title, error }));
 }
