@@ -33,13 +33,18 @@
 // re-exports, `import type`, dynamic import() and require() all count, and a
 // specifier that only appears in a comment does not.
 //
-// Not closable by a static scan: a computed specifier (require(name)),
-// module.require and process.mainModule.require, and starting a main-process
-// file by path (child_process.fork, a Worker).
+// Not closable by a static scan: a computed specifier (require(name),
+// module.require(name)), and starting a main-process file by path
+// (child_process.fork, a Worker). module.require('<literal>') and
+// process.mainModule.require('<literal>') are read like require('<literal>').
+//
+// Each way around the rule that the scan closes is kept as a probe below: a
+// file placed in the src/core of a temporary tree, which the scan must report.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { builtinModules } = require('node:module');
 const ts = require('typescript');
@@ -212,4 +217,66 @@ function boundaryOffenders(root) {
 
 test('src/core reaches only src/core, src/shared, Node builtins and non-Electron packages, directly or through src/shared', () => {
   assert.deepEqual(boundaryOffenders(path.join(__dirname, '..')), []);
+});
+
+/** A temporary repository tree with an empty src/core, src/shared and src/main/index.ts. */
+function scratchTree(t) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'md-core-boundary-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  for (const dir of ['src/core', 'src/shared', 'src/main', 'src/renderer/src']) fs.mkdirSync(path.join(root, dir), { recursive: true });
+  fs.writeFileSync(path.join(root, 'src/main/index.ts'), "import { app } from 'electron';\nexport const main = app;\n");
+  fs.writeFileSync(path.join(root, 'src/core/plain.ts'), 'export const plain = 1;\n');
+  return root;
+}
+
+// Each probe is one src/core file (and, for the link, a symlink beside it) and what the scan must say about it.
+const PROBES = [
+  { name: 'an import of electron', code: "import { app } from 'electron';", why: /electron is the forbidden package electron/ },
+  { name: 'an import of an electron-* package', code: "import 'electron-store';", why: /forbidden package electron-store/ },
+  { name: 'an import of src/main', code: "import { main } from '../main/index';", why: /resolves to src\/main\/index, outside src\/core and src\/shared/ },
+  { name: 'the @/ renderer alias', code: "import '@/thing';", why: /resolves to src\/renderer\/src\/thing, outside/ },
+  { name: 'an import that resolves to no file', code: "import './missing';", why: /resolves to no file/ },
+  { name: 'electron reached through src/shared', code: "import { s } from '../shared/s';", shared: { 's.ts': "import 'electron';\nexport const s = 1;\n" }, why: /src\/core\/probe\.ts -> src\/shared\/s\.ts: electron is the forbidden package/ },
+  { name: 'createRequire', code: "import { createRequire } from 'node:module';\ncreateRequire(__filename)('electron');", why: /uses createRequire/ },
+  { name: '(require)(…)', code: "(require)('electron');", why: /uses require other than as require\('<literal>'\)/ },
+  { name: '(0, require)(…)', code: "(0, require)('electron');", why: /uses require other than/ },
+  { name: 'require?.(…)', code: "require?.('electron');", why: /uses require other than/ },
+  { name: 'require.call(…)', code: "require.call(null, 'electron');", why: /uses require other than/ },
+  { name: 'require under another name', code: "const r = require;\nr('electron');", why: /uses require other than/ },
+  { name: 'a symlinked folder pointing at src/main', code: "import { main } from './zlink/index';", link: { 'zlink': '../main' }, why: /\.\/zlink\/index resolves through a symlink to .*src\/main\/index\.ts, outside src\/core and src\/shared/ },
+  { name: 'a package that wraps electron under another name', code: "import * as Sentry from '@sentry/electron';", why: /@sentry\/electron is the package @sentry\/electron, which is not on the allowlist/ },
+  { name: 'a computed createRequire key', code: "require('node:module')['create' + 'Require'](__filename)('electron');", why: /uses createRequire/ },
+  { name: 'a template-string createRequire key', code: "require('node:module')[`create${'Require'}`](__filename)('electron');", why: /uses createRequire/ },
+  { name: 'module.require with a literal', code: "module.require('electron');", why: /electron is the forbidden package electron/ },
+  { name: 'process.mainModule.require with a literal', code: "process.mainModule.require('electron');", why: /electron is the forbidden package electron/ }
+];
+
+for (const probe of PROBES) {
+  test(`the scan reports ${probe.name} in src/core`, (t) => {
+    const root = scratchTree(t);
+    const core = path.join(root, 'src/core');
+    for (const [name, text] of Object.entries(probe.shared || {})) fs.writeFileSync(path.join(root, 'src/shared', name), text);
+    for (const [name, to] of Object.entries(probe.link || {})) fs.symlinkSync(to, path.join(core, name));
+    fs.writeFileSync(path.join(core, 'probe.ts'), `${probe.code}\nexport {};\n`);
+    const offenders = boundaryOffenders(root);
+    assert.ok(offenders.some((o) => o.startsWith('src/core/probe.ts') && probe.why.test(o)), `expected ${probe.why} for probe.ts, got:\n${offenders.join('\n')}`);
+  });
+}
+
+test('the scan passes a src/core that uses only an allowed package, Node builtins, require(\'<literal>\') and src/shared', (t) => {
+  const root = scratchTree(t);
+  fs.writeFileSync(path.join(root, 'src/shared/s.ts'), "import { join } from 'node:path';\nexport const s = join('a', 'b');\n");
+  fs.writeFileSync(path.join(root, 'src/core/clean.ts'), [
+    "import { parse } from 'smol-toml';",
+    "import { readFileSync } from 'node:fs';",
+    "import * as os from 'os';",
+    "import { s } from '../shared/s';",
+    "import { plain } from './plain';",
+    "import { s as s2 } from '@shared/s';",
+    "const path = require('node:path');",
+    'const obj = { require: 1 };',
+    'export const all = [parse, readFileSync, os, s, s2, plain, path, obj.require];',
+    ''
+  ].join('\n'));
+  assert.deepEqual(boundaryOffenders(root), []);
 });
