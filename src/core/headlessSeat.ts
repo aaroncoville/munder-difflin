@@ -153,6 +153,10 @@ export function buildHeadlessLaunch(o: HeadlessSeatOptions): HeadlessLaunch {
   if (typeof o.prompt !== 'string' || !o.prompt.trim()) throw new HeadlessSeatRefused('the prompt is empty');
   // The prompt is the one positional; one that starts with a dash would be read as an option.
   if (o.prompt.startsWith('-')) throw new HeadlessSeatRefused('the prompt starts with "-", which the CLI would read as an option');
+  // --model takes the next argument whatever it is; a value that starts with a dash would hide an option in it.
+  if (o.model !== undefined && (typeof o.model !== 'string' || o.model.startsWith('-'))) {
+    throw new HeadlessSeatRefused('the model is not text or starts with "-", which the CLI would read as an option');
+  }
   if (o.maxBudgetUsd !== undefined && !(typeof o.maxBudgetUsd === 'number' && Number.isFinite(o.maxBudgetUsd) && o.maxBudgetUsd > 0)) {
     throw new HeadlessSeatRefused('the budget is not a positive number of dollars');
   }

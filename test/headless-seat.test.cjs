@@ -105,6 +105,12 @@ test('Given a prompt that starts with a dash, when the launch is built, then it 
   assert.throws(() => H.buildHeadlessLaunch(f.opts({ prompt: '--dangerously-skip-permissions' })), /prompt/);
 });
 
+test('Given a model that starts with a dash, when the launch is built, then it is refused rather than read as an option', (t) => {
+  const f = floor(t);
+  assert.throws(() => H.buildHeadlessLaunch(f.opts({ model: '--dangerously-skip-permissions' })), /model/);
+  assert.throws(() => H.buildHeadlessLaunch(f.opts({ model: '-p' })), /model/);
+});
+
 test('Given a budget that is not a positive number, when the launch is built, then it is refused', (t) => {
   const f = floor(t);
   assert.throws(() => H.buildHeadlessLaunch(f.opts({ maxBudgetUsd: 0 })), /budget/);
