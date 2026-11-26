@@ -89,3 +89,23 @@ test('installedHelpers lists bin/hive with the bytes ensureHive wrote, so the ca
   assert.equal(entry.path, path.join(hive.root(), 'bin', 'hive'));
   assert.equal(entry.expected, fs.readFileSync(entry.path, 'utf8'));
 });
+
+test('a symlink planted at bin/hive is replaced, and the file it points to is left alone', { skip: !POSIX }, (t) => {
+  const { home, hive } = floor(t);
+  hive.ensureHive();
+  const launcher = path.join(hive.root(), 'bin', 'hive');
+  const victim = path.join(home, 'not-the-hive.txt');
+  fs.writeFileSync(victim, 'not a launcher\n', { mode: 0o600 });
+  fs.rmSync(launcher);
+  fs.symlinkSync(victim, launcher);
+
+  hive.ensureHive();
+
+  assert.equal(fs.readFileSync(victim, 'utf8'), 'not a launcher\n', 'the link target keeps its content');
+  assert.equal(fs.statSync(victim).mode & 0o777, 0o600, 'and its mode');
+  const st = fs.lstatSync(launcher);
+  assert.ok(st.isFile(), 'bin/hive is a regular file again');
+  assert.equal(st.mode & 0o777, 0o755);
+  assert.match(fs.readFileSync(launcher, 'utf8'), /^#!\/bin\/sh\n/);
+  assert.deepEqual(fs.readdirSync(path.dirname(launcher)).filter((f) => f.startsWith('.hive')), [], 'no temporary file is left');
+});

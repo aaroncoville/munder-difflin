@@ -22,7 +22,8 @@ import { agentEnabledPlugins, agentPluginList, claudeUserDir, knownPluginIds } f
 import {
   existsSync, mkdirSync, readFileSync, writeFileSync, renameSync,
   readdirSync, statSync, lstatSync, realpathSync, rmSync, appendFileSync,
-  symlinkSync, unlinkSync, copyFileSync, cpSync, chmodSync, openSync, fstatSync, closeSync, constants as fsConstants
+  symlinkSync, unlinkSync, copyFileSync, cpSync, chmodSync, openSync, fstatSync, closeSync, constants as fsConstants,
+  fchmodSync, writeSync
 } from 'node:fs';
 import { join, dirname, basename, isAbsolute, relative, resolve as resolvePath } from 'node:path';
 import { homedir } from 'node:os';
@@ -1299,15 +1300,30 @@ export class HiveManager {
   }
 
   /** Installs `<root>/bin/hive`, the command agents use to edit tasks.json under its lock instead of
-   *  editing the file directly. POSIX only: it is a sh script. Best-effort, like the other helpers. */
+   *  editing the file directly. POSIX only: it is a sh script. Best-effort, like the other helpers.
+   *
+   *  Agents can write `<root>/bin`, so bin/hive may be a symlink one planted. Writing to that name
+   *  would overwrite the file it points to and make it executable, so the launcher is written to a
+   *  new file (created exclusively, which never follows a link) and renamed over the name: the
+   *  rename replaces a link itself, not its target. */
   private writeHiveCliLauncher(): void {
     const root = this.root();
     if (!root || process.platform === 'win32') return;
+    const target = join(root, 'bin', 'hive');
+    const tmp = join(root, 'bin', `.hive.tmp-${process.pid}-${randomBytes(6).toString('hex')}`);
     try {
-      const target = join(root, 'bin', 'hive');
-      writeFileSync(target, this.hiveCliLauncherContent(root), 'utf8');
-      chmodSync(target, 0o755);
-    } catch (e) { console.error('[hive] writeHiveCliLauncher failed:', e); }
+      const fd = openSync(tmp, 'wx', 0o755);
+      try {
+        writeSync(fd, this.hiveCliLauncherContent(root));
+        fchmodSync(fd, 0o755);
+      } finally {
+        closeSync(fd);
+      }
+      renameSync(tmp, target);
+    } catch (e) {
+      try { unlinkSync(tmp); } catch { /* never created, or already renamed */ }
+      console.error('[hive] writeHiveCliLauncher failed:', e);
+    }
   }
 
   private writeMemoryShim(): void {
