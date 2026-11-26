@@ -10,7 +10,10 @@
  *  - the hive gate hook is registered at PreToolUse with "onFailure": "block", so Claude Code itself blocks the call
  *    when the hook shim cannot start, times out or exits with an unexpected code. The shim's own fail-closed path is
  *    a second layer, not a replacement;
- *  - only project-independent settings load (--setting-sources user), as for a scoped interactive seat.
+ *  - only project-independent settings load (--setting-sources user), as for a scoped interactive seat;
+ *  - the settings carry the agent's enabledPlugins map, which switches off every plugin the owner has not kept for
+ *    agents. Without it the owner's user-level plugins would all load, with their hooks (which run as their own
+ *    processes, outside the Bash sandbox), MCP servers and skills, so a launch without the map is refused.
  *
  * The child's environment is an allowlist, never the parent's environment minus a few names: a launcher that runs
  * inside the Electron process carries ELECTRON_RUN_AS_NODE, NODE_OPTIONS and the parent Claude session's markers,
@@ -60,6 +63,9 @@ export interface HeadlessSeatOptions {
   settingsDir: string;
   /** The staged hook runtime whose command is the gate hook. */
   hookRuntime: StagedHookRuntime;
+  /** The agent's plugin map, the same one an interactive seat's settings carry: every plugin the owner has, each on
+   *  only when it is kept for agents. Required. */
+  enabledPlugins: Record<string, boolean>;
   model?: string;
   /** Passed to --max-budget-usd. */
   maxBudgetUsd?: number;
@@ -113,12 +119,14 @@ export class HeadlessSeatRefused extends Error {
   }
 }
 
-/** The generated settings: scoped sandbox roots, failing closed, and the gate hook at PreToolUse. */
-export function headlessSeatSettings(roots: string[], hookCommand: string): Record<string, unknown> {
+/** The generated settings: scoped sandbox roots, failing closed, the gate hook at PreToolUse, and the agent's plugin
+ *  map, which outranks the owner's user-level enabledPlugins for this session. */
+export function headlessSeatSettings(roots: string[], hookCommand: string, enabledPlugins: Record<string, boolean>): Record<string, unknown> {
   return {
     sandbox: { enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false, filesystem: { allowWrite: roots } },
     permissions: { additionalDirectories: roots },
     hooks: { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: hookCommand, onFailure: 'block' }] }] },
+    enabledPlugins: { ...enabledPlugins },
   };
 }
 
@@ -148,6 +156,9 @@ export function buildHeadlessLaunch(o: HeadlessSeatOptions): HeadlessLaunch {
   if (o.maxBudgetUsd !== undefined && !(typeof o.maxBudgetUsd === 'number' && Number.isFinite(o.maxBudgetUsd) && o.maxBudgetUsd > 0)) {
     throw new HeadlessSeatRefused('the budget is not a positive number of dollars');
   }
+  if (!isPlainObject(o.enabledPlugins) || !Object.values(o.enabledPlugins).every((v) => typeof v === 'boolean')) {
+    throw new HeadlessSeatRefused('no plugin map (enabledPlugins) was given, so every plugin the owner enabled would load');
+  }
   if (typeof o.cwd !== 'string' || !isAbsolute(o.cwd)) throw new HeadlessSeatRefused('the working folder is not an absolute path');
   const ctx = { root: o.hiveRoot, agentId: o.agentId, isGod: o.isGod === true, cwd: o.cwd };
   if (!ownFolder(ctx)) throw new HeadlessSeatRefused(`the agent folder for ${o.agentId} is missing or not a real folder`);
@@ -162,7 +173,7 @@ export function buildHeadlessLaunch(o: HeadlessSeatOptions): HeadlessLaunch {
   const priv = privateDirsReach(reach);
   if (priv) throw new HeadlessSeatRefused(priv);
   const env = headlessEnv(o.parentEnv ?? process.env, o.seatEnv);
-  const settings = headlessSeatSettings(roots, hookCommandFor(o.hookRuntime, true));
+  const settings = headlessSeatSettings(roots, hookCommandFor(o.hookRuntime, true), o.enabledPlugins);
   // Its own file name, so it never replaces the settings of the same agent's interactive seat.
   const settingsFile = writeSeatSettings(o.settingsDir, o.hiveRoot, `headless:${o.agentId}`, JSON.stringify(settings, null, 2));
   const argv = [o.cliPath ?? 'claude', '-p', '--output-format', 'json', '--settings', settingsFile, '--setting-sources', CLAUDE_USER_SOURCES];

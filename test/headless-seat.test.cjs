@@ -25,6 +25,9 @@ const { seatWriteRoots } = loadTs('src/core/writeRoots.ts');
 
 const NODE_DIR = path.dirname(process.execPath);
 
+/** An agent's plugin map as the app computes it: one plugin the owner kept for agents, one withheld. */
+const PLUGINS = { 'kept-tool@market': true, 'owner-only@market': false };
+
 /** A hive with one agent folder and evidence/, a working folder outside it, a private settings folder and a staged
  *  hook runtime (both outside the hive), and a stub `claude` that records how it was started. */
 function floor(t, canned = { stdout: '{}' }) {
@@ -51,6 +54,7 @@ function floor(t, canned = { stdout: '{}' }) {
   const opts = (more = {}) => ({
     prompt: 'Say ok.', hiveRoot, agentId: 'ag1', cwd, settingsDir, hookRuntime, cliPath: cli,
     parentEnv: { HOME: base, PATH: `${NODE_DIR}:/usr/bin:/bin`, USER: 'someone', LANG: 'en_US.UTF-8' },
+    enabledPlugins: PLUGINS,
     ...more,
   });
   return { base, hiveRoot, cwd, settingsDir, hookRuntime, cli, record, opts };
@@ -172,6 +176,22 @@ test('Given a scoped seat, when the seat runs, then the settings confine writes 
   const s = JSON.parse(json);
   assert.equal(s.sandbox.failIfUnavailable, true);
   assert.equal(s.sandbox.allowUnsandboxedCommands, false);
+});
+
+test('Given the agent\'s plugin map, when the seat runs, then the settings carry exactly that enabledPlugins map, a withheld plugin off', async (t) => {
+  const f = floor(t, { stdout: JSON.stringify(SUCCESS) });
+  await H.runHeadlessSeat(f.opts());
+  const s = JSON.parse(f.record().settings);
+  assert.deepEqual(s.enabledPlugins, PLUGINS);
+  assert.equal(s.enabledPlugins['owner-only@market'], false, 'a plugin not kept for agents is switched off for this session');
+});
+
+test('Given no plugin map, when the launch is built, then it is refused rather than load every plugin the owner enabled', (t) => {
+  const f = floor(t);
+  assert.throws(() => H.buildHeadlessLaunch(f.opts({ enabledPlugins: undefined })), /plugin/);
+  assert.throws(() => H.buildHeadlessLaunch(f.opts({ enabledPlugins: ['kept-tool@market'] })), /plugin/);
+  assert.throws(() => H.buildHeadlessLaunch(f.opts({ enabledPlugins: { 'kept-tool@market': 'yes' } })), /plugin/);
+  assert.equal(fs.existsSync(f.settingsDir) && fs.readdirSync(f.settingsDir).length > 0, false, 'no settings file is written');
 });
 
 test('Given a working folder inside the private settings folder, when the launch is built, then it is refused', (t) => {
