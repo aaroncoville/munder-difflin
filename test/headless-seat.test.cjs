@@ -277,6 +277,32 @@ test('Given the CLI prints something that is not a JSON result, when the seat ru
   assert.equal(r.stdout, 'Error: something went wrong\n');
 });
 
+test('Given a CLI whose stdout passes the output bound and keeps running, when the seat runs, then the CLI is killed and the run fails saying so', { timeout: 10_000 }, async (t) => {
+  const f = floor(t, { stdout: 'x'.repeat(5000), hang: true });
+  const r = await H.runHeadlessSeat(f.opts({ maxOutputBytes: 1000 }));
+  assert.equal(r.ok, false);
+  assert.equal(r.exitCode, null, 'it did not exit by itself');
+  assert.equal(r.signal, 'SIGKILL');
+  assert.match(r.error, /stdout.*1000 bytes/);
+  assert.ok(r.stdout.length <= 1000, 'no more than the bound is kept');
+});
+
+test('Given a CLI whose stderr passes the output bound, when the seat runs, then the run fails saying so', { timeout: 10_000 }, async (t) => {
+  const f = floor(t, { stdout: JSON.stringify(SUCCESS), stderr: 'e'.repeat(5000), hang: true });
+  const r = await H.runHeadlessSeat(f.opts({ maxOutputBytes: 1000 }));
+  assert.equal(r.ok, false);
+  assert.match(r.error, /stderr.*1000 bytes/);
+});
+
+test('Given an output bound that is not a positive whole number of bytes, when the launch is built, then it is refused', (t) => {
+  const f = floor(t);
+  for (const n of [0, -1, 1.5, Number.NaN]) assert.throws(() => H.buildHeadlessLaunch(f.opts({ maxOutputBytes: n })), /output bound/, String(n));
+});
+
+test('The default output bound is 8 MiB per stream', () => {
+  assert.equal(H.HEADLESS_MAX_OUTPUT_BYTES, 8 * 1024 * 1024);
+});
+
 test('Given a CLI path that does not exist, when the seat runs, then it resolves not ok with the spawn error', async (t) => {
   const f = floor(t);
   const r = await H.runHeadlessSeat(f.opts({ cliPath: path.join(f.base, 'missing', 'claude') }));

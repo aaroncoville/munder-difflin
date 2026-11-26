@@ -51,6 +51,10 @@ export const HEADLESS_SEAT_ENV: readonly string[] = [
  *  such a write instead. */
 export const HEADLESS_PERMISSION_MODES: readonly string[] = ['default', 'acceptEdits', 'plan', 'dontAsk'];
 
+/** The default bound on each of the CLI's stdout and stderr, in bytes. The JSON result of one turn is far smaller; a
+ *  stream past this is a CLI gone wrong, and keeping all of it would grow the app's memory without limit. */
+export const HEADLESS_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
+
 /** Set on every headless launch: a resumed session never runs a tool call a hook deferred. */
 export const DEFERRED_RESUME_ENV = 'CLAUDE_CODE_DISABLE_DEFERRED_TOOL_RESUME';
 
@@ -84,6 +88,9 @@ export interface HeadlessSeatOptions {
   /** The CLI to run; defaults to `claude` on PATH. */
   cliPath?: string;
   spawn?: SpawnLike;
+  /** The bound on each of stdout and stderr, in bytes (default HEADLESS_MAX_OUTPUT_BYTES). Past it the CLI is killed
+   *  and the run fails. */
+  maxOutputBytes?: number;
   /** The file the stream's brief says the run produces, returned with the result for a later done-check. */
   outputFile?: string;
 }
@@ -172,6 +179,9 @@ export function buildHeadlessLaunch(o: HeadlessSeatOptions): HeadlessLaunch {
   if (!isPlainObject(o.enabledPlugins) || !Object.values(o.enabledPlugins).every((v) => typeof v === 'boolean')) {
     throw new HeadlessSeatRefused('no plugin map (enabledPlugins) was given, so every plugin the owner enabled would load');
   }
+  if (o.maxOutputBytes !== undefined && !(Number.isSafeInteger(o.maxOutputBytes) && o.maxOutputBytes > 0)) {
+    throw new HeadlessSeatRefused('the output bound is not a positive whole number of bytes');
+  }
   if (typeof o.cwd !== 'string' || !isAbsolute(o.cwd)) throw new HeadlessSeatRefused('the working folder is not an absolute path');
   const ctx = { root: o.hiveRoot, agentId: o.agentId, isGod: o.isGod === true, cwd: o.cwd };
   if (!ownFolder(ctx)) throw new HeadlessSeatRefused(`the agent folder for ${o.agentId} is missing or not a real folder`);
@@ -211,27 +221,31 @@ export function parseHeadlessOutput(stdout: string): { result: Record<string, un
 const text = (x: unknown): string | null => (typeof x === 'string' ? x : null);
 
 /** Build the launch, run the CLI to completion and read its result. Resolves (never rejects) once the CLI has
- *  exited or could not be started; a refused launch throws before anything runs. */
+ *  exited or could not be started; a refused launch throws before anything runs. A CLI whose stdout or stderr passes
+ *  the output bound is killed, and the run fails saying so. */
 export function runHeadlessSeat(o: HeadlessSeatOptions): Promise<HeadlessRun> {
   const launch = buildHeadlessLaunch(o);
   const spawn = o.spawn ?? nodeSpawn;
   return new Promise<HeadlessRun>((resolveRun) => {
-    let stdout = '';
-    let stderr = '';
+    const limit = o.maxOutputBytes ?? HEADLESS_MAX_OUTPUT_BYTES;
+    const out = { stdout: '', stderr: '' };
+    const bytes = { stdout: 0, stderr: 0 };
+    let overflow: string | null = null;
     let settled = false;
     const finish = (exitCode: number | null, signal: string | null, spawnError: string | null): void => {
       if (settled) return;
       settled = true;
-      const r = spawnError ? null : parseHeadlessOutput(stdout).result;
+      const { stdout, stderr } = out;
+      const r = spawnError || overflow ? null : parseHeadlessOutput(stdout).result;
       const cost = r && typeof r.total_cost_usd === 'number' && Number.isFinite(r.total_cost_usd) ? r.total_cost_usd : null;
       const isError = r ? r.is_error === true : true;
       const subtype = r ? text(r.subtype) : null;
-      let error = spawnError;
+      let error = spawnError ?? overflow;
       if (!error && !r) error = 'the CLI printed no JSON result object';
       else if (!error && exitCode !== 0) error = `the CLI exited with ${exitCode === null ? `signal ${signal}` : `code ${exitCode}`}`;
       else if (!error && subtype !== 'success') error = `the CLI's result is ${subtype ?? 'without a subtype'}, not success`;
       resolveRun({
-        ok: !spawnError && exitCode === 0 && r !== null && !isError && subtype === 'success',
+        ok: !spawnError && !overflow && exitCode === 0 && r !== null && !isError && subtype === 'success',
         exitCode, signal, result: r ? text(r.result) : null, sessionId: r ? text(r.session_id) : null, totalCostUsd: cost,
         subtype, error, stdout, stderr,
         argv: launch.argv, cwd: launch.cwd, settingsFile: launch.settingsFile, outputFile: o.outputFile ?? null,
@@ -243,8 +257,19 @@ export function runHeadlessSeat(o: HeadlessSeatOptions): Promise<HeadlessRun> {
     } catch (e) { finish(null, null, (e as Error).message); return; }
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
-    child.stdout?.on('data', (d: string) => { stdout += d; });
-    child.stderr?.on('data', (d: string) => { stderr += d; });
+    const take = (stream: 'stdout' | 'stderr', d: string): void => {
+      if (overflow) return;
+      const n = Buffer.byteLength(d, 'utf8');
+      if (bytes[stream] + n > limit) {
+        overflow = `the CLI's ${stream} passed the output bound of ${limit} bytes, so it was killed`;
+        try { child.kill('SIGKILL'); } catch { /* it has already gone */ }
+        return;
+      }
+      bytes[stream] += n;
+      out[stream] += d;
+    };
+    child.stdout?.on('data', (d: string) => take('stdout', d));
+    child.stderr?.on('data', (d: string) => take('stderr', d));
     child.on('error', (e) => finish(null, null, e.message));
     child.on('close', (code, signal) => finish(code, signal, null));
   });
