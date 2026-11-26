@@ -93,6 +93,7 @@ import { PrivateDirRefused, registerPrivateDir } from '../core/privateDirs';
 import { sourceCheckout } from '../core/repoInstructions';
 import { SeatSettingsRefused } from '../core/seatSettings';
 import { relocationEnv } from '../core/launchLine';
+import { CliPinRefused, cliVersion, judgePin, pinnedSeatEnv } from './cliPins';
 import { buildPtyEnv } from './ptyEnv';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WakeSkipLog, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
@@ -2803,7 +2804,7 @@ function spawnFailReason(error?: string): SpawnFailReason {
 /** A refused id must not start as a process with no prompt, environment, hooks or
  *  roster entry. Its worktree goes too, since no process will ever tear it down. One
  *  that cannot be removed is logged and stays tracked, because it is still on disk. */
-async function refuseSpawn(ptyId: string, agentId: string, provider: string, refusal: RefusedRosterId | RegistryUnreadable | HookRuntimeUnavailable | CodexHomeRefused | PrivateDirRefused | SeatSettingsRefused): Promise<{ ok: false; error: string }> {
+async function refuseSpawn(ptyId: string, agentId: string, provider: string, refusal: RefusedRosterId | RegistryUnreadable | HookRuntimeUnavailable | CodexHomeRefused | PrivateDirRefused | SeatSettingsRefused | CliPinRefused): Promise<{ ok: false; error: string }> {
   // An ordinary id as it is; only one that is not a plain folder name is quoted and cut short.
   hive.appendLog({ kind: 'spawn-refused', agentId: isFolderName(agentId) ? agentId : shortTarget(agentId), reason: refusal.message });
   // Whatever ensureAgent already did for this spawn (a new agent's registry row) is rolled back.
@@ -3275,6 +3276,16 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       extra.OPENCODE_CONFIG_CONTENT = JSON.stringify(oc);
     }
     opts.env = { ...(opts.env ?? {}), ...extra };
+  }
+  // A pinned CLI: the seat starts only on the pinned version (and model), before anything below runs the CLI.
+  const pinCli = claudeProvider ? 'claude' : provider === 'codex' ? 'codex' : null;
+  const pin = pinCli && opts.hive?.id ? readConfig().cliPins?.[pinCli] : undefined;
+  if (pinCli && pin && opts.hive?.id) {
+    const env: NodeJS.ProcessEnv = { ...process.env, ...(opts.env ?? {}) };
+    const version = cliVersion(pinCli, resolveCliCommand(opts.command), env);
+    const verdict = judgePin(pinCli, pin, version, [opts.command, ...(opts.args ?? [])]);
+    if (!verdict.ok) return refuseSpawn(opts.id, opts.hive.id, provider, new CliPinRefused(`Agent ${opts.hive.id} was not started: ${verdict.reason}`));
+    opts.env = { ...(opts.env ?? {}), ...pinnedSeatEnv(pinCli, pin) };
   }
   // Codex Remote is daemon-based (there is no `/remote-control` slash command).
   // Start/enable the daemon under this agent's isolated CODEX_HOME and connect

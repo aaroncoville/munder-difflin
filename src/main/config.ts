@@ -14,6 +14,7 @@ import { MAX_AGENT_TOKEN_CAP } from '../shared/tokenCaps';
 import type { MemorySettings } from './memoryBackend';
 import { expandTilde, normalizeHiveHome } from './fs';
 import type { IntegrationRecord } from '../shared/integrations';
+import type { CliPins } from './cliPins';
 import {
   DEFAULT_CONTEXT_TRIGGER,
   DEFAULT_ORG_TRIGGER,
@@ -180,6 +181,8 @@ export interface HarnessConfig {
    *  launch-time hive picker. Maintained by writeConfig whenever harnessHome is
    *  set (onboarding finish, changeHome). Capped to a handful. */
   recentHives?: string[];
+  /** Provider CLI versions (and optionally models) seats may start with; see cliPins.ts. Unset = no pin. */
+  cliPins?: CliPins;
   /** Folders the user registered during onboarding (used as quick-picks). */
   registeredRepos: string[];
   /** When true, new agents are spawned with --permission-mode bypassPermissions. */

@@ -1,0 +1,85 @@
+'use strict';
+
+/**
+ * Seats run the provider CLI found on PATH. A pin names the version (and, optionally, the model) a seat may start
+ * with, so an upgrade of the shared install cannot move running work onto an untested CLI. These check the judgement
+ * a spawn makes against a pin, and that no pin leaves a launch exactly as it was.
+ */
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const loadTs = require('./load-ts.cjs');
+
+const { parseCliVersion, launchModel, judgePin, pinnedSeatEnv, cliVersion } = loadTs('src/main/cliPins.ts');
+
+test('the version is read from each CLI\'s own --version line', () => {
+  assert.equal(parseCliVersion('claude', '2.1.332 (Claude Code)\n'), '2.1.332');
+  assert.equal(parseCliVersion('codex', 'codex-cli 0.172.0\n'), '0.172.0');
+  // Codex prints a PATH-alias warning first when it cannot write its aliases.
+  assert.equal(parseCliVersion('codex', 'WARNING: proceeding, even though we could not create PATH aliases\ncodex-cli 0.172.0\n'), '0.172.0');
+  assert.equal(parseCliVersion('claude', 'command not found'), null);
+  assert.equal(parseCliVersion('codex', ''), null);
+});
+
+test('the launch model is the last --model value; -m counts for Codex only', () => {
+  assert.equal(launchModel('claude', ['claude', '--model', 'claude-opus-5-5', '--permission-mode', 'bypassPermissions']), 'claude-opus-5-5');
+  assert.equal(launchModel('claude', ['claude', '--model=claude-opus-5-5']), 'claude-opus-5-5');
+  assert.equal(launchModel('codex', ['codex', '--remote', 'unix:///x.sock', '-m', 'gpt-5.6-sol', '-a', 'never']), 'gpt-5.6-sol');
+  assert.equal(launchModel('codex', ['codex', '--model', 'a', '--model', 'b']), 'b');
+  assert.equal(launchModel('claude', ['claude', '-m', 'x']), null);
+  assert.equal(launchModel('codex', ['codex', 'resume', 'abc']), null);
+});
+
+test('no pin: nothing is judged and the seat env gains nothing', () => {
+  assert.deepEqual(judgePin('claude', undefined, null, ['claude']), { ok: true, pinned: false });
+  assert.deepEqual(pinnedSeatEnv('claude', undefined), {});
+  assert.deepEqual(pinnedSeatEnv('codex', undefined), {});
+});
+
+test('a pinned seat starts only on the pinned version', () => {
+  const pin = { version: '2.1.332' };
+  assert.deepEqual(judgePin('claude', pin, '2.1.332', ['claude', '--model', 'claude-opus-5-5']), { ok: true, pinned: true });
+  const moved = judgePin('claude', pin, '2.1.333', ['claude']);
+  assert.equal(moved.ok, false);
+  assert.match(moved.reason, /claude 2\.1\.333.*pinned to 2\.1\.332/);
+  const unread = judgePin('codex', { version: '0.172.0' }, null, ['codex']);
+  assert.equal(unread.ok, false);
+  assert.match(unread.reason, /could not be read/);
+});
+
+test('a pinned model must be the one the launch line names', () => {
+  const pin = { version: '0.172.0', model: 'gpt-5.6-sol' };
+  assert.deepEqual(judgePin('codex', pin, '0.172.0', ['codex', '--model', 'gpt-5.6-sol']), { ok: true, pinned: true });
+  const other = judgePin('codex', pin, '0.172.0', ['codex', '--model', 'gpt-5.7']);
+  assert.equal(other.ok, false);
+  assert.match(other.reason, /model gpt-5\.7.*pinned to gpt-5\.6-sol/);
+  // A launch with no model would take whatever the CLI's catalog defaults to.
+  const none = judgePin('codex', pin, '0.172.0', ['codex']);
+  assert.equal(none.ok, false);
+  assert.match(none.reason, /names no model/);
+});
+
+test('a pinned Claude seat has its own auto-updater turned off', () => {
+  assert.deepEqual(pinnedSeatEnv('claude', { version: '2.1.332' }), { DISABLE_AUTOUPDATER: '1' });
+  assert.deepEqual(pinnedSeatEnv('codex', { version: '0.172.0' }), {});
+});
+
+test('cliVersion runs the executable once per path and mtime', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-pins-'));
+  const exe = path.join(dir, 'claude');
+  fs.writeFileSync(exe, '#!/bin/sh\necho "2.1.332 (Claude Code)"\n', { mode: 0o755 });
+  let runs = 0;
+  const run = (file, args) => { runs++; return require('node:child_process').spawnSync(file, args, { encoding: 'utf8' }); };
+  assert.equal(cliVersion('claude', exe, process.env, run), '2.1.332');
+  assert.equal(cliVersion('claude', exe, process.env, run), '2.1.332');
+  assert.equal(runs, 1);
+  fs.writeFileSync(exe, '#!/bin/sh\necho "2.1.340 (Claude Code)"\n', { mode: 0o755 });
+  fs.utimesSync(exe, new Date(), new Date(Date.now() + 5000));
+  assert.equal(cliVersion('claude', exe, process.env, run), '2.1.340');
+  assert.equal(runs, 2);
+  assert.equal(cliVersion('claude', path.join(dir, 'missing'), process.env, run), null);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
