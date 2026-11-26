@@ -220,3 +220,27 @@ test('at most 50 edits are held; past that an edit is answered busy at once', as
   assert.equal(wrote, 49, 'only the edits that were held were written');
   assert.deepEqual(await writes('addTask', () => true), { ok: true }, 'the queue takes edits again once it drains');
 });
+
+// On a volume that cannot make hard links the ledger lock cannot be taken
+// safely, so task ledger writes are refused there. The window must be told
+// why, and the ledger must be left exactly as it was.
+
+test('on a volume without hard links, an edit from the window answers ok: false with the reason and writes nothing', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-ledger-nolink-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'tasks.json');
+  fs.writeFileSync(file, JSON.stringify({ tasks: [{ id: 'a', status: 'todo' }] }, null, 2));
+  const before = fs.readFileSync(file);
+  const link = () => { throw Object.assign(new Error('EPERM: operation not permitted, link'), { code: 'EPERM' }); };
+  const lines = [];
+  const writes = serialTaskWrites();
+  const answer = await writes('patchTask',
+    () => updateTaskLedgerFile(file, (cards) => cards.map((c) => ({ ...c, status: 'done' })), { waitMs: 50, link }) !== null,
+    { sleep: async () => { throw new Error('must not pause: this is not a busy ledger'); }, log: (l) => lines.push(l) });
+  assert.equal(answer.ok, false);
+  assert.match(answer.error, /does not support hard links/);
+  assert.match(answer.error, /task ledger writes are disabled/);
+  assert.equal(lines.length, 1, 'the failure is logged once');
+  assert.ok(fs.readFileSync(file).equals(before), 'tasks.json is byte for byte as it was');
+  assert.deepEqual(fs.readdirSync(dir), ['tasks.json'], 'no lock or temporary file is left');
+});
