@@ -106,7 +106,7 @@ const LEDGER_LOCK_STALE_MS = 30_000;
  *  only this row's own bytes. `io` is for tests. */
 export function recordHeadlessCost(hiveRoot: string, agentId: string, run: HeadlessRun, now = Date.now(), io: {
   writeSync?: typeof writeSync; lockWaitMs?: number; link?: (existingPath: string, newPath: string) => void;
-  hooks?: FileLockHooks & { afterLock?: () => void };
+  hooks?: FileLockHooks & { afterLock?: () => void; afterOpen?: () => void };
 } = {}): HeadlessCost {
   const { row, reason } = headlessCostRow(agentId, run, now);
   if (!row) return { costRecorded: false, costReason: reason, row: null };
@@ -135,6 +135,7 @@ export function recordHeadlessCost(hiveRoot: string, agentId: string, run: Headl
       if (last[0] !== 0x0a) lead = '\n';
     }
     const line = Buffer.from(`${lead}${JSON.stringify(row)}\n`, 'utf8');
+    io.hooks?.afterOpen?.();
     confirm();
     try {
       writeAllSync(fd, ledger, line, io.writeSync);

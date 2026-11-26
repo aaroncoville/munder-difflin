@@ -498,6 +498,19 @@ test('Given a ledger lock whose pid is one process.kill refuses as an argument, 
   }
 });
 
+test('Given the lock is taken from the holder after the ledger is opened, when it is about to write, then the second check finds the lock is not its own and appends nothing', (t) => {
+  const h = hive(t);
+  fs.writeFileSync(h.ledger, '');
+  const lock = `${h.ledger}.lock`;
+  const other = JSON.stringify({ pid: process.pid, host: os.hostname(), acquiredAt: new Date().toISOString(), token: 'someone-else' });
+  const afterOpen = () => { fs.rmSync(lock); fs.writeFileSync(lock, other); };
+  const c = S.recordHeadlessCost(h.root, 'ag1', run(), 5, { hooks: { afterOpen } });
+  assert.equal(c.costRecorded, false);
+  assert.match(c.costReason, /cost-ledger\.jsonl\.lock no longer holds this writer's record/);
+  assert.equal(fs.readFileSync(h.ledger, 'utf8'), '', 'nothing was appended');
+  assert.equal(fs.readFileSync(lock, 'utf8'), other, 'the other holder\'s lock is left alone');
+});
+
 test('Given the lock is taken from the holder after it acquired it, when it is about to append, then it checks, finds the lock is not its own, and appends nothing', (t) => {
   const h = hive(t);
   const lock = `${h.ledger}.lock`;
