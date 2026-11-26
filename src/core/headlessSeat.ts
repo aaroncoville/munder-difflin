@@ -511,8 +511,11 @@ export function runHeadlessSeat(o: HeadlessSeatOptions): Promise<HeadlessRun> {
     // The run is over when the CLI exits: its result line is written by then. What it started is swept first (after a
     // timeout the timeout's own signals do that). Output still in the pipes gets a short drain; a subprocess that
     // keeps the pipes open after that does not hold the result back.
+    let timeoutTimer: NodeJS.Timeout | null = null;
     child.on('exit', (code, signal) => {
       clearInterval(recorder);
+      // A CLI that exited before its timeout is not timed out, however long the sweep and drain after it take.
+      if (timeoutTimer && !timedOut) clearTimeout(timeoutTimer);
       const swept = timedOut ? Promise.resolve() : sweep('SIGKILL');
       void swept.then(() => {
         const drain = setTimeout(() => { child.stdout?.destroy(); child.stderr?.destroy(); ended(code, signal); }, HEADLESS_DRAIN_MS);
@@ -522,7 +525,7 @@ export function runHeadlessSeat(o: HeadlessSeatOptions): Promise<HeadlessRun> {
       });
     });
     if (o.timeoutMs !== undefined) {
-      timers.push(setTimeout(() => {
+      timers.push(timeoutTimer = setTimeout(() => {
         if (settled || overflow) return;
         timedOut = true;
         killSignal = 'SIGTERM';

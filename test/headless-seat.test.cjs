@@ -767,3 +767,14 @@ test('Given a run, when it resolves, then it says when it started', async (t) =>
   const r = await H.runHeadlessSeat(f.opts());
   assert.ok(typeof r.startedAt === 'number' && r.startedAt >= before && r.startedAt <= Date.now(), String(r.startedAt));
 });
+
+test('Given a CLI that exits just before its timeout while the after-exit sweep is still reading, when the timeout comes, then the run is not timed out and keeps its cost', HANG_LIMIT, async (t) => {
+  const f = floor(t);
+  hanging(t, f, { ignoreTerm: false, print: `${JSON.stringify(SUCCESS)}\n`, exitAfterMs: 600 });
+  const slowTable = () => new Promise((res) => setTimeout(() => res([]), 900));
+  const r = await H.runHeadlessSeat(f.opts({ timeoutMs: 1000, killGraceMs: 500, processTable: slowTable, processPollMs: 60000 }));
+  assert.equal(r.timedOut, false);
+  assert.equal(r.exitCode, 0);
+  assert.equal(r.ok, true, r.error);
+  assert.equal(r.totalCostUsd, 0.0042);
+});
