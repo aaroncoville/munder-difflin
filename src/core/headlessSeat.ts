@@ -109,9 +109,18 @@ export interface HeadlessLaunch {
   roots: string[];
 }
 
+export type HeadlessOutcome = 'success' | 'budget-stop' | 'failed';
+
+/** The result subtype the CLI gives a run stopped by --max-budget-usd. */
+export const BUDGET_STOP_SUBTYPE = 'error_max_budget_usd';
+
 export interface HeadlessRun {
-  /** True only when the CLI exited 0 with a result object that is not an error and whose subtype is success. */
+  /** True only when the CLI exited 0 and its last line is a well-formed result object with is_error false and subtype
+   *  success. */
   ok: boolean;
+  /** success when ok; budget-stop when the result's subtype is error_max_budget_usd, whatever is_error and the exit
+   *  code say; failed otherwise. */
+  outcome: HeadlessOutcome;
   exitCode: number | null;
   signal: string | null;
   result: string | null;
@@ -212,15 +221,25 @@ export function buildHeadlessLaunch(o: HeadlessSeatOptions): HeadlessLaunch {
   return { argv, env, cwd: o.cwd, settingsFile, roots };
 }
 
-/** The CLI's result object: the last line of stdout that is a JSON object of type "result". */
+/** The CLI's result object: the last non-empty line of stdout, when it is a JSON object of type "result". Earlier
+ *  lines (a warning printed first) are ignored; anything after the result means the output did not end as a finished
+ *  run's does, so there is no result. */
 export function parseHeadlessOutput(stdout: string): { result: Record<string, unknown> | null } {
   const lines = stdout.split('\n').map((l) => l.trim()).filter(Boolean);
-  for (let i = lines.length - 1; i >= 0; i--) {
-    let v: unknown;
-    try { v = JSON.parse(lines[i]); } catch { continue; }
-    if (isPlainObject(v) && v.type === 'result') return { result: v };
-  }
-  return { result: null };
+  if (lines.length === 0) return { result: null };
+  let v: unknown;
+  try { v = JSON.parse(lines[lines.length - 1]); } catch { return { result: null }; }
+  return { result: isPlainObject(v) && v.type === 'result' ? v : null };
+}
+
+/** What is wrong with a result object's shape, or null when it has the fields a run is judged on: subtype (text),
+ *  is_error (a boolean), session_id (text), and on a success the result text. */
+export function headlessResultProblem(r: Record<string, unknown>): string | null {
+  if (typeof r.subtype !== 'string') return 'subtype is not text';
+  if (typeof r.is_error !== 'boolean') return 'is_error is not a boolean';
+  if (typeof r.session_id !== 'string') return 'session_id is not text';
+  if (r.subtype === 'success' && typeof r.result !== 'string') return 'a success has no result text';
+  return null;
 }
 
 const text = (x: unknown): string | null => (typeof x === 'string' ? x : null);
@@ -243,14 +262,19 @@ export function runHeadlessSeat(o: HeadlessSeatOptions): Promise<HeadlessRun> {
       const { stdout, stderr } = out;
       const r = spawnError || overflow ? null : parseHeadlessOutput(stdout).result;
       const cost = r && typeof r.total_cost_usd === 'number' && Number.isFinite(r.total_cost_usd) ? r.total_cost_usd : null;
-      const isError = r ? r.is_error === true : true;
       const subtype = r ? text(r.subtype) : null;
+      const problem = r ? headlessResultProblem(r) : null;
+      const budgetStop = subtype === BUDGET_STOP_SUBTYPE;
       let error = spawnError ?? overflow;
-      if (!error && !r) error = 'the CLI printed no JSON result object';
+      if (!error && !r) error = 'the CLI\'s output does not end with a JSON result object';
+      else if (!error && problem) error = `the CLI's result is malformed: ${problem}`;
+      else if (!error && budgetStop) error = 'the CLI stopped at its budget';
       else if (!error && exitCode !== 0) error = `the CLI exited with ${exitCode === null ? `signal ${signal}` : `code ${exitCode}`}`;
-      else if (!error && subtype !== 'success') error = `the CLI's result is ${subtype ?? 'without a subtype'}, not success`;
+      else if (!error && r?.is_error !== false) error = 'the CLI\'s result is an error';
+      else if (!error && subtype !== 'success') error = `the CLI's result is ${subtype}, not success`;
+      const ok = error === null;
       resolveRun({
-        ok: !spawnError && !overflow && exitCode === 0 && r !== null && !isError && subtype === 'success',
+        ok, outcome: ok ? 'success' : budgetStop ? 'budget-stop' : 'failed',
         exitCode, signal, result: r ? text(r.result) : null, sessionId: r ? text(r.session_id) : null, totalCostUsd: cost,
         subtype, error, stdout, stderr,
         argv: launch.argv, cwd: launch.cwd, settingsFile: launch.settingsFile, outputFile: o.outputFile ?? null,

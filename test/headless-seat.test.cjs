@@ -243,6 +243,8 @@ test('Given the CLI prints a success result and exits 0, when the seat runs, the
   assert.equal(r.sessionId, SUCCESS.session_id);
   assert.equal(r.totalCostUsd, 0.0042);
   assert.equal(r.subtype, 'success');
+  assert.equal(r.outcome, 'success');
+  assert.equal(r.error, null);
   assert.equal(r.outputFile, '/tmp/brief-output.md');
   assert.ok(r.settingsFile.startsWith(f.settingsDir));
 });
@@ -254,6 +256,7 @@ test('Given the CLI stops on its budget and exits 1, when the seat runs, then th
   assert.equal(r.ok, false);
   assert.equal(r.exitCode, 1);
   assert.equal(r.subtype, 'error_max_budget_usd');
+  assert.equal(r.outcome, 'budget-stop');
   assert.equal(r.totalCostUsd, 0.051);
   assert.equal(r.stderr, 'budget exceeded');
 });
@@ -274,6 +277,33 @@ test('Given the CLI exits 0 with a result that is not an error but is not a succ
   assert.equal(r.ok, false);
   assert.equal(r.subtype, 'error_max_turns');
   assert.match(r.error, /error_max_turns/);
+});
+
+test('Given the CLI exits 0 with a result object missing its fields, when the seat runs, then the run is not ok and says the result is malformed', async (t) => {
+  for (const out of [{ type: 'result' }, { ...SUCCESS, is_error: undefined }, { ...SUCCESS, is_error: 'false' }, { ...SUCCESS, session_id: 7 }, { ...SUCCESS, result: undefined }]) {
+    const f = floor(t, { stdout: JSON.stringify(out), exitCode: 0 });
+    const r = await H.runHeadlessSeat(f.opts());
+    assert.equal(r.ok, false, JSON.stringify(out));
+    assert.equal(r.outcome, 'failed');
+    assert.match(r.error, /malformed/);
+  }
+});
+
+test('Given the CLI reports a budget stop without is_error and exits 0, when the seat runs, then the run is not ok and its outcome is a budget stop', async (t) => {
+  const out = { ...SUCCESS, subtype: 'error_max_budget_usd', is_error: false, result: undefined, total_cost_usd: 0.051 };
+  const f = floor(t, { stdout: JSON.stringify(out), exitCode: 0 });
+  const r = await H.runHeadlessSeat(f.opts({ maxBudgetUsd: 0.05 }));
+  assert.equal(r.ok, false);
+  assert.equal(r.outcome, 'budget-stop');
+  assert.match(r.error, /budget/);
+  assert.equal(r.totalCostUsd, 0.051);
+});
+
+test('Given a success result followed by output that is not a result, when the seat runs, then the run is not ok', async (t) => {
+  const f = floor(t, { stdout: `${JSON.stringify(SUCCESS)}\n{"type":"result"\n`, exitCode: 0 });
+  const r = await H.runHeadlessSeat(f.opts());
+  assert.equal(r.ok, false);
+  assert.equal(r.outcome, 'failed');
 });
 
 test('Given the CLI prints something that is not a JSON result, when the seat runs, then the run is not ok and says why', async (t) => {
@@ -337,4 +367,5 @@ test('parseHeadlessOutput: the last JSON result line wins over earlier lines', (
   assert.equal(p.result.session_id, SUCCESS.session_id);
   assert.equal(H.parseHeadlessOutput('[1,2]').result, null);
   assert.equal(H.parseHeadlessOutput(JSON.stringify({ type: 'assistant' })).result, null);
+  assert.equal(H.parseHeadlessOutput(`${JSON.stringify(SUCCESS)}\nnot json\n`).result, null, 'the result must be the last line');
 });
