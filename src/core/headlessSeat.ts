@@ -55,11 +55,13 @@ export const HEADLESS_SEAT_ENV: readonly string[] = [
   'AGENT_ID', 'AGENT_NAME', 'AGENT_DIR', 'HIVE_ROOT', 'HIVE_SOCK', 'HIVE_SPAWN_TOKEN', 'HIVE_SCOPED_ROOTS', 'HIVE_MEMORY_AGENT', 'HIVE_NODE',
 ];
 
-/** The --permission-mode values a headless seat may run with. bypassPermissions is left out: the edit tools are held
+/** The --permission-mode values a headless seat may run with, from the choices the CLI accepts (Claude Code 2.1.332:
+ *  acceptEdits, auto, bypassPermissions, manual, dontAsk, plan). auto is left out: a classifier, not the permission
+ *  rules, decides what runs. bypassPermissions is left out: the edit tools are held
  *  to the seat roots (permissions.additionalDirectories) by the permission layer, not by the Bash sandbox, and that
  *  mode lets them write anywhere without asking. In a -p run nobody can answer a prompt, so the other modes refuse
  *  such a write instead. */
-export const HEADLESS_PERMISSION_MODES: readonly string[] = ['default', 'acceptEdits', 'plan', 'dontAsk'];
+export const HEADLESS_PERMISSION_MODES: readonly string[] = ['manual', 'acceptEdits', 'plan', 'dontAsk'];
 
 /** The mode passed when the caller names none. A mode is always passed: without one the session would take the
  *  owner's permissions.defaultMode, which may be bypassPermissions. dontAsk refuses anything not already allowed,
