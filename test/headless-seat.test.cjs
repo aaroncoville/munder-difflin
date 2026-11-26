@@ -285,6 +285,19 @@ test('Given managed settings that switch the sandbox off or allow an unsandboxed
   }
 });
 
+test('Given managed settings that disable the filesystem sandbox, choose bypass as the default mode, or carry a key the check does not know, when the launch is built, then it is refused naming the key', (t) => {
+  for (const [json, key] of [
+    [{ sandbox: { filesystem: { disabled: true } }, permissions: { allow: ['Bash'] } }, 'sandbox.filesystem.disabled'],
+    [{ permissions: { defaultMode: 'bypassPermissions', allow: ['Bash'] } }, 'permissions.defaultMode'],
+    [{ sandbox: { network: { allowUnixSockets: ['/var/run/docker.sock'] } } }, 'sandbox.network.allowUnixSockets'],
+  ]) {
+    const f = floor(t);
+    managedSettings(f, json);
+    assert.throws(() => H.buildHeadlessLaunch(f.opts()), (e) => e.name === 'HeadlessSeatRefused' && e.message.includes(`managed settings: ${key}`), key);
+    assert.equal(fs.existsSync(f.settingsDir), false, 'no settings file is written');
+  }
+});
+
 test('Given managed settings that cannot be understood, when the launch is built, then it is refused', (t) => {
   const f = floor(t);
   managedSettings(f, '{ not json');

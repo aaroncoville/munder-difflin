@@ -228,15 +228,16 @@ export function buildHeadlessLaunch(o: HeadlessSeatOptions): HeadlessLaunch {
   const priv = privateDirsReach(reach);
   if (priv) throw new HeadlessSeatRefused(priv);
   const env = headlessEnv(o.parentEnv ?? process.env, o.seatEnv);
-  // Managed settings are merged into the session whatever the launch line says: every write root they add must be
-  // inside the seat's roots (or a temp folder the CLI's sandbox grants anyway). User settings are not loaded at all.
+  // Managed settings are merged into the session whatever the launch line says, so their sandbox and permissions are
+  // judged as an allowlist: every key must be understood and none may widen the seat beyond its roots (or a temp
+  // folder the CLI's sandbox grants anyway). User settings are not loaded at all.
   const places = launchPlaces('claude', env, homedir());
   if ('unknown' in places) throw new HeadlessSeatRefused(`where Claude will read its configuration cannot be told: ${places.unknown}`);
   const excess = claudeSettingsExcess({
     managedFile: o.managedSettingsFile ?? MANAGED_CLAUDE_SETTINGS, userDir: null,
-    allowed: [...roots, ...places.tmpDirs], cwd: o.cwd, home: places.home,
+    allowed: [...roots, ...places.tmpDirs], cwd: o.cwd, home: places.home, strict: true,
   });
-  if (excess) throw new HeadlessSeatRefused(`the owner's ${excess.why} adds a write root outside the seat's roots${excess.root ? `: ${excess.root}` : ''}`);
+  if (excess) throw new HeadlessSeatRefused(`the owner's ${excess.why} would widen the seat beyond its roots${excess.root ? `: ${excess.root}` : ''}`);
   const settings = headlessSeatSettings(roots, hookCommandFor(o.hookRuntime, true), o.enabledPlugins);
   // Its own file name, so it never replaces the settings of the same agent's interactive seat.
   const settingsFile = writeSeatSettings(o.settingsDir, o.hiveRoot, `headless:${o.agentId}`, JSON.stringify(settings, null, 2));

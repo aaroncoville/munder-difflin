@@ -102,6 +102,117 @@ function settingsExcess(text: string, sandboxOff: boolean): { problem: string } 
   return null;
 }
 
+/** The permissions.defaultMode values the strict check admits: the modes that ask, or refuse, before a tool writes
+ *  outside the rules. bypassPermissions and auto are left out. */
+export const ADMITTED_DEFAULT_MODES: readonly string[] = ['default', 'manual', 'acceptEdits', 'plan', 'dontAsk'];
+
+type Judged = { key: string; why?: string; root?: string | null } | null;
+
+/** The strict judgement of one settings object's `sandbox` and `permissions` subtrees: an allowlist. Every key there
+ *  must be one listed below, with the type it expects, and must not widen what the seat can write, read or run beyond
+ *  `inside`; the first that fails is returned with its key path (and the root it resolved to, for a root). Keys outside
+ *  the two subtrees are not judged here.
+ *
+ *  sandbox: enabled (not false), failIfUnavailable (not false), allowUnsandboxedCommands (not true),
+ *    enableWeakerNestedSandbox (not true), autoAllowBashIfSandboxed (boolean), excludedCommands (only entries the
+ *    scoped seat already runs unsandboxed), filesystem.{disabled (not true), allowWrite (inside), denyWrite, denyRead},
+ *    network.{allowedDomains, allowLocalBinding}.
+ *  permissions: allow (a file-writing tool's rule must be inside; other rules leave the sandbox and roots as they are),
+ *    ask, deny, additionalDirectories (inside), defaultMode (ADMITTED_DEFAULT_MODES), disableBypassPermissionsMode
+ *    ("disable"). */
+function strictExcess(v: Record<string, unknown>, inside: (x: string | null) => boolean, cwd: string, home: string, settingsDir: string): Judged {
+  const bool = (o: Record<string, unknown>, k: string, path: string, refused: boolean): Judged => {
+    if (!Object.hasOwn(o, k)) return null;
+    if (typeof o[k] !== 'boolean') return { key: path, why: 'is not a boolean' };
+    return o[k] === refused ? { key: path } : null;
+  };
+  const list = (o: Record<string, unknown>, k: string, path: string): Judged | string[] => {
+    if (!Object.hasOwn(o, k)) return [];
+    return stringList(o[k]) ? o[k] as string[] : { key: path, why: 'is not a list of text' };
+  };
+  const unknown = (o: Record<string, unknown>, known: string[], path: string): Judged => {
+    const k = Object.keys(o).find((x) => !known.includes(x));
+    return k === undefined ? null : { key: `${path}.${k}`, why: 'is not a key this check understands' };
+  };
+  const roots = (values: string[], path: string): Judged => {
+    for (const x of values) {
+      const root = settingsRootPath(x, cwd, home);
+      if (!inside(root)) return { key: path, root };
+    }
+    return null;
+  };
+  if (Object.hasOwn(v, 'sandbox')) {
+    const sb = v.sandbox;
+    if (!isPlainObject(sb)) return { key: 'sandbox', why: 'is not an object' };
+    const u = unknown(sb, ['enabled', 'failIfUnavailable', 'allowUnsandboxedCommands', 'enableWeakerNestedSandbox', 'autoAllowBashIfSandboxed', 'excludedCommands', 'filesystem', 'network'], 'sandbox');
+    if (u) return u;
+    for (const [k, refused] of [['enabled', false], ['failIfUnavailable', false], ['allowUnsandboxedCommands', true], ['enableWeakerNestedSandbox', true]] as const) {
+      const j = bool(sb, k, `sandbox.${k}`, refused);
+      if (j) return j;
+    }
+    if (Object.hasOwn(sb, 'autoAllowBashIfSandboxed') && typeof sb.autoAllowBashIfSandboxed !== 'boolean') return { key: 'sandbox.autoAllowBashIfSandboxed', why: 'is not a boolean' };
+    const ex = list(sb, 'excludedCommands', 'sandbox.excludedCommands');
+    if (!Array.isArray(ex)) return ex;
+    const own: readonly string[] = SCOPED_UNSANDBOXED_COMMANDS;
+    if (!ex.every((c) => own.includes(c))) return { key: 'sandbox.excludedCommands' };
+    if (Object.hasOwn(sb, 'filesystem')) {
+      const fsx = sb.filesystem;
+      if (!isPlainObject(fsx)) return { key: 'sandbox.filesystem', why: 'is not an object' };
+      const uf = unknown(fsx, ['disabled', 'allowWrite', 'denyWrite', 'denyRead'], 'sandbox.filesystem');
+      if (uf) return uf;
+      const d = bool(fsx, 'disabled', 'sandbox.filesystem.disabled', true);
+      if (d) return d;
+      for (const k of ['denyWrite', 'denyRead']) {
+        const l = list(fsx, k, `sandbox.filesystem.${k}`);
+        if (!Array.isArray(l)) return l;
+      }
+      const aw = list(fsx, 'allowWrite', 'sandbox.filesystem.allowWrite');
+      if (!Array.isArray(aw)) return aw;
+      const r = roots(aw, 'sandbox.filesystem.allowWrite');
+      if (r) return r;
+    }
+    if (Object.hasOwn(sb, 'network')) {
+      const net = sb.network;
+      if (!isPlainObject(net)) return { key: 'sandbox.network', why: 'is not an object' };
+      const un = unknown(net, ['allowedDomains', 'allowLocalBinding'], 'sandbox.network');
+      if (un) return un;
+      const dom = list(net, 'allowedDomains', 'sandbox.network.allowedDomains');
+      if (!Array.isArray(dom)) return dom;
+      if (Object.hasOwn(net, 'allowLocalBinding') && typeof net.allowLocalBinding !== 'boolean') return { key: 'sandbox.network.allowLocalBinding', why: 'is not a boolean' };
+    }
+  }
+  if (Object.hasOwn(v, 'permissions')) {
+    const pm = v.permissions;
+    if (!isPlainObject(pm)) return { key: 'permissions', why: 'is not an object' };
+    const u = unknown(pm, ['allow', 'ask', 'deny', 'additionalDirectories', 'defaultMode', 'disableBypassPermissionsMode'], 'permissions');
+    if (u) return u;
+    for (const k of ['ask', 'deny']) {
+      const l = list(pm, k, `permissions.${k}`);
+      if (!Array.isArray(l)) return l;
+    }
+    const allow = list(pm, 'allow', 'permissions.allow');
+    if (!Array.isArray(allow)) return allow;
+    for (const rule of allow) {
+      const tool = writeRuleTool(rule);
+      if (tool === null) continue;
+      const root = editRuleFolder(rule, settingsDir, cwd, home);
+      if (!inside(root)) return { key: `permissions.allow ${tool}`, root };
+    }
+    const dirs = list(pm, 'additionalDirectories', 'permissions.additionalDirectories');
+    if (!Array.isArray(dirs)) return dirs;
+    const r = roots(dirs, 'permissions.additionalDirectories');
+    if (r) return r;
+    if (Object.hasOwn(pm, 'defaultMode')) {
+      if (typeof pm.defaultMode !== 'string') return { key: 'permissions.defaultMode', why: 'is not text' };
+      if (!ADMITTED_DEFAULT_MODES.includes(pm.defaultMode)) return { key: 'permissions.defaultMode' };
+    }
+    if (Object.hasOwn(pm, 'disableBypassPermissionsMode') && pm.disableBypassPermissionsMode !== 'disable') {
+      return { key: 'permissions.disableBypassPermissionsMode', why: 'is not "disable"' };
+    }
+  }
+  return null;
+}
+
 export interface ClaudeSettingsPlaces {
   /** The machine-wide settings file; its managed-settings.d drop-ins are read too. */
   managedFile: string;
@@ -114,6 +225,9 @@ export interface ClaudeSettingsPlaces {
   cwd: string;
   /** The home folder ~ and $HOME stand for. */
   home: string;
+  /** Judge the `sandbox` and `permissions` subtrees as an allowlist (strictExcess) instead of reading only the keys
+   *  that name write roots. */
+  strict?: boolean;
 }
 
 /** The first write root the owner's managed or user Claude settings add outside `allowed`: `why` names it as
@@ -129,6 +243,14 @@ export function claudeSettingsExcess(p: ClaudeSettingsPlaces): { why: string; ro
     const text = readSmallSettingsFile(file);
     if (text === 'missing') continue;
     if (text === null) return { why: `${source} (could not be read)`, root: null };
+    if (p.strict) {
+      let v: unknown;
+      try { v = JSON.parse(text); } catch { return { why: `${source} (could not be understood: it is not JSON)`, root: null }; }
+      if (!isPlainObject(v)) return { why: `${source} (could not be understood: it is not an object)`, root: null };
+      const j = strictExcess(v, inside, p.cwd, p.home, dirname(file));
+      if (j) return { why: `${source}: ${j.key}${j.why ? ` (${j.why})` : ''}`, root: j.root ?? null };
+      continue;
+    }
     const c = claudeRootEntries(text);
     if (!c) return { why: `${source} (could not be understood)`, root: null };
     const more = settingsExcess(text, source === 'managed settings');
