@@ -131,6 +131,24 @@ const rootsInside: Judge = (v, path, c) => {
 // A credential entry that masks has the proxy put the real value into requests the seat makes; one that denies only
 // hides it.
 const denyEntriesOnly: Judge = (v, path) => ((v as unknown[]).every((e) => isPlainObject(e) && e.mode === 'deny') ? null : { key: path, why: 'an entry does not deny' });
+/** Second-level labels that registries hand out under a two-letter country code (co.uk, com.au, gov.br …). Not the
+ *  public suffix list: a wildcard under a suffix not named here is admitted. */
+const GENERIC_SECOND_LEVEL = new Set(['ac', 'co', 'com', 'edu', 'go', 'gob', 'gov', 'mil', 'ne', 'net', 'nic', 'or', 'org']);
+
+/** Whether an allowedDomains entry matches every domain or every domain under a public suffix. A ':port' suffix is
+ *  dropped first (it only narrows the entry to one port). A wildcard is understood only as one leading '*.' label;
+ *  anywhere else the entry is too wide. '*.<tld>' and '*.<generic second level>.<country code>' are too wide. */
+function domainTooWide(entry: string): boolean {
+  const host = entry.trim().replace(/:\d+$/, '').toLowerCase();
+  if (!host.includes('*')) return false;
+  if (!host.startsWith('*.')) return true;
+  const rest = host.slice(2);
+  if (rest.includes('*')) return true;
+  const labels = rest.split('.').filter(Boolean);
+  if (labels.length <= 1) return true;
+  return labels.length === 2 && labels[1].length === 2 && GENERIC_SECOND_LEVEL.has(labels[0]);
+}
+
 const emptyOnly: Judge = (v, path) => ((v as string[]).length === 0 ? null : { key: path });
 
 /** The judgement of each key the table classes as judged (other than objects, whose keys are judged in turn): the
@@ -170,8 +188,10 @@ const JUDGES: Readonly<Record<string, Judge>> = {
   'sandbox.network.allowLocalBinding': refuseWhen(!SCOPED_SANDBOX_PINS.allowLocalBinding),
   'sandbox.network.allowMachLookup': emptyOnly,
   'sandbox.network.allowUnixSockets': emptyOnly,
-  // An entry of wildcards and dots alone ('*', '*.*') matches every host and lifts the egress filter.
-  'sandbox.network.allowedDomains': (v, path) => ((v as string[]).some((d) => /^[*.]+$/.test(d.trim())) ? { key: path, why: 'an entry matches every domain' } : null),
+  'sandbox.network.allowedDomains': (v, path) => {
+    const wide = (v as string[]).find(domainTooWide);
+    return wide === undefined ? null : { key: path, why: `"${wide}" matches every domain or a whole public suffix` };
+  },
 };
 
 /** The keys JUDGES has a judgement for. */

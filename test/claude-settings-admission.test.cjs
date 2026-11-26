@@ -193,3 +193,14 @@ test('strict: a credential entry that masks rather than denies is refused: the p
     assert.ok(r && r.why.includes(`managed settings: ${key}`), `${JSON.stringify(credentials)}: ${r && r.why}`);
   }
 });
+
+test('strict: an allowedDomains wildcard over everything or a whole public suffix is refused, with or without a port', (t) => {
+  const f = floor(t);
+  for (const entry of ['*:443', '*.com', '*.com:443', '*.org', '*.co.uk', '*.com.au', '*.gov.br:8443', 'exa*mple.com', '*.*.example.com', 'example.*']) {
+    const r = f.judge({ sandbox: { network: { allowedDomains: [entry] } } });
+    assert.ok(r && r.why.includes('managed settings: sandbox.network.allowedDomains'), `${entry} was admitted`);
+  }
+  for (const entry of ['*.example.com', 'example.com:443', '*.example.co.uk', 'api.example.org', '*.example.de', 'localhost:8080']) {
+    assert.equal(f.judge({ sandbox: { network: { allowedDomains: [entry] } } }), null, entry);
+  }
+});
