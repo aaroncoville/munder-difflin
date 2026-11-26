@@ -341,3 +341,38 @@ test('a lock put back in place by a breaker that took it aside by mistake is sti
   assert.deepEqual(ids(file), ['a']);
   assert.deepEqual(leftovers(dir), []);
 });
+
+/** Makes fs.writeSync write at most `max` bytes per call, as a blocking write to a regular file may.
+ *  Armed from inside mutate, so only the ledger's own write is affected, not the lock's. */
+function shortWrites(t, max) {
+  const real = fs.writeSync;
+  t.after(() => { fs.writeSync = real; });
+  const restore = () => { fs.writeSync = real; };
+  const arm = () => { fs.writeSync = function (fd, data, offset, length, position) {
+    const buf = typeof data === 'string' ? Buffer.from(data) : data;
+    const off = typeof data !== 'string' && typeof offset === 'number' ? offset : 0;
+    const len = typeof data !== 'string' && typeof length === 'number' ? length : buf.length - off;
+    if (max === 0) return 0;
+    return real.call(fs, fd, buf, off, Math.min(max, len), typeof data !== 'string' ? position : null);
+  }; };
+  return { arm, restore };
+}
+
+test('a write that completes only part of the ledger at a time still writes all of it', (t) => {
+  const { dir, file } = hive(t, { tasks: [{ id: 'a', title: 'x'.repeat(500) }] });
+  const short = shortWrites(t, 64);
+  updateTaskLedgerFile(file, (c) => { short.arm(); return [...c, { id: 'b', title: 'y'.repeat(500) }]; });
+  short.restore();
+  assert.deepEqual(ids(file), ['a', 'b']);
+  assert.deepEqual(leftovers(dir), []);
+});
+
+test('a write that stops making progress leaves the ledger as it was', (t) => {
+  const { dir, file } = hive(t, { tasks: [{ id: 'a' }] });
+  const before = fs.readFileSync(file, 'utf8');
+  const short = shortWrites(t, 0);
+  assert.throws(() => updateTaskLedgerFile(file, (c) => { short.arm(); return [...c, { id: 'b' }]; }), /tasks\.json/);
+  short.restore();
+  assert.equal(fs.readFileSync(file, 'utf8'), before);
+  assert.deepEqual(leftovers(dir), []);
+});

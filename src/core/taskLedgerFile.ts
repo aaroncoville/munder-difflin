@@ -214,12 +214,29 @@ function readLedger(path: string, unreadable: 'throw' | 'empty'): Record<string,
   }
 }
 
+/**
+ * Writes all of `text` to `fd`. A write to a regular file may complete only part of what it was given and
+ * report how much; the rest is written by further calls. A call that writes nothing would loop for ever,
+ * so it is an error. The file's size is then checked against what was meant to be written.
+ */
+function writeFully(fd: number, path: string, text: string): void {
+  const bytes = Buffer.from(text, 'utf8');
+  let done = 0;
+  while (done < bytes.length) {
+    const wrote = writeSync(fd, bytes, done, bytes.length - done);
+    if (!(wrote > 0)) throw new Error(`writing ${path} stopped after ${done} of ${bytes.length} bytes, so it was left as it was`);
+    done += wrote;
+  }
+  const size = fstatSync(fd).size;
+  if (size !== bytes.length) throw new Error(`${path} would be ${size} bytes instead of ${bytes.length}, so it was left as it was`);
+}
+
 function writeAtomically(path: string, text: string, beforeRename: () => void): void {
   const tmp = join(dirname(path), `.${basename(path)}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`);
   try {
     const fd = openSync(tmp, 'wx');
     try {
-      writeSync(fd, text);
+      writeFully(fd, path, text);
       fsyncSync(fd);
     } finally {
       closeSync(fd);
