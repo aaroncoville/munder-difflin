@@ -234,8 +234,9 @@ const inside = (root: string, p: string): boolean => {
 /** Whether the run's output file is in place: see above. Never throws. The file is read through one descriptor
  *  opened without following a link (and without waiting on a pipe): it must be a regular file with one name only (a
  *  second name, a hard link, could be anywhere), and not empty; its path, resolved, must still be that same file
- *  (device and inode) and lie inside the seat's write roots. `hooks` is for tests. */
-export function checkHeadlessOutput(seat: HeadlessSeatPlace, outputFile: string | null, hooks: { afterOpen?: () => void } = {}): HeadlessDoneCheck {
+ *  (device and inode) and lie inside the seat's write roots. With `notBefore` (the run's start), it must also have
+ *  been written since, so a file an earlier run left behind does not count. `afterOpen` is for tests. */
+export function checkHeadlessOutput(seat: HeadlessSeatPlace, outputFile: string | null, hooks: { notBefore?: number; afterOpen?: () => void } = {}): HeadlessDoneCheck {
   const no = (reason: string): HeadlessDoneCheck => ({ done: false, reason });
   if (!outputFile) return no('no output file was named for the run');
   if (!isAbsolute(outputFile)) return no(`the output file ${outputFile} is not an absolute path`);
@@ -259,6 +260,7 @@ export function checkHeadlessOutput(seat: HeadlessSeatPlace, outputFile: string 
     const roots = seatWriteRoots({ root: seat.hiveRoot, agentId: seat.agentId, isGod: seat.isGod === true, cwd: seat.cwd });
     const realRoots = roots.flatMap((r) => { try { return [realpathSync(r)]; } catch { return []; } });
     if (!realRoots.some((r) => inside(r, real))) return no(`the output file ${outputFile} is outside the seat's write roots`);
+    if (hooks.notBefore !== undefined && st.mtimeMs < hooks.notBefore) return no(`the output file ${outputFile} was last written before the run started`);
     return { done: true, reason: null, file: { dev: st.dev, ino: st.ino } };
   } finally {
     closeSync(fd);
@@ -368,7 +370,7 @@ export async function runHeadlessStream(o: HeadlessStreamOptions): Promise<Headl
   const run = await runHeadlessSeat(o);
   const cost = recordHeadlessCost(o.hiveRoot, o.agentId, run);
   const check: HeadlessDoneCheck = run.ok
-    ? checkHeadlessOutput({ hiveRoot: o.hiveRoot, agentId: o.agentId, isGod: o.isGod, cwd: o.cwd }, o.outputFile)
+    ? checkHeadlessOutput({ hiveRoot: o.hiveRoot, agentId: o.agentId, isGod: o.isGod, cwd: o.cwd }, o.outputFile, { notBefore: run.startedAt })
     : { done: false, reason: `the run did not succeed: ${run.error ?? `the CLI reported ${run.subtype ?? 'an error'}`}` };
   const result: HeadlessStreamResult = { run, cost, done: check.done, doneReason: check.reason, messageId: null, messageError: null };
   if (!check.done) return result;

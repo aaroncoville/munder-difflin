@@ -760,3 +760,10 @@ test('Given a CLI whose subprocess runs in its own process group, when the timeo
   const p = pids();
   assert.ok(await allGone([p.child, p.grandchild]), `no process is left behind: ${JSON.stringify(p)}`);
 });
+
+test('Given a run, when it resolves, then it says when it started', async (t) => {
+  const f = floor(t, { stdout: JSON.stringify(SUCCESS) });
+  const before = Date.now();
+  const r = await H.runHeadlessSeat(f.opts());
+  assert.ok(typeof r.startedAt === 'number' && r.startedAt >= before && r.startedAt <= Date.now(), String(r.startedAt));
+});

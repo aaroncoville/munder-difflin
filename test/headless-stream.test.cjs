@@ -443,3 +443,15 @@ test('Given the output path is swapped for a link to another file inside the roo
   assert.equal(r.done, false);
   assert.match(r.reason, /changed while it was checked/);
 });
+
+test('Given an output file last written before the run started, when the output is checked against the run\'s start, then the run is not done', (t) => {
+  const s = seat(t);
+  const out = path.join(s.cwd, 'out.md');
+  fs.writeFileSync(out, 'x\n');
+  fs.utimesSync(out, new Date('2020-01-01'), new Date('2020-01-01'));
+  const r = S.checkHeadlessOutput(s.ctx, out, { notBefore: Date.now() - 1000 });
+  assert.equal(r.done, false);
+  assert.match(r.reason, /before the run started/);
+  fs.writeFileSync(out, 'written now\n');
+  assert.equal(S.checkHeadlessOutput(s.ctx, out, { notBefore: Date.now() - 1000 }).done, true);
+});

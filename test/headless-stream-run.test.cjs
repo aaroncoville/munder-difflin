@@ -83,8 +83,7 @@ function diff(a, b) {
 const ledgerRows = (f) => fs.readFileSync(f.ledger, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
 
 test('Given a run that succeeds and writes its output, when the stream runs, then one ledger row and one done message land, and nothing else in the hive changes', async (t) => {
-  const f = floor(t);
-  fs.writeFileSync(path.join(f.cwd, 'report.md'), 'the report\n');
+  const f = floor(t, { stdout: `${JSON.stringify(SUCCESS)}\n`, writes: { 'report.md': 'the report\n' } });
   const before = snapshot(f.hiveRoot);
   const s = await S.runHeadlessStream(f.opts());
   assert.equal(s.run.ok, true);
@@ -135,8 +134,7 @@ test('Given a run that succeeds but whose output file is outside the seat\'s roo
 });
 
 test('Given a run that fails although its output file is in place, when the stream runs, then it is not done and no message is sent', async (t) => {
-  const f = floor(t, { stdout: JSON.stringify(SUCCESS), exitCode: 2 });
-  fs.writeFileSync(path.join(f.cwd, 'report.md'), 'the report\n');
+  const f = floor(t, { stdout: JSON.stringify(SUCCESS), exitCode: 2, writes: { 'report.md': 'the report\n' } });
   const s = await S.runHeadlessStream(f.opts());
   assert.equal(s.run.ok, false);
   assert.equal(s.done, false);
@@ -147,8 +145,7 @@ test('Given a run that fails although its output file is in place, when the stre
 
 test('Given a run stopped by its budget, when the stream runs, then its row carries the budget-stop marker and it is not done', async (t) => {
   const capped = { ...SUCCESS, subtype: 'error_max_budget_usd', is_error: true, total_cost_usd: 0.051 };
-  const f = floor(t, { stdout: JSON.stringify(capped), exitCode: 1 });
-  fs.writeFileSync(path.join(f.cwd, 'report.md'), 'partial\n');
+  const f = floor(t, { stdout: JSON.stringify(capped), exitCode: 1, writes: { 'report.md': 'partial\n' } });
   const s = await S.runHeadlessStream(f.opts({ maxBudgetUsd: 0.05 }));
   assert.equal(s.done, false);
   const rows = ledgerRows(f);
@@ -181,4 +178,17 @@ test('Given a run that times out, when the stream runs, then no ledger row and n
   assert.equal(s.done, false);
   assert.equal(s.messageId, null);
   assert.deepEqual(diff(before, snapshot(f.hiveRoot)), { added: [], changed: [], removed: [] });
+});
+
+test('Given an output file left by an earlier run and a run that writes nothing, when the stream runs, then it is not done and no message is sent', async (t) => {
+  const f = floor(t);
+  const out = path.join(f.cwd, 'report.md');
+  fs.writeFileSync(out, 'yesterday\'s report\n');
+  const old = new Date(Date.now() - 60_000);
+  fs.utimesSync(out, old, old);
+  const s = await S.runHeadlessStream(f.opts());
+  assert.equal(s.run.ok, true);
+  assert.equal(s.done, false);
+  assert.match(s.doneReason, /before the run started/);
+  assert.deepEqual(fs.readdirSync(f.outbox), []);
 });

@@ -185,6 +185,8 @@ export interface HeadlessRun {
   timedOut: boolean;
   /** The last signal sent to the run's process group: null when none was needed. */
   killSignal: 'SIGTERM' | 'SIGKILL' | null;
+  /** When the CLI was started (epoch ms), so a check can tell what this run wrote from what was there before. */
+  startedAt: number;
   /** How many of the CLI's subprocesses outside its own process group were signalled (each with its group). */
   swept: number;
   /** Why the subprocess sweep could not run, or ran on an incomplete picture: the process table could not be read.
@@ -432,10 +434,11 @@ export function runHeadlessSeat(o: HeadlessSeatOptions): Promise<HeadlessRun> {
         exitCode, signal, result: r ? text(r.result) : null, sessionId: r ? text(r.session_id) : null, totalCostUsd: cost,
         subtype, error, stdout, stderr,
         argv: launch.argv, cwd: launch.cwd, settingsFile: launch.settingsFile, outputFile: o.outputFile ?? null,
-        timedOut, killSignal, swept: swept.size, sweepError,
+        timedOut, killSignal, swept: swept.size, sweepError, startedAt,
       });
     };
     let child: ChildProcess;
+    const startedAt = Date.now();
     try {
       // detached: the CLI leads a new process group, which its own children join unless they start their own.
       child = spawn(launch.argv[0], launch.argv.slice(1), { cwd: launch.cwd, env: launch.env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });

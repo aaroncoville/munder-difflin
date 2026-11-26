@@ -18,6 +18,8 @@ if (at !== -1 && argv[at + 1]) {
 fs.writeFileSync(path.join(__dirname, 'record.json'), JSON.stringify({ argv, env: { ...process.env }, cwd: process.cwd(), settings }));
 
 const canned = JSON.parse(fs.readFileSync(path.join(__dirname, 'canned.json'), 'utf8'));
+// canned.writes: { "<path relative to the working folder>": "<content>" }, written as the run's own output.
+for (const [file, content] of Object.entries(canned.writes ?? {})) fs.writeFileSync(path.resolve(file), content);
 if (canned.stderr) process.stderr.write(canned.stderr);
 process.stdout.write(canned.stdout ?? '');
 process.exitCode = canned.exitCode ?? 0;
