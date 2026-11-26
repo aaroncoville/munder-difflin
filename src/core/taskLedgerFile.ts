@@ -30,7 +30,7 @@
  * Writing never commits: committing the hive repository stays with the app.
  */
 import { randomBytes } from 'node:crypto';
-import { closeSync, fstatSync, fsyncSync, linkSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, fchmodSync, fstatSync, fsyncSync, linkSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { mergeTaskLedger } from './taskLedger';
@@ -236,6 +236,9 @@ function writeAtomically(path: string, text: string, beforeRename: () => void): 
   try {
     const fd = openSync(tmp, 'wx');
     try {
+      // The new file replaces the old one, so it takes the old one's permissions rather than the defaults.
+      const existing = statSync(path, { throwIfNoEntry: false });
+      if (existing) fchmodSync(fd, existing.mode & 0o7777);
       writeFully(fd, path, text);
       fsyncSync(fd);
     } finally {

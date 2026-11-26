@@ -376,3 +376,11 @@ test('a write that stops making progress leaves the ledger as it was', (t) => {
   assert.equal(fs.readFileSync(file, 'utf8'), before);
   assert.deepEqual(leftovers(dir), []);
 });
+
+test('the ledger keeps its file mode when it is replaced', (t) => {
+  const { file } = hive(t, { tasks: [] });
+  fs.chmodSync(file, 0o600);
+  updateTaskLedgerFile(file, (c) => [...c, { id: 'a' }]);
+  assert.deepEqual(ids(file), ['a']);
+  assert.equal((fs.statSync(file).mode & 0o7777).toString(8), '600');
+});
