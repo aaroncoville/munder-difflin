@@ -1,7 +1,7 @@
 'use strict';
 // A headless Claude seat runs one `claude -p` turn for one stream, outside the app's terminals:
-//  - its launch line carries -p, the generated --settings file, JSON output and any model or budget asked for, in an
-//    order the app's own launch-line reader (launchLine.ts claudeLaunch) understands;
+//  - its launch line carries -p, the generated --settings file, JSON output, an empty --setting-sources (no user,
+//    project or local settings), a permission mode and any model or budget asked for;
 //  - its environment is an allowlist: only the named variables pass from the parent (no ELECTRON_RUN_AS_NODE or any
 //    other app-only variable, whatever the parent holds), plus the seat's own hive values, and always
 //    CLAUDE_CODE_DISABLE_DEFERRED_TOOL_RESUME=1 so a resumed run never runs a tool call a hook deferred;
@@ -20,7 +20,7 @@ const loadTs = require('./load-ts.cjs');
 
 const H = loadTs('src/core/headlessSeat.ts');
 const { stageHookRuntime, hookCommandFor } = loadTs('src/core/hookRuntime.ts');
-const { claudeLaunch, claudeRoots } = loadTs('src/core/launchLine.ts');
+const { claudeRoots } = loadTs('src/core/launchLine.ts');
 const { seatWriteRoots } = loadTs('src/core/writeRoots.ts');
 
 const NODE_DIR = path.dirname(process.execPath);
@@ -99,13 +99,15 @@ test('Given no permission mode, when the launch is built, then dontAsk is passed
   assert.equal(l.argv[l.argv.indexOf('--permission-mode') + 1], 'dontAsk');
 });
 
-test('Given a built launch, when the app\'s launch-line reader reads it, then every option is understood and the settings file is the generated one', (t) => {
+test('Given a built launch, then it loads no settings source of the owner\'s: --setting-sources is empty and the only --settings is the generated file', (t) => {
   const f = floor(t);
   const l = H.buildHeadlessLaunch(f.opts({ model: 'haiku', maxBudgetUsd: 0.05, permissionMode: 'acceptEdits' }));
-  const why = [];
-  const facts = {};
-  assert.equal(claudeLaunch(['claude', ...l.argv.slice(1)], l.settingsFile, [], why, facts), 'ok', why.join('; '));
-  assert.equal(facts.userSourcesOnly, true, 'project and local settings files are not loaded');
+  const at = l.argv.indexOf('--setting-sources');
+  assert.notEqual(at, -1);
+  assert.equal(l.argv[at + 1], '', 'no user, project or local settings');
+  assert.equal(l.argv.filter((a) => a === '--setting-sources').length, 1);
+  assert.equal(l.argv.filter((a) => a === '--settings').length, 1);
+  assert.equal(l.argv[l.argv.indexOf('--settings') + 1], l.settingsFile);
 });
 
 test('Given a prompt that starts with a dash, when the launch is built, then it is refused rather than read as an option', (t) => {
@@ -229,15 +231,33 @@ test('Given no plugin map, when the launch is built, then it is refused rather t
   assert.equal(fs.existsSync(f.settingsDir) && fs.readdirSync(f.settingsDir).length > 0, false, 'no settings file is written');
 });
 
-// Claude merges the owner's managed and user settings into the headless session: a write root there outside the
-// seat's roots would reach the sandbox and the edit tools whatever the generated settings say.
+// The headless session loads no user settings, so the owner's user settings cannot widen it and are not read. Managed
+// settings cannot be left out and outrank the generated file: a write root there outside the seat's roots would reach
+// the sandbox and the edit tools whatever the generated settings say.
 function ownerSettings(f, dir, json) {
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify(json));
 }
+function managedSettings(f, json) {
+  fs.mkdirSync(path.join(f.base, 'managed'), { recursive: true });
+  fs.writeFileSync(path.join(f.base, 'managed', 'managed-settings.json'), typeof json === 'string' ? json : JSON.stringify(json));
+}
 const OTHER = (f) => path.join(f.hiveRoot, 'agents', 'other');
 
-test('Given user settings in CLAUDE_CONFIG_DIR that add another agent\'s folder, when the launch is built, then it is refused naming the root and nothing is written', (t) => {
+test('Given user settings that would widen the seat, when the launch is built, then they are not read and the session does not load them', (t) => {
+  const f = floor(t);
+  fs.mkdirSync(OTHER(f));
+  const widen = { sandbox: { enabled: false, filesystem: { disabled: true, allowWrite: [OTHER(f)] }, excludedCommands: ['cp *'] }, permissions: { defaultMode: 'bypassPermissions', allow: ['Bash', `Write(/${OTHER(f)}/**)`] } };
+  const cfg = path.join(f.base, 'cfg');
+  ownerSettings(f, cfg, widen);
+  ownerSettings(f, path.join(f.base, '.claude'), widen);
+  const l = H.buildHeadlessLaunch(f.opts({ parentEnv: { ...f.opts().parentEnv, CLAUDE_CONFIG_DIR: cfg } }));
+  assert.equal(l.argv[l.argv.indexOf('--setting-sources') + 1], '');
+  fs.writeFileSync(path.join(cfg, 'settings.json'), '{ not json');
+  assert.doesNotThrow(() => H.buildHeadlessLaunch(f.opts({ parentEnv: { ...f.opts().parentEnv, CLAUDE_CONFIG_DIR: cfg } })), 'an unreadable user file is not read either');
+});
+
+test('Given managed settings that add a root outside the seat, when the launch is built, then it is refused naming the managed source and root, and nothing is written', (t) => {
   for (const json of [
     (f) => ({ sandbox: { filesystem: { allowWrite: [OTHER(f)] } } }),
     (f) => ({ permissions: { additionalDirectories: [OTHER(f)] } }),
@@ -245,55 +265,30 @@ test('Given user settings in CLAUDE_CONFIG_DIR that add another agent\'s folder,
   ]) {
     const f = floor(t);
     fs.mkdirSync(OTHER(f));
-    const cfg = path.join(f.base, 'cfg');
-    ownerSettings(f, cfg, json(f));
-    const parentEnv = { ...f.opts().parentEnv, CLAUDE_CONFIG_DIR: cfg };
-    assert.throws(() => H.buildHeadlessLaunch(f.opts({ parentEnv })), (e) => e.name === 'HeadlessSeatRefused' && /user settings/.test(e.message) && e.message.includes(OTHER(f)), JSON.stringify(json(f)));
+    managedSettings(f, json(f));
+    assert.throws(() => H.buildHeadlessLaunch(f.opts()), (e) => e.name === 'HeadlessSeatRefused' && /managed settings/.test(e.message) && e.message.includes(OTHER(f)), JSON.stringify(json(f)));
     assert.equal(fs.existsSync(f.settingsDir), false, 'no settings file is written');
   }
 });
 
-test('Given the default user folder under HOME adds a root outside the seat, when the launch is built, then it is refused', (t) => {
+test('Given managed settings that run a command outside the sandbox, when the launch is built, then it is refused', (t) => {
   const f = floor(t);
-  ownerSettings(f, path.join(f.base, '.claude'), { sandbox: { filesystem: { allowWrite: ['~/elsewhere'] } } });
-  assert.throws(() => H.buildHeadlessLaunch(f.opts()), /user settings: sandbox\.filesystem\.allowWrite/);
+  managedSettings(f, { sandbox: { excludedCommands: ['cp *'] } });
+  assert.throws(() => H.buildHeadlessLaunch(f.opts()), /managed settings: sandbox\.excludedCommands/);
 });
 
-test('Given managed settings that add a root outside the seat, when the launch is built, then it is refused naming the managed source', (t) => {
-  const f = floor(t);
-  ownerSettings(f, path.join(f.base, 'managed'), { permissions: { additionalDirectories: [f.hiveRoot] } });
-  fs.renameSync(path.join(f.base, 'managed', 'settings.json'), path.join(f.base, 'managed', 'managed-settings.json'));
-  assert.throws(() => H.buildHeadlessLaunch(f.opts()), /managed settings/);
-});
-
-test('Given user settings that run a command outside the sandbox, when the launch is built, then it is refused', (t) => {
-  const f = floor(t);
-  ownerSettings(f, path.join(f.base, '.claude'), { sandbox: { excludedCommands: ['cp *'] } });
-  assert.throws(() => H.buildHeadlessLaunch(f.opts()), /user settings: sandbox\.excludedCommands/);
-});
-
-test('Given managed or user settings that switch the sandbox off or allow an unsandboxed retry, when the launch is built, then it is refused', (t) => {
-  for (const [where, sandbox, key] of [
-    ['managed', { enabled: false }, 'managed settings: sandbox.enabled'],
-    ['managed', { allowUnsandboxedCommands: true }, 'managed settings: sandbox.allowUnsandboxedCommands'],
-    ['user', { enabled: false }, 'user settings: sandbox.enabled'],
-    ['user', { allowUnsandboxedCommands: true }, 'user settings: sandbox.allowUnsandboxedCommands'],
-  ]) {
+test('Given managed settings that switch the sandbox off or allow an unsandboxed retry, when the launch is built, then it is refused', (t) => {
+  for (const [sandbox, key] of [[{ enabled: false }, 'managed settings: sandbox.enabled'], [{ allowUnsandboxedCommands: true }, 'managed settings: sandbox.allowUnsandboxedCommands']]) {
     const f = floor(t);
-    if (where === 'managed') {
-      fs.mkdirSync(path.join(f.base, 'managed'));
-      fs.writeFileSync(path.join(f.base, 'managed', 'managed-settings.json'), JSON.stringify({ sandbox }));
-    } else ownerSettings(f, path.join(f.base, '.claude'), { sandbox });
+    managedSettings(f, { sandbox });
     assert.throws(() => H.buildHeadlessLaunch(f.opts()), (e) => e.message.includes(key), key);
   }
 });
 
-test('Given user settings that cannot be read or understood, when the launch is built, then it is refused', (t) => {
+test('Given managed settings that cannot be understood, when the launch is built, then it is refused', (t) => {
   const f = floor(t);
-  const cfg = path.join(f.base, 'cfg');
-  fs.mkdirSync(cfg);
-  fs.writeFileSync(path.join(cfg, 'settings.json'), '{ not json');
-  assert.throws(() => H.buildHeadlessLaunch(f.opts({ parentEnv: { ...f.opts().parentEnv, CLAUDE_CONFIG_DIR: cfg } })), /could not be understood/);
+  managedSettings(f, '{ not json');
+  assert.throws(() => H.buildHeadlessLaunch(f.opts()), /managed settings \(could not be understood/);
 });
 
 test('Given a Claude user folder that cannot be placed, when the launch is built, then it is refused', (t) => {
@@ -301,11 +296,10 @@ test('Given a Claude user folder that cannot be placed, when the launch is built
   assert.throws(() => H.buildHeadlessLaunch(f.opts({ parentEnv: { ...f.opts().parentEnv, CLAUDE_CONFIG_DIR: 'relative/cfg' } })), /CLAUDE_CONFIG_DIR/);
 });
 
-test('Given user settings whose roots are all inside the seat\'s roots, when the launch is built, then it goes ahead', (t) => {
+test('Given managed settings whose roots are all inside the seat\'s roots, when the launch is built, then it goes ahead', (t) => {
   const f = floor(t);
-  const cfg = path.join(f.base, 'cfg');
-  ownerSettings(f, cfg, { sandbox: { filesystem: { allowWrite: [path.join(f.hiveRoot, 'evidence')] } }, permissions: { additionalDirectories: [f.cwd] } });
-  const l = H.buildHeadlessLaunch(f.opts({ parentEnv: { ...f.opts().parentEnv, CLAUDE_CONFIG_DIR: cfg } }));
+  managedSettings(f, { sandbox: { filesystem: { allowWrite: [path.join(f.hiveRoot, 'evidence')] } }, permissions: { additionalDirectories: [f.cwd] } });
+  const l = H.buildHeadlessLaunch(f.opts());
   assert.ok(fs.existsSync(l.settingsFile));
 });
 

@@ -10,10 +10,11 @@
  *  - the hive gate hook is registered at PreToolUse with "onFailure": "block", so Claude Code itself blocks the call
  *    when the hook shim cannot start, times out or exits with an unexpected code. The shim's own fail-closed path is
  *    a second layer, not a replacement;
- *  - only project-independent settings load (--setting-sources user), as for a scoped interactive seat. Claude still
- *    merges the owner's managed and user settings into the session, so, as for a scoped interactive seat, the launch is
- *    refused when they add a write root outside the seat's roots (claudeSettingsAdmission.ts), or when where the CLI
- *    will read them cannot be told from the child's environment;
+ *  - none of the owner's settings files load (an empty --setting-sources: no user, project or local settings), so
+ *    nothing in them can widen the seat, and the generated file is the session's only settings file besides managed
+ *    settings. Managed settings cannot be left out and outrank the generated file, so the launch is refused when they
+ *    widen the seat (claudeSettingsAdmission.ts), or when where the CLI looks cannot be told from the child's
+ *    environment. Authentication does not come from a settings file and still works;
  *  - the settings carry the agent's enabledPlugins map, which switches off every plugin the owner has not kept for
  *    agents. Without it the owner's user-level plugins would all load, with their hooks (which run as their own
  *    processes, outside the Bash sandbox), MCP servers and skills, so a launch without the map is refused.
@@ -33,7 +34,7 @@ import { isAbsolute } from 'node:path';
 import { CLAUDE_CONFIG_KEEP } from './claudeEnv';
 import { claudeSettingsExcess, MANAGED_CLAUDE_SETTINGS } from './claudeSettingsAdmission';
 import { hookCommandFor, overlaps, rootOverlap, verifyHookRuntime, type StagedHookRuntime } from './hookRuntime';
-import { CLAUDE_USER_SOURCES, isPlainObject, launchPlaces } from './launchLine';
+import { isPlainObject, launchPlaces } from './launchLine';
 import { privateDirsReach } from './privateDirs';
 import { writeSeatSettings } from './seatSettings';
 import { ownFolder, seatWriteRoots } from './writeRoots';
@@ -71,6 +72,9 @@ export const HEADLESS_DEFAULT_PERMISSION_MODE = 'dontAsk';
 /** The default bound on each of the CLI's stdout and stderr, in bytes. The JSON result of one turn is far smaller; a
  *  stream past this is a CLI gone wrong, and keeping all of it would grow the app's memory without limit. */
 export const HEADLESS_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
+
+/** The --setting-sources value of every headless launch: none, so no user, project or local settings file loads. */
+export const HEADLESS_SETTING_SOURCES = '';
 
 /** Set on every headless launch: a resumed session never runs a tool call a hook deferred. */
 export const DEFERRED_RESUME_ENV = 'CLAUDE_CODE_DISABLE_DEFERRED_TOOL_RESUME';
@@ -224,19 +228,19 @@ export function buildHeadlessLaunch(o: HeadlessSeatOptions): HeadlessLaunch {
   const priv = privateDirsReach(reach);
   if (priv) throw new HeadlessSeatRefused(priv);
   const env = headlessEnv(o.parentEnv ?? process.env, o.seatEnv);
-  // The owner's managed and user settings are merged into the session: every write root they add must be inside the
-  // seat's roots (or a temp folder the CLI's sandbox grants anyway), read where the child's environment points the CLI.
+  // Managed settings are merged into the session whatever the launch line says: every write root they add must be
+  // inside the seat's roots (or a temp folder the CLI's sandbox grants anyway). User settings are not loaded at all.
   const places = launchPlaces('claude', env, homedir());
-  if ('unknown' in places) throw new HeadlessSeatRefused(`where Claude will read the owner's settings cannot be told: ${places.unknown}`);
+  if ('unknown' in places) throw new HeadlessSeatRefused(`where Claude will read its configuration cannot be told: ${places.unknown}`);
   const excess = claudeSettingsExcess({
-    managedFile: o.managedSettingsFile ?? MANAGED_CLAUDE_SETTINGS, userDir: places.claudeUserDir,
-    allowed: [...roots, ...places.tmpDirs], cwd: o.cwd, home: places.home, refuseUserSandboxOff: true,
+    managedFile: o.managedSettingsFile ?? MANAGED_CLAUDE_SETTINGS, userDir: null,
+    allowed: [...roots, ...places.tmpDirs], cwd: o.cwd, home: places.home,
   });
   if (excess) throw new HeadlessSeatRefused(`the owner's ${excess.why} adds a write root outside the seat's roots${excess.root ? `: ${excess.root}` : ''}`);
   const settings = headlessSeatSettings(roots, hookCommandFor(o.hookRuntime, true), o.enabledPlugins);
   // Its own file name, so it never replaces the settings of the same agent's interactive seat.
   const settingsFile = writeSeatSettings(o.settingsDir, o.hiveRoot, `headless:${o.agentId}`, JSON.stringify(settings, null, 2));
-  const argv = [o.cliPath ?? 'claude', '-p', '--output-format', 'json', '--settings', settingsFile, '--setting-sources', CLAUDE_USER_SOURCES];
+  const argv = [o.cliPath ?? 'claude', '-p', '--output-format', 'json', '--settings', settingsFile, '--setting-sources', HEADLESS_SETTING_SOURCES];
   if (o.model) argv.push('--model', o.model);
   if (o.maxBudgetUsd !== undefined) argv.push('--max-budget-usd', String(o.maxBudgetUsd));
   argv.push('--permission-mode', o.permissionMode ?? HEADLESS_DEFAULT_PERMISSION_MODE);

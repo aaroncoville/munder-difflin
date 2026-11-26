@@ -105,17 +105,15 @@ function settingsExcess(text: string, sandboxOff: boolean): { problem: string } 
 export interface ClaudeSettingsPlaces {
   /** The machine-wide settings file; its managed-settings.d drop-ins are read too. */
   managedFile: string;
-  /** The Claude user folder the session reads settings.json from (CLAUDE_CONFIG_DIR, else ~/.claude). */
-  userDir: string;
+  /** The Claude user folder the session reads settings.json from (CLAUDE_CONFIG_DIR, else ~/.claude); null when the
+   *  session loads no user settings. */
+  userDir: string | null;
   /** The roots the seat may write: anything the owner's settings add must be inside one of them. */
   allowed: string[];
   /** The seat's working folder, for relative roots. */
   cwd: string;
   /** The home folder ~ and $HOME stand for. */
   home: string;
-  /** Also refuse user settings that switch the sandbox off or allow an unsandboxed retry (managed ones always are).
-   *  The seat's own settings file outranks user settings for these, so this is a second layer, not the only one. */
-  refuseUserSandboxOff?: boolean;
 }
 
 /** The first write root the owner's managed or user Claude settings add outside `allowed`: `why` names it as
@@ -125,7 +123,7 @@ export function claudeSettingsExcess(p: ClaudeSettingsPlaces): { why: string; ro
   const dropDir = join(dirname(p.managedFile), 'managed-settings.d');
   const dropIns: string[] = [];
   try { for (const n of readdirSync(dropDir).sort()) if (n.endsWith('.json')) dropIns.push(join(dropDir, n)); } catch { /* none */ }
-  const files: Array<[string, string]> = [...[p.managedFile, ...dropIns].map((f): [string, string] => [f, 'managed settings']), [join(p.userDir, 'settings.json'), 'user settings']];
+  const files: Array<[string, string]> = [...[p.managedFile, ...dropIns].map((f): [string, string] => [f, 'managed settings']), ...(p.userDir === null ? [] : [[join(p.userDir, 'settings.json'), 'user settings'] as [string, string]])];
   const inside = (x: string | null): boolean => !!x && insideAny(x, p.allowed);
   for (const [file, source] of files) {
     const text = readSmallSettingsFile(file);
@@ -133,7 +131,7 @@ export function claudeSettingsExcess(p: ClaudeSettingsPlaces): { why: string; ro
     if (text === null) return { why: `${source} (could not be read)`, root: null };
     const c = claudeRootEntries(text);
     if (!c) return { why: `${source} (could not be understood)`, root: null };
-    const more = settingsExcess(text, source === 'managed settings' || p.refuseUserSandboxOff === true);
+    const more = settingsExcess(text, source === 'managed settings');
     if (more && 'problem' in more) return { why: `${source} (could not be understood: ${more.problem})`, root: null };
     if (more) return { why: `${source}: ${more.key}`, root: null };
     for (const e of c.entries) {
