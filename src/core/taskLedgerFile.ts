@@ -162,7 +162,8 @@ function acquire(
 ): OwnLock {
   const token = randomBytes(12).toString('hex');
   const body = JSON.stringify({ pid: process.pid, host: hostname(), acquiredAt: new Date().toISOString(), token });
-  const deadline = Date.now() + opts.waitMs;
+  // A monotonic clock: a wall-clock step back would stretch the wait, a step forward would cut it short.
+  const deadline = performance.now() + opts.waitMs;
   let last: LockRecord | null = null;
   const tmp = join(dirname(lock), `.${basename(lock)}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`);
   writeFileSync(tmp, body, { flag: 'wx' });
@@ -184,7 +185,7 @@ function acquire(
           if (breakStale(lock, held)) continue;
         }
       }
-      if (Date.now() >= deadline) throw new TaskLedgerLockTimeout(lock, opts.waitMs, describe(last));
+      if (performance.now() >= deadline) throw new TaskLedgerLockTimeout(lock, opts.waitMs, describe(last));
       sleep(opts.retryMs);
     }
   } finally {

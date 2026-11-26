@@ -400,3 +400,20 @@ test('leftover lock, break-aside and temporary files older than a minute are swe
   updateTaskLedgerFile(file, (c) => [...c, { id: 'a' }]);
   assert.deepEqual(leftovers(dir).sort(), [...names.map((n) => `${n}-new`), 'notes.tmp-1'].sort());
 });
+
+test('the wait for the lock ends on time even when the wall clock runs backwards', (t) => {
+  const { file, lock } = hive(t, { tasks: [] });
+  holdLock(lock);
+  // The child's wall clock runs backwards from the moment it starts; with a wall-clock deadline the
+  // wait would never end.
+  const r = spawnSync(process.execPath, ['-e', `
+    const loadTs = require(${JSON.stringify(path.join(__dirname, 'load-ts.cjs'))});
+    const { updateTaskLedgerFile, TaskLedgerLockTimeout } = loadTs('src/core/taskLedgerFile.ts');
+    const real = Date.now; const start = real();
+    Date.now = () => start - 2 * (real() - start);
+    try { updateTaskLedgerFile(process.argv[1], (c) => c, { waitMs: 300 }); process.exit(2); }
+    catch (e) { process.exit(e instanceof TaskLedgerLockTimeout ? 0 : 3); }`, file],
+  { cwd: path.join(__dirname, '..'), timeout: 5_000 });
+  assert.equal(r.signal, null, 'the writer was still waiting after 5 s');
+  assert.equal(r.status, 0, r.stderr.toString());
+});
