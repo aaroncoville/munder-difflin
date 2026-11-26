@@ -205,6 +205,49 @@ test('a holder on this host that this process may signal-check but not inspect i
   assert.equal(JSON.parse(fs.readFileSync(lock, 'utf8')).token, 'theirs', "the holder's lock is left in place");
 });
 
+// Reading a start time runs ps on macOS, synchronously, on the app's main thread. It must fit inside the
+// wait for the lock, however slow ps is, and a read that runs out of time is one that could not be made.
+
+test('reading start times stays inside the wait for the lock, even when every read hangs until its time limit', (t) => {
+  const { file, lock } = hive(t, { tasks: [] });
+  holdLock(lock, { started: START, acquiredAt: new Date(Date.now() - 10 * 60_000).toISOString() });
+  const limits = [];
+  // A ps that hangs: each read takes the whole time it is given (2 s when given none), then fails.
+  const hanging = (pid, timeoutMs) => {
+    limits.push(timeoutMs);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, typeof timeoutMs === 'number' ? timeoutMs : 2_000);
+    return null;
+  };
+  const started = performance.now();
+  assert.throws(() => updateTaskLedgerFile(file, (c) => [...c, { id: 'b' }], { waitMs: 150, startTime: hanging }), TaskLedgerLockTimeout);
+  const took = performance.now() - started;
+  assert.ok(took < 150 + 100, `the writer gave up after ${Math.round(took)} ms, not about 150`);
+  assert.ok(limits.length >= 2, 'its own start time and the holder\'s were both read');
+  for (const limit of limits) assert.ok(typeof limit === 'number' && limit > 0 && limit <= 100, `a read was allowed ${limit} ms`);
+  const total = limits.reduce((a, b) => a + b, 0);
+  assert.ok(total <= 150, `the reads were allowed ${total} ms in all, more than the 150 ms wait`);
+  assert.deepEqual(ids(file), [], 'nothing was written');
+});
+
+test('where ps cannot be started, a running holder on this host is busy, and ps is never given more than 100 ms', { skip: process.platform === 'linux' || process.platform === 'win32' ? 'start times come from /proc or are not read' : false }, (t) => {
+  const cp = require('node:child_process');
+  const real = cp.execFileSync;
+  t.after(() => { cp.execFileSync = real; });
+  const calls = [];
+  cp.execFileSync = function (command, args, options) {
+    if (command !== 'ps') return real.apply(this, arguments);
+    calls.push(options && options.timeout);
+    throw Object.assign(new Error('spawnSync ps EPERM'), { code: 'EPERM', syscall: 'spawnSync ps' });
+  };
+  // The holder is a running process other than this one, so its start time has to be read with ps.
+  const { file, lock } = hive(t, { tasks: [] });
+  holdLock(lock, { pid: process.ppid, started: START, token: 'theirs', acquiredAt: new Date(Date.now() - 10 * 60_000).toISOString() });
+  assert.throws(() => updateTaskLedgerFile(file, (c) => [...c, { id: 'b' }], { waitMs: 200 }), TaskLedgerLockTimeout);
+  assert.equal(JSON.parse(fs.readFileSync(lock, 'utf8')).token, 'theirs', "the holder's lock is left in place");
+  assert.ok(calls.length >= 1, 'ps was asked for the holder\'s start time');
+  for (const timeout of calls) assert.ok(typeof timeout === 'number' && timeout > 0 && timeout <= 100, `ps was given ${timeout} ms`);
+});
+
 test('a holder paused between its ownership check and its rename keeps the lock, so no card is lost', async (t) => {
   const { dir, file, lock } = hive(t, { tasks: [{ id: 'seed' }] });
   const sync = fs.mkdtempSync(path.join(os.tmpdir(), 'md-ledger-sync-'));

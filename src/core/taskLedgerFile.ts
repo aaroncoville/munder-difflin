@@ -73,10 +73,11 @@ export interface TaskLedgerFileOptions {
    */
   unreadable?: 'throw' | 'empty';
   /**
-   * When process `pid` started, or null when that cannot be read. Used for this writer's own record and to
-   * check a holder's. Default: processStart, from /proc or ps. A test can make it fail. Not for production use.
+   * When process `pid` started, or null when that cannot be read within `timeoutMs`. Used for this writer's
+   * own record and to check a holder's. Default: processStart, from /proc or ps. A test can make it fail or
+   * hang. Not for production use.
    */
-  startTime?: (pid: number) => string | null;
+  startTime?: (pid: number, timeoutMs: number) => string | null;
   /** Called between the steps of taking the lock, so a test can interleave writers. Not for production use. */
   hooks?: TaskLedgerLockHooks;
 }
@@ -156,10 +157,11 @@ function alive(pid: number): boolean {
  *    second as the process it replaced started would read alike; that needs the first process to have
  *    lived under a second and its pid to come round again in that second.
  *
- * null (no /proc and no ps, as on Windows; a sandbox that hides the process from ps; the process gone)
- * means "cannot check", never "a different process".
+ * null (no /proc and no ps, as on Windows; a sandbox that hides the process from ps or will not start it;
+ * a ps that did not answer within `timeoutMs`; the process gone) means "cannot check", never "a different
+ * process".
  */
-function processStart(pid: number): string | null {
+function processStart(pid: number, timeoutMs: number): string | null {
   if (process.platform === 'win32') return null;
   if (process.platform === 'linux' && existsSync('/proc/self/stat')) {
     try {
@@ -176,7 +178,7 @@ function processStart(pid: number): string | null {
     const out = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
       env: { PATH: '/bin:/usr/bin', LC_ALL: 'C', TZ: 'UTC' },
       stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 2_000
+      timeout: timeoutMs
     }).toString().trim();
     return out ? `ps:${out}` : null;
   } catch {
@@ -184,13 +186,23 @@ function processStart(pid: number): string | null {
   }
 }
 
-let ownStart: string | null | undefined;
-/** When process `pid` started (see processStart), reading this process's own start time only once. */
-function defaultStartTime(pid: number): string | null {
-  if (pid !== process.pid) return processStart(pid);
-  if (ownStart === undefined) ownStart = processStart(process.pid);
+let ownStart: string | null = null;
+/**
+ * When process `pid` started (see processStart). This process's own start time is kept once it has been
+ * read; a read that failed, perhaps only because ps was slow that time, is tried again on the next update.
+ */
+function defaultStartTime(pid: number, timeoutMs: number): string | null {
+  if (pid !== process.pid) return processStart(pid, timeoutMs);
+  if (ownStart === null) ownStart = processStart(process.pid, timeoutMs);
   return ownStart;
 }
+
+/**
+ * The longest one start-time read may take. It runs ps, synchronously, on the caller's thread (the app's
+ * main thread), normally in a few milliseconds; a ps that hangs must not stall it past the wait for the
+ * lock, which the app keeps short for that reason.
+ */
+const START_READ_MS = 100;
 
 /** Whether running process `pid` is the one that recorded `started`: null when that cannot be told. */
 function sameProcess(pid: number, started: unknown, startTime: (pid: number) => string | null): boolean | null {
@@ -261,10 +273,17 @@ function acquire(
   opts: Required<Pick<TaskLedgerFileOptions, 'waitMs' | 'staleMs' | 'retryMs' | 'startTime'>> & { hooks: TaskLedgerLockHooks }
 ): OwnLock {
   const token = randomBytes(12).toString('hex');
-  const started = opts.startTime(process.pid);
-  const body = JSON.stringify({ pid: process.pid, host: hostname(), ...(started === null ? {} : { started }), acquiredAt: new Date().toISOString(), token });
   // A monotonic clock: a wall-clock step back would stretch the wait, a step forward would cut it short.
   const deadline = performance.now() + opts.waitMs;
+  // Start-time reads count against the wait: each gets at most START_READ_MS, and no more than is left of
+  // it. A read that runs out of time cannot tell whether a holder is the process that wrote its record,
+  // so that holder is taken to be alive (see isStale), and the wait still ends on time.
+  const readStart = (pid: number): string | null => {
+    const left = Math.min(START_READ_MS, Math.floor(deadline - performance.now()));
+    return left > 0 ? opts.startTime(pid, left) : null;
+  };
+  const started = readStart(process.pid);
+  const body = JSON.stringify({ pid: process.pid, host: hostname(), ...(started === null ? {} : { started }), acquiredAt: new Date().toISOString(), token });
   let last: HeldLock | null = null;
   const owners = new Map<string, boolean | null>();
   const tmp = join(dirname(lock), `.${basename(lock)}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`);
@@ -282,7 +301,7 @@ function acquire(
       const held = readLock(lock);
       if (held) {
         last = held;
-        if (isStale(held, opts, owners)) {
+        if (isStale(held, { staleMs: opts.staleMs, startTime: readStart }, owners)) {
           opts.hooks.beforeBreak?.();
           if (breakStale(lock, held)) continue;
         }
