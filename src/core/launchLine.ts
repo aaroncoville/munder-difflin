@@ -371,7 +371,8 @@ export function claudeRoots(json: string): { roots: string[]; enabled: boolean |
 /** The Claude tools that write files. An allow rule for any of them (bare, or with a path pattern) lets that tool write
  *  what it names without asking, so each is read as a write root, as Edit is. */
 export const CLAUDE_FILE_WRITE_TOOLS: readonly string[] = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'];
-const FILE_WRITE_RULE = new RegExp(`^\\s*(?:${CLAUDE_FILE_WRITE_TOOLS.join('|')})\\s*(\\(|$)`);
+// Any letter case: whether the CLI matches tool names case-insensitively is not known, so such a rule is read too.
+const FILE_WRITE_RULE = new RegExp(`^\\s*(?:${CLAUDE_FILE_WRITE_TOOLS.join('|')})\\s*(\\(|$)`, 'i');
 
 /** The same reading as claudeRoots, with the key each root came from, and the file-writing tool allow rules in
  *  permissions.allow (each lets that tool write what it names; read only when that list is a list of text). */

@@ -45,7 +45,13 @@ export function settingsRootPath(x: unknown, cwd: string, home: string): string 
 /** The file-writing tool an allow rule names (Edit, Write, MultiEdit, NotebookEdit), or null. */
 function writeRuleTool(rule: string): string | null {
   const m = /^\s*([A-Za-z]+)\s*(\(|$)/.exec(rule);
-  return m && CLAUDE_FILE_WRITE_TOOLS.includes(m[1]) ? m[1] : null;
+  return m ? writeTool(m[1]) : null;
+}
+
+/** The file-writing tool a rule's tool name names, matched in any letter case (whether the CLI's own matching ignores
+ *  case is not known, so a differently cased name is read as the tool), as CLAUDE_FILE_WRITE_TOOLS spells it. */
+function writeTool(name: string): string | null {
+  return CLAUDE_FILE_WRITE_TOOLS.find((t) => t.toLowerCase() === name.toLowerCase()) ?? null;
 }
 
 /** The folder a file-writing tool's allow rule (Edit(...), Write(...), MultiEdit(...), NotebookEdit(...)) starts in,
@@ -53,7 +59,7 @@ function writeRuleTool(rule: string): string | null {
  *  to the working folder. A pattern is cut at its first wildcard; a cut inside a name keeps the folder holding it. */
 export function editRuleFolder(rule: string, settingsDir: string, cwd: string, home: string): string | null {
   const m = /^\s*([A-Za-z]+)\s*\((.*)\)\s*$/.exec(rule);
-  if (!m || !CLAUDE_FILE_WRITE_TOOLS.includes(m[1])) return null;
+  if (!m || writeTool(m[1]) === null) return null;
   const spec = m[2].trim();
   if (!spec) return null;
   let p: string;

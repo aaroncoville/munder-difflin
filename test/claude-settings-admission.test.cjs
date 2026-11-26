@@ -94,3 +94,21 @@ test('strict: settings that keep the seat within its roots are admitted', (t) =>
   ];
   for (const settings of admitted) assert.equal(f.judge(settings), null, JSON.stringify(settings));
 });
+
+test('strict: a file-writing tool rule is read whatever the case of its tool name', (t) => {
+  const f = floor(t);
+  const out = path.join(f.base, 'elsewhere');
+  for (const tool of ['edit', 'WRITE', 'multiedit', 'notebookedit', 'NotebookEDIT']) {
+    for (const rule of [`${tool}(/${out}/**)`, tool]) {
+      const r = f.judge({ permissions: { allow: [rule] } });
+      assert.ok(r && /managed settings: permissions\.allow /.test(r.why), `${rule} was admitted`);
+    }
+  }
+  assert.equal(f.judge({ permissions: { allow: [`write(/${f.work}/**)`] } }), null, 'a rule inside the roots is still admitted');
+});
+
+test('the root reader lists a file-writing tool rule whatever the case of its tool name', () => {
+  const { claudeRootEntries } = loadTs('src/core/launchLine.ts');
+  const rules = ['edit(//x/**)', 'WRITE', 'MultiEdit(//y)', 'notebookedit', 'Read(//z)', 'Editor(//w)'];
+  assert.deepEqual(claudeRootEntries(JSON.stringify({ permissions: { allow: rules } })).editRules, ['edit(//x/**)', 'WRITE', 'MultiEdit(//y)', 'notebookedit']);
+});
