@@ -649,8 +649,10 @@ test('where hard links are refused, nothing is written and the error says ledger
   const before = fs.readFileSync(file);
   for (const code of ['EPERM', 'ENOTSUP', 'EXDEV', 'ENOSYS']) {
     const link = () => { throw Object.assign(new Error(`${code}: link`), { code }); };
+    // EPERM is also what a permission or sandbox rule refusing the link gives, so it does not blame the volume alone.
+    const cause = code === 'EPERM' ? /may not support hard links, or a permission or sandbox rule refused/ : /does not support hard links/;
     assert.throws(() => updateTaskLedgerFile(file, (c) => [...c, { id: 'b' }], { link }),
-      (e) => /does not support hard links/.test(e.message) && /task ledger writes are disabled/.test(e.message) && e.message.includes(code),
+      (e) => cause.test(e.message) && /task ledger writes are disabled/.test(e.message) && e.message.includes(code),
       code);
     assert.ok(fs.readFileSync(file).equals(before), `tasks.json is byte for byte as it was (${code})`);
     assert.deepEqual(leftovers(dir), [], `no lock or temporary file is left (${code})`);

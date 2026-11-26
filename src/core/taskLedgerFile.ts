@@ -311,7 +311,11 @@ function acquire(
       } catch (e) {
         const code = (e as NodeJS.ErrnoException).code;
         if (code && NO_HARD_LINKS.has(code)) {
-          throw new Error(`${dirname(lock)}: this volume does not support hard links (${code}), which the lock on tasks.json needs; task ledger writes are disabled`);
+          // EPERM is also what a permission or sandbox rule refusing the link gives, so it names both causes.
+          const cause = code === 'EPERM'
+            ? 'this volume may not support hard links, or a permission or sandbox rule refused one'
+            : 'this volume does not support hard links';
+          throw new Error(`${dirname(lock)}: ${cause} (${code}), which the lock on tasks.json needs; task ledger writes are disabled`);
         }
         if (code !== 'EEXIST') throw e;
       }
