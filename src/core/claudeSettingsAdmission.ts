@@ -9,7 +9,7 @@
  */
 import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path';
-import { CLAUDE_FILE_WRITE_TOOLS, claudeRootEntries } from './launchLine';
+import { CLAUDE_FILE_WRITE_TOOLS, claudeRootEntries, isPlainObject, stringList } from './launchLine';
 import { insideAny } from './writeRoots';
 
 /** The machine-wide Claude settings file. */
@@ -67,6 +67,22 @@ export function editRuleFolder(rule: string, settingsDir: string, cwd: string, h
   return resolvePath(head.endsWith('/') ? head : dirname(head));
 }
 
+/** What in one settings file's text cannot be judged, beyond the roots claudeRootEntries reads; null when nothing.
+ *  A permissions allow, ask or deny list that is not a list of text is not understood: reading around it would skip a
+ *  rule the CLI may still apply. */
+function settingsProblem(text: string): string | null {
+  let v: unknown;
+  try { v = JSON.parse(text); } catch { return 'it is not JSON'; }
+  if (!isPlainObject(v)) return 'it is not an object';
+  const pm = v.permissions;
+  if (isPlainObject(pm)) {
+    for (const k of ['allow', 'ask', 'deny']) {
+      if (Object.hasOwn(pm, k) && !stringList(pm[k])) return `permissions.${k} is not a list of text`;
+    }
+  }
+  return null;
+}
+
 export interface ClaudeSettingsPlaces {
   /** The machine-wide settings file; its managed-settings.d drop-ins are read too. */
   managedFile: string;
@@ -95,6 +111,8 @@ export function claudeSettingsExcess(p: ClaudeSettingsPlaces): { why: string; ro
     if (text === null) return { why: `${source} (could not be read)`, root: null };
     const c = claudeRootEntries(text);
     if (!c) return { why: `${source} (could not be understood)`, root: null };
+    const problem = settingsProblem(text);
+    if (problem) return { why: `${source} (could not be understood: ${problem})`, root: null };
     for (const e of c.entries) {
       const root = settingsRootPath(e.value, p.cwd, p.home);
       if (!inside(root)) return { why: `${source}: ${e.key}`, root };

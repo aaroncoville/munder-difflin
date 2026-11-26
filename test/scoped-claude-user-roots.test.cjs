@@ -74,6 +74,20 @@ test('flag on: an allow rule for any file-writing tool outside the seat\'s roots
   }
 });
 
+test('flag on: a permissions allow, ask or deny list that is not a list of text refuses the spawn, rather than being skipped', async (t) => {
+  const f = floor(t);
+  const cases = [
+    { allow: [`Edit(/${f.A('other')}/**)`, 5] },
+    { allow: 'Edit' },
+    { ask: [null] },
+    { deny: { Bash: true } },
+  ];
+  for (const [i, permissions] of cases.entries()) {
+    f.user({ permissions });
+    await assert.rejects(f.spawn(`l${i}`, true), (e) => e instanceof ScopedRootsRefused && /user settings \(could not be understood/.test(e.message), JSON.stringify(permissions));
+  }
+});
+
 test('the Claude file-writing tools the admission reads include every Claude write tool the gate protects', () => {
   const { CLAUDE_FILE_WRITE_TOOLS } = loadTs('src/core/launchLine.ts');
   const { PROTECTED_WRITE_TOOLS } = loadTs('src/core/writeRoots.ts');
