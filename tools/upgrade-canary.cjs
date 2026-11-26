@@ -269,9 +269,14 @@ function runCanary(o) {
       const inside = path.join(d.allowed, 'x');
       const outside = path.join(d.forbidden, 'x');
       const r = codexExec(d.cwd, runTouches([inside, outside]), [d.allowed]);
-      const cmd = codexEvidence(r.stdout).commands.find((c) => String(c.command ?? '').includes(outside));
-      const refused = !!cmd && cmd.exit_code !== 0 && REFUSED.test(String(cmd.aggregated_output ?? ''));
-      return writeVerdict({ inside, outside, attempted: !!cmd, refused, why: failed(r) });
+      const ev = codexEvidence(r.stdout);
+      const cmd = ev.commands.find((c) => String(c.command ?? '').includes(outside));
+      // Codex 0.172's exec --json emits no item for a command its sandbox refused; the refusal then shows only in the
+      // model's report of the exit codes, so that report is the evidence when the stream has no item.
+      const reported = !cmd && reportedRefusal(ev.messages);
+      const refused = reported || (!!cmd && cmd.exit_code !== 0 && REFUSED.test(String(cmd.aggregated_output ?? '')));
+      const v = writeVerdict({ inside, outside, attempted: !!cmd || reported, refused, why: failed(r) });
+      return v.ok === true && reported ? { ...v, detail: `${v.detail} (seen in the model's report; the event stream had no item for that command)` } : v;
     },
     'codex.child-thread-roots': () => {
       const d = dirs('codex-child');
@@ -287,8 +292,7 @@ function runCanary(o) {
       }
       if (!ev.collab) return { ok: null, detail: `no sub-agent tool was used (${failed(r)})` };
       if (!exists(inside)) return { ok: null, detail: 'the child did not write inside its roots, so it may never have run' };
-      const reported = ev.messages.some((m) => m.split('\n').some((l) => /forbidden/.test(l) && REFUSED.test(l)));
-      if (!reported) return { ok: null, detail: 'the child wrote inside its roots, but no refused attempt outside them was reported' };
+      if (!reportedRefusal(ev.messages)) return { ok: null, detail: 'the child wrote inside its roots, but no refused attempt outside them was reported' };
       return { ok: true, detail: 'a child thread wrote inside its roots and reported the write outside them refused' };
     }
   };
@@ -312,6 +316,8 @@ function runCanary(o) {
     if (got !== expected) return { ok: false, detail: `${where} is ${cli} ${got}, expected ${expected}` };
     return { ok: true, detail: `${where} is ${cli} ${got}` };
   }
+  /** A line of the model's report naming the forbidden root together with a refusal. */
+  function reportedRefusal(messages) { return messages.some((m) => m.split('\n').some((l) => /forbidden/.test(l) && REFUSED.test(l))); }
   function exitZero(r, what) { return r.status === 0 ? { ok: true, detail: `${what} exited 0` } : { ok: false, detail: `${what}: ${failed(r)}` }; }
   function writeVerdict({ inside, outside, attempted, refused, why }) {
     if (exists(outside)) return { ok: false, detail: 'a write outside the roots landed' };

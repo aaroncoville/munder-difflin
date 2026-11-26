@@ -45,6 +45,8 @@ function claudeStream(calls, result = 'done', cost = 0.01) {
  *   child-silent       the child writes inside its roots but nothing about the outside write is reported
  *   other-error        every out-of-roots or hooked call fails for some other reason (no such file), writing nothing
  *   no-collab-item     the child runs, but the stream shows no sub-agent tool
+ *   drop-refused-item  like Codex 0.172: no event for a command the sandbox refused; only the model's report has it
+ *   noisy-report       the report also has an unrelated line saying "Operation not permitted"
  */
 function fakeRun(faults = new Set(), versions = { claude: '2.1.332', codex: '0.172.0' }) {
   let claudeHookTurns = 0;
@@ -101,9 +103,11 @@ function fakeRun(faults = new Set(), versions = { claude: '2.1.332', codex: '0.1
       const why = other ? 'No such file or directory' : 'Operation not permitted';
       const item = { id: `c${i}`, type: 'command_execution', command: `/bin/zsh -lc 'touch ${t}'`, exit_code: wrote ? 0 : 1,
         aggregated_output: wrote ? '' : `touch: ${t}: ${why}`, status: wrote ? 'completed' : 'failed' };
-      if (child) report.push(`touch ${t} — exit code ${wrote ? 0 : 1}${wrote ? '' : ` (${why})`}`);
-      else ev.push({ type: 'item.completed', item });
+      report.push(`touch ${t} — exit code ${wrote ? 0 : 1}${wrote ? '' : ` (${why})`}`);
+      if (!child && !(faults.has('drop-refused-item') && !wrote)) ev.push({ type: 'item.completed', item });
     });
+    if (faults.has('noisy-report')) report.push('note: a first attempt at the scratch cache said Operation not permitted');
+    if (!child) ev.push({ type: 'item.completed', item: { type: 'agent_message', text: report.join('\n') } });
     if (child) {
       if (!faults.has('no-collab-item')) ev.push({ type: 'item.completed', item: { type: 'collab_tool_call', tool: 'wait', status: 'completed' } });
       ev.push({ type: 'item.completed', item: { type: 'agent_message', text: faults.has('child-silent') ? 'The sub-agent finished.' : `The sub-agent reported:\n${report.join('\n')}` } });
@@ -219,6 +223,18 @@ test('Codex token use is summed, and the run stops at its ceiling', () => {
     const r = res.results.find((x) => x.probe === 'codex.child-thread-roots');
     assert.equal(r.ok, null);
     assert.match(r.detail, /Codex token limit/);
+  });
+});
+
+test('codex.sandbox-write passes on the model report when Codex drops the refused command from its stream', () => {
+  withWork((work) => {
+    const r = one(work, ['drop-refused-item'], 'codex.sandbox-write');
+    assert.equal(r.ok, true, r.detail);
+    assert.match(r.detail, /model's report/);
+    // ...but not when nothing reports the refusal either.
+    assert.equal(one(work, ['drop-refused-item', 'stop-early'], 'codex.sandbox-write').ok, null);
+    // ...nor on a refusal line that is not about the forbidden root.
+    assert.equal(one(work, ['drop-refused-item', 'stop-early', 'noisy-report'], 'codex.sandbox-write').ok, null);
   });
 });
 
