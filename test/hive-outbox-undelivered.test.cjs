@@ -17,7 +17,7 @@ const { allCommitsIdle } = loadTs('src/core/hiveCommit.ts');
 require('./codex-test-home.cjs').isolateHomeForFile('md-nohomes-');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
-const outboxFailure = loadTs('src/main/outboxFailure.ts');
+const outboxFailure = loadTs('src/core/outboxFailure.ts');
 const ts = require('typescript');
 
 async function floor(t) {

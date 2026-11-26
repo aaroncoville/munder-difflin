@@ -24,6 +24,7 @@ export * from './inboxClaims';
 export * from './mailLine';
 export * from './messageId';
 export * from './messageTarget';
+export * from './outboxFailure';
 export * from './outboxResend';
 export * from './pricing';
 export * from './privateDirs';

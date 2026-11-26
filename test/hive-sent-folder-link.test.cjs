@@ -15,7 +15,7 @@ const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { allCommitsIdle } = loadTs('src/core/hiveCommit.ts');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
-const { moveWithoutReplacing } = loadTs('src/main/outboxFailure.ts');
+const { moveWithoutReplacing } = loadTs('src/core/outboxFailure.ts');
 const { RecentSends } = loadTs('src/core/outboxResend.ts');
 
 async function floor(t) {
