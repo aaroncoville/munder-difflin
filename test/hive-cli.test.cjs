@@ -89,7 +89,7 @@ test('patch merges fields into the card, keeps its other fields and its id', (t)
 test('patch refuses to clear the assignee, and writes nothing', (t) => {
   const { dir, file } = hive(t, { tasks: [{ id: 'a', assignee: 'x', status: 'doing' }] });
   const before = fs.readFileSync(file, 'utf8');
-  for (const json of ['{"assignee":null}', '{"assignee":""}', '{"assignee":7}', '{"assignee":["y"]}', '{"status":"done","assignee":null}']) {
+  for (const json of ['{"assignee":null}', '{"assignee":""}', '{"assignee":7}', '{"assignee":["y"]}', '{"status":"done","assignee":null}', '{"assignee":"  "}', '{"assignee":"\\t\\n"}']) {
     const r = run(['--hive', dir, 'tasks', 'patch', 'a', '--json', json]);
     assert.equal(r.code, 1, json);
     assert.match(r.stderr, /assignee/, json);

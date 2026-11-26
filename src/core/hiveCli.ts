@@ -53,7 +53,7 @@ commands:
   hive tasks patch <id> --json <patch>
       Merge the fields of <patch>, an object, into card <id>. A patch may
       not change "id", may not set "humanQA" (use ask), and may change
-      "assignee" only to another non-empty string.
+      "assignee" only to another string that is not blank.
   hive tasks ask <id> --q-file <path>
       Append the question in file <path> to card <id>'s humanQA list as
       { "q", "askedAt" }, and set the card's status to "blocked".
@@ -149,8 +149,8 @@ const idOf = (card: unknown): unknown => (isObject(card) ? card.id : undefined);
 function refuseLedgerRuleBreak(patch: Card, id: string): void {
   if (Object.hasOwn(patch, 'id') && patch.id !== id) throw new CliError(`a patch cannot change the card's "id"; this is card ${id}`);
   if (Object.hasOwn(patch, 'humanQA')) throw new CliError('a patch cannot set "humanQA": its history only grows; add a question with hive tasks ask');
-  if (Object.hasOwn(patch, 'assignee') && (typeof patch.assignee !== 'string' || !patch.assignee)) {
-    throw new CliError('a patch cannot clear "assignee": it may only name another assignee, as a non-empty string');
+  if (Object.hasOwn(patch, 'assignee') && (typeof patch.assignee !== 'string' || !patch.assignee.trim())) {
+    throw new CliError('a patch cannot clear "assignee": it may only name another assignee, as a string that is not blank');
   }
 }
 
