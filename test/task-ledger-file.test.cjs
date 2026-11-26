@@ -186,6 +186,15 @@ test('a lock whose pid is alive but belongs to a later process (pid reused) is b
   assert.deepEqual(leftovers(dir), []);
 });
 
+test('start times read by different methods are not compared: the running holder stays busy', (t) => {
+  // A /proc tick count and a ps date always differ, which would wrongly read as a reused pid.
+  const { file, lock } = hive(t, { tasks: [] });
+  holdLock(lock, { started: 'proc:123456', token: 'theirs', acquiredAt: new Date(Date.now() - 3_600_000).toISOString() });
+  assert.throws(() => updateTaskLedgerFile(file, (c) => [...c, { id: 'b' }], { waitMs: 200, staleMs: 1_000, startTime: startedAt(START) }),
+    TaskLedgerLockTimeout);
+  assert.equal(JSON.parse(fs.readFileSync(lock, 'utf8')).token, 'theirs', "the holder's lock is left in place");
+});
+
 test('a waiter that cannot read start times treats a running holder on this host as busy, however old its lock', (t) => {
   const { file, lock } = hive(t, { tasks: [] });
   holdLock(lock, { started: START, token: 'theirs', acquiredAt: new Date(Date.now() - 10 * 60_000).toISOString() });
