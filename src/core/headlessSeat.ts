@@ -39,7 +39,7 @@ import { isAbsolute } from 'node:path';
 import { CLAUDE_CONFIG_KEEP } from './claudeEnv';
 import { claudeSettingsExcess, MANAGED_CLAUDE_SETTINGS } from './claudeSettingsAdmission';
 import { hookCommandFor, overlaps, rootOverlap, verifyHookRuntime, type StagedHookRuntime } from './hookRuntime';
-import { isPlainObject, launchPlaces } from './launchLine';
+import { CLAUDE_FILE_WRITE_TOOLS, isPlainObject, launchPlaces } from './launchLine';
 import { privateDirsReach } from './privateDirs';
 import { writeSeatSettings } from './seatSettings';
 import { ownFolder, SCOPED_SANDBOX_PINS, seatWriteRoots } from './writeRoots';
@@ -184,15 +184,27 @@ export class HeadlessSeatRefused extends Error {
   }
 }
 
-/** The generated settings: scoped sandbox roots, failing closed, the gate hook at PreToolUse, and the agent's plugin
- *  map, which outranks the owner's user-level enabledPlugins for this session. */
+/** Allow rules for each file-writing tool inside each root, and nowhere else. Under the default dontAsk mode a call
+ *  nothing allows is refused, the file tools writing inside the seat's own roots included, so without these a
+ *  headless seat cannot write its output file. `//` starts an absolute path in a rule. A root with a character a rule
+ *  would read as a wildcard or as the rule's end is refused rather than allowed more widely than meant. */
+export function headlessWriteRules(roots: string[]): string[] {
+  for (const r of roots) {
+    if (!isAbsolute(r) || /[*?[\]{}()\\]/.test(r)) throw new HeadlessSeatRefused(`the seat root ${r} cannot be written as a permission rule`);
+  }
+  return CLAUDE_FILE_WRITE_TOOLS.flatMap((tool) => roots.map((r) => `${tool}(/${r}/**)`));
+}
+
+/** The generated settings: scoped sandbox roots, failing closed, the file tools allowed inside those roots, the gate
+ *  hook at PreToolUse, and the agent's plugin map, which outranks the owner's user-level enabledPlugins for this
+ *  session. */
 export function headlessSeatSettings(roots: string[], hookCommand: string, enabledPlugins: Record<string, boolean>): Record<string, unknown> {
   return {
     sandbox: {
       enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false, filesystem: { allowWrite: roots },
       autoAllowBashIfSandboxed: SCOPED_SANDBOX_PINS.autoAllowBashIfSandboxed, network: { allowLocalBinding: SCOPED_SANDBOX_PINS.allowLocalBinding },
     },
-    permissions: { additionalDirectories: roots },
+    permissions: { additionalDirectories: roots, allow: headlessWriteRules(roots) },
     hooks: { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: hookCommand, onFailure: 'block' }] }] },
     enabledPlugins: { ...enabledPlugins },
   };

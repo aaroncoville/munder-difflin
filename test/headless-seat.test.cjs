@@ -232,6 +232,38 @@ test('Given any seat, when the seat runs, then its settings pin sandboxed Bash t
   assert.deepEqual(s.sandbox.network, { allowLocalBinding: false });
 });
 
+// Under the default --permission-mode dontAsk a tool call nothing allows is refused, and that includes the file tools
+// writing inside the seat's own roots (seen on a real turn: Write was denied in the working folder). The settings
+// therefore allow each file-writing tool inside each root, and nowhere else.
+
+const { CLAUDE_FILE_WRITE_TOOLS } = loadTs('src/core/launchLine.ts');
+const { editRuleFolder } = loadTs('src/core/claudeSettingsAdmission.ts');
+
+test('Given a scoped seat, when the seat runs, then the settings allow each file-writing tool inside each seat root and nothing else', async (t) => {
+  const f = floor(t, { stdout: JSON.stringify(SUCCESS) });
+  await H.runHeadlessSeat(f.opts());
+  const s = JSON.parse(f.record().settings);
+  const roots = seatWriteRoots({ root: f.hiveRoot, agentId: 'ag1', isGod: false, cwd: f.cwd });
+  const allow = s.permissions.allow;
+  assert.ok(Array.isArray(allow));
+  assert.equal(allow.length, CLAUDE_FILE_WRITE_TOOLS.length * roots.length);
+  for (const tool of CLAUDE_FILE_WRITE_TOOLS) {
+    for (const root of roots) assert.ok(allow.includes(`${tool}(/${root}/**)`), `${tool} in ${root}`);
+  }
+  // Read by the app's own rule reader, every rule starts inside a seat root: none reaches past it.
+  for (const rule of allow) {
+    assert.ok(roots.includes(editRuleFolder(rule, f.settingsDir, f.cwd, f.base)), `${rule} starts at a seat root`);
+  }
+  assert.deepEqual(s.permissions.deny ?? [], []);
+});
+
+test('Given a root whose name a rule would read as a wildcard or a rule end, when the write rules are made, then it is refused', () => {
+  for (const r of ['/w/a*b', '/w/a?b', '/w/[ab]', '/w/{a,b}', '/w/a)b', 'relative/w']) {
+    assert.throws(() => H.headlessWriteRules([r]), /permission rule/, r);
+  }
+  assert.deepEqual(H.headlessWriteRules(['/w/x']).filter((x) => x.startsWith('Write(')), ['Write(//w/x/**)']);
+});
+
 test('Given the agent\'s plugin map, when the seat runs, then the settings carry exactly that enabledPlugins map, a withheld plugin off', async (t) => {
   const f = floor(t, { stdout: JSON.stringify(SUCCESS) });
   await H.runHeadlessSeat(f.opts());
