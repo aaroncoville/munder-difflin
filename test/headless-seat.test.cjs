@@ -723,6 +723,17 @@ test('Given a CLI that exits while a subprocess no signal reaches keeps its stdo
   assert.ok(alive(pids().grandchild), 'the pipe holder was not stopped, so the drain alone ended the wait');
 });
 
+test('Given the CLI has exited and a fresh process table shows none of its subprocesses, when the run ends, then its group number is not signalled', HANG_LIMIT, async (t) => {
+  const f = floor(t);
+  // The grandchild stays in the CLI's group. With nothing in the table to show the group still holds what the CLI
+  // started, the number could by now name a group that took it over, so it is not signalled; the grandchild stands
+  // in for a member of that group.
+  const pids = hanging(t, f, { ignoreTerm: false, print: `${JSON.stringify(SUCCESS)}\n`, exitAfterMs: 200 });
+  const r = await H.runHeadlessSeat(f.opts({ processTable: async () => [], processPollMs: 100 }));
+  assert.equal(r.ok, true, r.error);
+  assert.ok(alive(pids().grandchild), 'nothing in the group was signalled');
+});
+
 test('Given a pid seen as a subprocess that shows another command once the CLI has exited, when the run ends, then that pid is not signalled', HANG_LIMIT, async (t) => {
   const f = floor(t);
   const pids = hanging(t, f, { ignoreTerm: false, detach: true, print: `${JSON.stringify(SUCCESS)}\n`, exitAfterMs: 600 });

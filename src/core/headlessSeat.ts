@@ -462,8 +462,11 @@ export function runHeadlessSeat(o: HeadlessSeatOptions): Promise<HeadlessRun> {
       for (const d of descendantsOf(rows, child.pid)) known.set(d.pid, d.commandLine);
     };
     /** Signal the CLI's group and each of its subprocesses with its group: from a fresh read, only pids the table
-     *  still shows with the command they had while the CLI ran. */
+     *  still shows with the command they had while the CLI ran. Once the CLI has exited, its group's number is held by
+     *  nothing that proves it is still that group, and could name another group by then, so it is signalled only when
+     *  the same read shows one of the CLI's subprocesses still there. */
     const sweep = async (sig: NodeJS.Signals): Promise<void> => {
+      const running = cliRunning();
       const rows = await read();
       const targets: number[] = [];
       if (rows) {
@@ -471,7 +474,7 @@ export function runHeadlessSeat(o: HeadlessSeatOptions): Promise<HeadlessRun> {
         const now = new Map(rows.map((r) => [r.pid, r.commandLine]));
         for (const [pid, cmd] of known) if (now.get(pid) === cmd) targets.push(pid);
       }
-      signalGroup(child, sig);
+      if (running || targets.length > 0) signalGroup(child, sig);
       for (const pid of targets) if (signalProcess(pid, sig)) swept.add(pid);
     };
     let reading = false;
