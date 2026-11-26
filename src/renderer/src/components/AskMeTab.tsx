@@ -280,9 +280,13 @@ export function AskMeTab() {
       const result = updated
         ? await window.cth.hivePatchTask(task.id, { humanQA: updated.humanQA })
         : { ok: false };
-      if (!result.ok) throw new Error('task changed before ask could be dismissed');
-    } catch {
-      setTasks(tasks); // restore on failure so the user can retry
+      if (!result.ok) {
+        setTasks(tasks); // restore on failure so the user can retry
+        setNotifyError(translate('askMe.dismissNotSaved', { title: task.title, error: result.error ?? translate('askMe.cardChanged') }));
+      }
+    } catch (e) {
+      setTasks(tasks);
+      setNotifyError(translate('askMe.dismissNotSaved', { title: task.title, error: e instanceof Error ? e.message : String(e) }));
     }
   };
 

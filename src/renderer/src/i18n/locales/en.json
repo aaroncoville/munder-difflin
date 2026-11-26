@@ -96,6 +96,7 @@
     "answerNotSent": "Your answer on \"{{title}}\" is saved on the card, but it could not be sent on: {{error}}",
     "answerNotSaved": "Your answer on \"{{title}}\" was not saved, and is still in the box: {{error}}",
     "cardChanged": "the card changed before the answer could be saved",
+    "dismissNotSaved": "\"{{title}}\" was not dismissed: {{error}}",
     "emptyTitle": "Nothing needs you right now. 🌿",
     "emptySub": "When the team blocks a task on your input — a question to answer or a to-do only you can perform — it shows up here (and on the ASK ME board on the floor).",
     "openDetail": "open the full task detail",

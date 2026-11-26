@@ -77,3 +77,17 @@ test('an answer the ledger refused says why, keeps the draft and its images, and
   assert.equal(useStore.getState().answerAttachments['A-1'].length, 1, 'the images are kept');
   assert.equal(labelled(view.tree, 'respond & unblock').props.disabled, false, 'the answer can be sent again');
 });
+
+test('a dismissal the ledger refused says why and puts the card back', async () => {
+  fakeBridge({ tasks: [task('A-2')], patched: { ok: false, error: BUSY } });
+  const view = await open();
+
+  const dismiss = find(view.tree, (n) => n.props && n.props['aria-label'] === 'dismiss this ask');
+  assert.ok(dismiss, 'the dismiss button is found by its label');
+  await dismiss.props.onClick();
+  await settle();
+  view.render();
+
+  assert.ok(shown(view.tree).includes(BUSY), `the main process's reason must be on screen; got:\n${shown(view.tree)}`);
+  assert.ok(textarea(view.tree), 'the card is back on the board');
+});
