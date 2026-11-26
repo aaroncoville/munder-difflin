@@ -6,9 +6,9 @@
  * half-written. So every update here:
  *
  *  - takes an exclusive lock file next to the ledger (`tasks.json.lock`, holding the holder's pid, host,
- *    acquisition time and a random token), waiting a bounded time for a holder to finish. The record is
- *    written to a temporary file first and hard-linked to the lock's name, which fails if the lock exists,
- *    so a lock never exists without its record;
+ *    process start time, acquisition time and a random token), waiting a bounded time for a holder to
+ *    finish. The record is written to a temporary file first and hard-linked to the lock's name, which
+ *    fails if the lock exists, so a lock never exists without its record;
  *  - re-reads the ledger UNDER the lock, applies the caller's edit to that, and folds the result over the
  *    on-disk cards with mergeTaskLedger, so fields the caller does not model survive;
  *  - writes a temporary file in the same folder, fsyncs it and renames it over the ledger, so a reader sees
@@ -23,19 +23,28 @@
  * milliseconds while its writer is alive.
  *
  * A lock is stale, and is broken, when its holder on this host has exited. A holder on this host that is
- * still running is never judged by `staleMs`: it may be slow (stopped in a debugger, a sleeping laptop, a
- * stalled disk, a wall-clock step) and would go on to write after its lock was broken. Only after
- * `liveStaleMs`, far longer than any real update, is such a lock broken, because by then the pid has more
- * likely been reused by an unrelated process. A lock from another host, or one with no readable record,
- * can only be judged by age, and is stale after `staleMs`.
+ * still running is never broken, however old its lock: it may be slow (stopped in a debugger, a sleeping
+ * laptop, a stalled disk) and would go on to write after its lock was broken. Its ownership check and its
+ * rename are two separate steps, so a holder paused between them would rename its ledger over the one
+ * written by whoever broke its lock, and that writer's card would be lost although both reported success.
+ * "Still running" means that exact process: the record carries the holder's start time (see processStart),
+ * and a running process with the recorded pid but a different start time is a later process that reused
+ * the pid, so the lock is broken. A live holder that never finishes keeps the lock; every waiter then times
+ * out with an error naming it (pid, host, how long it has held the lock), and stopping that process frees it.
+ *
+ * Only a lock that cannot be checked is judged by age: a lock from another host, or one with no readable
+ * record, is stale after `staleMs`; a lock on this host whose holder is running but whose start time cannot
+ * be compared (a record without one, or a start time this process cannot read) is stale after
+ * `liveStaleMs`, far longer than any real update.
  *
  * The lock is advisory. A writer that edits tasks.json without this function, such as an agent with a
  * file-edit tool, is not serialized with the others; the rename only means no reader sees a torn file.
  *
  * Writing never commits: committing the hive repository stays with the app.
  */
+import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { closeSync, fchmodSync, fstatSync, fsyncSync, linkSync, lstatSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, fchmodSync, fstatSync, fsyncSync, linkSync, lstatSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { mergeTaskLedger } from './taskLedger';
@@ -47,7 +56,10 @@ export interface TaskLedgerFileOptions {
   waitMs?: number;
   /** A lock from another host, or with no readable record, is stale after this. Default 30 s. */
   staleMs?: number;
-  /** A lock whose holder on this host is still running is stale only after this (pid reuse). Default 5 min. */
+  /**
+   * A lock whose holder on this host is running, but whose start time cannot be compared with the one in
+   * the record, is stale after this. A holder whose start time matches is never stale. Default 5 min.
+   */
   liveStaleMs?: number;
   /** Pause between attempts to take the lock. Default 20 ms. */
   retryMs?: number;
@@ -63,6 +75,8 @@ export interface TaskLedgerLockHooks {
   beforeBreak?: () => void;
   /** The writer is about to make the lock its own, carrying its record. */
   beforeLockRecorded?: () => void;
+  /** The writer found the lock still its own and is about to rename its new ledger into place. */
+  afterOwnershipCheck?: () => void;
 }
 
 /** The lock stayed held by a live, fresh holder for the whole wait. */
@@ -81,7 +95,7 @@ export class TaskLedgerLockLost extends Error {
   }
 }
 
-interface LockRecord { pid?: unknown; host?: unknown; acquiredAt?: unknown; token?: unknown }
+interface LockRecord { pid?: unknown; host?: unknown; started?: unknown; acquiredAt?: unknown; token?: unknown }
 
 const sleeper = new Int32Array(new SharedArrayBuffer(4));
 function sleep(ms: number): void {
@@ -120,15 +134,87 @@ function alive(pid: number): boolean {
   }
 }
 
-function isStale(lock: HeldLock, staleMs: number, liveStaleMs: number): boolean {
-  const { record } = lock;
-  if (!record || record.host !== hostname() || typeof record.pid !== 'number') return lock.ageMs > staleMs;
-  return !alive(record.pid) || lock.ageMs > liveStaleMs;
+/**
+ * When process `pid` started, as a string no later process with the same pid can have, or null when it
+ * cannot be read. Two values are comparable only when read the same way, so each carries its method:
+ *
+ *  - Linux: `proc:` and field 22 of /proc/<pid>/stat, the start time in clock ticks after boot. Exact.
+ *  - Other Unix (macOS, BSD): `ps:` and `ps -o lstart= -p <pid>`, the start time to the second, run with
+ *    LC_ALL=C and TZ=UTC so every process on the host formats it alike. A pid reused within the same
+ *    second as the process it replaced started would read alike; that needs the first process to have
+ *    lived under a second and its pid to come round again in that second.
+ *
+ * null (no /proc and no ps, as on Windows; a sandbox that hides the process from ps; the process gone)
+ * means "cannot check", never "a different process".
+ */
+function processStart(pid: number): string | null {
+  if (process.platform === 'win32') return null;
+  if (process.platform === 'linux' && existsSync('/proc/self/stat')) {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+      // The command name in field 2 is in parentheses and may contain spaces or ')'; the fields after it don't.
+      const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+      const ticks = fields[22 - 3];
+      return ticks && /^\d+$/.test(ticks) ? `proc:${ticks}` : null;
+    } catch {
+      return null;
+    }
+  }
+  try {
+    const out = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
+      env: { PATH: '/bin:/usr/bin', LC_ALL: 'C', TZ: 'UTC' },
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 2_000
+    }).toString().trim();
+    return out ? `ps:${out}` : null;
+  } catch {
+    return null;
+  }
 }
 
-function describe(record: LockRecord | null): string {
-  if (!record) return 'a holder that has not written its record yet';
-  return `pid ${String(record.pid)} on ${String(record.host)} since ${String(record.acquiredAt)}`;
+let ownStart: string | null | undefined;
+/** This process's start time, read once. */
+function ownProcessStart(): string | null {
+  if (ownStart === undefined) ownStart = processStart(process.pid);
+  return ownStart;
+}
+
+/** Whether running process `pid` is the one that recorded `started`: null when that cannot be told. */
+function sameProcess(pid: number, started: unknown): boolean | null {
+  if (typeof started !== 'string') return null;
+  const now = processStart(pid);
+  if (now === null) return null;
+  const method = (value: string): string => value.slice(0, value.indexOf(':') + 1);
+  if (method(now) !== method(started)) return null;
+  return now === started;
+}
+
+interface StaleBounds { staleMs: number; liveStaleMs: number }
+
+/**
+ * `owners` remembers, for the length of one wait, whether a recorded holder is still the process that wrote
+ * it, so a waiter does not read a start time on every retry. A holder that exits meanwhile is still seen at
+ * once, because whether the pid is alive is asked every time.
+ */
+function isStale(lock: HeldLock, bounds: StaleBounds, owners: Map<string, boolean | null>): boolean {
+  const { record } = lock;
+  if (!record || record.host !== hostname() || typeof record.pid !== 'number') return lock.ageMs > bounds.staleMs;
+  if (!alive(record.pid)) return true;
+  // A fresh lock with a running holder is never broken, so there is no need yet to ask which process it is.
+  if (lock.ageMs <= bounds.staleMs) return false;
+  const key = `${record.pid} ${String(record.started)}`;
+  if (!owners.has(key)) owners.set(key, sameProcess(record.pid, record.started));
+  const same = owners.get(key);
+  if (same === true) return false;
+  if (same === false) return true;
+  return lock.ageMs > bounds.liveStaleMs;
+}
+
+function describe(held: HeldLock | null): string {
+  const record = held?.record;
+  if (!held || !record) return 'a holder that has not written its record yet';
+  const seconds = Math.max(0, Math.round(held.ageMs / 1000));
+  return `pid ${String(record.pid)} on ${String(record.host)}, held for ${seconds} s (since ${String(record.acquiredAt)})`;
 }
 
 /**
@@ -161,10 +247,12 @@ function acquire(
   opts: Required<Pick<TaskLedgerFileOptions, 'waitMs' | 'staleMs' | 'liveStaleMs' | 'retryMs'>> & { hooks: TaskLedgerLockHooks }
 ): OwnLock {
   const token = randomBytes(12).toString('hex');
-  const body = JSON.stringify({ pid: process.pid, host: hostname(), acquiredAt: new Date().toISOString(), token });
+  const started = ownProcessStart();
+  const body = JSON.stringify({ pid: process.pid, host: hostname(), ...(started === null ? {} : { started }), acquiredAt: new Date().toISOString(), token });
   // A monotonic clock: a wall-clock step back would stretch the wait, a step forward would cut it short.
   const deadline = performance.now() + opts.waitMs;
-  let last: LockRecord | null = null;
+  let last: HeldLock | null = null;
+  const owners = new Map<string, boolean | null>();
   const tmp = join(dirname(lock), `.${basename(lock)}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`);
   writeFileSync(tmp, body, { flag: 'wx' });
   const { dev, ino } = statSync(tmp);
@@ -179,13 +267,16 @@ function acquire(
       }
       const held = readLock(lock);
       if (held) {
-        last = held.record;
-        if (isStale(held, opts.staleMs, opts.liveStaleMs)) {
+        last = held;
+        if (isStale(held, opts, owners)) {
           opts.hooks.beforeBreak?.();
           if (breakStale(lock, held)) continue;
         }
       }
-      if (performance.now() >= deadline) throw new TaskLedgerLockTimeout(lock, opts.waitMs, describe(last));
+      if (performance.now() >= deadline) {
+        const here = last?.record?.host === hostname();
+        throw new TaskLedgerLockTimeout(lock, opts.waitMs, `${describe(last)}${here ? '; if that process is stuck, stopping it frees the lock' : ''}`);
+      }
       sleep(opts.retryMs);
     }
   } finally {
@@ -197,7 +288,7 @@ function acquire(
 function confirmOwn(lock: string, own: OwnLock): void {
   const held = readLock(lock);
   if (held && held.record?.token === own.token && held.dev === own.dev && held.ino === own.ino) return;
-  throw new TaskLedgerLockLost(lock, held ? describe(held.record) : 'no lock');
+  throw new TaskLedgerLockLost(lock, held ? describe(held) : 'no lock');
 }
 
 function release(lock: string, own: OwnLock): void {
@@ -295,12 +386,13 @@ export function updateTaskLedgerFile(
   options: TaskLedgerFileOptions = {}
 ): unknown[] | null {
   const lock = `${path}.lock`;
+  const hooks = options.hooks ?? {};
   const own = acquire(lock, {
     waitMs: options.waitMs ?? 5_000,
     staleMs: options.staleMs ?? 30_000,
     liveStaleMs: options.liveStaleMs ?? 300_000,
     retryMs: options.retryMs ?? 20,
-    hooks: options.hooks ?? {}
+    hooks
   });
   try {
     sweepLeftovers(path);
@@ -309,7 +401,10 @@ export function updateTaskLedgerFile(
     const next = mutate(current.slice());
     if (next === null) return null;
     const merged = mergeTaskLedger(current, next, (options.now ?? (() => new Date()))().toISOString());
-    writeAtomically(path, JSON.stringify({ ...ledger, tasks: merged }, null, 2), () => confirmOwn(lock, own));
+    writeAtomically(path, JSON.stringify({ ...ledger, tasks: merged }, null, 2), () => {
+      confirmOwn(lock, own);
+      hooks.afterOwnershipCheck?.();
+    });
     return merged;
   } finally {
     release(lock, own);
