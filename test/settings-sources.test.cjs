@@ -25,7 +25,7 @@ require.cache[electron] = { id: electron, filename: electron, loaded: true, expo
 test.after(() => fs.rmSync(userData, { recursive: true, force: true }));
 
 const { HiveManager } = loadTs('src/main/hive.ts');
-const { claudeLaunch } = loadTs('src/main/launchLine.ts');
+const { claudeLaunch } = loadTs('src/core/launchLine.ts');
 const W = loadTs('src/main/writeRoots.ts');
 const { sanitize } = loadTs('src/main/usageLog.ts');
 const { readConfig } = loadTs('src/main/config.ts');

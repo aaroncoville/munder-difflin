@@ -88,11 +88,11 @@ import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, IN
 import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
 import { isFolderName, RefusedRosterId, RegistryUnreadable, shortTarget } from './messageTarget';
-import { HookRuntimeUnavailable } from './hookRuntime';
+import { HookRuntimeUnavailable } from '../core/hookRuntime';
 import { PrivateDirRefused, registerPrivateDir } from './privateDirs';
 import { sourceCheckout } from './repoInstructions';
 import { SeatSettingsRefused } from './seatSettings';
-import { relocationEnv } from './launchLine';
+import { relocationEnv } from '../core/launchLine';
 import { buildPtyEnv } from './ptyEnv';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WakeSkipLog, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';

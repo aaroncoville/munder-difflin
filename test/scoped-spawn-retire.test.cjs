@@ -90,9 +90,9 @@ test('a spawn whose terminal does not start leaves no policy or token behind', a
     codexHomes: { recordSpawn() {} }, codexThreads: { spawned() {} }, workerWake: { noteSpawn() {} },
     ptyManager: { spawn: () => ({ ok: false, error: 'cwd does not exist: /gone' }) },
     analytics: { track() {} }, spawnFailReason: () => 'cwd_missing',
-    relocationEnv: loadTs('src/main/launchLine.ts').relocationEnv,
+    relocationEnv: loadTs('src/core/launchLine.ts').relocationEnv,
     buildPtyEnv: loadTs('src/main/ptyEnv.ts').buildPtyEnv,
-    HookRuntimeUnavailable: loadTs('src/main/hookRuntime.ts').HookRuntimeUnavailable,
+    HookRuntimeUnavailable: loadTs('src/core/hookRuntime.ts').HookRuntimeUnavailable,
     refuseSpawn: async () => ({ ok: false, error: 'refused' }),
   });
   const out = await run({ id: 'pty-ag', cwd: f.work, command: 'claude', args: ['--settings', settings], env: { HIVE_SPAWN_TOKEN: token }, hive: { id: 'ag', name: 'ag' } }, 'claude');

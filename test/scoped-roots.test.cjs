@@ -131,7 +131,7 @@ test('flag on: an owner\'s Codex roots in a form that cannot be rewritten refuse
 });
 
 test('replacing the owner\'s roots: a bracket inside a quoted root or a comment does not end the list early', () => {
-  const { withOnlyCodexWritableRoots } = loadTs('src/shared/codexWritableRoots.ts');
+  const { withOnlyCodexWritableRoots } = loadTs('src/core/codexWritableRoots.ts');
   const user = `[sandbox_workspace_write]\nwritable_roots = [ "/odd]name", # ] not the end\n  '/lit]eral' ]\nnetwork_access = false\n`;
   const out = withOnlyCodexWritableRoots(user, ['/mine']);
   assert.deepEqual({ ...parseToml(out).sandbox_workspace_write }, { writable_roots: ['/mine'], network_access: false });
@@ -139,7 +139,7 @@ test('replacing the owner\'s roots: a bracket inside a quoted root or a comment 
 });
 
 test('replacing the owner\'s roots: a config with none gains exactly the seat\'s, as without the flag', () => {
-  const { withOnlyCodexWritableRoots, withCodexWritableRoots } = loadTs('src/shared/codexWritableRoots.ts');
+  const { withOnlyCodexWritableRoots, withCodexWritableRoots } = loadTs('src/core/codexWritableRoots.ts');
   for (const user of ['model = "m"\n', '[sandbox_workspace_write]\nnetwork_access = true\n']) {
     assert.equal(withOnlyCodexWritableRoots(user, ['/a', '/b']), withCodexWritableRoots(user, ['/a', '/b']));
   }

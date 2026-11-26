@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { parse as parseToml } from 'smol-toml';
 import { tomlBasicString } from '../shared/codexTrust';
-import { isPlainObject } from './launchLine';
+import { isPlainObject } from '../core/launchLine';
 
 type Rpc = (method: string, params: unknown) => Promise<any>;
 /** `written` is what the app wrote into the home's config.toml for this spawn, held in memory: the hooks it generated

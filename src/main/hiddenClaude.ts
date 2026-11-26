@@ -4,7 +4,7 @@ import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { agentEnabledPlugins, claudeUserDir, knownPluginIds } from './agentPlugins';
-import { ensurePrivateDir, writeNoFollow } from './hookRuntime';
+import { ensurePrivateDir, writeNoFollow } from '../core/hookRuntime';
 import { registerPrivateDir } from './privateDirs';
 import { resolveCommand, userShellPath } from './shellEnv';
 import { expandTilde } from './fs';

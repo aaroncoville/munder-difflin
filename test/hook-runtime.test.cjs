@@ -17,7 +17,7 @@ const { withSeatSettings, seatFile } = require('./seat-settings-dir.cjs');
 const { codexTestBase, removeDir } = require('./codex-test-home.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
-const R = loadTs('src/main/hookRuntime.ts');
+const R = loadTs('src/core/hookRuntime.ts');
 const POSIX = process.platform !== 'win32';
 
 /** A short base under /tmp (socket paths are length-limited), HOME jailed into it, and an app-data folder beside the hive. */
@@ -602,7 +602,7 @@ test('round 5: a hand-written line with no -s takes the sandbox from Codex confi
 test('round 5/6: Codex config is parsed as TOML; names in strings never count; refusals name the key', async (t) => {
   const { base, home, away, rt, hive } = floor(t);
   hive.setHookRuntime(rt);
-  const L = loadTs('src/main/launchLine.ts');
+  const L = loadTs('src/core/launchLine.ts');
   const q3 = '"'.repeat(3);
   const fine = [
     '[projects."/Users/me/profile"]\ntrust_level = "trusted"\n',
@@ -757,7 +757,7 @@ test('round 7 (H2): a late refusal removes only a row this spawn still owns — 
 });
 
 test('round 7 (M): any date, time or non-finite value anywhere is not understood — expected verdicts hard-coded, not from the parser', async (t) => {
-  const L = loadTs('src/main/launchLine.ts');
+  const L = loadTs('src/core/launchLine.ts');
   const cases = [
     ['sandbox_mode = "workspace-write"\nhistory_date = 2020-02-30\n', 'unknown', 'history_date'],
     ['x = 1979-05-27T07:32:00Z\n', 'unknown', 'x'],
