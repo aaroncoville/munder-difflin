@@ -73,7 +73,7 @@ test('add refuses a card without a string id', (t) => {
 
 test('patch merges fields into the card, keeps its other fields and its id', (t) => {
   const { dir, file } = hive(t, { tasks: [{ id: 'a', title: 'A', status: 'todo', repo: 'x' }, { id: 'b', title: 'B' }] });
-  const r = run(['--hive', dir, 'tasks', 'patch', 'a', '--json', '{"status":"doing","id":"zzz","note":"n"}']);
+  const r = run(['--hive', dir, 'tasks', 'patch', 'a', '--json', '{"status":"doing","id":"a","note":"n"}']);
   assert.equal(r.code, 0, r.stderr);
   assert.equal(r.stdout, 'patched a\n');
   const a = card(file, 'a');
@@ -84,6 +84,50 @@ test('patch merges fields into the card, keeps its other fields and its id', (t)
   assert.deepEqual(read(file).tasks.map((c) => c.id), ['a', 'b'], 'the id is preserved and no card is added');
   const { updatedAt, ...b } = card(file, 'b');
   assert.deepEqual(b, { id: 'b', title: 'B' }, 'the other card keeps its fields (the ledger may stamp updatedAt)');
+});
+
+test('patch refuses to clear the assignee, and writes nothing', (t) => {
+  const { dir, file } = hive(t, { tasks: [{ id: 'a', assignee: 'x', status: 'doing' }] });
+  const before = fs.readFileSync(file, 'utf8');
+  for (const json of ['{"assignee":null}', '{"assignee":""}', '{"assignee":7}', '{"assignee":["y"]}', '{"status":"done","assignee":null}']) {
+    const r = run(['--hive', dir, 'tasks', 'patch', 'a', '--json', json]);
+    assert.equal(r.code, 1, json);
+    assert.match(r.stderr, /assignee/, json);
+    assert.equal(r.stdout, '', json);
+  }
+  assert.equal(fs.readFileSync(file, 'utf8'), before);
+});
+
+test('patch may hand the card to another assignee', (t) => {
+  const { dir, file } = hive(t, { tasks: [{ id: 'a', assignee: 'x' }] });
+  const r = run(['--hive', dir, 'tasks', 'patch', 'a', '--json', '{"assignee":"y"}']);
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(card(file, 'a').assignee, 'y');
+});
+
+test('patch refuses any humanQA, so the question and answer history cannot be rewritten or erased', (t) => {
+  const prior = [{ q: 'old', askedAt: '2026-01-01T00:00:00.000Z', a: 'ans' }];
+  const { dir, file } = hive(t, { tasks: [{ id: 'a', assignee: 'x', humanQA: prior }] });
+  const before = fs.readFileSync(file, 'utf8');
+  for (const json of ['{"humanQA":[]}', '{"humanQA":null}', '{"humanQA":"x"}', `{"humanQA":${JSON.stringify([...prior, { q: 'new' }])}}`,
+    '{"assignee":null,"humanQA":[]}']) {
+    const r = run(['--hive', dir, 'tasks', 'patch', 'a', '--json', json]);
+    assert.equal(r.code, 1, json);
+    assert.match(r.stderr, /humanQA|assignee/, json);
+  }
+  assert.equal(fs.readFileSync(file, 'utf8'), before);
+  assert.deepEqual(card(file, 'a').humanQA, prior);
+});
+
+test('patch refuses to change the card id, and writes nothing', (t) => {
+  const { dir, file } = hive(t, { tasks: [{ id: 'a' }, { id: 'b' }] });
+  const before = fs.readFileSync(file, 'utf8');
+  for (const json of ['{"id":"zzz"}', '{"id":"b"}', '{"id":null}', '{"id":7}']) {
+    const r = run(['--hive', dir, 'tasks', 'patch', 'a', '--json', json]);
+    assert.equal(r.code, 1, json);
+    assert.match(r.stderr, /"id"/, json);
+  }
+  assert.equal(fs.readFileSync(file, 'utf8'), before);
 });
 
 test('patch of an unknown id fails and writes nothing', (t) => {

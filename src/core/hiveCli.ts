@@ -31,7 +31,9 @@ commands:
       Add <card>, an object with a string "id", unless a card with that id
       exists. Prints "added <id>" or "exists <id>".
   hive tasks patch <id> --json <patch>
-      Merge the fields of <patch>, an object, into card <id>. The id is kept.
+      Merge the fields of <patch>, an object, into card <id>. A patch may
+      not change "id", may not set "humanQA" (use ask), and may change
+      "assignee" only to another non-empty string.
   hive tasks ask <id> --q-file <path>
       Append the question in file <path> to card <id>'s humanQA list as
       { "q", "askedAt" }, and set the card's status to "blocked".
@@ -111,6 +113,20 @@ function lockWaitMs(env: Record<string, string | undefined>): number | undefined
 
 const idOf = (card: unknown): unknown => (isObject(card) ? card.id : undefined);
 
+/**
+ * Refuses a patch that breaks a rule the ledger's other writers rely on: a card keeps its id; once
+ * assigned, a card always names an assignee; and humanQA, the record of questions to the operator and
+ * their answers, only grows, through `ask` here and through the app when it records an answer. A
+ * patch replaces a field's whole value, so a patch carrying humanQA could rewrite or erase that record.
+ */
+function refuseLedgerRuleBreak(patch: Card, id: string): void {
+  if (Object.hasOwn(patch, 'id') && patch.id !== id) throw new CliError(`a patch cannot change the card's "id"; this is card ${id}`);
+  if (Object.hasOwn(patch, 'humanQA')) throw new CliError('a patch cannot set "humanQA": its history only grows; add a question with hive tasks ask');
+  if (Object.hasOwn(patch, 'assignee') && (typeof patch.assignee !== 'string' || !patch.assignee)) {
+    throw new CliError('a patch cannot clear "assignee": it may only name another assignee, as a non-empty string');
+  }
+}
+
 /** Runs `hive <argv…>` and returns its exit status. */
 export function runHiveCli(argv: string[], env: Record<string, string | undefined>, io: HiveCliIo): number {
   const readFile = io.readFile ?? ((path: string) => readFileSync(path, 'utf8'));
@@ -148,6 +164,7 @@ export function runHiveCli(argv: string[], env: Record<string, string | undefine
       const id = oneId();
       want('--json');
       const patch = jsonObject(options.get('--json')!, readFile, 'the patch');
+      refuseLedgerRuleBreak(patch, id);
       edit = (cards) => {
         const index = cards.findIndex((c) => idOf(c) === id);
         if (index < 0) throw new CliError(`no card with id ${id} in the ledger`);
