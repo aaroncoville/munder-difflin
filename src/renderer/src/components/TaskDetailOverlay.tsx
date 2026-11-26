@@ -21,8 +21,10 @@ export function TaskDetailOverlay() {
   const agents = useStore((s) => s.agents);
   const restorable = useStore((s) => s.restorableAgents);
   const [tasks, setTasks] = useState<HiveTask[]>([]);
-  const taskWriteError = useStore((s) => s.taskWriteError);
-  const setTaskWriteError = useStore((s) => s.setTaskWriteError);
+  // This detail's own line about a move that was not saved. Not the store's taskWriteError: that one is
+  // the board's (a card it could not remove, a Slack message it could not add), and would show under the
+  // title of whichever card is opened next. Cleared when the detail closes or shows another card.
+  const [taskWriteError, setTaskWriteError] = useState('');
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const refresh = useCallback(async () => {
@@ -33,6 +35,7 @@ export function TaskDetailOverlay() {
   }, []);
 
   useEffect(() => {
+    setTaskWriteError('');
     if (!taskDetailId) return;
     void refresh();
     timer.current = setInterval(() => { void refresh(); }, POLL_MS);

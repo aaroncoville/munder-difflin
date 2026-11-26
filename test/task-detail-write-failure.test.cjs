@@ -98,3 +98,24 @@ test('a move that goes through after one that was refused clears the line', asyn
   const { words } = screen(view);
   assert.ok(!words.includes(BUSY), `the old failure must be gone; got:\n${words}`);
 });
+
+test("the detail does not show a failure from the board, and its own failure goes when it closes", async () => {
+  // A card the board could not remove: that line belongs to the board, not to this card's detail.
+  useStore.getState().setTaskWriteError('Could not remove "another card" from the board');
+  const view = await openDetail(() => ({ ok: false, error: BUSY }));
+  assert.ok(!screen(view).words.includes('another card'), `a board failure leaked into the detail:\n${screen(view).words}`);
+
+  await moveTo(view, 'done');
+  assert.ok(screen(view).words.includes(BUSY));
+  useStore.getState().closeTaskDetail();
+  view.render();
+  useStore.getState().openTaskDetail('D-1');
+  view.render();
+  // React cleans up and runs the overlay's effects again because the open card changed; this host does so
+  // on request.
+  for (const stop of view.cleanups.splice(0)) stop?.();
+  view.cleanups.push(...view.runEffects());
+  await settle();
+  view.render();
+  assert.ok(!screen(view).words.includes(BUSY), `the line outlived the detail it was shown in:\n${screen(view).words}`);
+});
