@@ -6,7 +6,7 @@
  * `scope`, `origin`, `deliverable`, `commit`, `blockedOn`, `notes` — none of
  * which the renderer's display model knows about. Several UI surfaces write the
  * ledger back after a small edit (answer a question, move a card, dismiss one),
- * and `hive:writeTasks` replaces the file wholesale. So any writer holding a
+ * and the whole-ledger write they used replaced the file wholesale. So any writer holding a
  * partial model of a card silently DELETED every field it didn't know about,
  * on EVERY card on the board, the moment the user touched one of them.
  *

@@ -128,15 +128,10 @@ export function AskMeTab() {
     .sort((a, b) => compareByNewestAsk(openQuestion(a), openQuestion(b)));
 
   /**
-   * Apply `patch` to the OPEN humanQA entry of one card, on the RAW ledger.
-   * Returns whether it landed.
-   *
-   * Re-reads tasks.json first rather than writing this view's 5s-old snapshot,
-   * because `hive:writeTasks` treats the incoming array as the card MEMBERSHIP:
-   * writing our snapshot back would delete any card the god added since the last
-   * poll. Re-locating the open question by its text also means an answer can
-   * never land on a different question the god swapped in underneath us — in
-   * that case nothing is written and the draft is kept.
+   * An answer and a dismissal each send ONE card's humanQA to hive:patchTask,
+   * never this view's 5s-old snapshot of the whole ledger: the main process
+   * applies the patch to tasks.json as it is on disk, under its lock, so a card
+   * the god added since the last poll cannot be lost.
    */
 
   /**
@@ -216,7 +211,14 @@ export function AskMeTab() {
       const result = updated
         ? await window.cth.hivePatchTask(task.id, { humanQA: updated.humanQA })
         : { ok: false };
-      if (!result.ok) throw new Error('task changed before answer could be saved');
+      if (!result.ok) {
+        // Nothing was written, so nothing is announced; the draft and images stay in the box.
+        setNotifyError(translate('askMe.answerNotSaved', {
+          title: task.title,
+          error: result.error ?? translate('askMe.cardChanged')
+        }));
+        return;
+      }
       setTasks(next);
       const askKey = askKeyOf(task.id, open.askedAt);
       if (askKey) noteAskSubmitted(askKey, answer);
@@ -235,8 +237,9 @@ export function AskMeTab() {
       setNotifyError(told.ok ? '' : translate('askMe.answerNotSent', { title: task.title, error: told.error ?? '?' }));
       setAnswerDraft(task.id, '');
       clearAttachments(task.id);
-    } catch {
-      /* leave the draft so the user can retry */
+    } catch (e) {
+      // Leave the draft so the user can retry, and say why.
+      setNotifyError(translate('askMe.answerNotSaved', { title: task.title, error: e instanceof Error ? e.message : String(e) }));
     } finally {
       // ALWAYS, and in a finally rather than at the end: `sending` is what
       // rejects the next send, and it is one value for the whole board, so a
@@ -272,9 +275,15 @@ export function AskMeTab() {
       const result = updated
         ? await window.cth.hivePatchTask(task.id, { humanQA: updated.humanQA })
         : { ok: false };
-      if (!result.ok) throw new Error('task changed before ask could be dismissed');
-    } catch {
-      setTasks(tasks); // restore on failure so the user can retry
+      if (!result.ok) {
+        setTasks(tasks); // restore on failure so the user can retry
+        setNotifyError(translate('askMe.dismissNotSaved', { title: task.title, error: result.error ?? translate('askMe.cardChangedBeforeDismissal') }));
+      } else {
+        setNotifyError('');
+      }
+    } catch (e) {
+      setTasks(tasks);
+      setNotifyError(translate('askMe.dismissNotSaved', { title: task.title, error: e instanceof Error ? e.message : String(e) }));
     }
   };
 

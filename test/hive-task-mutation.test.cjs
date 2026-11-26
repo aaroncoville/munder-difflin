@@ -95,7 +95,7 @@ test('renderer task actions never send a whole stale ledger back to main', () =>
     'src/renderer/src/components/AskMeTab.tsx',
     'src/renderer/src/components/TaskDetailOverlay.tsx',
     'src/renderer/src/components/TasksKanban.tsx',
-    'src/renderer/src/hooks/useHive.ts'
+    'src/renderer/src/hooks/slackTaskCard.ts'
   ].map((file) => sourceAssert.activeSource(file));
 
   for (const source of sources) {

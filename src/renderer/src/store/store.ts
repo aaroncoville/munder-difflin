@@ -253,6 +253,10 @@ interface State {
   taskDetailId: string | null;
   openTaskDetail: (id: string) => void;
   closeTaskDetail: () => void;
+  /** Why the last task-board write from this window was not saved (a busy or unreadable
+   *  task ledger), or '' — shown on the board until a later write from it succeeds. */
+  taskWriteError: string;
+  setTaskWriteError: (message: string) => void;
   /** One-shot prefill for the Command Center's dispatch box (a task detail's
    *  "assign" from anywhere in the app). seq-keyed like ccTabRequest. */
   dispatchSeedRequest: { text: string; seq: number } | null;
@@ -901,6 +905,8 @@ export const useStore = create<State>((set, get) => ({
   taskDetailId: null,
   openTaskDetail: (id) => set({ taskDetailId: id }),
   closeTaskDetail: () => set({ taskDetailId: null }),
+  taskWriteError: '',
+  setTaskWriteError: (message) => set({ taskWriteError: message }),
   dispatchSeedRequest: null,
   requestDispatchSeed: (text) =>
     set((s) => ({ dispatchSeedRequest: { text, seq: (s.dispatchSeedRequest?.seq ?? 0) + 1 } })),

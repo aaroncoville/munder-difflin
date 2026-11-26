@@ -38,7 +38,7 @@ import {
 import { linkWorktreeDeps, unlinkWorktreeDeps } from './worktreeDeps';
 import { saveAskAttachment } from './askAttachments';
 import { HiveManager, type AgentMeta, type HiveMessage, type HiveTask } from './hive';
-import { taskWriteResult } from './taskLedgerResult';
+import { serialTaskWrites } from './taskLedgerResult';
 import { archiveOrphanedAgents as archiveOrphans } from './orphanSweep';
 import { runCanaries, memoryCanary } from './canaries';
 import { TurnTracker, diffTasks, type UsageIds } from '../core/usageEvents';
@@ -2117,8 +2117,9 @@ function dispatchWebhookWork(arg: {
     };
     // addTask appends against the latest on-disk ledger and is idempotent by task
     // id, so a concurrent card writer (Slack, god, voice, another webhook) can't
-    // have its card lost to our stale whole-ledger overwrite. (writeTasks(...existing)
-    // recreated exactly that race.) A fresh taskId never collides, so this always adds.
+    // have its card lost to our stale whole-ledger overwrite. (Writing back the whole
+    // ledger read earlier recreated exactly that race.) A fresh taskId never collides,
+    // so this always adds.
     hive.addTask(card);
   } catch (e) {
     console.error('[webhook] could not create task card:', e instanceof Error ? e.message : e);
@@ -3882,25 +3883,28 @@ ipcMain.handle('hive:send', (_evt, partial: Partial<HiveMessage>, from: unknown)
   if (sender === 'human') analytics.trackMessageSent('hive');
   return { ok: true, message: msg };
 });
-ipcMain.handle('hive:addTask', (_evt, task: unknown) => {
+// One queue for the three task-ledger writes, so a write retried after finding the ledger busy cannot land
+// after a later edit of the same card.
+const taskWrites = serialTaskWrites();
+ipcMain.handle('hive:addTask', async (_evt, task: unknown) => {
   if (!task || typeof task !== 'object' || Array.isArray(task)
     || typeof (task as { id?: unknown }).id !== 'string') {
     return { ok: false, error: 'invalid task' };
   }
   if (!hive.enabled()) return { ok: false, error: 'hive disabled (no harnessHome)' };
-  return taskWriteResult('addTask', () => hive.addTask(task as HiveTask));
+  return taskWrites('addTask', () => hive.addTask(task as HiveTask));
 });
-ipcMain.handle('hive:patchTask', (_evt, id: unknown, patch: unknown) => {
+ipcMain.handle('hive:patchTask', async (_evt, id: unknown, patch: unknown) => {
   if (typeof id !== 'string' || !id || !patch || typeof patch !== 'object' || Array.isArray(patch)) {
     return { ok: false, error: 'invalid task patch' };
   }
   if (!hive.enabled()) return { ok: false, error: 'hive disabled (no harnessHome)' };
-  return taskWriteResult('patchTask', () => hive.patchTask(id, patch as Partial<Omit<HiveTask, 'id'>>));
+  return taskWrites('patchTask', () => hive.patchTask(id, patch as Partial<Omit<HiveTask, 'id'>>));
 });
-ipcMain.handle('hive:deleteTask', (_evt, id: unknown) => {
+ipcMain.handle('hive:deleteTask', async (_evt, id: unknown) => {
   if (typeof id !== 'string' || !id) return { ok: false, error: 'invalid task id' };
   if (!hive.enabled()) return { ok: false, error: 'hive disabled (no harnessHome)' };
-  return taskWriteResult('deleteTask', () => hive.deleteTask(id));
+  return taskWrites('deleteTask', () => hive.deleteTask(id));
 });
 ipcMain.handle('hive:setArchived', (_evt, id: unknown, archived: unknown) => {
   if (typeof id !== 'string') return { ok: false, error: 'invalid id' };

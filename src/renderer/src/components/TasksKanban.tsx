@@ -159,13 +159,23 @@ export function TasksKanban() {
   // god's to write, but a person can clear a card they no longer want tracked.
   // Main removes the named id from its latest on-disk ledger, so a webhook or
   // god card added since this renderer's last poll cannot be lost.
-  const dismissTask = useCallback(async (id: string) => {
-    setTasks((prev) => prev.filter((t) => t.id !== id)); // optimistic
+  // A refusal (a busy or unreadable ledger) brings the card back and says why.
+  const taskWriteError = useStore((s) => s.taskWriteError);
+  const setTaskWriteError = useStore((s) => s.setTaskWriteError);
+  const dismissTask = useCallback(async (task: HiveTask) => {
+    setTasks((prev) => prev.filter((t) => t.id !== task.id)); // optimistic
     try {
-      const result = await window.cth.hiveDeleteTask(id);
-      if (!result.ok) void refresh();
-    } catch { /* keep last good; the next poll re-syncs from disk */ }
-  }, [refresh]);
+      const result = await window.cth.hiveDeleteTask(task.id);
+      if (result.ok) setTaskWriteError('');
+      else {
+        setTaskWriteError(t('kanban.dismissNotSaved', { title: task.title, error: result.error ?? '?' }));
+        void refresh();
+      }
+    } catch (e) {
+      setTaskWriteError(t('kanban.dismissNotSaved', { title: task.title, error: e instanceof Error ? e.message : String(e) }));
+      void refresh();
+    }
+  }, [refresh, setTaskWriteError, t]);
 
   useEffect(() => {
     refresh();
@@ -201,6 +211,23 @@ export function TasksKanban() {
         </span>
       </div>
 
+      {/* Not every failure here is followed by an edit that would clear it (a Slack message that could not
+          be added, say), so the user can close the line. */}
+      {taskWriteError && (
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 12, color: 'var(--cth-coral)', padding: '6px 10px 0' }}>
+          <span style={{ flex: 1, minWidth: 0 }}>{taskWriteError}</span>
+          <button
+            onClick={() => setTaskWriteError('')}
+            title={t('kanban.closeNotice')}
+            aria-label={t('kanban.closeNotice')}
+            style={{
+              flexShrink: 0, padding: 0, border: 'none', cursor: 'pointer', background: 'transparent',
+              color: 'var(--cth-ink-500)', fontFamily: 'var(--cth-font-ui)', fontSize: 12, lineHeight: 1
+            }}
+          >✕</button>
+        </div>
+      )}
+
       {/* Columns */}
       <div style={{
         flex: 1, minHeight: 0, display: 'flex', gap: 8, padding: 10, overflowX: 'auto'
@@ -231,7 +258,7 @@ export function TasksKanban() {
                     accent={col.accent}
                     assigneeName={nameFor(t.assignee)}
                     onOpen={() => openTaskDetail(t.id)}
-                    onDismiss={() => dismissTask(t.id)}
+                    onDismiss={() => dismissTask(t)}
                   />
                 ))}
               </div>
@@ -329,13 +356,15 @@ function TaskCard({ task, accent, assigneeName, onOpen, onDismiss }: {
 // the big stage instead of the narrow side panel. Exported for App's
 // TaskDetailOverlay; opened via the store's openTaskDetail from anywhere.
 
-export function TaskDetail({ task, all, assigneeName, onMove, onAssign, onClose }: {
+export function TaskDetail({ task, all, assigneeName, onMove, onAssign, onClose, notice }: {
   task: HiveTask;
   all: HiveTask[];
   assigneeName?: string;
   onMove: (s: Status) => void;
   onAssign: () => void;
   onClose: () => void;
+  /** Why the last write from the task views was not saved, shown under the title. */
+  notice?: string;
 }) {
   const { t } = useTranslation();
   const rtl = useRtl();
@@ -367,6 +396,9 @@ export function TaskDetail({ task, all, assigneeName, onMove, onAssign, onClose 
                 {task.title}
               </div>
             </div>
+            {notice && (
+              <div style={{ fontSize: 12, color: 'var(--cth-coral)' }}>{notice}</div>
+            )}
 
             {/* Fact row */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
