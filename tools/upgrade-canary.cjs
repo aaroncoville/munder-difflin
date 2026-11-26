@@ -86,9 +86,11 @@ const textOf = (content) => (typeof content === 'string' ? content
 
 /** Whether a shell command is the generated `touch <target>` (the target optionally quoted), so a command that
  *  touches something else, or only mentions the target, is not taken for the attempt. Asked for exit codes, a model
- *  may add `2>&1` and one trailing `echo` of `$?`; nothing else may follow, and the echo may not run anything. */
+ *  may add `2>&1` and one trailing `echo` of `$?`; nothing else may follow, and the echo may not run anything. A line
+ *  break starts another command, so a command holding one is never the touch. */
 function isTouchOf(command, target) {
-  const m = /^touch\s+(?:'([^']*)'|"([^"]*)"|([^\s;&|]+))(\s+2>&1)?(?:\s*(?:;|&&)\s*echo\s+([^;&|`<>()]*))?$/.exec(command.trim());
+  if (/[\r\n]/.test(command.replace(/^\s+|\s+$/g, ''))) return false;
+  const m = /^touch[ \t]+(?:'([^'\r\n]*)'|"([^"\r\n]*)"|([^\s;&|]+))([ \t]+2>&1)?(?:[ \t]*(?:;|&&)[ \t]*echo[ \t]+([^;&|`<>()\r\n]*))?$/.exec(command.trim());
   if (!m || (m[1] ?? m[2] ?? m[3]) !== target) return false;
   return m[5] === undefined || /\$\?/.test(m[5]);
 }
