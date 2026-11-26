@@ -1,6 +1,6 @@
 import './pinUserData';
-import { seedCodexHookTrust } from './codexHookTrust';
-import { assertComputedCodexHome, CodexHomeRefused, codexSeatHome } from './codexSeatHome';
+import { seedCodexHookTrust } from '../core/codexHookTrust';
+import { assertComputedCodexHome, CodexHomeRefused, codexSeatHome } from '../core/codexSeatHome';
 import { applyGitCommitsSetting, gitCommitsDisabled } from './hiveGitSetting';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
 import { bundledResourcePath } from './resourcePaths';

@@ -41,8 +41,8 @@ import { PrivateDirRefused, privateDirsReach, registerPrivateDir } from '../core
 import { repoInstructions } from '../core/repoInstructions';
 import { checkSeatSettingsTarget, seatSettingsFile, writeSeatSettings } from '../core/seatSettings';
 import { claudeFileHooks, claudeHookEntries, hookInventoryRow, type SourceHooks } from './hookInventory';
-import { ownerHooks } from './codexHookTrust';
-import { CodexHomeRefused, codexHomesReach, codexSeatHome, existingCodexHomes, migrateSeatHome } from './codexSeatHome';
+import { ownerHooks } from '../core/codexHookTrust';
+import { CodexHomeRefused, codexHomesReach, codexSeatHome, existingCodexHomes, migrateSeatHome } from '../core/codexSeatHome';
 import {
   argsWithSandboxStance,
   hasSandboxStance,

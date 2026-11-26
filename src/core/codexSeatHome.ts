@@ -3,7 +3,7 @@ import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, open
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { codexShortHomePath, codexShortHomeRoot } from '../shared/codexRemote';
-import { overlaps, realish, type WriteRoot } from '../core/hookRuntime';
+import { overlaps, realish, type WriteRoot } from './hookRuntime';
 
 /**
  * Where a Codex agent's CODEX_HOME lives, and why it is not in the agent folder.

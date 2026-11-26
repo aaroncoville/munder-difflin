@@ -47,7 +47,7 @@ function floor({ nudges, failObserve = [] }) {
     performance, Date, Set,
     console: { log() {}, warn() {}, error() {} },
     join: path.join,
-    codexSeatHome: loadTs('src/main/codexSeatHome.ts').codexSeatHome,
+    codexSeatHome: loadTs('src/core/codexSeatHome.ts').codexSeatHome,
     hive: {
       enabled: () => true,
       registry: () => ({ godId: 'god', agents: { worker: { provider: 'codex' } } }),

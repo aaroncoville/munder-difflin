@@ -8,6 +8,8 @@
  */
 export * from './breaker';
 export * from './costLifetime';
+export * from './codexHookTrust';
+export * from './codexSeatHome';
 export * from './codexUsage';
 export * from './codexWritableRoots';
 export * from './hookRuntime';

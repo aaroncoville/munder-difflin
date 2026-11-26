@@ -66,7 +66,7 @@ async function setup(t, overrides = {}) {
     worktreePaths, worktreeOrigins,
     removeWorktree: (origin, wt) => { removed.push([origin, wt]); return removal(); },
     relocationEnv: loadTs('src/core/launchLine.ts').relocationEnv, buildPtyEnv: loadTs('src/main/ptyEnv.ts').buildPtyEnv, process,
-    RefusedRosterId, RegistryUnreadable, HookRuntimeUnavailable: loadTs('src/core/hookRuntime.ts').HookRuntimeUnavailable, CodexHomeRefused: loadTs('src/main/codexSeatHome.ts').CodexHomeRefused, PrivateDirRefused: loadTs('src/core/privateDirs.ts').PrivateDirRefused, SeatSettingsRefused: loadTs('src/core/seatSettings.ts').SeatSettingsRefused, ScopedRootsRefused: loadTs('src/main/writeRoots.ts').ScopedRootsRefused, shortTarget: loadTs('src/main/messageTarget.ts').shortTarget, isFolderName: loadTs('src/main/messageTarget.ts').isFolderName
+    RefusedRosterId, RegistryUnreadable, HookRuntimeUnavailable: loadTs('src/core/hookRuntime.ts').HookRuntimeUnavailable, CodexHomeRefused: loadTs('src/core/codexSeatHome.ts').CodexHomeRefused, PrivateDirRefused: loadTs('src/core/privateDirs.ts').PrivateDirRefused, SeatSettingsRefused: loadTs('src/core/seatSettings.ts').SeatSettingsRefused, ScopedRootsRefused: loadTs('src/main/writeRoots.ts').ScopedRootsRefused, shortTarget: loadTs('src/main/messageTarget.ts').shortTarget, isFolderName: loadTs('src/main/messageTarget.ts').isFolderName
   };
   const run = vm.runInNewContext(liveProvisioning(), context);
   const spawn = (id) => run({ id: `pty-${id}`, cwd: home, hive: { id, name: 'x' } }, 'claude');
@@ -180,7 +180,7 @@ test('a Codex spawn refused after provisioning wrote its registry row leaves no 
   t.after(async () => removeDir(rt));
   f.real.setHookRuntime(rt);
   // Its computed home is a link, which is refused while the home is prepared: after the row was written.
-  const { codexSeatHome } = loadTs('src/main/codexSeatHome.ts');
+  const { codexSeatHome } = loadTs('src/core/codexSeatHome.ts');
   const id = 'cx1';
   const home = codexSeatHome(path.join(f.real.root(), 'agents', id), id);
   fs.mkdirSync(path.dirname(home), { recursive: true });
