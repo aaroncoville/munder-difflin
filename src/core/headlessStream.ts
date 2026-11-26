@@ -15,10 +15,13 @@
  * that printed no cost has none to write: neither gets a row, and the result says why. A guessed 0 would read as a
  * free run.
  *
- * Like every service outside the app, this only writes files: one append, never a commit. The row goes out in one
- * write to a file opened for appending, so it cannot interleave with the app's rows, and never through a link.
+ * Like every service outside the app, this only writes files: one append, never a commit. The row is appended whole
+ * or not at all, on a line of its own, never through a link, and headless writers take turns through a lock file
+ * beside the ledger (cost-ledger.jsonl.lock), which exists only while one of them appends. The app's own rows are
+ * appended without that lock, each in a single append.
  */
-import { closeSync, constants, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, realpathSync, rmSync, writeSync } from 'node:fs';
+import { closeSync, constants, fstatSync, fsyncSync, ftruncateSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, writeSync } from 'node:fs';
+import { hostname } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { basename, isAbsolute, join, relative } from 'node:path';
 import { parseHeadlessOutput, runHeadlessSeat, type HeadlessRun, type HeadlessSeatOptions } from './headlessSeat';
@@ -88,21 +91,110 @@ export function headlessCostRow(agentId: string, run: HeadlessRun, now: number):
   return { row, reason: null };
 }
 
-/** Append one row to `<hiveRoot>/cost-ledger.jsonl` in a single write, or nothing; never throws. */
-export function recordHeadlessCost(hiveRoot: string, agentId: string, run: HeadlessRun, now = Date.now()): HeadlessCost {
+/** How long an append waits for another headless writer's ledger lock before it gives up. */
+export const LEDGER_LOCK_WAIT_MS = 5000;
+/** A lock whose holder cannot be identified (no readable record, or another host) is stale after this. */
+const LEDGER_LOCK_STALE_MS = 30_000;
+
+const nap = (ms: number): void => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
+const running = (pid: number): boolean => {
+  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM'; }
+};
+
+interface LedgerLockSeen { pid: unknown; host: unknown; dev: number; ino: number; ageMs: number }
+
+function readLedgerLock(lock: string): LedgerLockSeen | null {
+  try {
+    const st = lstatSync(lock);
+    let rec: Record<string, unknown> = {};
+    try { const v: unknown = JSON.parse(readFileSync(lock, 'utf8')); if (isPlainObject(v)) rec = v; } catch { /* no record yet, or damaged */ }
+    return { pid: rec.pid, host: rec.host, dev: st.dev, ino: st.ino, ageMs: Date.now() - st.mtimeMs };
+  } catch { return null; }
+}
+
+/**
+ * Take `<ledger>.lock` for one append and return its release. The lock is created with O_EXCL and holds the
+ * holder's pid and host. It is broken only when its holder on this host has exited, or, when its holder cannot be
+ * identified (no readable record, another host), once it is LEDGER_LOCK_STALE_MS old. A running holder is never
+ * broken, however old its lock. Breaking renames the lock aside and keeps it only if it is still the file judged
+ * stale, so a fresh lock taken meanwhile is put back. Throws, naming the holder, when the wait runs out.
+ */
+function lockLedger(ledger: string, waitMs: number): () => void {
+  const lock = `${ledger}.lock`;
+  const body = Buffer.from(JSON.stringify({ pid: process.pid, host: hostname(), token: randomBytes(8).toString('hex'), acquiredAt: new Date().toISOString() }), 'utf8');
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    let fd: number | null = null;
+    try { fd = openSync(lock, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o644); } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+    }
+    if (fd !== null) {
+      let own: { dev: number; ino: number };
+      try { writeAllSync(fd, lock, body); own = fstatSync(fd); } catch (e) { closeSync(fd); rmSync(lock, { force: true }); throw e; }
+      closeSync(fd);
+      return () => {
+        const now = readLedgerLock(lock);
+        if (now && now.dev === own.dev && now.ino === own.ino) rmSync(lock, { force: true });
+      };
+    }
+    const held = readLedgerLock(lock);
+    if (held) {
+      const ours = held.host === hostname() && typeof held.pid === 'number' && Number.isSafeInteger(held.pid) && held.pid > 0;
+      const stale = ours ? !running(held.pid as number) : held.ageMs > LEDGER_LOCK_STALE_MS;
+      if (stale) {
+        const aside = `${lock}.stale-${randomBytes(6).toString('hex')}`;
+        try {
+          renameSync(lock, aside);
+          const moved = lstatSync(aside);
+          if (moved.dev !== held.dev || moved.ino !== held.ino) { try { linkSync(aside, lock); } catch { /* taken again */ } }
+        } catch { /* someone else broke or took it */ }
+        rmSync(aside, { force: true });
+        continue;
+      }
+      if (Date.now() >= deadline) throw new Error(`the ledger lock ${lock} is held by pid ${String(held.pid)} on ${String(held.host)}`);
+    } else if (Date.now() >= deadline) throw new Error(`the ledger lock ${lock} could not be taken`);
+    nap(10);
+  }
+}
+
+/** Append one row to `<hiveRoot>/cost-ledger.jsonl`, whole or not at all; never throws. Headless appends hold the
+ *  ledger lock (lockLedger) for the write. A ledger whose last line has no newline (a writer that stopped part-way)
+ *  gets one first, so the row starts on a line of its own. The row is written in full (writeAllSync) and flushed;
+ *  a write that stops short is undone, by cutting the ledger back to where it was when what follows that point is
+ *  only this row's own bytes. `io` is for tests. */
+export function recordHeadlessCost(hiveRoot: string, agentId: string, run: HeadlessRun, now = Date.now(), io: { writeSync?: typeof writeSync; lockWaitMs?: number } = {}): HeadlessCost {
   const { row, reason } = headlessCostRow(agentId, run, now);
   if (!row) return { costRecorded: false, costReason: reason, row: null };
-  const line = Buffer.from(`${JSON.stringify(row)}\n`, 'utf8');
+  const ledger = join(hiveRoot, COST_LEDGER_FILE);
+  let release: (() => void) | null = null;
   let fd: number | null = null;
   try {
-    fd = openSync(join(hiveRoot, COST_LEDGER_FILE), constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o644);
-    const wrote = writeSync(fd, line);
-    if (wrote !== line.length) return { costRecorded: false, costReason: `the ledger append failed: wrote ${wrote} of ${line.length} bytes`, row: null };
+    release = lockLedger(ledger, io.lockWaitMs ?? LEDGER_LOCK_WAIT_MS);
+    fd = openSync(ledger, constants.O_RDWR | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o644);
+    const before = fstatSync(fd).size;
+    let lead = '';
+    if (before > 0) {
+      const last = Buffer.alloc(1);
+      readSync(fd, last, 0, 1, before - 1);
+      if (last[0] !== 0x0a) lead = '\n';
+    }
+    const line = Buffer.from(`${lead}${JSON.stringify(row)}\n`, 'utf8');
+    try {
+      writeAllSync(fd, ledger, line, io.writeSync);
+      fsyncSync(fd);
+    } catch (e) {
+      const size = fstatSync(fd).size;
+      const tail = Buffer.alloc(Math.max(0, size - before));
+      if (tail.length) readSync(fd, tail, 0, tail.length, before);
+      if (tail.length <= line.length && tail.equals(line.subarray(0, tail.length))) ftruncateSync(fd, before);
+      throw e;
+    }
     return { costRecorded: true, costReason: null, row };
   } catch (e) {
     return { costRecorded: false, costReason: `the ledger append failed: ${(e as Error).message}`, row: null };
   } finally {
     if (fd !== null) closeSync(fd);
+    release?.();
   }
 }
 

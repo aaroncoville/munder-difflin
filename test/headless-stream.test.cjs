@@ -292,3 +292,90 @@ test('Given a write that completes a few bytes at a time, when a message is writ
   const m = JSON.parse(fs.readFileSync(path.join(s.root, 'agents', 'ag1', 'outbox', `${id}.json`), 'utf8'));
   assert.equal(m.body, msg.body);
 });
+
+// --- ledger append integrity ---------------------------------------------------------------------------------------
+// The row is appended whole or not at all, on a line of its own, one writer at a time (a lock file beside the ledger,
+// cost-ledger.jsonl.lock, taken with O_EXCL and broken only when its holder on this host has exited).
+
+const parseAll = (file) => fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+
+test('Given a ledger whose last line is unterminated, when a cost is recorded, then the row starts on a fresh line and both rows parse', (t) => {
+  const h = hive(t);
+  const torn = JSON.stringify({ agent_id: 'other', session_id: 's0', ts: 1, input: 0, output: 0, cache_read: 0, cache_creation: 0, model: 'm', usd: 1 });
+  fs.writeFileSync(h.ledger, torn);
+  const c = S.recordHeadlessCost(h.root, 'ag1', run(), 5);
+  assert.equal(c.costRecorded, true, c.costReason);
+  const rows = parseAll(h.ledger);
+  assert.deepEqual(rows.map((r) => r.agent_id), ['other', 'ag1']);
+  assert.ok(fs.readFileSync(h.ledger, 'utf8').endsWith('\n'));
+});
+
+test('Given a write that stops short, when a cost is recorded, then no row is recorded, the result says why, and the ledger is as it was', (t) => {
+  const h = hive(t);
+  const before = `${JSON.stringify({ agent_id: 'other', session_id: 's0', ts: 1, usd: 1 })}\n`;
+  fs.writeFileSync(h.ledger, before);
+  const short = (fd, buf, off, len) => (len > 10 ? fs.writeSync(fd, buf, off, 10) : 0);
+  const c = S.recordHeadlessCost(h.root, 'ag1', run(), 5, { writeSync: short });
+  assert.equal(c.costRecorded, false);
+  assert.match(c.costReason, /stopped after/);
+  assert.equal(fs.readFileSync(h.ledger, 'utf8'), before, 'no half row is left behind');
+  assert.deepEqual(fs.readdirSync(h.root).sort(), ['agents', 'cost-ledger.jsonl'], 'and no lock is left behind');
+});
+
+test('Given a write that completes a few bytes at a time, when a cost is recorded, then the whole row lands and the lock is gone', (t) => {
+  const h = hive(t);
+  const trickle = (fd, buf, off, len) => fs.writeSync(fd, buf, off, Math.min(len, 5));
+  const c = S.recordHeadlessCost(h.root, 'ag1', run(), 5, { writeSync: trickle });
+  assert.equal(c.costRecorded, true, c.costReason);
+  assert.equal(parseAll(h.ledger).length, 1);
+  assert.deepEqual(fs.readdirSync(h.root).sort(), ['agents', 'cost-ledger.jsonl']);
+});
+
+test('Given the ledger lock is held by a running process, when a cost is recorded, then it waits, gives up, and writes nothing', (t) => {
+  const h = hive(t);
+  fs.writeFileSync(`${h.ledger}.lock`, JSON.stringify({ pid: process.pid, host: os.hostname(), token: 'x' }));
+  const c = S.recordHeadlessCost(h.root, 'ag1', run(), 5, { lockWaitMs: 200 });
+  assert.equal(c.costRecorded, false);
+  assert.match(c.costReason, new RegExp(`lock.*pid ${process.pid}`));
+  assert.equal(fs.existsSync(h.ledger), false);
+  assert.ok(fs.existsSync(`${h.ledger}.lock`), 'a live holder\'s lock is never broken');
+});
+
+test('Given a ledger lock left by a process that has exited, when a cost is recorded, then the lock is broken and the row lands', (t) => {
+  const h = hive(t);
+  const { spawnSync } = require('node:child_process');
+  const dead = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))']).stdout.toString();
+  fs.writeFileSync(`${h.ledger}.lock`, JSON.stringify({ pid: Number(dead), host: os.hostname(), token: 'x' }));
+  const c = S.recordHeadlessCost(h.root, 'ag1', run(), 5, { lockWaitMs: 2000 });
+  assert.equal(c.costRecorded, true, c.costReason);
+  assert.equal(parseAll(h.ledger).length, 1);
+  assert.equal(fs.existsSync(`${h.ledger}.lock`), false);
+});
+
+test('Given several processes appending at once, a few bytes per write, when they finish, then every row is intact on a line of its own', { timeout: 60000 }, async (t) => {
+  const h = hive(t);
+  const { spawn } = require('node:child_process');
+  const N = 6;
+  const ROWS = 25;
+  const script = `
+    const fs = require('node:fs');
+    const S = require(${JSON.stringify(path.join(__dirname, 'load-ts.cjs'))})('src/core/headlessStream.ts');
+    const nap = new Int32Array(new SharedArrayBuffer(4));
+    const slow = (fd, buf, off, len) => { Atomics.wait(nap, 0, 0, 1); return fs.writeSync(fd, buf, off, Math.min(len, 16)); };
+    const base = JSON.parse(process.argv[1]);
+    for (let i = 0; i < ${ROWS}; i++) {
+      const c = S.recordHeadlessCost(process.argv[2], 'ag' + process.argv[3], { ...base, sessionId: 'w' + process.argv[3] + '-' + i }, Date.now(), { writeSync: slow, lockWaitMs: 30000 });
+      if (!c.costRecorded) { console.error(c.costReason); process.exit(1); }
+    }`;
+  const codes = await Promise.all(Array.from({ length: N }, (_, w) => new Promise((res) => {
+    const c = spawn(process.execPath, ['-e', script, JSON.stringify(run()), h.root, String(w)], { cwd: path.join(__dirname, '..'), stdio: ['ignore', 'ignore', 'inherit'] });
+    c.on('exit', res);
+  })));
+  assert.deepEqual(codes, Array(N).fill(0));
+  const text = fs.readFileSync(h.ledger, 'utf8');
+  const lines = text.split('\n');
+  assert.equal(lines.pop(), '', 'newline-terminated');
+  assert.equal(lines.length, N * ROWS);
+  const sessions = new Set(lines.map((l) => JSON.parse(l).session_id));
+  assert.equal(sessions.size, N * ROWS, 'every row whole and distinct');
+});
