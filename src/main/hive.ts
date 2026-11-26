@@ -3170,13 +3170,14 @@ export class HiveManager {
 
   /** Edit the ledger against its on-disk cards under the ledger lock, then log
    *  and commit. `mutate` returning null leaves the ledger untouched. Returns
-   *  whether anything was written. An unreadable tasks.json is treated as empty,
-   *  as writeTasks always has. */
+   *  whether anything was written. An unreadable tasks.json is refused (throws)
+   *  and left as it is: edited as if empty, it would be replaced by a ledger
+   *  holding only this edit. */
   private updateTasks(mutate: (current: HiveTask[]) => HiveTask[] | null): boolean {
     const root = this.root();
     if (!root) return false;
     this.ensureHive();
-    const merged = updateTaskLedgerFile(join(root, 'tasks.json'), (current) => mutate(current as HiveTask[]), { unreadable: 'empty' });
+    const merged = updateTaskLedgerFile(join(root, 'tasks.json'), (current) => mutate(current as HiveTask[]));
     if (!merged) return false;
     this.appendLog({ kind: 'tasks', count: merged.length });
     this.commit(`hive: tasks (${merged.length})`);

@@ -99,3 +99,13 @@ test('the hive repository ignores the ledger lock, its break-aside copies and th
   }
   assert.ok(!ignored('tasks.json'), 'the ledger itself is still committed');
 });
+
+test('add, patch and delete refuse an unreadable ledger instead of replacing it', (t) => {
+  const { hive, file } = floor(t);
+  const broken = '{ "tasks": [ {"id": "a"} ';
+  fs.writeFileSync(file, broken);
+  assert.throws(() => hive.addTask(card('b')), /tasks\.json/);
+  assert.throws(() => hive.patchTask('a', { status: 'done' }), /tasks\.json/);
+  assert.throws(() => hive.deleteTask('a'), /tasks\.json/);
+  assert.equal(fs.readFileSync(file, 'utf8'), broken, 'the unreadable ledger is left as it is');
+});
