@@ -22,7 +22,7 @@ import type { CircuitBreaker } from '../core/breaker';
 import { estimateCostUsd } from '../core/pricing';
 import { validateHookEvent } from '../shared/hookEvents';
 import { frameIds } from '../core/usageEvents';
-import { isProtectedWrite, refusedWrite, type RootsContext } from './writeRoots';
+import { isProtectedWrite, refusedWrite, type RootsContext } from '../core/writeRoots';
 
 /** Maximum JSON payload bytes in one newline-delimited hook frame. */
 const MAX_HOOK_FRAME_BYTES = 256 * 1024;

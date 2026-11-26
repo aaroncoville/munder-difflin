@@ -43,7 +43,7 @@ import { runCanaries, memoryCanary } from './canaries';
 import { TurnTracker, diffTasks, type UsageIds } from '../core/usageEvents';
 import { loadUsageSecret, usageRef } from '../core/usageRef';
 import { UsageLog, recordFromRenderer } from './usageLog';
-import { ScopedRootsRefused, WriteRootsDryRun, seatGate, spawnLaunchFacts, type SpawnRecord } from './writeRoots';
+import { ScopedRootsRefused, WriteRootsDryRun, seatGate, spawnLaunchFacts, type SpawnRecord } from '../core/writeRoots';
 import { writeWeeklyDigest } from './usageDigest';
 import { HookServer } from './hooks';
 import { HeavyJobLock, heavyLimit, heavySlotNotice, probeProcesses } from '../core/heavyJob';

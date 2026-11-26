@@ -482,7 +482,7 @@ function listHooks({ home, cwd, executable, env }) {
 }
 
 test('the write-roots dry run reads the computed home as the config the app generated', async (t) => {
-  const W = loadTs('src/main/writeRoots.ts');
+  const W = loadTs('src/core/writeRoots.ts');
   const f = fixture(t);
   const inj = await f.spawn('dr');
   const home = inj.env.CODEX_HOME;

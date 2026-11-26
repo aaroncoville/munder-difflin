@@ -18,7 +18,7 @@ const { codexTestBase, jailHome, removeDir } = require('./codex-test-home.cjs');
 const { withSeatSettings } = require('./seat-settings-dir.cjs');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
-const { ScopedRootsRefused } = loadTs('src/main/writeRoots.ts');
+const { ScopedRootsRefused } = loadTs('src/core/writeRoots.ts');
 
 function floor(t) {
   const base = codexTestBase(t, 'mdur-');

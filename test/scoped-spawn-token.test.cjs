@@ -28,7 +28,7 @@ require.cache[electron] = {
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { HookServer } = loadTs('src/main/hooks.ts');
-const { seatGate } = loadTs('src/main/writeRoots.ts');
+const { seatGate } = loadTs('src/core/writeRoots.ts');
 
 function floor(t) {
   const base = codexTestBase(t, 'mdtk-');

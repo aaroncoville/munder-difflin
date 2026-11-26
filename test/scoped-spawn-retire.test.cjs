@@ -28,7 +28,7 @@ require.cache[electron] = {
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { HookServer } = loadTs('src/main/hooks.ts');
-const { seatGate } = loadTs('src/main/writeRoots.ts');
+const { seatGate } = loadTs('src/core/writeRoots.ts');
 
 const INDEX = fs.readFileSync(path.resolve(__dirname, '..', 'src/main/index.ts'), 'utf8');
 const TREE = ts.createSourceFile('index.ts', INDEX, ts.ScriptTarget.ES2022, true);

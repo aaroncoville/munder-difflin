@@ -9,7 +9,7 @@
  * command, a path or file content; a source that cannot be read or understood counts as null; nothing here throws.
  */
 import { createHash } from 'node:crypto';
-import { isPlainObject } from '../core/launchLine';
+import { isPlainObject } from './launchLine';
 import { readSettings } from './writeRoots';
 
 /** The source classes a hook-inventory row may name. */

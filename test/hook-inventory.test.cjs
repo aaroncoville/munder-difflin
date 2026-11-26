@@ -131,7 +131,7 @@ test('a source that cannot be read is counted as null, and the spawn goes on', a
 });
 
 test('a source file that is a folder, a pipe or a link reads as null, without blocking or following it', { skip: process.platform === 'win32' }, (t) => {
-  const { claudeFileHooks, hookInventoryRow } = loadTs('src/main/hookInventory.ts');
+  const { claudeFileHooks, hookInventoryRow } = loadTs('src/core/hookInventory.ts');
   const base = codexTestBase(t, 'mdhiu-');
   const ok = path.join(base, 'ok.json');
   fs.writeFileSync(ok, hookFile('Stop', 'x'));
