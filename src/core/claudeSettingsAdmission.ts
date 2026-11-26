@@ -128,6 +128,9 @@ const rootsInside: Judge = (v, path, c) => {
   }
   return null;
 };
+// A credential entry that masks has the proxy put the real value into requests the seat makes; one that denies only
+// hides it.
+const denyEntriesOnly: Judge = (v, path) => ((v as unknown[]).every((e) => isPlainObject(e) && e.mode === 'deny') ? null : { key: path, why: 'an entry does not deny' });
 const emptyOnly: Judge = (v, path) => ((v as string[]).length === 0 ? null : { key: path });
 
 /** The judgement of each key the table classes as judged (other than objects, whose keys are judged in turn): the
@@ -150,6 +153,8 @@ const JUDGES: Readonly<Record<string, Judge>> = {
   // The seats pin these (SCOPED_SANDBOX_PINS): only the pinned value is admitted, since a boolean has nothing tighter.
   'sandbox.autoAllowBashIfSandboxed': refuseWhen(!SCOPED_SANDBOX_PINS.autoAllowBashIfSandboxed),
   'sandbox.credentials.allowPlaintextInject': refuseWhen(true),
+  'sandbox.credentials.envVars': denyEntriesOnly,
+  'sandbox.credentials.files': denyEntriesOnly,
   'sandbox.enableWeakerNestedSandbox': refuseWhen(true),
   'sandbox.enableWeakerNetworkIsolation': refuseWhen(true),
   'sandbox.enabled': refuseWhen(false),

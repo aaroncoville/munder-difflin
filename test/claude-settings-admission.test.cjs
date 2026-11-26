@@ -131,7 +131,7 @@ test('strict: the restrictive keys of the pinned CLI are admitted with any well-
     { sandbox: { filesystem: { allowManagedReadPathsOnly: true, allowRead: [] } } },
     { sandbox: { filesystem: { denyRead: ['/'], allowRead: [path.join(f.work, 'docs')] } } },
     { permissions: { blockReadsOutsideWorkingDirectories: true, blockWritesOutsideWorkingDirectories: true, denyInsteadOfPrompting: true, disableAutoMode: 'disable', workingDirectoriesExclude: ['/x'] } },
-    { sandbox: { credentials: { files: [{ path: '~/.aws', mode: 'deny' }], envVars: [] }, ignoreViolations: { '*': ['/tmp'] }, windows: { backend: 'sandboxuser' } } },
+    { sandbox: { credentials: { files: [{ path: '~/.aws', mode: 'deny' }], envVars: [{ name: 'GH_TOKEN', mode: 'deny' }] }, ignoreViolations: { '*': ['/tmp'] }, windows: { backend: 'sandboxuser' } } },
   ];
   for (const settings of admitted) assert.equal(f.judge(settings), null, JSON.stringify(settings));
 });
@@ -180,4 +180,16 @@ test('strict: an allowedDomains entry made only of wildcards and dots is refused
     assert.ok(r && r.why.includes('managed settings: sandbox.network.allowedDomains'), `${entry} was admitted`);
   }
   assert.equal(f.judge({ sandbox: { network: { allowedDomains: ['*.example.com', 'api.example.org'] } } }), null);
+});
+
+test('strict: a credential entry that masks rather than denies is refused: the proxy would inject the real value', (t) => {
+  const f = floor(t);
+  for (const [credentials, key] of [
+    [{ files: [{ path: '~/.aws/credentials', mode: 'deny' }, { path: '~/.netrc', mode: 'mask' }] }, 'sandbox.credentials.files'],
+    [{ envVars: [{ name: 'GH_TOKEN', mode: 'mask' }] }, 'sandbox.credentials.envVars'],
+    [{ files: ['~/.aws'] }, 'sandbox.credentials.files'],
+  ]) {
+    const r = f.judge({ sandbox: { credentials } });
+    assert.ok(r && r.why.includes(`managed settings: ${key}`), `${JSON.stringify(credentials)}: ${r && r.why}`);
+  }
 });

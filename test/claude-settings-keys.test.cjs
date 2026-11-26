@@ -17,12 +17,12 @@ test('the table classifies exactly the keys read from the CLI it names', () => {
   assert.deepEqual(Object.keys(CLAUDE_SETTINGS_KEYS).sort(), [...fixture.paths].sort());
 });
 
-test('every table entry has a class and a type, and an enum its values', () => {
+test('every table entry has a class, a type, a reason, and an enum its values', () => {
   for (const [key, e] of Object.entries(CLAUDE_SETTINGS_KEYS)) {
     assert.ok(['restrictive', 'judged', 'refused'].includes(e.cls), key);
     assert.ok(['object', 'boolean', 'strings', 'string', 'enum', 'array', 'stringListMap', 'any'].includes(e.type), key);
     if (e.type === 'enum') assert.ok(Array.isArray(e.values) && e.values.length > 0, key);
-    if (e.cls !== 'restrictive') assert.ok(typeof e.why === 'string' && e.why.length > 0, key);
+    assert.ok(typeof e.why === 'string' && e.why.length > 0, `${key} has no reason`);
   }
 });
 
