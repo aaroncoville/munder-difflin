@@ -1451,8 +1451,11 @@ export class HiveManager {
     // while being broken, and the temporary files a writer renames or links into place (taskLedgerFile.ts). Each
     // lives for milliseconds, but a commit can land while another process holds the lock, and a writer that dies
     // leaves its temporary copy of the whole ledger behind.
+    // `cost-ledger.jsonl.lock*`, `.cost-ledger.jsonl.lock.tmp-*`: the same lock (fileLock.ts) around a headless run's
+    // cost row (headlessStream.ts), its set-aside copies and its temporary record.
     const want = ['fleet.json', 'hooks.sock', 'cost-ledger.jsonl', 'crashes/', '.DS_Store', 'usage/', ...AGENT_ALLOWLIST_IGNORE_LINES, `${SET_ASIDE_PREFIX}*/`,
-      'tasks.json.lock', 'tasks.json.lock.stale-*', '.tasks.json.tmp-*', '.tasks.json.lock.tmp-*'];
+      'tasks.json.lock', 'tasks.json.lock.stale-*', '.tasks.json.tmp-*', '.tasks.json.lock.tmp-*',
+      'cost-ledger.jsonl.lock', 'cost-ledger.jsonl.lock.stale-*', '.cost-ledger.jsonl.lock.tmp-*'];
     let lines: string[] = [];
     if (existsSync(gitignore)) { try { lines = readFileSync(gitignore, 'utf8').split('\n'); } catch { lines = []; } }
     const missing = want.filter((w) => !lines.includes(w));
