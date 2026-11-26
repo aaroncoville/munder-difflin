@@ -22,7 +22,7 @@ require.cache[electron] = {
 };
 
 const { HookServer } = loadTs('src/main/hooks.ts');
-const { ControlRegistry } = loadTs('src/main/control.ts');
+const { ControlRegistry } = loadTs('src/core/control.ts');
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { removeDir } = require('./codex-test-home.cjs');

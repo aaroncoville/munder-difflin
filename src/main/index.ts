@@ -94,7 +94,7 @@ import { sourceCheckout } from '../core/repoInstructions';
 import { SeatSettingsRefused } from '../core/seatSettings';
 import { relocationEnv } from '../core/launchLine';
 import { buildPtyEnv } from './ptyEnv';
-import { ControlRegistry } from './control';
+import { ControlRegistry } from '../core/control';
 import { WorkerWakeWatchdog, WakeSkipLog, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
 import { inboxDeliveredAt, inboxLine, openTurnClaimAt, splitInbox } from '../core/inboxClaims';
 import { shouldReapIdle, workerHasLiveJob } from './workerIdleJobs';

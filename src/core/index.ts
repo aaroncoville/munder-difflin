@@ -7,6 +7,7 @@
  * that, so the folder stays usable outside the app process.
  */
 export * from './breaker';
+export * from './control';
 export * from './costLifetime';
 export * from './codexHookTrust';
 export * from './codexSeatHome';

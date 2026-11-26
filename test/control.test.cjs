@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const loadTs = require('./load-ts.cjs');
 
-const { ControlRegistry } = loadTs('src/main/control.ts');
+const { ControlRegistry } = loadTs('src/core/control.ts');
 
 test('auto-delivery pause is independent from tool pause and halt', () => {
   const control = new ControlRegistry();

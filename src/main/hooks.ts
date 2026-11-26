@@ -17,7 +17,7 @@ import { Notification, type WebContents } from 'electron';
 import type { HiveManager } from './hive';
 import { gateHeavyCall, settleHeavyCall, type HeavyJobLock } from '../core/heavyJob';
 import type { HarnessConfig } from './config';
-import type { ControlRegistry } from './control';
+import type { ControlRegistry } from '../core/control';
 import type { CircuitBreaker } from '../core/breaker';
 import { estimateCostUsd } from '../core/pricing';
 import { validateHookEvent } from '../shared/hookEvents';
