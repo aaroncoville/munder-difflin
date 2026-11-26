@@ -85,6 +85,15 @@ test('Given a model and a budget, when the launch is built, then argv is -p, JSO
   assert.ok(l.settingsFile.startsWith(f.settingsDir + path.sep), 'the settings file is in the private settings folder');
 });
 
+test('Given any launch, when it is built, then it passes --strict-mcp-config and names no MCP config, so no MCP server from the owner\'s global config or a plugin starts', (t) => {
+  const f = floor(t);
+  for (const l of [H.buildHeadlessLaunch(f.opts()), H.buildHeadlessLaunch(f.opts({ model: 'haiku', maxBudgetUsd: 0.05 }))]) {
+    assert.equal(l.argv.filter((a) => a === '--strict-mcp-config').length, 1);
+    assert.ok(!l.argv.includes('--mcp-config'), 'no server is named, so none starts');
+    assert.ok(l.argv.indexOf('--strict-mcp-config') < l.argv.length - 1, 'an option, before the prompt');
+  }
+});
+
 test('Given no model and no budget, when the launch is built, then neither option appears', (t) => {
   const f = floor(t);
   const l = H.buildHeadlessLaunch(f.opts());

@@ -273,6 +273,9 @@ export function buildHeadlessLaunch(o: HeadlessSeatOptions): HeadlessLaunch {
   // Its own file name, so it never replaces the settings of the same agent's interactive seat.
   const settingsFile = writeSeatSettings(o.settingsDir, o.hiveRoot, `headless:${o.agentId}`, JSON.stringify(settings, null, 2));
   const argv = [o.cliPath ?? 'claude', '-p', '--output-format', 'json', '--settings', settingsFile, '--setting-sources', HEADLESS_SETTING_SOURCES];
+  // MCP servers are not settings: the owner's global config (~/.claude.json) and plugins declare them, and an empty
+  // --setting-sources does not stop those. --strict-mcp-config with no --mcp-config starts none.
+  argv.push('--strict-mcp-config');
   if (o.model) argv.push('--model', o.model);
   if (o.maxBudgetUsd !== undefined) argv.push('--max-budget-usd', String(o.maxBudgetUsd));
   argv.push('--permission-mode', o.permissionMode ?? HEADLESS_DEFAULT_PERMISSION_MODE);
