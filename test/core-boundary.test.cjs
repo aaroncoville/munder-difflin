@@ -8,15 +8,23 @@
 //    src/shared; from a src/shared file it must land in src/shared. Anything
 //    else (src/main, src/preload, src/renderer, the @/ renderer alias, a folder
 //    elsewhere in the repository) is refused, and so is one that resolves to no
-//    file at all;
-//  - a bare import must be a Node builtin or an npm package, and never electron,
-//    an electron-* package, an @electron/* package, or node-pty (nor a subpath
-//    of one, such as electron/main);
+//    file at all. The file is judged where it really is, symlinks resolved, so a
+//    linked folder inside src/core that points at src/main does not count as
+//    src/core;
+//  - a bare import must be a Node builtin or one of the npm packages listed in
+//    PACKAGES below, so adding a package to core is a deliberate edit here: a
+//    package that wraps Electron need not be named electron-*. electron, an
+//    electron-* package, an @electron/* package and node-pty (or a subpath of
+//    one, such as electron/main) are named as such in the failure;
 //  - no file may use createRequire (from 'module' / 'node:module', in any
-//    form: named, renamed, through a namespace or default import, or
-//    destructured from require). It builds a require() whose specifiers the
+//    form: named, renamed, through a namespace or default import, destructured
+//    from require, or as a computed key that folds to the name, such as
+//    ['create' + 'Require']). It builds a require() whose specifiers the
 //    scanner cannot see, so createRequire(import.meta.url)('electron') would
-//    otherwise pass.
+//    otherwise pass;
+//  - require may only be called directly, as require('<literal>'). Any other
+//    use of it ((require)('x'), (0, require)('x'), require?.('x'),
+//    require.call(…), const r = require) hides its specifier from the scanner.
 //
 // src/core may import src/shared, so every shared file it reaches is held to the
 // same rule, transitively: otherwise core -> shared -> electron would pass.
@@ -24,6 +32,10 @@
 // every specifier is read with the TypeScript scanner, so static imports,
 // re-exports, `import type`, dynamic import() and require() all count, and a
 // specifier that only appears in a comment does not.
+//
+// Not closable by a static scan: a computed specifier (require(name)),
+// module.require and process.mainModule.require, and starting a main-process
+// file by path (child_process.fork, a Worker).
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -40,7 +52,11 @@ const EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'
 // An ESM-style specifier names the emitted file; the source has the TS extension.
 const TS_FOR_JS = { '.js': ['.ts', '.tsx'], '.jsx': ['.tsx'], '.mjs': ['.mts'], '.cjs': ['.cts'] };
 
+// The npm packages src/core and the src/shared files it reaches may import.
+const PACKAGES = new Set(['smol-toml']);
+
 const inside = (dir, p) => p === dir || p.startsWith(dir + path.sep);
+const real = (p) => fs.realpathSync(p);
 const rel = (p) => path.relative(root, p);
 
 function scripts(dir) {
@@ -89,7 +105,8 @@ function judge(file, spec) {
   if (t === null) {
     if (spec.startsWith('node:') || builtinModules.includes(spec)) return {};
     const pkg = packageOf(spec);
-    return forbiddenPackage(pkg) ? { why: `${spec} is the forbidden package ${pkg}` } : {};
+    if (forbiddenPackage(pkg)) return { why: `${spec} is the forbidden package ${pkg}` };
+    return PACKAGES.has(pkg) ? {} : { why: `${spec} is the package ${pkg}, which is not on the allowlist of packages core may use` };
   }
   const zones = inside(coreDir, file) ? [coreDir, sharedDir] : [sharedDir];
   if (!zones.some((z) => inside(z, t))) {
@@ -97,6 +114,10 @@ function judge(file, spec) {
   }
   const resolved = resolveFile(t);
   if (!resolved) return { why: `${spec} resolves to no file` };
+  const where = real(resolved);
+  if (!zones.some((z) => inside(real(z), where))) {
+    return { why: `${spec} resolves through a symlink to ${where}, outside ${zones.map(rel).join(' and ')}` };
+  }
   return { follow: inside(sharedDir, resolved) && SCRIPT.test(resolved) ? resolved : null };
 }
 
@@ -106,26 +127,66 @@ function specifiers(file) {
 
 const SCRIPT_KIND = { '.ts': ts.ScriptKind.TS, '.mts': ts.ScriptKind.TS, '.cts': ts.ScriptKind.TS, '.tsx': ts.ScriptKind.TSX, '.jsx': ts.ScriptKind.JSX };
 
-/** Lines where `file` names createRequire, as an identifier or as a ['createRequire'] key. */
-function createRequireLines(file) {
+/** The value of a string expression built only from literals ('a', `a`, 'a' + 'b', (…)), else undefined. */
+function constantString(node) {
+  if (ts.isStringLiteralLike(node)) return node.text;
+  if (ts.isParenthesizedExpression(node)) return constantString(node.expression);
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+    const left = constantString(node.left);
+    const right = constantString(node.right);
+    return left === undefined || right === undefined ? undefined : left + right;
+  }
+  if (ts.isTemplateExpression(node)) {
+    let text = node.head.text;
+    for (const span of node.templateSpans) {
+      const part = constantString(span.expression);
+      if (part === undefined) return undefined;
+      text += part + span.literal.text;
+    }
+    return text;
+  }
+  return undefined;
+}
+
+/** The names a member is declared or reached by: `x.require`, `{ require: … }`, a class or interface member. */
+function isMemberName(node) {
+  const p = node.parent;
+  return !!p && p.name === node && (ts.isPropertyAccessExpression(p) || ts.isPropertyAssignment(p)
+    || ts.isPropertyDeclaration(p) || ts.isMethodDeclaration(p) || ts.isPropertySignature(p) || ts.isMethodSignature(p));
+}
+
+/** require('<literal>'): the only use of require whose specifier the scanner reads. */
+function isDirectRequireCall(node) {
+  const call = node.parent;
+  return !!call && ts.isCallExpression(call) && call.expression === node && !call.questionDotToken
+    && call.arguments.length === 1 && ts.isStringLiteralLike(call.arguments[0]);
+}
+
+/**
+ * Where `file` reaches a loader the scanner cannot follow: createRequire named as an identifier or as an
+ * element key that folds to 'createRequire', and require used other than as require('<literal>').
+ */
+function loaderOffences(file) {
   const sf = ts.createSourceFile(file, fs.readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true,
     SCRIPT_KIND[path.extname(file)] ?? ts.ScriptKind.JS);
-  const lines = [];
+  const found = new Map();
+  const at = (node, what) => found.set(`${sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1}: ${what}`, true);
   const visit = (node) => {
-    const named = ts.isIdentifier(node) && node.text === 'createRequire';
-    const keyed = ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression)
-      && node.argumentExpression.text === 'createRequire';
-    if (named || keyed) lines.push(sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1);
+    if (ts.isIdentifier(node) && node.text === 'createRequire') at(node, 'uses createRequire');
+    if (ts.isElementAccessExpression(node) && constantString(node.argumentExpression) === 'createRequire') at(node, 'uses createRequire');
+    if (ts.isIdentifier(node) && node.text === 'require' && !isMemberName(node) && !isDirectRequireCall(node)) {
+      at(node, "uses require other than as require('<literal>')");
+    }
     ts.forEachChild(node, visit);
   };
   visit(sf);
-  return [...new Set(lines)];
+  return [...found.keys()];
 }
 
 /** Every offence reachable from `file`, following imports into src/shared. */
 function offendersFrom(file, chain, seen, offenders) {
   const here = [...chain, rel(file)].join(' -> ');
-  for (const line of createRequireLines(file)) offenders.push(`${here}:${line}: uses createRequire`);
+  for (const offence of loaderOffences(file)) offenders.push(`${here}:${offence}`);
   for (const spec of specifiers(file)) {
     const { why, follow } = judge(file, spec);
     if (why) offenders.push(`${[...chain, rel(file)].join(' -> ')}: ${why}`);
