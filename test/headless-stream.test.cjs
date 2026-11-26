@@ -263,3 +263,13 @@ test('Given the seat\'s outbox is a link to a folder elsewhere, when a message i
   assert.throws(() => S.writeOutboxMessage(s.root, 'ag1', msg), /not a real folder/);
   assert.deepEqual(fs.readdirSync(path.join(s.base, 'elsewhere')), []);
 });
+
+test('Given a run whose reported cost is negative or not a finite number, when its cost is recorded, then no row is written and the result says why', (t) => {
+  const h = hive(t);
+  for (const usd of [-5, -0.0001, Number.POSITIVE_INFINITY, Number.NaN]) {
+    const c = S.recordHeadlessCost(h.root, 'ag1', run({ totalCostUsd: usd }), 5);
+    assert.equal(c.costRecorded, false, String(usd));
+    assert.match(c.costReason, /not a cost/);
+  }
+  assert.equal(fs.existsSync(h.ledger), false, 'a negative row would lower the agent\'s lifetime spend');
+});

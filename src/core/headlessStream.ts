@@ -72,6 +72,8 @@ function modelOf(result: Record<string, unknown> | null, argv: string[]): string
 export function headlessCostRow(agentId: string, run: HeadlessRun, now: number): { row: HeadlessCostRow | null; reason: string | null } {
   if (run.timedOut) return { row: null, reason: 'the run timed out, so its cost is unknown' };
   if (run.totalCostUsd === null) return { row: null, reason: 'the CLI reported no cost' };
+  // The ledger's lifetime fold adds what each session reports: a negative cost would lower an agent's spend.
+  if (!(Number.isFinite(run.totalCostUsd) && run.totalCostUsd >= 0)) return { row: null, reason: `the CLI reported ${run.totalCostUsd}, which is not a cost` };
   if (!run.sessionId) return { row: null, reason: 'the CLI reported no session id, which the ledger is keyed by' };
   const result = parseHeadlessOutput(run.stdout).result;
   const u = isPlainObject(result?.usage) ? (result.usage as Record<string, unknown>) : {};
