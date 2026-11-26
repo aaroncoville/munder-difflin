@@ -35,6 +35,9 @@
  * No electron import — unit-testable (mirrors ControlRegistry).
  */
 
+import { WORKER_WAKE_TURN_CEILING_MS } from './inboxClaims';
+export { WORKER_WAKE_TURN_CEILING_MS };
+
 /** The exact nudge the renderer's inbox-wake loop would have typed. */
 export const WORKER_WAKE_NUDGE =
   'You have new hive inbox message(s) — read your inbox, act on them now, and move handled ones to inbox/.done/. Act autonomously; only message god if you genuinely need a decision.';
@@ -68,14 +71,6 @@ export const WORKER_WAKE_HITL_REARM_MS = 5 * 60_000;
  *  Codex/Gemini/grok worker would otherwise read as stalled forever and be
  *  nudged every cooldown while working — the repeated nudging #368 removed. */
 export const WORKER_WAKE_STALL_MS = 90_000;
-/** How long an open turn keeps the stall rule off with no further hook. A
- *  turn is open from the hook that starts one (a prompt, a tool call, a
- *  subagent) until Stop, or until the CLI notifies that it is waiting for
- *  input; while it is open the worker is working, whatever its
- *  mail's age, and typing into it lands keystrokes in the middle of that work.
- *  A Stop the harness never heard would hold the worker for good, so past this
- *  long since the turn's last hook it no longer counts as open. */
-export const WORKER_WAKE_TURN_CEILING_MS = 20 * 60_000;
 /** Minimum age of pending mail before a held worker is reported in the log. */
 export const WORKER_WAKE_REPORT_MS = 60_000;
 

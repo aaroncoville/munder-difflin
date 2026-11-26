@@ -27,7 +27,15 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { isFolderName } from '../core/messageTarget';
-import { WORKER_WAKE_TURN_CEILING_MS } from './workerWake';
+
+/** How long an open turn keeps the stall rule off with no further hook. A
+ *  turn is open from the hook that starts one (a prompt, a tool call, a
+ *  subagent) until Stop, or until the CLI notifies that it is waiting for
+ *  input; while it is open the worker is working, whatever its
+ *  mail's age, and typing into it lands keystrokes in the middle of that work.
+ *  A Stop the harness never heard would hold the worker for good, so past this
+ *  long since the turn's last hook it no longer counts as open. */
+export const WORKER_WAKE_TURN_CEILING_MS = 20 * 60_000;
 
 /**
  * Delivery times (file mtimes, ms) of the messages waiting in an agent's inbox.
