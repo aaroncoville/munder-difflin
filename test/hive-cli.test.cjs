@@ -91,7 +91,7 @@ test('patch refuses to clear the assignee, and writes nothing', (t) => {
   const before = fs.readFileSync(file, 'utf8');
   for (const json of ['{"assignee":null}', '{"assignee":""}', '{"assignee":7}', '{"assignee":["y"]}', '{"status":"done","assignee":null}', '{"assignee":"  "}', '{"assignee":"\\t\\n"}',
     // Characters that show nothing: zero-width space, joiners, word joiner, BOM, soft hyphen, Hangul filler.
-    '{"assignee":"\\u200b"}', '{"assignee":"\\u200c\\u200d"}', '{"assignee":" \\u2060\\ufeff "}', '{"assignee":"\\u00ad"}', '{"assignee":"\\u3164"}']) {
+    '{"assignee":"\\u200b"}', '{"assignee":"\\u200c\\u200d"}', '{"assignee":" \\u2060\\ufeff "}', '{"assignee":"\\u00ad"}', '{"assignee":"\\u3164"}', '{"assignee":"\\u2800"}']) {
     const r = run(['--hive', dir, 'tasks', 'patch', 'a', '--json', json]);
     assert.equal(r.code, 1, json);
     assert.match(r.stderr, /assignee/, json);
