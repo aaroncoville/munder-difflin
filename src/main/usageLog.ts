@@ -19,7 +19,7 @@ import { appendFileSync, chmodSync, mkdirSync, readdirSync, readFileSync, rmSync
 import { join } from 'node:path';
 import { FAIL_CLOSED_REASONS, LOG_TOOLS, PATH_CLASSES, PROVIDERS, SHAPES, START_SOURCES, VIAS } from './writeRoots';
 import { HOOK_SOURCES } from './hookInventory';
-import { WITHHELD_REASONS } from './repoInstructions';
+import { WITHHELD_REASONS } from '../core/repoInstructions';
 
 export const RETENTION_DAYS = 90;
 const SCHEMA = 1;

@@ -38,7 +38,7 @@ import { setAsideUnlessFolder } from './sentFolder';
 import { COMMAND_GROUPS } from '../shared/claudeCommands';
 import { codexShortHomeRoot } from '../shared/codexRemote';
 import { PrivateDirRefused, privateDirsReach, registerPrivateDir } from '../core/privateDirs';
-import { repoInstructions } from './repoInstructions';
+import { repoInstructions } from '../core/repoInstructions';
 import { checkSeatSettingsTarget, seatSettingsFile, writeSeatSettings } from '../core/seatSettings';
 import { claudeFileHooks, claudeHookEntries, hookInventoryRow, type SourceHooks } from './hookInventory';
 import { ownerHooks } from './codexHookTrust';

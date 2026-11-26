@@ -30,7 +30,7 @@ test.after(() => fs.rmSync(userData, { recursive: true, force: true }));
 
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { sanitize } = loadTs('src/main/usageLog.ts');
-const { sourceCheckout, repoInstructions } = loadTs('src/main/repoInstructions.ts');
+const { sourceCheckout, repoInstructions } = loadTs('src/core/repoInstructions.ts');
 const { isRepo } = loadTs('src/main/git.ts');
 
 const HEADER = 'Repository instructions (';

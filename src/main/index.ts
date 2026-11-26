@@ -90,7 +90,7 @@ import { buildWorkerLaunch } from './workerLaunch';
 import { isFolderName, RefusedRosterId, RegistryUnreadable, shortTarget } from './messageTarget';
 import { HookRuntimeUnavailable } from '../core/hookRuntime';
 import { PrivateDirRefused, registerPrivateDir } from '../core/privateDirs';
-import { sourceCheckout } from './repoInstructions';
+import { sourceCheckout } from '../core/repoInstructions';
 import { SeatSettingsRefused } from '../core/seatSettings';
 import { relocationEnv } from '../core/launchLine';
 import { buildPtyEnv } from './ptyEnv';
