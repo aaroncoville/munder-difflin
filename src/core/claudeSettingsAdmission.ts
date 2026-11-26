@@ -9,7 +9,7 @@
  */
 import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path';
-import { claudeRootEntries } from './launchLine';
+import { CLAUDE_FILE_WRITE_TOOLS, claudeRootEntries } from './launchLine';
 import { insideAny } from './writeRoots';
 
 /** The machine-wide Claude settings file. */
@@ -42,13 +42,19 @@ export function settingsRootPath(x: unknown, cwd: string, home: string): string 
   return resolvePath(v);
 }
 
-/** The folder an Edit(...) allow rule's pattern starts in, or null when it cannot be read (a bare `Edit` allows every
- *  path). `//x` is absolute, `~/x` in the home folder, `/x` relative to the settings file's folder, any other relative
+/** The file-writing tool an allow rule names (Edit, Write, MultiEdit, NotebookEdit), or null. */
+function writeRuleTool(rule: string): string | null {
+  const m = /^\s*([A-Za-z]+)\s*(\(|$)/.exec(rule);
+  return m && CLAUDE_FILE_WRITE_TOOLS.includes(m[1]) ? m[1] : null;
+}
+
+/** The folder a file-writing tool's allow rule (Edit(...), Write(...), MultiEdit(...), NotebookEdit(...)) starts in,
+ *  or null when it cannot be read (a bare `Edit` or `Write` allows every path). `//x` is absolute, `~/x` in the home folder, `/x` relative to the settings file's folder, any other relative
  *  to the working folder. A pattern is cut at its first wildcard; a cut inside a name keeps the folder holding it. */
 export function editRuleFolder(rule: string, settingsDir: string, cwd: string, home: string): string | null {
-  const m = /^\s*Edit\s*\((.*)\)\s*$/.exec(rule);
-  if (!m) return null;
-  const spec = m[1].trim();
+  const m = /^\s*([A-Za-z]+)\s*\((.*)\)\s*$/.exec(rule);
+  if (!m || !CLAUDE_FILE_WRITE_TOOLS.includes(m[1])) return null;
+  const spec = m[2].trim();
   if (!spec) return null;
   let p: string;
   if (spec.startsWith('//')) p = spec.slice(1);
@@ -95,7 +101,7 @@ export function claudeSettingsExcess(p: ClaudeSettingsPlaces): { why: string; ro
     }
     for (const rule of c.editRules) {
       const root = editRuleFolder(rule, dirname(file), p.cwd, p.home);
-      if (!inside(root)) return { why: `${source}: permissions.allow Edit`, root };
+      if (!inside(root)) return { why: `${source}: permissions.allow ${writeRuleTool(rule) ?? 'Edit'}`, root };
     }
   }
   return null;

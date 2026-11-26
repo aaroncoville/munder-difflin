@@ -368,8 +368,13 @@ export function claudeRoots(json: string): { roots: string[]; enabled: boolean |
   return c ? { roots: c.roots, enabled: c.enabled } : null;
 }
 
-/** The same reading as claudeRoots, with the key each root came from, and the Edit allow rules in permissions.allow
- *  (each lets the edit tools write what it names; read only when that list is a list of text). */
+/** The Claude tools that write files. An allow rule for any of them (bare, or with a path pattern) lets that tool write
+ *  what it names without asking, so each is read as a write root, as Edit is. */
+export const CLAUDE_FILE_WRITE_TOOLS: readonly string[] = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'];
+const FILE_WRITE_RULE = new RegExp(`^\\s*(?:${CLAUDE_FILE_WRITE_TOOLS.join('|')})\\s*(\\(|$)`);
+
+/** The same reading as claudeRoots, with the key each root came from, and the file-writing tool allow rules in
+ *  permissions.allow (each lets that tool write what it names; read only when that list is a list of text). */
 export function claudeRootEntries(json: string): { entries: ClaudeRootEntry[]; editRules: string[] } | null {
   const c = readClaudeRoots(json);
   return c ? { entries: c.entries, editRules: c.editRules } : null;
@@ -406,7 +411,7 @@ function readClaudeRoots(json: string): { roots: string[]; enabled: boolean | un
       roots.push(...pm.additionalDirectories);
       for (const value of pm.additionalDirectories) entries.push({ key: 'permissions.additionalDirectories', value });
     }
-    if (Object.hasOwn(pm, 'allow') && stringList(pm.allow)) editRules.push(...pm.allow.filter((r) => /^\s*Edit\s*(\(|$)/.test(r)));
+    if (Object.hasOwn(pm, 'allow') && stringList(pm.allow)) editRules.push(...pm.allow.filter((r) => FILE_WRITE_RULE.test(r)));
   }
   return { roots, enabled, entries, editRules };
 }

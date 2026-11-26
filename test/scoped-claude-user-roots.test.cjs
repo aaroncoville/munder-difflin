@@ -62,6 +62,25 @@ test('flag on: a user allowWrite, additionalDirectories or Edit allow rule outsi
   }
 });
 
+test('flag on: an allow rule for any file-writing tool outside the seat\'s roots refuses the spawn, as Edit does', async (t) => {
+  const f = floor(t);
+  const other = f.A('other');
+  // Listed here by hand, not imported: dropping a tool from the module's list must fail this test.
+  for (const [i, tool] of ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'].entries()) {
+    f.user({ permissions: { allow: [`${tool}(/${other}/**)`] } });
+    await assert.rejects(f.spawn(`w${i}`, true), refusedFor(f, 'user settings', `permissions.allow ${tool}`), tool);
+    f.user({ permissions: { allow: [tool] } });
+    await assert.rejects(f.spawn(`b${i}`, true), refusedFor(f, 'user settings', `permissions.allow ${tool}`), `bare ${tool}`);
+  }
+});
+
+test('the Claude file-writing tools the admission reads include every Claude write tool the gate protects', () => {
+  const { CLAUDE_FILE_WRITE_TOOLS } = loadTs('src/core/launchLine.ts');
+  const { PROTECTED_WRITE_TOOLS } = loadTs('src/core/writeRoots.ts');
+  const claudeOnes = PROTECTED_WRITE_TOOLS.filter((x) => x !== 'apply_patch'); // apply_patch is Codex's
+  for (const tool of [...claudeOnes, 'Edit', 'Write', 'MultiEdit', 'NotebookEdit']) assert.ok(CLAUDE_FILE_WRITE_TOOLS.includes(tool), tool);
+});
+
 test('flag on: the same entry in the managed settings refuses the spawn, naming the managed source', async (t) => {
   const f = floor(t);
   fs.writeFileSync(f.managed, JSON.stringify({ sandbox: { filesystem: { allowWrite: [f.A('other')] } } }));
