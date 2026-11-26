@@ -141,6 +141,23 @@ export function defaultStartTime(pid: number, timeoutMs: number): string | null 
  */
 const START_READ_MS = 100;
 
+/**
+ * Whether `pid` can name one process to ask about. Only a positive integer can: kill(0, 0) and kill(-1, 0) ask
+ * about process groups and succeed, and a value process.kill refuses as an argument (a fraction, or an integer
+ * from 2^31 up) throws before the system is asked, so it is never "no such process". Any of those, read as a
+ * pid, would name a holder alive for good.
+ */
+function usablePid(pid: unknown): pid is number {
+  if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+  } catch (e) {
+    // The system's own answers (ESRCH, EPERM) come from the kill call; an argument error does not.
+    if ((e as NodeJS.ErrnoException).syscall !== 'kill') return false;
+  }
+  return true;
+}
+
 /** Whether running process `pid` is the one that recorded `started`: null when that cannot be told. */
 function sameProcess(pid: number, started: unknown, startTime: (pid: number) => string | null): boolean | null {
   if (typeof started !== 'string') return null;
@@ -160,9 +177,7 @@ interface StaleBounds { staleMs: number; startTime: (pid: number) => string | nu
  */
 function isStale(lock: HeldLock, bounds: StaleBounds, owners: Map<string, boolean | null>): boolean {
   const { record } = lock;
-  // Only a positive integer names one process: kill(0, 0) and kill(-1, 0) ask about process groups and
-  // succeed, and a fraction is never "no such process", so any of those would read as a holder alive for good.
-  if (!record || record.host !== hostname() || typeof record.pid !== 'number' || !Number.isSafeInteger(record.pid) || record.pid <= 0) return lock.ageMs > bounds.staleMs;
+  if (!record || record.host !== hostname() || !usablePid(record.pid)) return lock.ageMs > bounds.staleMs;
   if (!alive(record.pid)) return true;
   // A fresh lock with a running holder is never broken, so there is no need yet to ask which process it is.
   if (lock.ageMs <= bounds.staleMs) return false;

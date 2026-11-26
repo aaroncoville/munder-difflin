@@ -485,6 +485,19 @@ test('Given a stale lock replaced by a live holder\'s lock just as it is broken,
   assert.equal(fs.existsSync(h.ledger), false, 'and nothing was appended beside it');
 });
 
+test('Given a ledger lock whose pid is one process.kill refuses as an argument, when it is old, then it is broken by age and the row lands', (t) => {
+  for (const pid of [2 ** 31, Number.MAX_SAFE_INTEGER]) {
+    const h = hive(t);
+    const lock = `${h.ledger}.lock`;
+    const hourAgo = new Date(Date.now() - 3_600_000);
+    fs.writeFileSync(lock, JSON.stringify({ pid, host: os.hostname(), acquiredAt: hourAgo.toISOString(), token: 'x' }));
+    fs.utimesSync(lock, hourAgo, hourAgo);
+    const c = S.recordHeadlessCost(h.root, 'ag1', run(), 5, { lockWaitMs: 300 });
+    assert.equal(c.costRecorded, true, `pid ${pid}: ${c.costReason}`);
+    assert.equal(parseAll(h.ledger).length, 1);
+  }
+});
+
 test('Given the lock is taken from the holder after it acquired it, when it is about to append, then it checks, finds the lock is not its own, and appends nothing', (t) => {
   const h = hive(t);
   const lock = `${h.ledger}.lock`;
