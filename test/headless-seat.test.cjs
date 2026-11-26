@@ -555,6 +555,7 @@ function hanging(t, f, { ignoreTerm, print, ...more }) {
     for (const pid of [p.child, p.grandchild]) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
     fs.rmSync(pidsFile, { force: true });
   });
+  pids.file = pidsFile;
   return pids;
 }
 
@@ -652,4 +653,110 @@ test('Given the same run with no timeout, when the seat runs, then it still reso
   const r = await H.runHeadlessSeat(f.opts());
   assert.equal(r.ok, true, r.error);
   assert.equal(r.totalCostUsd, 0.0042);
+});
+
+// --- subprocesses outside the CLI's process group ---------------------------------------------------------------------
+// The real CLI starts its Bash shell and its hooks detached, each in its own process group, so signalling the CLI's
+// group does not reach them. Before each signal, and once after the CLI exits, the CLI's descendants are listed from
+// the process table and each one's group is signalled too; a descendant seen only while the CLI ran (it is reparented
+// once the CLI exits) is signalled only if the table still shows the same command at that pid. These tests use a
+// process table built from the pids the stub recorded, so they run anywhere; one test reads the real table with ps.
+
+/** A process table holding the stub CLI and its grandchild while they live, the grandchild reparented to 1 once the
+ *  CLI has gone, as the real table shows it. */
+function stubTable(pids) {
+  return async () => {
+    let p;
+    try { p = pids(); } catch { return []; }
+    const rows = [];
+    const cliUp = alive(p.child);
+    if (cliUp) rows.push({ pid: p.child, parentPid: process.pid, commandLine: 'claude -p' });
+    if (alive(p.grandchild)) rows.push({ pid: p.grandchild, parentPid: cliUp ? p.child : 1, commandLine: 'node -e wait' });
+    return rows;
+  };
+}
+
+test('Given a CLI whose subprocess runs in its own process group, when the timeout expires, then that subprocess is stopped too and counted', HANG_LIMIT, async (t) => {
+  const f = floor(t);
+  const pids = hanging(t, f, { ignoreTerm: false, detach: true });
+  const r = await H.runHeadlessSeat(f.opts({ timeoutMs: 1000, killGraceMs: 5000, processTable: stubTable(pids) }));
+  assert.equal(r.timedOut, true);
+  assert.equal(r.killSignal, 'SIGTERM');
+  assert.equal(r.swept, 1, 'the detached subprocess was signalled');
+  assert.equal(r.sweepError, null);
+  const p = pids();
+  assert.ok(await allGone([p.child, p.grandchild]), `no process is left behind: ${JSON.stringify(p)}`);
+});
+
+test('Given a CLI and a subprocess in its own group that both ignore SIGTERM, when the grace runs out, then both get SIGKILL and are gone', HANG_LIMIT, async (t) => {
+  const f = floor(t);
+  const pids = hanging(t, f, { ignoreTerm: true, detach: true });
+  const r = await H.runHeadlessSeat(f.opts({ timeoutMs: 1000, killGraceMs: 500, processTable: stubTable(pids) }));
+  assert.equal(r.killSignal, 'SIGKILL');
+  assert.equal(r.swept, 1);
+  const p = pids();
+  assert.ok(await allGone([p.child, p.grandchild]), `no process is left behind: ${JSON.stringify(p)}`);
+});
+
+test('Given a CLI that exits normally leaving a subprocess in its own group, when the run ends, then that subprocess is stopped and the run is still ok', HANG_LIMIT, async (t) => {
+  const f = floor(t);
+  const pids = hanging(t, f, { ignoreTerm: false, detach: true, print: `${JSON.stringify(SUCCESS)}\n`, exitAfterMs: 600 });
+  const r = await H.runHeadlessSeat(f.opts({ processTable: stubTable(pids), processPollMs: 100 }));
+  assert.equal(r.ok, true, r.error);
+  assert.equal(r.totalCostUsd, 0.0042);
+  assert.equal(r.swept, 1, 'the subprocess seen while the CLI ran was signalled after it exited');
+  const p = pids();
+  assert.ok(await allGone([p.grandchild]), `the subprocess is gone: ${JSON.stringify(p)}`);
+});
+
+test('Given a pid seen as a subprocess that shows another command once the CLI has exited, when the run ends, then that pid is not signalled', HANG_LIMIT, async (t) => {
+  const f = floor(t);
+  const pids = hanging(t, f, { ignoreTerm: false, detach: true, print: `${JSON.stringify(SUCCESS)}\n`, exitAfterMs: 600 });
+  // An unrelated process, standing in for one that took over a pid the CLI's subprocess had.
+  const { spawn } = require('node:child_process');
+  const bystander = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  t.after(() => { try { bystander.kill('SIGKILL'); } catch { /* gone */ } });
+  const table = async () => {
+    let p;
+    try { p = pids(); } catch { return []; }
+    const cliUp = alive(p.child);
+    return cliUp
+      ? [{ pid: p.child, parentPid: process.pid, commandLine: 'claude -p' }, { pid: bystander.pid, parentPid: p.child, commandLine: 'bash -c npm test' }]
+      : [{ pid: bystander.pid, parentPid: 1, commandLine: 'some other program' }];
+  };
+  const r = await H.runHeadlessSeat(f.opts({ processTable: table, processPollMs: 100 }));
+  assert.equal(r.ok, true, r.error);
+  assert.equal(r.swept, 0);
+  assert.ok(alive(bystander.pid), 'the process now at that pid was left alone');
+});
+
+test('Given a process table that cannot be read, when the timeout expires, then the run says its subprocesses could not be listed', HANG_LIMIT, async (t) => {
+  const f = floor(t);
+  hanging(t, f, { ignoreTerm: false, detach: true });
+  const r = await H.runHeadlessSeat(f.opts({ timeoutMs: 1000, killGraceMs: 500, processTable: async () => { throw new Error('ps: Operation not permitted'); } }));
+  assert.equal(r.timedOut, true);
+  assert.equal(r.swept, 0);
+  assert.match(r.sweepError, /Operation not permitted/);
+  assert.match(r.error, /could not be listed/);
+  assert.doesNotMatch(r.error, /killed/);
+});
+
+test('Given a process table read that never answers, when the timeout expires, then the read is abandoned and the run still resolves', HANG_LIMIT, async (t) => {
+  const f = floor(t);
+  hanging(t, f, { ignoreTerm: false, detach: true });
+  const r = await H.runHeadlessSeat(f.opts({ timeoutMs: 1000, killGraceMs: 500, processTable: () => new Promise(() => {}) }));
+  assert.equal(r.timedOut, true);
+  assert.match(r.sweepError, /could not be read within/);
+});
+
+// Needs `ps`: an agent sandbox cannot start it, so run this file outside one. It fails, rather than skips, when ps
+// cannot run, so a missing sweep is never reported as a pass.
+test('Given a CLI whose subprocess runs in its own process group, when the timeout expires with the real process table (needs ps), then that subprocess is gone', HANG_LIMIT, async (t) => {
+  const f = floor(t);
+  const pids = hanging(t, f, { ignoreTerm: false, detach: true });
+  const r = await H.runHeadlessSeat(f.opts({ timeoutMs: 1000, killGraceMs: 2000 }));
+  assert.equal(r.sweepError, null, `ps must be able to run here (outside an agent sandbox): ${r.sweepError}`);
+  assert.equal(r.swept, 1);
+  const p = pids();
+  assert.ok(await allGone([p.child, p.grandchild]), `no process is left behind: ${JSON.stringify(p)}`);
 });

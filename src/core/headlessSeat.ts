@@ -28,16 +28,22 @@
  * Output is read with --output-format json: one result object carrying the result text, the session id and
  * total_cost_usd. --max-budget-usd is passed through when asked for; deciding a cap is the caller's business.
  *
- * The CLI is started as the leader of its own process group, so a run that outlives its timeout is stopped whole:
- * SIGTERM to the group, then SIGKILL to the group after a grace. Signalling only the CLI would leave the commands it
- * started (a shell, a build, a server) running with nobody to stop them. A run stopped this way has no result object,
- * so its cost is unknown: totalCostUsd is null, not 0.
+ * The CLI is started as the leader of its own process group. A run that outlives its timeout gets SIGTERM, then
+ * SIGKILL after a grace, sent to that group and to every subprocess of the CLI's: the CLI starts its Bash shell and its
+ * hooks detached, each in a process group of its own, which a signal to the CLI's group does not reach. The
+ * subprocesses are listed from the process table before each signal, and once more after the CLI exits, however it
+ * exits; each is signalled with its group. What is seen only while the CLI ran (a subprocess is reparented once the
+ * CLI exits) is recorded every few seconds and signalled after the exit only if the table still shows the same command
+ * at that pid. A subprocess started and orphaned between two of those reads is not seen; when the table cannot be
+ * read at all, the result says so (sweepError) rather than claiming everything was stopped. A run stopped by its
+ * timeout has no result object, so its cost is unknown: totalCostUsd is null, not 0.
  */
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { homedir } from 'node:os';
 import { isAbsolute } from 'node:path';
 import { CLAUDE_CONFIG_KEEP } from './claudeEnv';
 import { claudeSettingsExcess, MANAGED_CLAUDE_SETTINGS } from './claudeSettingsAdmission';
+import { probeProcesses, type ProcRow } from './heavyJob';
 import { hookCommandFor, overlaps, rootOverlap, verifyHookRuntime, type StagedHookRuntime } from './hookRuntime';
 import { CLAUDE_FILE_WRITE_TOOLS, isPlainObject, launchPlaces } from './launchLine';
 import { privateDirsReach } from './privateDirs';
@@ -129,6 +135,11 @@ export interface HeadlessSeatOptions {
   timeoutMs?: number;
   /** How long a timed-out run's process group has between SIGTERM and SIGKILL. Defaults to HEADLESS_KILL_GRACE_MS. */
   killGraceMs?: number;
+  /** Reads the process table (pid and parent pid of every process) for the subprocess sweep; defaults to `ps`. */
+  processTable?: () => Promise<ProcRow[]>;
+  /** How often, while the CLI runs, its subprocesses are recorded for the sweep after it exits. Defaults to
+   *  HEADLESS_PROCESS_POLL_MS. */
+  processPollMs?: number;
 }
 
 /** The default time between SIGTERM and SIGKILL for a run that timed out. */
@@ -174,6 +185,11 @@ export interface HeadlessRun {
   timedOut: boolean;
   /** The last signal sent to the run's process group: null when none was needed. */
   killSignal: 'SIGTERM' | 'SIGKILL' | null;
+  /** How many of the CLI's subprocesses outside its own process group were signalled (each with its group). */
+  swept: number;
+  /** Why the subprocess sweep could not run, or ran on an incomplete picture: the process table could not be read.
+   *  Null when every read succeeded. */
+  sweepError: string | null;
 }
 
 /** Refuses a headless launch that cannot be confined or run as asked. */
@@ -333,6 +349,36 @@ function signalGroup(child: ChildProcess, sig: NodeJS.Signals | 0): boolean {
 /** How long output already written may take to arrive after the CLI has exited, before the pipes are closed. */
 export const HEADLESS_DRAIN_MS = 250;
 
+/** How often, while the CLI runs, its subprocesses are recorded for the sweep after it exits. */
+export const HEADLESS_PROCESS_POLL_MS = 2000;
+
+/** The longest one read of the process table may take before it is abandoned. */
+export const PROCESS_TABLE_TIMEOUT_MS = 2000;
+
+/** The pids below `root` in a process table, by parent pid. */
+export function descendantsOf(rows: readonly ProcRow[], root: number): ProcRow[] {
+  const children = new Map<number, ProcRow[]>();
+  for (const r of rows) children.set(r.parentPid, [...(children.get(r.parentPid) ?? []), r]);
+  const out: ProcRow[] = [];
+  const seen = new Set<number>([root]);
+  const queue = [root];
+  while (queue.length) {
+    for (const c of children.get(queue.shift() as number) ?? []) {
+      if (seen.has(c.pid)) continue;
+      seen.add(c.pid);
+      out.push(c);
+      queue.push(c.pid);
+    }
+  }
+  return out;
+}
+
+/** Signal the process group `pid` leads, or the process alone when it leads none. False when neither exists. */
+function signalProcess(pid: number, sig: NodeJS.Signals | 0): boolean {
+  if (process.platform !== 'win32') { try { process.kill(-pid, sig); return true; } catch { /* not a group leader */ } }
+  try { process.kill(pid, sig); return true; } catch { return false; }
+}
+
 /** How often a timed-out run's group is checked for having gone, before the grace runs out. */
 const GROUP_POLL_MS = 50;
 
@@ -344,6 +390,8 @@ export function runHeadlessSeat(o: HeadlessSeatOptions): Promise<HeadlessRun> {
   const launch = buildHeadlessLaunch(o);
   const spawn = o.spawn ?? nodeSpawn;
   const grace = o.killGraceMs ?? HEADLESS_KILL_GRACE_MS;
+  const readTable = o.processTable ?? probeProcesses;
+  const pollMs = o.processPollMs ?? HEADLESS_PROCESS_POLL_MS;
   return new Promise<HeadlessRun>((resolveRun) => {
     const limit = o.maxOutputBytes ?? HEADLESS_MAX_OUTPUT_BYTES;
     const out = { stdout: '', stderr: '' };
@@ -353,6 +401,10 @@ export function runHeadlessSeat(o: HeadlessSeatOptions): Promise<HeadlessRun> {
     let timedOut = false;
     let killSignal: HeadlessRun['killSignal'] = null;
     const timers: NodeJS.Timeout[] = [];
+    // The CLI's subprocesses seen while it ran (pid -> command), and those signalled.
+    const known = new Map<number, string>();
+    const swept = new Set<number>();
+    let sweepError: string | null = null;
     const finish = (exitCode: number | null, signal: string | null, spawnError: string | null): void => {
       if (settled) return;
       settled = true;
@@ -364,8 +416,11 @@ export function runHeadlessSeat(o: HeadlessSeatOptions): Promise<HeadlessRun> {
       const problem = r ? headlessResultProblem(r) : null;
       const budgetStop = subtype === BUDGET_STOP_SUBTYPE;
       let error = spawnError ?? overflow;
-      if (!error && timedOut) error = `the run timed out after ${o.timeoutMs} ms and its process group was sent ${killSignal}`;
-      else if (!error && !r) error = 'the CLI\'s output does not end with a JSON result object';
+      if (!error && timedOut) {
+        const others = swept.size ? ` and ${swept.size} of its subprocesses (with their groups)` : '';
+        error = `the run timed out after ${o.timeoutMs} ms and its process group${others} was sent ${killSignal}`
+          + (sweepError ? `; its other subprocesses could not be listed (${sweepError})` : '');
+      } else if (!error && !r) error = 'the CLI\'s output does not end with a JSON result object';
       else if (!error && problem) error = `the CLI's result is malformed: ${problem}`;
       else if (!error && budgetStop) error = 'the CLI stopped at its budget';
       else if (!error && exitCode !== 0) error = `the CLI exited with ${exitCode === null ? `signal ${signal}` : `code ${exitCode}`}`;
@@ -377,16 +432,52 @@ export function runHeadlessSeat(o: HeadlessSeatOptions): Promise<HeadlessRun> {
         exitCode, signal, result: r ? text(r.result) : null, sessionId: r ? text(r.session_id) : null, totalCostUsd: cost,
         subtype, error, stdout, stderr,
         argv: launch.argv, cwd: launch.cwd, settingsFile: launch.settingsFile, outputFile: o.outputFile ?? null,
-        timedOut, killSignal,
+        timedOut, killSignal, swept: swept.size, sweepError,
       });
     };
     let child: ChildProcess;
     try {
-      // detached: the CLI leads a new process group, which its own children join, so the group can be stopped whole.
+      // detached: the CLI leads a new process group, which its own children join unless they start their own.
       child = spawn(launch.argv[0], launch.argv.slice(1), { cwd: launch.cwd, env: launch.env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
     } catch (e) { finish(null, null, (e as Error).message); return; }
-    // After a timeout the run resolves only once the CLI has closed and its group is gone or has been sent SIGKILL,
-    // so nothing it started outlives the result.
+    const cliRunning = (): boolean => child.exitCode === null && child.signalCode === null;
+    /** One read of the process table, abandoned after PROCESS_TABLE_TIMEOUT_MS; null (and sweepError) when it fails. */
+    const read = (): Promise<ProcRow[] | null> => new Promise((res) => {
+      let done = false;
+      const fail = (why: string): void => { if (done) return; done = true; sweepError ??= why; res(null); };
+      const t = setTimeout(() => fail(`the process table could not be read within ${PROCESS_TABLE_TIMEOUT_MS} ms`), PROCESS_TABLE_TIMEOUT_MS);
+      let p: Promise<ProcRow[]>;
+      try { p = Promise.resolve(readTable()); } catch (e) { p = Promise.reject(e); }
+      p.then((rows) => { clearTimeout(t); if (done) return; done = true; res(rows); },
+        (e: unknown) => { clearTimeout(t); fail(`the process table could not be read: ${(e as Error)?.message ?? String(e)}`); });
+    });
+    /** Record the CLI's subprocesses from a table read while it still runs (later they are reparented and lost). */
+    const record = (rows: readonly ProcRow[]): void => {
+      if (!cliRunning() || child.pid === undefined) return;
+      for (const d of descendantsOf(rows, child.pid)) known.set(d.pid, d.commandLine);
+    };
+    /** Signal the CLI's group and each of its subprocesses with its group: from a fresh read, only pids the table
+     *  still shows with the command they had while the CLI ran. */
+    const sweep = async (sig: NodeJS.Signals): Promise<void> => {
+      const rows = await read();
+      const targets: number[] = [];
+      if (rows) {
+        record(rows);
+        const now = new Map(rows.map((r) => [r.pid, r.commandLine]));
+        for (const [pid, cmd] of known) if (now.get(pid) === cmd) targets.push(pid);
+      }
+      signalGroup(child, sig);
+      for (const pid of targets) if (signalProcess(pid, sig)) swept.add(pid);
+    };
+    let reading = false;
+    const recorder = setInterval(() => {
+      if (reading || !cliRunning()) return;
+      reading = true;
+      void read().then((rows) => { reading = false; if (rows) record(rows); });
+    }, pollMs);
+    timers.push(recorder);
+    // After a timeout the run resolves only once the CLI has exited and its group and subprocesses are gone or have
+    // been sent SIGKILL, so nothing it started outlives the result.
     let closed: { code: number | null; signal: string | null } | null = null;
     let groupDone = false;
     const settleAfterKill = (): void => { if (closed && groupDone) finish(closed.code, closed.signal, null); };
@@ -397,9 +488,10 @@ export function runHeadlessSeat(o: HeadlessSeatOptions): Promise<HeadlessRun> {
       const n = Buffer.byteLength(d, 'utf8');
       if (bytes[stream] + n > limit) {
         overflow = `the CLI's ${stream} passed the output bound of ${limit} bytes, so it was killed`;
-        // The same group kill a timeout ends in, so nothing the CLI started outlives it either.
+        // The same kill a timeout ends in, so nothing the CLI started outlives it either.
         killSignal = 'SIGKILL';
         signalGroup(child, 'SIGKILL');
+        void sweep('SIGKILL');
         return;
       }
       bytes[stream] += n;
@@ -413,34 +505,46 @@ export function runHeadlessSeat(o: HeadlessSeatOptions): Promise<HeadlessRun> {
       closed = { code, signal };
       settleAfterKill();
     };
-    // The run is over when the CLI exits: its result line is written by then. Output still in the pipes gets a short
-    // drain; a subprocess that keeps the pipes open after that does not hold the result back.
+    // The run is over when the CLI exits: its result line is written by then. What it started is swept first (after a
+    // timeout the timeout's own signals do that). Output still in the pipes gets a short drain; a subprocess that
+    // keeps the pipes open after that does not hold the result back.
     child.on('exit', (code, signal) => {
-      const drain = setTimeout(() => { child.stdout?.destroy(); child.stderr?.destroy(); ended(code, signal); }, HEADLESS_DRAIN_MS);
-      timers.push(drain);
-      child.once('close', () => { clearTimeout(drain); ended(code, signal); });
+      clearInterval(recorder);
+      const swept = timedOut ? Promise.resolve() : sweep('SIGKILL');
+      void swept.then(() => {
+        const drain = setTimeout(() => { child.stdout?.destroy(); child.stderr?.destroy(); ended(code, signal); }, HEADLESS_DRAIN_MS);
+        timers.push(drain);
+        if (child.stdout?.readableEnded !== false && child.stderr?.readableEnded !== false) { clearTimeout(drain); ended(code, signal); return; }
+        child.once('close', () => { clearTimeout(drain); ended(code, signal); });
+      });
     });
     if (o.timeoutMs !== undefined) {
       timers.push(setTimeout(() => {
         if (settled || overflow) return;
         timedOut = true;
         killSignal = 'SIGTERM';
-        if (!signalGroup(child, 'SIGTERM')) groupDone = true;
-        const poll = setInterval(() => {
-          if (!signalGroup(child, 0)) { clearInterval(poll); groupDone = true; settleAfterKill(); }
-        }, GROUP_POLL_MS);
-        timers.push(poll);
-        timers.push(setTimeout(() => {
-          clearInterval(poll);
-          if (!groupDone) { killSignal = 'SIGKILL'; signalGroup(child, 'SIGKILL'); groupDone = true; }
-          settleAfterKill();
-          // Something outside the group may still hold the output pipes open; do not wait on it for ever.
+        void sweep('SIGTERM').then(() => {
+          if (settled) return;
+          const gone = (): boolean => !signalGroup(child, 0) && [...swept].every((pid) => !signalProcess(pid, 0));
+          const poll = setInterval(() => {
+            if (gone()) { clearInterval(poll); groupDone = true; settleAfterKill(); }
+          }, GROUP_POLL_MS);
+          timers.push(poll);
           timers.push(setTimeout(() => {
-            child.stdout?.destroy(); child.stderr?.destroy();
-            finish(closed?.code ?? child.exitCode, closed?.signal ?? child.signalCode, null);
+            clearInterval(poll);
+            const last = groupDone ? Promise.resolve() : (killSignal = 'SIGKILL', sweep('SIGKILL'));
+            void last.then(() => {
+              groupDone = true;
+              settleAfterKill();
+              // Something outside the group may still hold the output pipes open; do not wait on it for ever.
+              timers.push(setTimeout(() => {
+                child.stdout?.destroy(); child.stderr?.destroy();
+                finish(closed?.code ?? child.exitCode, closed?.signal ?? child.signalCode, null);
+              }, grace));
+            });
           }, grace));
-        }, grace));
-        settleAfterKill();
+          if (gone()) { clearInterval(poll); groupDone = true; settleAfterKill(); }
+        });
       }, o.timeoutMs));
     }
   });
