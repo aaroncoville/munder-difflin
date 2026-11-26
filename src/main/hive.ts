@@ -67,7 +67,7 @@ import { mailSender, PendingMail } from '../core/mailLine';
 import { nodeLauncherScript } from './nodeLauncher';
 import { codexTrustEntry } from '../shared/codexTrust';
 import { withCodexWritableRoots, withOnlyCodexWritableRoots } from '../core/codexWritableRoots';
-import { canonical, cwdHoldsHive, cwdOutsideOwnFolder, insideAny, FAIL_CLOSED_DIR, FAIL_CLOSED_FILE, ownFolderProblem, PROTECTED_WRITE_TOOLS, ScopedRootsRefused, seatRoots } from '../core/writeRoots';
+import { canonical, cwdHoldsHive, cwdOutsideOwnFolder, insideAny, FAIL_CLOSED_DIR, FAIL_CLOSED_FILE, ownFolderProblem, PROTECTED_WRITE_TOOLS, ScopedRootsRefused, seatWriteRoots } from '../core/writeRoots';
 import { godNameFromRegistry } from '../shared/godIdentity';
 import { appendSession } from './codexActivity';
 import { isSafeMessageId, publishMessage, sweepInboxLeftovers } from '../core/messageId';
@@ -2204,10 +2204,7 @@ export class HiveManager {
    *  could write the hive root would carry the grant wherever it points. */
   private scopedWritableDirs(meta: AgentMeta, dir: string, root: string): string[] {
     const cwd = meta.cwd ? expandTilde(meta.cwd) : '';
-    const roots = seatRoots({ root, agentId: meta.id, isGod: meta.isGod === true, cwd }, dir);
-    const evidence = join(canonical(root), 'evidence');
-    const realDir = (p: string): boolean => { try { const st = lstatSync(p); return st.isDirectory() && !st.isSymbolicLink(); } catch { return false; } };
-    return roots.filter((r) => r !== evidence || realDir(r));
+    return seatWriteRoots({ root, agentId: meta.id, isGod: meta.isGod === true, cwd }, dir);
   }
 
   private hookSettings(cmd: string | null, cwd: string, cfg: McpDefaultsMap, theme?: 'light' | 'dark', writableDirs: string[] = [], enabledPlugins?: Record<string, boolean>, scoped = false): unknown {

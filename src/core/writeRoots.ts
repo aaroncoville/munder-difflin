@@ -190,6 +190,14 @@ export function seatRoots(ctx: RootsContext, own?: string): string[] {
   return ctx.isGod && cwd ? [...new Set([cwd, ...roots])] : roots;
 }
 
+/** The roots a scoped seat's sandbox is granted: seatRoots, with `evidence/` only while it is a real folder. A link
+ *  planted there while every agent could write the hive root would carry the grant wherever it points. */
+export function seatWriteRoots(ctx: RootsContext, own?: string): string[] {
+  const evidence = join(canonical(ctx.root), 'evidence');
+  const realDir = (p: string): boolean => { try { const st = lstatSync(p); return st.isDirectory() && !st.isSymbolicLink(); } catch { return false; } };
+  return seatRoots(ctx, own).filter((r) => r !== evidence || realDir(r));
+}
+
 function absolute(p: string, ctx: RootsContext): string {
   const base = cwdOf(ctx) || canonical(ctx.root);
   return canonical(isAbsolute(p) ? p : join(base, p));
