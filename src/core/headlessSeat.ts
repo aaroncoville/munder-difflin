@@ -37,7 +37,7 @@ import { hookCommandFor, overlaps, rootOverlap, verifyHookRuntime, type StagedHo
 import { isPlainObject, launchPlaces } from './launchLine';
 import { privateDirsReach } from './privateDirs';
 import { writeSeatSettings } from './seatSettings';
-import { ownFolder, seatWriteRoots } from './writeRoots';
+import { ownFolder, SCOPED_SANDBOX_PINS, seatWriteRoots } from './writeRoots';
 
 /** Backend switches on the shared keep-list that a headless seat does not pass. Each needs its provider's own
  *  credentials and region variables (AWS_*, ANTHROPIC_VERTEX_PROJECT_ID, CLOUD_ML_REGION, ...), which the allowlist
@@ -172,7 +172,10 @@ export class HeadlessSeatRefused extends Error {
  *  map, which outranks the owner's user-level enabledPlugins for this session. */
 export function headlessSeatSettings(roots: string[], hookCommand: string, enabledPlugins: Record<string, boolean>): Record<string, unknown> {
   return {
-    sandbox: { enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false, filesystem: { allowWrite: roots } },
+    sandbox: {
+      enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false, filesystem: { allowWrite: roots },
+      autoAllowBashIfSandboxed: SCOPED_SANDBOX_PINS.autoAllowBashIfSandboxed, network: { allowLocalBinding: SCOPED_SANDBOX_PINS.allowLocalBinding },
+    },
     permissions: { additionalDirectories: roots },
     hooks: { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: hookCommand, onFailure: 'block' }] }] },
     enabledPlugins: { ...enabledPlugins },

@@ -215,6 +215,14 @@ test('Given a scoped seat, when the seat runs, then the settings confine writes 
   assert.equal(s.sandbox.allowUnsandboxedCommands, false);
 });
 
+test('Given any seat, when the seat runs, then its settings pin sandboxed Bash to the permission flow and keep localhost binding off', async (t) => {
+  const f = floor(t, { stdout: JSON.stringify(SUCCESS) });
+  await H.runHeadlessSeat(f.opts());
+  const s = JSON.parse(f.record().settings);
+  assert.equal(s.sandbox.autoAllowBashIfSandboxed, false);
+  assert.deepEqual(s.sandbox.network, { allowLocalBinding: false });
+});
+
 test('Given the agent\'s plugin map, when the seat runs, then the settings carry exactly that enabledPlugins map, a withheld plugin off', async (t) => {
   const f = floor(t, { stdout: JSON.stringify(SUCCESS) });
   await H.runHeadlessSeat(f.opts());

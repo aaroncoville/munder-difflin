@@ -68,7 +68,7 @@ import { mailSender, PendingMail } from '../core/mailLine';
 import { nodeLauncherScript } from './nodeLauncher';
 import { codexTrustEntry } from '../shared/codexTrust';
 import { withCodexWritableRoots, withOnlyCodexWritableRoots } from '../core/codexWritableRoots';
-import { canonical, cwdHoldsHive, cwdOutsideOwnFolder, FAIL_CLOSED_DIR, FAIL_CLOSED_FILE, ownFolderProblem, PROTECTED_WRITE_TOOLS, SCOPED_UNSANDBOXED_COMMANDS, ScopedRootsRefused, seatWriteRoots } from '../core/writeRoots';
+import { canonical, cwdHoldsHive, cwdOutsideOwnFolder, FAIL_CLOSED_DIR, FAIL_CLOSED_FILE, ownFolderProblem, PROTECTED_WRITE_TOOLS, SCOPED_SANDBOX_PINS, SCOPED_UNSANDBOXED_COMMANDS, ScopedRootsRefused, seatWriteRoots } from '../core/writeRoots';
 import { godNameFromRegistry } from '../shared/godIdentity';
 import { appendSession } from './codexActivity';
 import { isSafeMessageId, publishMessage, sweepInboxLeftovers } from '../core/messageId';
@@ -2228,8 +2228,12 @@ export class HiveManager {
         ? {
             sandbox: {
               enabled: true, filesystem: { allowWrite: writableDirs },
-              // Scoped roots: no rerun with the sandbox off, except the listed commands (SCOPED_UNSANDBOXED_COMMANDS).
-              ...(scoped ? { allowUnsandboxedCommands: false, excludedCommands: [...SCOPED_UNSANDBOXED_COMMANDS] } : {})
+              // Scoped roots: no rerun with the sandbox off, except the listed commands (SCOPED_UNSANDBOXED_COMMANDS),
+              // and sandboxed Bash and localhost binding pinned off (SCOPED_SANDBOX_PINS).
+              ...(scoped ? {
+                allowUnsandboxedCommands: false, excludedCommands: [...SCOPED_UNSANDBOXED_COMMANDS],
+                autoAllowBashIfSandboxed: SCOPED_SANDBOX_PINS.autoAllowBashIfSandboxed, network: { allowLocalBinding: SCOPED_SANDBOX_PINS.allowLocalBinding }
+              } : {})
             },
             permissions: { additionalDirectories: writableDirs }
           }

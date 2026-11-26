@@ -497,6 +497,15 @@ export const SCOPED_UNSANDBOXED_COMMANDS = [
   'npm --prefix * run test:focused', 'npm --prefix * run build', 'npm --prefix * run typecheck',
 ] as const;
 
+/** Sandbox settings every scoped seat's generated settings set, so the CLI's own default never decides them:
+ *  - autoAllowBashIfSandboxed false: a sandboxed Bash command goes through the permission flow like any other. The
+ *    CLI documents false as the default, but Claude Code 2.1.332 falls back to a feature gate when it is unset;
+ *  - network.allowLocalBinding false: sandboxed commands cannot open localhost listeners, which other local
+ *    processes (another seat's included) could reach. Unset is false in Claude Code 2.1.332.
+ *  The generated settings are --settings (flag settings), which outrank user settings; managed settings outrank
+ *  them, so the owner-settings check refuses any other value there (claudeSettingsAdmission.ts). */
+export const SCOPED_SANDBOX_PINS = { autoAllowBashIfSandboxed: false, allowLocalBinding: false } as const;
+
 export const PROTECTED_WRITE_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'apply_patch'] as const;
 export const isProtectedWrite = (tool: unknown): boolean => typeof tool === 'string' && (PROTECTED_WRITE_TOOLS as readonly string[]).includes(tool);
 
