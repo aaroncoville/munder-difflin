@@ -56,11 +56,11 @@ function assertGenerated(root, docs = GENERATED_DOCS) {
   }
 }
 
-test('writeTasks preserves existing generated hive docs', (t) => {
+test('a task ledger write preserves existing generated hive docs', (t) => {
   const { hive, root } = floor(t);
   writeSentinels(root);
 
-  hive.writeTasks([]);
+  hive.addTask({ id: 'a', title: 'A', status: 'todo', dependsOn: [], priority: 1, createdAt: '2026-11-26T00:00:00.000Z' });
 
   assertSentinels(root);
 });

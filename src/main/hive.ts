@@ -158,7 +158,7 @@ export interface HiveTask {
   dependsOn: string[];
   priority: number;
   createdAt: string;
-  /** Last status change, stamped by writeTasks; ages a card that sits in 'doing'. */
+  /** Last status change, stamped when the ledger is written; ages a card that sits in 'doing'. */
   updatedAt?: string;
   /** First-class human feedback: the god appends {q} when a card can only
    *  proceed with the human's input (status goes blocked); the harness UI
@@ -3147,32 +3147,22 @@ export class HiveManager {
     return root ? this.readJson(join(root, 'tasks.json'), { tasks: [] }) : { tasks: [] };
   }
 
-  /** Persist the task ledger to hive/tasks.json and commit it. Mirrors the
-   *  board/message persist pattern: write JSON, log the change, single-commit.
-   *
-   *  MERGES by card id instead of clobbering. Callers hold PARTIAL models of a
-   *  card — the renderer's kanban parser knows nine fields, the god writes as
-   *  many as the work needs (`result`, the verbatim Slack reply posted back to
-   *  the user; `repo`; `scope`; `origin`; `commit`; …). A wholesale write meant
-   *  one small edit through the UI deleted every unmodelled field on EVERY card
-   *  on the board. Now an unmentioned field keeps its on-disk value.
-   *
-   *  Deleting a card still works: the incoming list IS the membership, so a card
-   *  dropped from it (TasksKanban dismiss, the voice delete_task action) is
-   *  gone. Merging protects fields, never card membership.
-   *
-   *  The write goes through updateTaskLedgerFile: under tasks.json.lock, merged
-   *  over the ledger as it is on disk at that moment, and renamed into place,
-   *  so it cannot interleave with another process's write. */
-  writeTasks(tasks: HiveTask[]): void {
-    this.updateTasks(() => tasks);
-  }
-
   /** Edit the ledger against its on-disk cards under the ledger lock, then log
    *  and commit. `mutate` returning null leaves the ledger untouched. Returns
    *  whether anything was written. An unreadable tasks.json is refused (throws)
    *  and left as it is: edited as if empty, it would be replaced by a ledger
-   *  holding only this edit. */
+   *  holding only this edit.
+   *
+   *  The result MERGES over the on-disk cards by id instead of clobbering them.
+   *  Writers hold PARTIAL models of a card — the renderer's kanban parser knows
+   *  nine fields, the god writes as many as the work needs (`result`, the
+   *  verbatim Slack reply posted back to the user; `repo`; `scope`; `origin`;
+   *  `commit`; …) — so an unmentioned field keeps its on-disk value. The list
+   *  `mutate` returns is the membership: a card it leaves out is deleted.
+   *
+   *  There is deliberately no method that writes a whole list a caller read
+   *  earlier: that list deletes every card added since it was read. Edits go
+   *  through addTask, patchTask and deleteTask, which decide under the lock. */
   private updateTasks(mutate: (current: HiveTask[]) => HiveTask[] | null): boolean {
     const root = this.root();
     if (!root) return false;

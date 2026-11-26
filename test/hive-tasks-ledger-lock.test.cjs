@@ -1,6 +1,6 @@
 'use strict';
 
-// HiveManager's task-ledger writes go through updateTaskLedgerFile: they take
+// HiveManager's task-ledger writes (addTask, patchTask, deleteTask) go through updateTaskLedgerFile: they take
 // tasks.json.lock, edit the ledger as it is on disk under that lock, and replace
 // the file by rename. So the app's own writes cannot interleave with another
 // process's, and a card that process adds is not lost to the app's write.
@@ -35,7 +35,7 @@ function child(t, script, args) {
   return { proc, done };
 }
 
-test('writeTasks waits for a lock another process holds, then writes', async (t) => {
+test('addTask waits for a lock another process holds, then writes', async (t) => {
   const { hive, file } = floor(t);
   const lock = `${file}.lock`;
   // The child takes the lock, reports it, holds it for 400 ms and releases it.
@@ -47,19 +47,19 @@ test('writeTasks waits for a lock another process holds, then writes', async (t)
     setTimeout(() => { fs.unlinkSync(lock); process.exit(0); }, 400);`, [lock]);
   await new Promise((resolve) => proc.stdout.once('data', resolve));
   const started = Date.now();
-  hive.writeTasks([card('a')]);
+  hive.addTask(card('a'));
   const waited = Date.now() - started;
   await done;
-  assert.ok(waited >= 250, `writeTasks returned after ${waited} ms, while the lock was still held`);
+  assert.ok(waited >= 250, `addTask returned after ${waited} ms, while the lock was still held`);
   assert.deepEqual(ids(file), ['a']);
   assert.equal(fs.existsSync(lock), false, 'the lock is released');
 });
 
-test('writeTasks replaces tasks.json by rename and keeps its other top-level keys', (t) => {
+test('addTask replaces tasks.json by rename and keeps its other top-level keys', (t) => {
   const { hive, file } = floor(t);
   fs.writeFileSync(file, JSON.stringify({ version: 2, tasks: [card('a')], owner: 'god' }, null, 2));
   const before = fs.statSync(file).ino;
-  hive.writeTasks([card('a'), card('b')]);
+  hive.addTask(card('b'));
   assert.notEqual(fs.statSync(file).ino, before, 'written to a new file and renamed, not in place');
   const disk = JSON.parse(fs.readFileSync(file, 'utf8'));
   assert.deepEqual(disk.tasks.map((c) => c.id), ['a', 'b']);
