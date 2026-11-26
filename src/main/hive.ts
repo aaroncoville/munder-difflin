@@ -463,6 +463,9 @@ function putBackFields(now: RegistryAgent, before: RegistryAgent, wrote: Registr
   return out as unknown as RegistryAgent;
 }
 
+/** How long an app write to tasks.json waits for another holder of its lock. It runs on the main thread. */
+const TASK_LEDGER_WAIT_MS = 250;
+
 export class HiveManager {
   /**
    * @param getHome  Lazily resolve harnessHome so the hive follows config changes.
@@ -3162,12 +3165,18 @@ export class HiveManager {
    *
    *  There is deliberately no method that writes a whole list a caller read
    *  earlier: that list deletes every card added since it was read. Edits go
-   *  through addTask, patchTask and deleteTask, which decide under the lock. */
+   *  through addTask, patchTask and deleteTask, which decide under the lock.
+   *
+   *  The wait for the lock is short (TASK_LEDGER_WAIT_MS). Every caller runs on
+   *  the app's main thread, where the wait blocks every window; a healthy
+   *  holder keeps the lock for milliseconds, so a longer wait only freezes the
+   *  app while a stuck holder is sorted out. The caller gets a
+   *  TaskLedgerLockTimeout naming the holder and can try again. */
   private updateTasks(mutate: (current: HiveTask[]) => HiveTask[] | null): boolean {
     const root = this.root();
     if (!root) return false;
     this.ensureHive();
-    const merged = updateTaskLedgerFile(join(root, 'tasks.json'), (current) => mutate(current as HiveTask[]));
+    const merged = updateTaskLedgerFile(join(root, 'tasks.json'), (current) => mutate(current as HiveTask[]), { waitMs: TASK_LEDGER_WAIT_MS });
     if (!merged) return false;
     this.appendLog({ kind: 'tasks', count: merged.length });
     this.commit(`hive: tasks (${merged.length})`);

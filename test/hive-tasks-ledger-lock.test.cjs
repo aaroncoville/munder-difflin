@@ -38,19 +38,19 @@ function child(t, script, args) {
 test('addTask waits for a lock another process holds, then writes', async (t) => {
   const { hive, file } = floor(t);
   const lock = `${file}.lock`;
-  // The child takes the lock, reports it, holds it for 400 ms and releases it.
+  // The child takes the lock, reports it, holds it for 120 ms and releases it.
   const { proc, done } = child(t, `
     const fs = require('node:fs'); const os = require('node:os');
     const lock = process.argv[1];
     fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, host: os.hostname(), acquiredAt: new Date().toISOString() }), { flag: 'wx' });
     process.stdout.write('held\\n');
-    setTimeout(() => { fs.unlinkSync(lock); process.exit(0); }, 400);`, [lock]);
+    setTimeout(() => { fs.unlinkSync(lock); process.exit(0); }, 120);`, [lock]);
   await new Promise((resolve) => proc.stdout.once('data', resolve));
   const started = Date.now();
   hive.addTask(card('a'));
   const waited = Date.now() - started;
   await done;
-  assert.ok(waited >= 250, `addTask returned after ${waited} ms, while the lock was still held`);
+  assert.ok(waited >= 60, `addTask returned after ${waited} ms, while the lock was still held`);
   assert.deepEqual(ids(file), ['a']);
   assert.equal(fs.existsSync(lock), false, 'the lock is released');
 });
@@ -79,7 +79,18 @@ test('addTask from the app and another process adding cards at the same time los
     for (let i = 0; i < Number(n); i++) updateTaskLedgerFile(file, (cur) => [...cur, { id: 'svc-' + i }], { waitMs: 30000 });`,
   [file, String(N), String(startAt)]);
   while (Date.now() < startAt) { /* start together */ }
-  for (let i = 0; i < N; i++) assert.equal(hive.addTask(card(`app-${i}`)), true);
+  // The app waits only briefly for the lock and reports a busy ledger instead of freezing; like a user
+  // told the task list is busy, it tries again. A busy answer is never a silent loss.
+  let busy = 0;
+  for (let i = 0; i < N; i++) {
+    for (;;) {
+      try { assert.equal(hive.addTask(card(`app-${i}`)), true); break; } catch (e) {
+        if (e.name !== 'TaskLedgerLockTimeout') throw e;
+        busy++;
+      }
+    }
+  }
+  t.diagnostic(`the app was told the ledger was busy ${busy} times`);
   await done;
   const got = new Set(ids(file));
   const lost = [];
@@ -108,4 +119,14 @@ test('add, patch and delete refuse an unreadable ledger instead of replacing it'
   assert.throws(() => hive.patchTask('a', { status: 'done' }), /tasks\.json/);
   assert.throws(() => hive.deleteTask('a'), /tasks\.json/);
   assert.equal(fs.readFileSync(file, 'utf8'), broken, 'the unreadable ledger is left as it is');
+});
+
+test('a ledger write from the app gives up quickly when another process holds the lock', (t) => {
+  const { hive, file } = floor(t);
+  fs.writeFileSync(`${file}.lock`, JSON.stringify({ pid: process.pid, host: os.hostname(), acquiredAt: new Date().toISOString(), token: 'other' }));
+  const started = Date.now();
+  assert.throws(() => hive.addTask(card('a')), (e) => e.name === 'TaskLedgerLockTimeout');
+  const waited = Date.now() - started;
+  assert.ok(waited < 1000, `the app's main thread was blocked for ${waited} ms`);
+  assert.deepEqual(ids(file), []);
 });
