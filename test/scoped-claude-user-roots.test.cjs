@@ -148,6 +148,21 @@ test('flag on: settings that only narrow access, in keys the pinned CLI supports
   await f.spawn('narrow', true);
 });
 
+test('flag on: user or managed settings that auto-approve sandboxed Bash or allow localhost binding refuse the spawn; the pinned value starts it', async (t) => {
+  const f = floor(t);
+  const cases = [[{ autoAllowBashIfSandboxed: true }, 'sandbox.autoAllowBashIfSandboxed'], [{ network: { allowLocalBinding: true } }, 'sandbox.network.allowLocalBinding']];
+  for (const [i, [sandbox, key]] of cases.entries()) {
+    f.user({ sandbox });
+    await assert.rejects(f.spawn(`p${i}`, true), refusedFor(f, 'user settings', key), `user ${key}`);
+    f.user({});
+    fs.writeFileSync(f.managed, JSON.stringify({ sandbox }));
+    await assert.rejects(f.spawn(`q${i}`, true), refusedFor(f, 'managed settings', key), `managed ${key}`);
+    fs.rmSync(f.managed);
+  }
+  f.user({ sandbox: { autoAllowBashIfSandboxed: false, network: { allowLocalBinding: false } } });
+  await f.spawn('pinned', true);
+});
+
 test('flag on: ordinary rules that keep the seat inside its roots still start it', async (t) => {
   const f = floor(t);
   f.user({ model: 'opus', permissions: { allow: ['Bash', 'Read', 'WebFetch', 'mcp__x__y'], deny: ['Read(~/.ssh/**)'], defaultMode: 'acceptEdits' }, sandbox: { enabled: true, excludedCommands: ['npm run build'] } });

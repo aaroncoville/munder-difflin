@@ -315,6 +315,17 @@ test('Given managed settings that disable the filesystem sandbox, choose bypass 
   }
 });
 
+test('Given managed settings that auto-approve sandboxed Bash or allow localhost binding, when the launch is built, then it is refused', (t) => {
+  for (const [sandbox, key] of [[{ autoAllowBashIfSandboxed: true }, 'sandbox.autoAllowBashIfSandboxed'], [{ network: { allowLocalBinding: true } }, 'sandbox.network.allowLocalBinding']]) {
+    const f = floor(t);
+    managedSettings(f, { sandbox });
+    assert.throws(() => H.buildHeadlessLaunch(f.opts()), (e) => e.message.includes(`managed settings: ${key}`), key);
+  }
+  const f = floor(t);
+  managedSettings(f, { sandbox: { autoAllowBashIfSandboxed: false, network: { allowLocalBinding: false } } });
+  assert.doesNotThrow(() => H.buildHeadlessLaunch(f.opts()));
+});
+
 test('Given managed settings that cannot be understood, when the launch is built, then it is refused', (t) => {
   const f = floor(t);
   managedSettings(f, '{ not json');

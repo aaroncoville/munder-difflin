@@ -84,7 +84,7 @@ test('strict: settings that keep the seat within its roots are admitted', (t) =>
   const admitted = [
     {},
     { model: 'haiku', hooks: {} },
-    { sandbox: { enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false, autoAllowBashIfSandboxed: true, enableWeakerNestedSandbox: false } },
+    { sandbox: { enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false, autoAllowBashIfSandboxed: false, enableWeakerNestedSandbox: false } },
     { sandbox: { excludedCommands: ['npm run build', 'git fetch *'] } },
     { sandbox: { filesystem: { disabled: false, allowWrite: [path.join(f.seat, 'x')], denyWrite: ['/etc'], denyRead: ['~/.ssh'] } } },
     { sandbox: { network: { allowedDomains: ['example.com'], allowLocalBinding: false } } },

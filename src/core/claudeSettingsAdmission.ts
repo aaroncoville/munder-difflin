@@ -10,7 +10,7 @@
 import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path';
 import { CLAUDE_FILE_WRITE_TOOLS, claudeRootEntries, isPlainObject, stringList } from './launchLine';
-import { insideAny, SCOPED_UNSANDBOXED_COMMANDS } from './writeRoots';
+import { insideAny, SCOPED_SANDBOX_PINS, SCOPED_UNSANDBOXED_COMMANDS } from './writeRoots';
 import { CLAUDE_SETTINGS_CLI, CLAUDE_SETTINGS_KEYS, type SettingsKey } from './claudeSettingsKeys';
 
 /** The machine-wide Claude settings file. */
@@ -147,6 +147,8 @@ const JUDGES: Readonly<Record<string, Judge>> = {
   'sandbox.allowAppleEvents': refuseWhen(true),
   'sandbox.allowNestedUserNamespaces': refuseWhen(true),
   'sandbox.allowUnsandboxedCommands': refuseWhen(true),
+  // The seats pin these (SCOPED_SANDBOX_PINS): only the pinned value is admitted, since a boolean has nothing tighter.
+  'sandbox.autoAllowBashIfSandboxed': refuseWhen(!SCOPED_SANDBOX_PINS.autoAllowBashIfSandboxed),
   'sandbox.credentials.allowPlaintextInject': refuseWhen(true),
   'sandbox.enableWeakerNestedSandbox': refuseWhen(true),
   'sandbox.enableWeakerNetworkIsolation': refuseWhen(true),
@@ -160,6 +162,7 @@ const JUDGES: Readonly<Record<string, Judge>> = {
   'sandbox.filesystem.allowWrite': rootsInside,
   'sandbox.filesystem.disabled': refuseWhen(true),
   'sandbox.network.allowAllUnixSockets': refuseWhen(true),
+  'sandbox.network.allowLocalBinding': refuseWhen(!SCOPED_SANDBOX_PINS.allowLocalBinding),
   'sandbox.network.allowMachLookup': emptyOnly,
   'sandbox.network.allowUnixSockets': emptyOnly,
   // An entry of wildcards and dots alone ('*', '*.*') matches every host and lifts the egress filter.
