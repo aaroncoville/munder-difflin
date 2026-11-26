@@ -257,8 +257,8 @@ test('Given a scoped seat, when the seat runs, then the settings allow each file
   assert.deepEqual(s.permissions.deny ?? [], []);
 });
 
-test('Given a root whose name a rule would read as a wildcard or a rule end, when the write rules are made, then it is refused', () => {
-  for (const r of ['/w/a*b', '/w/a?b', '/w/[ab]', '/w/{a,b}', '/w/a)b', 'relative/w']) {
+test('Given a root whose name a rule would read as a wildcard, a rule end or a substitution, or that holds a newline, when the write rules are made, then it is refused', () => {
+  for (const r of ['/w/a*b', '/w/a?b', '/w/[ab]', '/w/{a,b}', '/w/a)b', 'relative/w', '/w/$HOME', '/w/%HOME%', '/w/a`b', '/w/a\nb']) {
     assert.throws(() => H.headlessWriteRules([r]), /permission rule/, r);
   }
   assert.deepEqual(H.headlessWriteRules(['/w/x']).filter((x) => x.startsWith('Write(')), ['Write(//w/x/**)']);
