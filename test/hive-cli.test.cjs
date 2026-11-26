@@ -199,6 +199,34 @@ test('--json @path reads the JSON from a file', (t) => {
   assert.equal(card(file, 'a').title, 'A2');
 });
 
+test('a --json or --q-file file over 1 MB is refused and nothing is written', (t) => {
+  const { dir, file } = hive(t, { tasks: [{ id: 'a' }] });
+  const before = fs.readFileSync(file, 'utf8');
+  const MB = 1024 * 1024;
+  // A card of exactly 1 MB is accepted; one byte more is not.
+  const sized = (id, bytes) => {
+    const head = `{"id":"${id}","pad":"`;
+    return head + 'x'.repeat(bytes - head.length - 2) + '"}';
+  };
+  const big = path.join(dir, 'big.json');
+  fs.writeFileSync(big, sized('b', MB + 1));
+  const bigQ = path.join(dir, 'big.txt');
+  fs.writeFileSync(bigQ, 'q'.repeat(MB + 1));
+  for (const argv of [['tasks', 'add', '--json', `@${big}`], ['tasks', 'patch', 'a', '--json', `@${big}`], ['tasks', 'ask', 'a', '--q-file', bigQ]]) {
+    const r = run(['--hive', dir, ...argv]);
+    assert.equal(r.code, 1, argv.join(' '));
+    assert.match(r.stderr, /larger than 1 MB/, argv.join(' '));
+  }
+  assert.equal(fs.readFileSync(file, 'utf8'), before);
+
+  const atLimit = path.join(dir, 'limit.json');
+  fs.writeFileSync(atLimit, sized('c', MB));
+  assert.equal(fs.statSync(atLimit).size, MB);
+  const ok = run(['--hive', dir, 'tasks', 'add', '--json', `@${atLimit}`]);
+  assert.equal(ok.code, 0, ok.stderr);
+  assert.equal(card(file, 'c').pad.length, MB - '{"id":"c","pad":"'.length - 2);
+});
+
 test('a missing hive root is a usage error', () => {
   const r = run(['tasks', 'add', '--json', '{"id":"a"}'], {});
   assert.equal(r.code, 2);

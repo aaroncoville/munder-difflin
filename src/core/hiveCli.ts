@@ -10,7 +10,7 @@
  * runHiveCli takes its arguments, environment and output as parameters and returns the exit status, so it can
  * be run in process; hiveCliMain.ts is the entry that wires it to the real process.
  */
-import { readFileSync, statSync } from 'node:fs';
+import { closeSync, openSync, readSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { TaskLedgerLockLost, TaskLedgerLockTimeout, updateTaskLedgerFile } from './taskLedgerFile';
 
@@ -19,6 +19,26 @@ export interface HiveCliIo {
   stderr: (text: string) => void;
   /** Reads a file named on the command line (`--json @path`, `--q-file`). Default: fs, as UTF-8. */
   readFile?: (path: string) => string;
+}
+
+/** The most a file named on the command line may hold. A card or a question is a few kilobytes; the ledger is read by every window. */
+export const HIVE_CLI_FILE_MAX_BYTES = 1024 * 1024;
+
+/** Reads at most `max` + 1 bytes of `path`, enough to tell that it is over `max` without reading all of it. */
+function readFileBounded(path: string, max: number): string {
+  const fd = openSync(path, 'r');
+  try {
+    const buf = Buffer.alloc(max + 1);
+    let n = 0;
+    while (n < buf.length) {
+      const got = readSync(fd, buf, n, buf.length - n, null);
+      if (got === 0) break;
+      n += got;
+    }
+    return buf.toString('utf8', 0, n);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 export const HIVE_CLI_USAGE = `usage: hive [--hive <dir>] tasks <command> [arguments]
@@ -42,6 +62,9 @@ options:
   --hive <dir>     the hive folder (default: $HIVE_ROOT)
   --json <json>    JSON text, or @<path> to read it from a file; use @path
                    when your shell would mangle the quotes
+  --q-file <path>  the file holding the question for ask
+                   (a file named by --json @<path> or --q-file may hold at
+                   most 1 MB)
   --help           this text
 
 environment:
@@ -91,12 +114,16 @@ function isObject(value: unknown): value is Card {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
+/** The text of a file named on the command line, refused when it is over HIVE_CLI_FILE_MAX_BYTES. */
+function readArgFile(path: string, readFile: (path: string) => string, what: string): string {
+  let text: string;
+  try { text = readFile(path); } catch (e) { throw new CliError(`cannot read ${what} from ${path}: ${(e as Error).message}`); }
+  if (Buffer.byteLength(text, 'utf8') > HIVE_CLI_FILE_MAX_BYTES) throw new CliError(`${path} is larger than 1 MB, too large for ${what}`);
+  return text;
+}
+
 function jsonObject(spec: string, readFile: (path: string) => string, what: string): Card {
-  let text = spec;
-  if (spec.startsWith('@')) {
-    const path = spec.slice(1);
-    try { text = readFile(path); } catch (e) { throw new CliError(`cannot read ${what} from ${path}: ${(e as Error).message}`); }
-  }
+  const text = spec.startsWith('@') ? readArgFile(spec.slice(1), readFile, what) : spec;
   let value: unknown;
   try { value = JSON.parse(text); } catch (e) { throw new CliError(`${what} is not valid JSON: ${(e as Error).message}`); }
   if (!isObject(value)) throw new CliError(`${what} must be a JSON object`);
@@ -129,7 +156,7 @@ function refuseLedgerRuleBreak(patch: Card, id: string): void {
 
 /** Runs `hive <argv…>` and returns its exit status. */
 export function runHiveCli(argv: string[], env: Record<string, string | undefined>, io: HiveCliIo): number {
-  const readFile = io.readFile ?? ((path: string) => readFileSync(path, 'utf8'));
+  const readFile = io.readFile ?? ((path: string) => readFileBounded(path, HIVE_CLI_FILE_MAX_BYTES));
   try {
     const { positional, options, help } = parse(argv);
     if (help || positional.length === 0) throw new UsageError('');
@@ -177,8 +204,7 @@ export function runHiveCli(argv: string[], env: Record<string, string | undefine
       const id = oneId();
       want('--q-file');
       const qFile = options.get('--q-file')!;
-      let q: string;
-      try { q = readFile(qFile).trimEnd(); } catch (e) { throw new CliError(`cannot read the question from ${qFile}: ${(e as Error).message}`); }
+      const q = readArgFile(qFile, readFile, 'the question').trimEnd();
       if (!q.trim()) throw new CliError(`the question in ${qFile} is empty`);
       edit = (cards) => {
         const index = cards.findIndex((c) => idOf(c) === id);
