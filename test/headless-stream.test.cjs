@@ -464,6 +464,17 @@ test('Given an output file whose name starts with two dots, inside a root, when 
   assert.equal(r.done, true, r.reason);
 });
 
+test('Given a file system that keeps whole seconds, when an output file written in the run\'s first second is checked, then the run is done', (t) => {
+  const s = seat(t);
+  const out = path.join(s.cwd, 'out.md');
+  fs.writeFileSync(out, 'x\n');
+  const second = Math.floor(Date.now() / 1000) - 5;
+  // The file's time as such a file system keeps it: the second it was written in, rounded down.
+  fs.utimesSync(out, second, second);
+  assert.equal(S.checkHeadlessOutput(s.ctx, out, { notBefore: second * 1000 + 700 }).done, true);
+  assert.equal(S.checkHeadlessOutput(s.ctx, out, { notBefore: (second + 1) * 1000 }).done, false, 'a file from the second before is still refused');
+});
+
 // The ledger lock is the shared file lock (fileLock.ts), so it keeps that lock's guarantees: a volume without hard
 // links refuses it (no append), a live lock that replaced a stale one while it was being broken is never removed,
 // and the holder confirms the lock is still its own immediately before it appends.
