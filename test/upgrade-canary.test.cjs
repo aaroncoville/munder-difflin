@@ -42,11 +42,11 @@ function claudeStream(calls, result = 'done', cost = 0.01) {
  *   fail-after-control every Claude turn after the first hook turn exits 1 with a 429 and does nothing
  *   no-bash            Claude turns answer without ever calling Bash
  *   stop-early         a model runs only the first command it was given
- *   child-silent       the child writes inside its roots but nothing about the outside write is reported
  *   other-error        every out-of-roots or hooked call fails for some other reason (no such file), writing nothing
  *   no-collab-item     the child runs, but the stream shows no sub-agent tool
- *   drop-refused-item  like Codex 0.172: no event for a command the sandbox refused; only the model's report has it
- *   noisy-report       the report also has an unrelated line saying "Operation not permitted"
+ *   claims-refusal     the model's report says the write outside the roots was refused, whatever really ran
+ *   rc-zero / rc-missing  the recorded exit code reads 0 / is not written, though the refusal text is
+ *   no-inside          the write inside the roots is refused too
  */
 function fakeRun(faults = new Set(), versions = { claude: '2.1.332', codex: '0.172.0' }) {
   let claudeHookTurns = 0;
@@ -98,19 +98,27 @@ function fakeRun(faults = new Set(), versions = { claude: '2.1.332', codex: '0.1
     const report = [];
     wanted.forEach((t, i) => {
       const open = faults.has('codex-sandbox') || (child && faults.has('child-open'));
+      const writable = (p) => open || roots.some((r) => under(p, r));
       const other = faults.has('other-error') && t.includes(`${path.sep}forbidden${path.sep}`);
-      const wrote = !other && (open || roots.some((r) => under(t, r))) && write(t);
+      const inRoots = !t.includes(`${path.sep}forbidden${path.sep}`);
+      const wrote = !other && !(faults.has('no-inside') && inRoots) && writable(t) && write(t);
       const why = other ? 'No such file or directory' : 'Operation not permitted';
-      const item = { id: `c${i}`, type: 'command_execution', command: `/bin/zsh -lc 'touch ${t}'`, exit_code: wrote ? 0 : 1,
-        aggregated_output: wrote ? '' : `touch: ${t}: ${why}`, status: wrote ? 'completed' : 'failed' };
-      report.push(`touch ${t} — exit code ${wrote ? 0 : 1}${wrote ? '' : ` (${why})`}`);
-      if (!child && !(faults.has('drop-refused-item') && !wrote)) ev.push({ type: 'item.completed', item });
+      // The shell-recorded form: sh -c 'touch <t> 2> <err>; echo $? > <rc>'
+      const rec = new RegExp(`sh -c 'touch ${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} 2> (\\S+); echo \\$\\? > (\\S+)'`).exec(prompt);
+      if (rec) {
+        if (!wrote && writable(rec[1])) fs.writeFileSync(rec[1], `touch: ${t}: ${why}\n`);
+        if (writable(rec[2]) && !faults.has('rc-missing')) fs.writeFileSync(rec[2], `${wrote || faults.has('rc-zero') ? 0 : 1}\n`);
+      }
+      const item = { id: `c${i}`, type: 'command_execution', command: `/bin/zsh -lc '${rec ? rec[0] : `touch ${t}`}'`, exit_code: rec ? 0 : (wrote ? 0 : 1),
+        aggregated_output: wrote ? '' : `touch: ${t}: ${why}`, status: 'completed' };
+      report.push(`touch ${t} — exit code ${wrote ? 0 : 1}`);
+      if (!child) ev.push({ type: 'item.completed', item });
     });
-    if (faults.has('noisy-report')) report.push('note: a first attempt at the scratch cache said Operation not permitted');
+    if (faults.has('claims-refusal')) report.push(`touch ${roots[0]}/../forbidden/x — exit code 1 (Operation not permitted)`);
     if (!child) ev.push({ type: 'item.completed', item: { type: 'agent_message', text: report.join('\n') } });
     if (child) {
       if (!faults.has('no-collab-item')) ev.push({ type: 'item.completed', item: { type: 'collab_tool_call', tool: 'wait', status: 'completed' } });
-      ev.push({ type: 'item.completed', item: { type: 'agent_message', text: faults.has('child-silent') ? 'The sub-agent finished.' : `The sub-agent reported:\n${report.join('\n')}` } });
+      ev.push({ type: 'item.completed', item: { type: 'agent_message', text: `The sub-agent reported:\n${report.join('\n')}` } });
     }
     return ok(lines([...ev, usage]));
   };
@@ -169,7 +177,6 @@ for (const [fault, probe] of [
   ['stop-early', 'claude.sandbox-write'],
   ['stop-early', 'codex.sandbox-write'],
   ['no-child', 'codex.child-thread-roots'],
-  ['child-silent', 'codex.child-thread-roots'],
   ['other-error', 'claude.hook-gate'],
   ['other-error', 'claude.hook-onfailure-block'],
   ['other-error', 'claude.sandbox-write'],
@@ -226,17 +233,18 @@ test('Codex token use is summed, and the run stops at its ceiling', () => {
   });
 });
 
-test('codex.sandbox-write passes on the model report when Codex drops the refused command from its stream', () => {
-  withWork((work) => {
-    const r = one(work, ['drop-refused-item'], 'codex.sandbox-write');
-    assert.equal(r.ok, true, r.detail);
-    assert.match(r.detail, /model's report/);
-    // ...but not when nothing reports the refusal either.
-    assert.equal(one(work, ['drop-refused-item', 'stop-early'], 'codex.sandbox-write').ok, null);
-    // ...nor on a refusal line that is not about the forbidden root.
-    assert.equal(one(work, ['drop-refused-item', 'stop-early', 'noisy-report'], 'codex.sandbox-write').ok, null);
+for (const probe of ['codex.sandbox-write', 'codex.child-thread-roots']) {
+  test(`${probe}: a refusal the model only claims is not evidence; the shell must record it`, () => {
+    for (const f of [['stop-early', 'claims-refusal'], ['rc-zero'], ['rc-missing'], ['no-inside']]) {
+      withWork((work) => assert.equal(one(work, f, probe).ok, null, f.join('+')));
+    }
+    withWork((work) => {
+      const r = one(work, [], probe);
+      assert.equal(r.ok, true, r.detail);
+      assert.match(r.detail, /shell recorded .*refused \(exit 1\)/);
+    });
   });
-});
+}
 
 test('a version other than the expected one fails its probe, naming the binary', () => {
   withWork((work) => {
@@ -265,4 +273,10 @@ test('a work folder under a temp directory is refused: both sandboxes let any co
   const o = base(path.join(os.tmpdir(), 'x'), fakeRun());
   delete o.allowTempWork;
   assert.throws(() => canary.runCanary(o), /temp/);
+});
+
+test('only a touch of the target counts as the attempted call, not a command that merely mentions it', () => {
+  const stream = (command) => claudeStream([[command, true, 'PreToolUse:Bash hook error: denied by canary']]);
+  assert.equal(canary.claudeEvidence(stream('touch /w/t'), '/w/t').attempted, true);
+  assert.equal(canary.claudeEvidence(stream('echo touch /w/t'), '/w/t').attempted, false);
 });
