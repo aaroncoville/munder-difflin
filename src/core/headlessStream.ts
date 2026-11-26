@@ -21,7 +21,7 @@
 import { closeSync, constants, linkSync, lstatSync, mkdirSync, openSync, realpathSync, rmSync, writeSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { basename, isAbsolute, join, relative } from 'node:path';
-import { parseHeadlessOutput, type HeadlessRun } from './headlessSeat';
+import { parseHeadlessOutput, runHeadlessSeat, type HeadlessRun, type HeadlessSeatOptions } from './headlessSeat';
 import { isPlainObject } from './launchLine';
 import { isSafeMessageId } from './messageId';
 import { assertRealFolder } from './sentFolder';
@@ -216,4 +216,48 @@ export function writeOutboxMessage(hiveRoot: string, agentId: string, msg: Outbo
     rmSync(temp, { force: true });
   }
   throw new Error('no free message id in the outbox');
+}
+
+/*
+ * One stream, end to end: run the turn, record its cost, check its output, and tell god only when it is done.
+ *
+ * A run that is not done sends no message. The result says why (doneReason), and the caller that scheduled the run
+ * decides what to do about it: retry, or report it once. A "not done" message from every failed attempt would reach
+ * god as noise, and one from the seat's outbox would read as the seat's own word on a run that may never have
+ * started properly.
+ */
+
+export interface HeadlessStreamOptions extends HeadlessSeatOptions {
+  /** The file the stream's brief says the run produces; the run is done only when it is in place. */
+  outputFile: string;
+}
+
+export interface HeadlessStreamResult {
+  run: HeadlessRun;
+  cost: HeadlessCost;
+  done: boolean;
+  /** Why the run is not done; null when it is. */
+  doneReason: string | null;
+  /** The done message's id; null when none was written. */
+  messageId: string | null;
+  /** Why a done run's message could not be written; null otherwise. */
+  messageError: string | null;
+}
+
+/** Run one headless turn, then record its cost, check its output and, when it is done, mail god. A refused launch
+ *  throws before anything runs or is written. */
+export async function runHeadlessStream(o: HeadlessStreamOptions): Promise<HeadlessStreamResult> {
+  const run = await runHeadlessSeat(o);
+  const cost = recordHeadlessCost(o.hiveRoot, o.agentId, run);
+  const check: HeadlessDoneCheck = run.ok
+    ? checkHeadlessOutput({ hiveRoot: o.hiveRoot, agentId: o.agentId, isGod: o.isGod, cwd: o.cwd }, o.outputFile)
+    : { done: false, reason: `the run did not succeed: ${run.error ?? `the CLI reported ${run.subtype ?? 'an error'}`}` };
+  const result: HeadlessStreamResult = { run, cost, done: check.done, doneReason: check.reason, messageId: null, messageError: null };
+  if (!check.done) return result;
+  try {
+    result.messageId = writeOutboxMessage(o.hiveRoot, o.agentId, headlessDoneMessage(o.agentId, run, o.outputFile, cost));
+  } catch (e) {
+    result.messageError = (e as Error).message;
+  }
+  return result;
 }
