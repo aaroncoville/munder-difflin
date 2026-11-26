@@ -397,18 +397,27 @@ function readLedger(path: string, unreadable: 'throw' | 'empty'): Record<string,
 }
 
 /**
- * Writes all of `text` to `fd`. A write to a regular file may complete only part of what it was given and
- * report how much; the rest is written by further calls. A call that writes nothing would loop for ever,
- * so it is an error. The file's size is then checked against what was meant to be written.
+ * Writes all of `bytes` to `fd` at its current position. A write to a regular file may complete only part of
+ * what it was given and report how much; the rest is written by further calls. A call that writes nothing
+ * would loop for ever, so it is an error, naming how far the write got. `write` is fs.writeSync unless a test
+ * gives another.
  */
-function writeFully(fd: number, path: string, text: string): void {
-  const bytes = Buffer.from(text, 'utf8');
+export function writeAllSync(fd: number, path: string, bytes: Buffer, write: typeof writeSync = writeSync): void {
   let done = 0;
   while (done < bytes.length) {
-    const wrote = writeSync(fd, bytes, done, bytes.length - done);
+    const wrote = write(fd, bytes, done, bytes.length - done);
     if (!(wrote > 0)) throw new Error(`writing ${path} stopped after ${done} of ${bytes.length} bytes, so it was left as it was`);
     done += wrote;
   }
+}
+
+/**
+ * Writes all of `text` to `fd` (writeAllSync). The file's size is then checked against what was meant to be
+ * written.
+ */
+function writeFully(fd: number, path: string, text: string): void {
+  const bytes = Buffer.from(text, 'utf8');
+  writeAllSync(fd, path, bytes);
   const size = fstatSync(fd).size;
   if (size !== bytes.length) throw new Error(`${path} would be ${size} bytes instead of ${bytes.length}, so it was left as it was`);
 }
