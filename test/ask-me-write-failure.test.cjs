@@ -91,3 +91,20 @@ test('a dismissal the ledger refused says why and puts the card back', async () 
   assert.ok(shown(view.tree).includes(BUSY), `the main process's reason must be on screen; got:\n${shown(view.tree)}`);
   assert.ok(textarea(view.tree), 'the card is back on the board');
 });
+
+test('a dismissal that works after one that failed clears the failure line', async () => {
+  fakeBridge({ tasks: [task('A-2')], patched: { ok: false, error: BUSY } });
+  const view = await open();
+  const dismissButton = () => find(view.tree, (n) => n.props && n.props['aria-label'] === 'dismiss this ask');
+
+  await dismissButton().props.onClick();
+  await settle();
+  view.render();
+  assert.ok(shown(view.tree).includes(BUSY), 'the first dismissal failed and said so');
+
+  global.window.cth.hivePatchTask = async () => ({ ok: true });
+  await dismissButton().props.onClick();
+  await settle();
+  view.render();
+  assert.ok(!shown(view.tree).includes(BUSY), `the old failure must be gone; got:\n${shown(view.tree)}`);
+});
