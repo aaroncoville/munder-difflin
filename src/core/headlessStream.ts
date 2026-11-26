@@ -21,18 +21,18 @@
  * them appends. The app's own rows are
  * appended without that lock, each in a single append.
  */
-import { closeSync, constants, fstatSync, fsyncSync, ftruncateSync, linkSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, rmSync, writeSync } from 'node:fs';
+import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, realpathSync, rmSync, writeSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { basename, isAbsolute, join, relative } from 'node:path';
 import { parseHeadlessOutput, runHeadlessSeat, type HeadlessRun, type HeadlessSeatOptions } from './headlessSeat';
-import { acquireFileLock, confirmFileLock, defaultStartTime, releaseFileLock, type FileLockHooks, type OwnLock } from './fileLock';
+import { appendCostLedgerRow, COST_LEDGER_FILE, LEDGER_LOCK_WAIT_MS, type CostLedgerIo } from './costLedgerFile';
 import { isPlainObject } from './launchLine';
 import { isSafeMessageId } from './messageId';
 import { assertRealFolder } from './sentFolder';
 import { writeAllSync } from './taskLedgerFile';
 import { seatWriteRoots } from './writeRoots';
 
-export const COST_LEDGER_FILE = 'cost-ledger.jsonl';
+export { COST_LEDGER_FILE, LEDGER_LOCK_WAIT_MS };
 
 export interface HeadlessCostRow {
   agent_id: string;
@@ -92,67 +92,17 @@ export function headlessCostRow(agentId: string, run: HeadlessRun, now: number):
   return { row, reason: null };
 }
 
-/** How long an append waits for another headless writer's ledger lock before it gives up. */
-export const LEDGER_LOCK_WAIT_MS = 5000;
-/** A lock whose holder cannot be identified (no readable record, or another host) is stale after this. */
-const LEDGER_LOCK_STALE_MS = 30_000;
-
-/** Append one row to `<hiveRoot>/cost-ledger.jsonl`, whole or not at all; never throws. Headless appends hold the
- *  ledger's lock (`cost-ledger.jsonl.lock`, the shared file lock of fileLock.ts, as for tasks.json) for the write,
- *  and confirm it is still their own immediately before appending; a volume without hard links cannot hold it, so
- *  nothing is appended there. A ledger whose last line has no newline (a writer that stopped part-way)
- *  gets one first, so the row starts on a line of its own. The row is written in full (writeAllSync) and flushed;
- *  a write that stops short is undone, by cutting the ledger back to where it was when what follows that point is
- *  only this row's own bytes. `io` is for tests. */
-export function recordHeadlessCost(hiveRoot: string, agentId: string, run: HeadlessRun, now = Date.now(), io: {
-  writeSync?: typeof writeSync; lockWaitMs?: number; link?: (existingPath: string, newPath: string) => void;
-  hooks?: FileLockHooks & { afterLock?: () => void; afterOpen?: () => void };
-} = {}): HeadlessCost {
+/** Append one row to `<hiveRoot>/cost-ledger.jsonl`, whole or not at all, under the ledger's lock
+ *  (appendCostLedgerRow); never throws. A volume without hard links cannot hold the lock, so nothing is appended
+ *  there. `io` is for tests. */
+export function recordHeadlessCost(hiveRoot: string, agentId: string, run: HeadlessRun, now = Date.now(), io: CostLedgerIo = {}): HeadlessCost {
   const { row, reason } = headlessCostRow(agentId, run, now);
   if (!row) return { costRecorded: false, costReason: reason, row: null };
-  const ledger = join(hiveRoot, COST_LEDGER_FILE);
-  const lock = `${ledger}.lock`;
-  let own: OwnLock | null = null;
-  let fd: number | null = null;
   try {
-    own = acquireFileLock(lock, {
-      waitMs: io.lockWaitMs ?? LEDGER_LOCK_WAIT_MS, staleMs: LEDGER_LOCK_STALE_MS, retryMs: 10,
-      startTime: defaultStartTime, link: io.link ?? linkSync, hooks: io.hooks ?? {},
-      name: COST_LEDGER_FILE, disabled: 'headless cost rows',
-      timeout: (l, waitedMs, holder) => new Error(`could not lock ${l} within ${waitedMs} ms: held by ${holder}`),
-    });
-    io.hooks?.afterLock?.();
-    const held = own;
-    const confirm = (): void => confirmFileLock(lock, held, (l, holder) => new Error(`${l} no longer holds this writer's record (now ${holder}), so no row was appended`));
-    // Before the ledger is even opened (which may create it), and again just before the row is written.
-    confirm();
-    fd = openSync(ledger, constants.O_RDWR | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o644);
-    const before = fstatSync(fd).size;
-    let lead = '';
-    if (before > 0) {
-      const last = Buffer.alloc(1);
-      readSync(fd, last, 0, 1, before - 1);
-      if (last[0] !== 0x0a) lead = '\n';
-    }
-    const line = Buffer.from(`${lead}${JSON.stringify(row)}\n`, 'utf8');
-    io.hooks?.afterOpen?.();
-    confirm();
-    try {
-      writeAllSync(fd, ledger, line, io.writeSync);
-      fsyncSync(fd);
-    } catch (e) {
-      const size = fstatSync(fd).size;
-      const tail = Buffer.alloc(Math.max(0, size - before));
-      if (tail.length) readSync(fd, tail, 0, tail.length, before);
-      if (tail.length <= line.length && tail.equals(line.subarray(0, tail.length))) ftruncateSync(fd, before);
-      throw e;
-    }
+    appendCostLedgerRow(hiveRoot, row, 'headless cost rows', io);
     return { costRecorded: true, costReason: null, row };
   } catch (e) {
     return { costRecorded: false, costReason: `the ledger append failed: ${(e as Error).message}`, row: null };
-  } finally {
-    if (fd !== null) closeSync(fd);
-    if (own) releaseFileLock(lock, own);
   }
 }
 
