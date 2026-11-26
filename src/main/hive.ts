@@ -466,6 +466,11 @@ function putBackFields(now: RegistryAgent, before: RegistryAgent, wrote: Registr
 /** How long an app write to tasks.json waits for another holder of its lock. It runs on the main thread. */
 const TASK_LEDGER_WAIT_MS = 250;
 
+/** `text` as one sh word that sh takes literally: in single quotes, each `'` written as `'\''`. */
+function shSingleQuote(text: string): string {
+  return `'${text.replace(/'/g, "'\\''")}'`;
+}
+
 export class HiveManager {
   /**
    * @param getHome  Lazily resolve harnessHome so the hive follows config changes.
@@ -1281,9 +1286,16 @@ export class HiveManager {
   }
 
   /** `<root>/bin/hive`: runs the hive command bundle through the hive-node launcher, so it works
-   *  whatever node is on the caller's PATH, and defaults HIVE_ROOT to this hive. */
+   *  whatever node is on the caller's PATH, and defaults HIVE_ROOT to this hive. The paths are
+   *  single-quoted, so a space, quote, `$` or backtick in them is taken literally by sh. */
   private hiveCliLauncherContent(root: string): string {
-    return `#!/bin/sh\n: "\${HIVE_ROOT:=${root}}"\nexport HIVE_ROOT\nexec "${join(root, 'bin', 'hive-node')}" "${this.hiveCliBundlePath()}" "$@"\n`;
+    return [
+      '#!/bin/sh',
+      `if [ -z "\${HIVE_ROOT:-}" ]; then HIVE_ROOT=${shSingleQuote(root)}; fi`,
+      'export HIVE_ROOT',
+      `exec ${shSingleQuote(join(root, 'bin', 'hive-node'))} ${shSingleQuote(this.hiveCliBundlePath())} "$@"`,
+      ''
+    ].join('\n');
   }
 
   /** Installs `<root>/bin/hive`, the command agents use to edit tasks.json under its lock instead of

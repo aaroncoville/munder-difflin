@@ -59,6 +59,28 @@ test('ensureHive installs bin/hive, which runs the hive command on this hive wit
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(other, 'tasks.json'), 'utf8')).tasks.map((c) => c.id), ['x']);
 });
 
+test('bin/hive works in a hive whose path holds a space, quotes, $ and a backtick', { skip: !POSIX }, async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'md-hive-launcher-'));
+  t.after(async () => { await allCommitsIdle(); fs.rmSync(base, { recursive: true, force: true }); });
+  // Unquoted, or in double quotes, "$HOME" would expand to the HOME below and `x` would run.
+  const home = path.join(base, 'it\'s "a" $HOME `x` dir');
+  fs.mkdirSync(home);
+  const hive = new HiveManager(() => home);
+  const bundle = path.join(home, 'build', 'hiveCli.js');
+  await buildHiveCliBundle(bundle);
+  hive.hiveCliBundlePath = () => bundle;
+  hive.ensureHive();
+  const root = hive.root();
+  const launcher = path.join(root, 'bin', 'hive');
+
+  const env = { PATH: '/usr/bin:/bin', HOME: path.join(base, 'elsewhere') };
+  const added = spawnSync(launcher, ['tasks', 'add', '--json', '{"id":"odd-path"}'], { cwd: os.tmpdir(), env, encoding: 'utf8' });
+  assert.equal(added.status, 0, added.stderr);
+  assert.equal(added.stdout, 'added odd-path\n');
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, 'tasks.json'), 'utf8')).tasks.map((c) => c.id), ['odd-path']);
+  assert.deepEqual(fs.readdirSync(base).sort(), ['it\'s "a" $HOME `x` dir'], 'nothing was created beside the hive');
+});
+
 test('installedHelpers lists bin/hive with the bytes ensureHive wrote, so the canary can compare it', { skip: !POSIX }, (t) => {
   const { hive } = floor(t);
   hive.ensureHive();
