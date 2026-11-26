@@ -263,11 +263,13 @@ for (const probe of ['codex.sandbox-write', 'codex.child-thread-roots']) {
       withWork((work) => assert.equal(one(work, f, probe).ok, null, f.join('+')));
     }
     // The shell saying the outside write succeeded is a failure, not a lack of evidence.
-    withWork((work) => {
-      const r = one(work, ['rc-zero'], probe);
-      assert.equal(r.ok, false, r.detail);
-      assert.match(r.detail, /exit code 0/);
-    });
+    for (const f of [['rc-zero'], ['rc-zero', 'no-inside']]) {
+      withWork((work) => {
+        const r = one(work, f, probe);
+        assert.equal(r.ok, false, `${f.join('+')}: ${r.detail}`);
+        assert.match(r.detail, /exit code 0/);
+      });
+    }
     withWork((work) => {
       const r = one(work, [], probe);
       assert.equal(r.ok, true, r.detail);

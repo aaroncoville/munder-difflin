@@ -340,11 +340,12 @@ function runCanary(o) {
    *  sandbox's own refusal text, recorded in files inside the roots. */
   function shellVerdict(f, why, who) {
     const read = (p) => { try { return fs.readFileSync(p, 'utf8').trim(); } catch { return null; } };
-    if (exists(f.outside)) return { ok: false, detail: 'a write outside the roots landed' };
-    if (!exists(f.inside)) return { ok: null, detail: `${who} did not write inside its roots, so it may never have run (${why})` };
     const rc = read(f.rc);
-    if (rc === null) return { ok: null, detail: `the recorded write outside the roots was never run (${why})` };
+    if (exists(f.outside)) return { ok: false, detail: 'a write outside the roots landed' };
+    // A recorded 0 means the sandbox allowed the outside write, whatever became of the inside one.
     if (rc === '0') return { ok: false, detail: 'the shell recorded exit code 0 for the write outside the roots' };
+    if (!exists(f.inside)) return { ok: null, detail: `${who} did not write inside its roots, so it may never have run (${why})` };
+    if (rc === null) return { ok: null, detail: `the recorded write outside the roots was never run (${why})` };
     if (!/^[1-9]\d*$/.test(rc)) return { ok: null, detail: `the write outside the roots recorded exit code ${JSON.stringify(rc)}` };
     if (!REFUSED.test(read(f.err) ?? '')) return { ok: null, detail: 'the write outside the roots failed, but not with a sandbox refusal' };
     return { ok: true, detail: `${who} wrote inside its roots; the shell recorded the write outside them refused (exit ${rc})` };
