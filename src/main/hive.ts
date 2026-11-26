@@ -1271,7 +1271,31 @@ export class HiveManager {
     } catch { /* no bundled shim to compare with */ }
     out.push({ name: 'hive-node', path: join(root, 'bin', 'hive-node'), expected: this.nodeLauncherContent() });
     out.push({ name: 'runtime-node', path: join(root, 'bin', 'runtime', 'node'), expected: this.runtimeNodeContent() });
+    out.push({ name: 'hive', path: join(root, 'bin', 'hive'), expected: this.hiveCliLauncherContent(root) });
     return out;
+  }
+
+  /** The `hive` command bundle (src/core/hiveCliMain.ts), built next to the main bundle. */
+  private hiveCliBundlePath(): string {
+    return join(__dirname, 'hiveCli.js');
+  }
+
+  /** `<root>/bin/hive`: runs the hive command bundle through the hive-node launcher, so it works
+   *  whatever node is on the caller's PATH, and defaults HIVE_ROOT to this hive. */
+  private hiveCliLauncherContent(root: string): string {
+    return `#!/bin/sh\n: "\${HIVE_ROOT:=${root}}"\nexport HIVE_ROOT\nexec "${join(root, 'bin', 'hive-node')}" "${this.hiveCliBundlePath()}" "$@"\n`;
+  }
+
+  /** Installs `<root>/bin/hive`, the command agents use to edit tasks.json under its lock instead of
+   *  editing the file directly. POSIX only: it is a sh script. Best-effort, like the other helpers. */
+  private writeHiveCliLauncher(): void {
+    const root = this.root();
+    if (!root || process.platform === 'win32') return;
+    try {
+      const target = join(root, 'bin', 'hive');
+      writeFileSync(target, this.hiveCliLauncherContent(root), 'utf8');
+      chmodSync(target, 0o755);
+    } catch (e) { console.error('[hive] writeHiveCliLauncher failed:', e); }
   }
 
   private writeMemoryShim(): void {
@@ -1446,6 +1470,7 @@ export class HiveManager {
     // written before any hook installer runs (they probe for it).
     this.writeNodeLauncher();
     this.writeMemoryShim();
+    this.writeHiveCliLauncher();
     // …and the PATH-visible `node` fallback for the agent's OWN subprocesses.
     this.writeRuntimeShims();
 
