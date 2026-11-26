@@ -238,7 +238,7 @@ test('on a volume without hard links, an edit from the window answers ok: false 
     () => updateTaskLedgerFile(file, (cards) => cards.map((c) => ({ ...c, status: 'done' })), { waitMs: 50, link }) !== null,
     { sleep: async () => { throw new Error('must not pause: this is not a busy ledger'); }, log: (l) => lines.push(l) });
   assert.equal(answer.ok, false);
-  assert.match(answer.error, /does not support hard links/);
+  assert.match(answer.error, /hard links/);
   assert.match(answer.error, /task ledger writes are disabled/);
   assert.equal(lines.length, 1, 'the failure is logged once');
   assert.ok(fs.readFileSync(file).equals(before), 'tasks.json is byte for byte as it was');

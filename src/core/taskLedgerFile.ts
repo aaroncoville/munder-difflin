@@ -226,7 +226,9 @@ interface StaleBounds { staleMs: number; startTime: (pid: number) => string | nu
  */
 function isStale(lock: HeldLock, bounds: StaleBounds, owners: Map<string, boolean | null>): boolean {
   const { record } = lock;
-  if (!record || record.host !== hostname() || typeof record.pid !== 'number') return lock.ageMs > bounds.staleMs;
+  // Only a positive integer names one process: kill(0, 0) and kill(-1, 0) ask about process groups and
+  // succeed, and a fraction is never "no such process", so any of those would read as a holder alive for good.
+  if (!record || record.host !== hostname() || typeof record.pid !== 'number' || !Number.isSafeInteger(record.pid) || record.pid <= 0) return lock.ageMs > bounds.staleMs;
   if (!alive(record.pid)) return true;
   // A fresh lock with a running holder is never broken, so there is no need yet to ask which process it is.
   if (lock.ageMs <= bounds.staleMs) return false;
@@ -309,7 +311,11 @@ function acquire(
       } catch (e) {
         const code = (e as NodeJS.ErrnoException).code;
         if (code && NO_HARD_LINKS.has(code)) {
-          throw new Error(`${dirname(lock)}: this volume does not support hard links (${code}), which the lock on tasks.json needs; task ledger writes are disabled`);
+          // EPERM is also what a permission or sandbox rule refusing the link gives, so it names both causes.
+          const cause = code === 'EPERM'
+            ? 'this volume may not support hard links, or a permission or sandbox rule refused one'
+            : 'this volume does not support hard links';
+          throw new Error(`${dirname(lock)}: ${cause} (${code}), which the lock on tasks.json needs; task ledger writes are disabled`);
         }
         if (code !== 'EEXIST') throw e;
       }
