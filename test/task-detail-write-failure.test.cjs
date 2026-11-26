@@ -61,3 +61,40 @@ test('a move the ledger refused snaps back, and the detail says why', async () =
   assert.ok(words.includes(BUSY), `the main process's reason must be on screen; got:\n${words}`);
   assert.ok(words.includes('write the docs'), 'the message names the card');
 });
+
+/** Opens the detail of card D-1 with a ledger whose patch answers `answer()`. */
+async function openDetail(answer) {
+  const listens = { addEventListener() {}, removeEventListener() {} };
+  global.document = { visibilityState: 'hidden', hasFocus: () => false, ...listens };
+  global.window = {
+    ...listens,
+    cth: {
+      hiveTasks: async () => ({ tasks: [{ id: 'D-1', title: 'write the docs', status: 'todo' }] }),
+      hivePatchTask: async () => answer()
+    }
+  };
+  useStore.getState().openTaskDetail('D-1');
+  const view = mount(TaskDetailOverlay, {});
+  mounted.push(view);
+  await settle();
+  view.render();
+  return view;
+}
+
+async function moveTo(view, status) {
+  screen(view).detail.props.onMove(status);
+  await settle();
+  await settle();
+  view.render();
+}
+
+test('a move that goes through after one that was refused clears the line', async () => {
+  let answer = { ok: false, error: BUSY };
+  const view = await openDetail(() => answer);
+  await moveTo(view, 'done');
+  assert.ok(screen(view).words.includes(BUSY), 'the first move was refused and said so');
+  answer = { ok: true };
+  await moveTo(view, 'done');
+  const { words } = screen(view);
+  assert.ok(!words.includes(BUSY), `the old failure must be gone; got:\n${words}`);
+});
