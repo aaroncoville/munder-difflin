@@ -121,6 +121,16 @@ test('add, patch and delete refuse an unreadable ledger instead of replacing it'
   assert.equal(fs.readFileSync(file, 'utf8'), broken, 'the unreadable ledger is left as it is');
 });
 
+test('add, patch and delete refuse a ledger that is valid JSON of the wrong shape instead of replacing it', (t) => {
+  const { hive, file } = floor(t);
+  const legacy = '[{"id":"a"}]';
+  fs.writeFileSync(file, legacy);
+  assert.throws(() => hive.addTask(card('b')), /tasks\.json is not a task ledger/);
+  assert.throws(() => hive.patchTask('a', { status: 'done' }), /tasks\.json is not a task ledger/);
+  assert.throws(() => hive.deleteTask('a'), /tasks\.json is not a task ledger/);
+  assert.equal(fs.readFileSync(file, 'utf8'), legacy, 'the ledger is left as it is');
+});
+
 test('a ledger write from the app gives up quickly when another process holds the lock', (t) => {
   const { hive, file } = floor(t);
   fs.writeFileSync(`${file}.lock`, JSON.stringify({ pid: process.pid, host: os.hostname(), acquiredAt: new Date().toISOString(), token: 'other' }));

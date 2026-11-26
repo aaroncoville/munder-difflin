@@ -207,6 +207,24 @@ test('an unreadable ledger is refused by default, and treated as empty only when
   assert.deepEqual(ids(file), ['b']);
 });
 
+test('valid JSON of the wrong shape is refused by default and left as it is, and treated as empty only when asked', (t) => {
+  for (const text of ['[{"id":"legacy"}]', '{"tasks":{"x":1}}', '{"tasks":"a"}', '{"tasks":null}', 'null', '42', '"tasks"']) {
+    const { dir, file } = hive(t, text);
+    assert.throws(() => updateTaskLedgerFile(file, (c) => [...c, { id: 'b' }]), /tasks\.json is not a task ledger/, text);
+    assert.equal(fs.readFileSync(file, 'utf8'), text, `${text} is left alone`);
+    assert.deepEqual(leftovers(dir), [], `${text}: no lock or temporary file is left`);
+    updateTaskLedgerFile(file, (c) => [...c, { id: 'b' }], { unreadable: 'empty' });
+    assert.deepEqual(ids(file), ['b'], text);
+  }
+});
+
+test('an object without a tasks list is a ledger with no cards yet', (t) => {
+  const { file } = hive(t, { version: 2 });
+  updateTaskLedgerFile(file, (c) => [...c, { id: 'a' }]);
+  assert.deepEqual(read(file).version, 2);
+  assert.deepEqual(ids(file), ['a']);
+});
+
 test('two processes adding 50 cards each at the same time lose none', async (t) => {
   const { file } = hive(t, { tasks: [] });
   const N = 50;
