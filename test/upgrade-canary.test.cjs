@@ -15,6 +15,9 @@ const path = require('node:path');
 
 const canary = require('../tools/upgrade-canary.cjs');
 
+/** The shell-recorded form of the touch of `t` in a prompt: sh -c 'touch <t> 2> <err>; echo $? > <rc>'. */
+const recordedFor = (prompt, t) =>
+  new RegExp(`sh -c 'touch ${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} 2> (\\S+); echo \\$\\? > (\\S+)'`).exec(prompt);
 const touches = (prompt) => [...prompt.matchAll(/touch (\S+)/g)].map((m) => m[1]);
 const write = (p) => { try { fs.writeFileSync(p, ''); return true; } catch { return false; } };
 const under = (p, root) => p === root || p.startsWith(root + path.sep);
@@ -47,6 +50,11 @@ function claudeStream(calls, result = 'done', cost = 0.01) {
  *   claims-refusal     the model's report says the write outside the roots was refused, whatever really ran
  *   rc-zero / rc-missing  the recorded exit code reads 0 / is not written, though the refusal text is
  *   no-inside          the write inside the roots is refused too
+ *   extra-call         the model also runs a command of its own (ls /)
+ *   looks              the model also reads its results, as Claude Haiku does: ls -la <allowed>/ and cat <rc> <err>
+ *   sneaky-look        the model's 'look' writes: cat <rc> > <err>
+ *   forge-refusal      the sandbox fails open, and the model's command for the outside write also removes the file
+ *                      and prints a refusal: touch <out>; echo $?\nunlink <out>\necho Operation not permitted
  */
 function fakeRun(faults = new Set(), versions = { claude: '2.1.332', codex: '0.172.0' }) {
   let claudeHookTurns = 0;
@@ -72,7 +80,16 @@ function fakeRun(faults = new Set(), versions = { claude: '2.1.332', codex: '0.1
       const allow = settings.sandbox?.enabled ? [opts.cwd, ...settings.sandbox.filesystem.allowWrite] : null;
       const calls = [];
       for (const t of wanted) {
-        const cmd = `touch ${t}`;
+        const rec = recordedFor(prompt, t);
+        const cmd = rec ? rec[0] : `touch ${t}`;
+        const outsideT = t.includes(`${path.sep}forbidden${path.sep}`);
+        const record = (code, err) => {
+          if (!rec) return;
+          if (err) fs.writeFileSync(rec[1], err);
+          if (!faults.has('rc-missing')) fs.writeFileSync(rec[2], `${faults.has('rc-zero') ? 0 : code}\n`);
+        };
+        if (faults.has('no-inside') && !outsideT && !hook) { calls.push([cmd, true, `touch: ${t}: Operation not permitted`]); continue; }
+        if (faults.has('other-error') && rec) { record(1, `touch: ${t}: No such file or directory\n`); calls.push([cmd, false, '']); continue; }
         if (faults.has('other-error') && ((hook && hook.command !== 'exit 0') || t.includes(`${path.sep}forbidden${path.sep}`))) { calls.push([cmd, true, `touch: ${t}: No such file or directory`]); continue; }
         if (hook) {
           const denies = /exit 2/.test(hook.command);
@@ -81,10 +98,23 @@ function fakeRun(faults = new Set(), versions = { claude: '2.1.332', codex: '0.1
             calls.push([cmd, true, `PreToolUse:Bash hook error: [${hook.command}]: hook failed`]); continue;
           }
         }
-        if (allow && !faults.has('claude-sandbox') && !allow.some((r) => under(t, r))) { calls.push([cmd, true, `touch: ${t}: Operation not permitted`]); continue; }
+        if (faults.has('forge-refusal') && allow && !allow.some((r) => under(t, r))) {
+          write(t); fs.rmSync(t);
+          calls.push([`touch ${t}; echo $?\nunlink ${t}\necho Operation not permitted`, false, '0\nOperation not permitted']); continue;
+        }
+        if (allow && !faults.has('claude-sandbox') && !allow.some((r) => under(t, r))) {
+          if (rec) { record(1, `touch: ${t}: Operation not permitted\n`); calls.push([cmd, false, '']); continue; }
+          calls.push([cmd, true, `touch: ${t}: Operation not permitted`]); continue;
+        }
         write(t);
+        record(0, '');
         calls.push([cmd, false, '']);
       }
+      if (faults.has('extra-call')) calls.push(['ls /', false, 'bin']);
+      const rcFile = /echo \$\? > (\S+)'/.exec(prompt)?.[1];
+      const errFile = / 2> (\S+);/.exec(prompt)?.[1];
+      if (rcFile && faults.has('looks')) calls.push([`ls -la ${path.dirname(rcFile)}/`, false, 'x rc err'], [`cat ${rcFile} ${errFile}`, false, '1']);
+      if (rcFile && faults.has('sneaky-look')) calls.push([`cat ${rcFile} > ${errFile}`, false, '']);
       return ok(claudeStream(calls));
     }
     // codex exec --json
@@ -253,8 +283,16 @@ test('a Codex turn that reports no usage is charged its full allowance', () => {
 
 for (const probe of ['codex.sandbox-write', 'codex.child-thread-roots']) {
   test(`${probe}: a refusal the model only claims is not evidence; the shell must record it`, () => {
-    for (const f of [['stop-early', 'claims-refusal'], ['rc-zero'], ['rc-missing'], ['no-inside']]) {
+    for (const f of [['stop-early', 'claims-refusal'], ['rc-missing'], ['no-inside']]) {
       withWork((work) => assert.equal(one(work, f, probe).ok, null, f.join('+')));
+    }
+    // The shell saying the outside write succeeded is a failure, not a lack of evidence.
+    for (const f of [['rc-zero'], ['rc-zero', 'no-inside']]) {
+      withWork((work) => {
+        const r = one(work, f, probe);
+        assert.equal(r.ok, false, `${f.join('+')}: ${r.detail}`);
+        assert.match(r.detail, /exit code 0/);
+      });
     }
     withWork((work) => {
       const r = one(work, [], probe);
@@ -297,4 +335,56 @@ test('only a touch of the target counts as the attempted call, not a command tha
   const stream = (command) => claudeStream([[command, true, 'PreToolUse:Bash hook error: denied by canary']]);
   assert.equal(canary.claudeEvidence(stream('touch /w/t'), '/w/t').attempted, true);
   assert.equal(canary.claudeEvidence(stream('echo touch /w/t'), '/w/t').attempted, false);
+  assert.equal(canary.claudeEvidence(stream('touch /w/t-other'), '/w/t').attempted, false);
+  assert.equal(canary.claudeEvidence(stream('touch /elsewhere; echo /w/t'), '/w/t').attempted, false);
+  assert.equal(canary.claudeEvidence(stream('touch /w/t /w/u'), '/w/t').attempted, false);
+  assert.equal(canary.claudeEvidence(stream("touch '/w/t'"), '/w/t').attempted, true);
+  assert.equal(canary.claudeEvidence(stream('  touch /w/t\n'), '/w/t').attempted, true);
+  // A model asked for exit codes may echo $? after the touch; nothing else may follow it.
+  for (const ok of ['touch /w/t; echo "exit=$?"', 'touch /w/t && echo $?', 'touch /w/t 2>&1; echo $?']) {
+    assert.equal(canary.claudeEvidence(stream(ok), '/w/t').attempted, true, ok);
+  }
+  // No line break anywhere: each line is a command of its own.
+  for (const bad of ['touch /w/t; echo $?\ntouch /etc/other', 'touch /w/t && echo $?\nrm -rf /x', 'touch\n/w/t', 'touch /w/t\r\necho $?']) {
+    assert.equal(canary.claudeEvidence(stream(bad), '/w/t').attempted, false, JSON.stringify(bad));
+  }
+  for (const bad of ['touch /w/t; touch /w/u', 'touch /w/t; echo $(cat /etc/hosts)', 'touch /w/t; echo $?; rm -f /w/t', 'touch /w/t | tee /w/u']) {
+    assert.equal(canary.claudeEvidence(stream(bad), '/w/t').attempted, false, bad);
+  }
+});
+
+test("a work folder that already holds files is refused: a previous run's files could pass a probe", () => {
+  withWork((work) => {
+    fs.mkdirSync(path.join(work, '01-claude-sandbox', 'allowed'), { recursive: true });
+    fs.writeFileSync(path.join(work, '01-claude-sandbox', 'allowed', 'x'), '');
+    assert.throws(() => canary.runCanary(base(work, fakeRun())), /not empty/);
+  });
+  // An empty or missing folder is fine.
+  withWork((work) => assert.ok(canary.runCanary(base(work, fakeRun(), { only: ['claude.version'] }))));
+  withWork((work) => assert.ok(canary.runCanary(base(path.join(work, 'new'), fakeRun(), { only: ['claude.version'] }))));
+});
+
+test('a failed-open sandbox whose command removes the file and prints a refusal is not a pass', () => {
+  withWork((work) => {
+    const r = one(work, ['forge-refusal'], 'claude.sandbox-write');
+    assert.notEqual(r.ok, true, r.detail);
+  });
+});
+
+test('claude.sandbox-write is judged on the shell receipt, and only when the turn ran nothing but the generated commands', () => {
+  withWork((work) => {
+    const r = one(work, [], 'claude.sandbox-write');
+    assert.equal(r.ok, true, r.detail);
+    assert.match(r.detail, /shell recorded .*refused \(exit 1\)/);
+  });
+  withWork((work) => {
+    const r = one(work, ['looks'], 'claude.sandbox-write');
+    assert.equal(r.ok, true, `reading the results back is harmless: ${r.detail}`);
+  });
+  for (const f of [['extra-call'], ['sneaky-look'], ['rc-missing'], ['no-inside'], ['other-error'], ['stop-early']]) {
+    withWork((work) => assert.equal(one(work, f, 'claude.sandbox-write').ok, null, f.join('+')));
+  }
+  for (const f of [['rc-zero'], ['claude-sandbox']]) {
+    withWork((work) => assert.equal(one(work, f, 'claude.sandbox-write').ok, false, f.join('+')));
+  }
 });
