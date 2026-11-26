@@ -15,7 +15,7 @@
 import { createHash } from 'node:crypto';
 import { lstatSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
-import { ensurePrivateDir, writeNoFollow } from '../core/hookRuntime';
+import { ensurePrivateDir, writeNoFollow } from './hookRuntime';
 
 /** A Claude spawn refused because its settings file cannot be kept where no agent can write it. */
 export class SeatSettingsRefused extends Error {

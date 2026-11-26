@@ -15,7 +15,7 @@
  * This covers agents the app sandboxes (Claude and Codex). An agent the app does not sandbox can write anywhere, so no
  * root check holds it; such agents keep their own admission rule (hive.ts).
  */
-import { overlaps, type WriteRoot } from '../core/hookRuntime';
+import { overlaps, type WriteRoot } from './hookRuntime';
 
 const registered = new Map<string, string>();
 

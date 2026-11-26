@@ -13,6 +13,8 @@ export * from './codexWritableRoots';
 export * from './hookRuntime';
 export * from './launchLine';
 export * from './pricing';
+export * from './privateDirs';
+export * from './seatSettings';
 export * from './transcript';
 export * from './usage';
 export * from './usageEvents';
