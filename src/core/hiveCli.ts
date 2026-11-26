@@ -4,7 +4,7 @@
  * An agent or a service that edits tasks.json with a file-edit tool does so outside the ledger lock, so its
  * write can interleave with the app's and either side's cards can be lost. These commands make the same edits
  * through updateTaskLedgerFile instead: under tasks.json.lock, against the cards on disk at that moment, and
- * replaced by rename. A tasks.json that is not valid JSON is refused, never overwritten. Nothing here commits
+ * replaced by rename. A tasks.json that is not valid JSON, or not a ledger, is refused, never overwritten. Nothing here commits
  * or runs git: committing the hive stays with the app.
  *
  * runHiveCli takes its arguments, environment and output as parameters and returns the exit status, so it can

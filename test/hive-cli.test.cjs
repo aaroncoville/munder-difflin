@@ -257,6 +257,17 @@ test('a corrupt tasks.json is refused and left exactly as it was', (t) => {
   assert.deepEqual(fs.readdirSync(dir), ['tasks.json'], 'no lock or temporary file is left');
 });
 
+test('a tasks.json that is valid JSON but not a ledger is refused and left exactly as it was', (t) => {
+  for (const text of ['[{"id":"legacy"}]', '{"tasks":{"x":1}}']) {
+    const { dir, file } = hive(t, text);
+    const r = run(['--hive', dir, 'tasks', 'add', '--json', '{"id":"C"}']);
+    assert.equal(r.code, 1, text);
+    assert.match(r.stderr, /not a task ledger/, text);
+    assert.equal(fs.readFileSync(file, 'utf8'), text);
+    assert.deepEqual(fs.readdirSync(dir), ['tasks.json'], 'no lock or temporary file is left');
+  }
+});
+
 test('a lock held by another live process times out with exit 75, naming the holder', async (t) => {
   const { dir, file, lock } = hive(t, { tasks: [{ id: 'a' }] });
   const holder = spawn(process.execPath, ['-e', `
