@@ -11,7 +11,12 @@
 //    file at all;
 //  - a bare import must be a Node builtin or an npm package, and never electron,
 //    an electron-* package, an @electron/* package, or node-pty (nor a subpath
-//    of one, such as electron/main).
+//    of one, such as electron/main);
+//  - no file may use createRequire (from 'module' / 'node:module', in any
+//    form: named, renamed, through a namespace or default import, or
+//    destructured from require). It builds a require() whose specifiers the
+//    scanner cannot see, so createRequire(import.meta.url)('electron') would
+//    otherwise pass.
 //
 // src/core may import src/shared, so every shared file it reaches is held to the
 // same rule, transitively: otherwise core -> shared -> electron would pass.
@@ -99,8 +104,28 @@ function specifiers(file) {
   return ts.preProcessFile(fs.readFileSync(file, 'utf8'), true, true).importedFiles.map((i) => i.fileName);
 }
 
+const SCRIPT_KIND = { '.ts': ts.ScriptKind.TS, '.mts': ts.ScriptKind.TS, '.cts': ts.ScriptKind.TS, '.tsx': ts.ScriptKind.TSX, '.jsx': ts.ScriptKind.JSX };
+
+/** Lines where `file` names createRequire, as an identifier or as a ['createRequire'] key. */
+function createRequireLines(file) {
+  const sf = ts.createSourceFile(file, fs.readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true,
+    SCRIPT_KIND[path.extname(file)] ?? ts.ScriptKind.JS);
+  const lines = [];
+  const visit = (node) => {
+    const named = ts.isIdentifier(node) && node.text === 'createRequire';
+    const keyed = ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression)
+      && node.argumentExpression.text === 'createRequire';
+    if (named || keyed) lines.push(sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1);
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return [...new Set(lines)];
+}
+
 /** Every offence reachable from `file`, following imports into src/shared. */
 function offendersFrom(file, chain, seen, offenders) {
+  const here = [...chain, rel(file)].join(' -> ');
+  for (const line of createRequireLines(file)) offenders.push(`${here}:${line}: uses createRequire`);
   for (const spec of specifiers(file)) {
     const { why, follow } = judge(file, spec);
     if (why) offenders.push(`${[...chain, rel(file)].join(' -> ')}: ${why}`);
