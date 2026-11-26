@@ -97,6 +97,10 @@ export interface HeadlessSeatOptions {
   /** The agent's plugin map, the same one an interactive seat's settings carry: every plugin the owner has, each on
    *  only when it is kept for agents. Required. */
   enabledPlugins: Record<string, boolean>;
+  /** True when the empty plugin map is meant: the owner has no plugins to list. An empty map without it is refused,
+   *  since it cannot be told from a map nobody computed, and it would leave on any plugin that loads from outside
+   *  the owner's settings files (an organisation's synced plugins, for one). */
+  noPlugins?: boolean;
   model?: string;
   /** Passed to --max-budget-usd. */
   maxBudgetUsd?: number;
@@ -210,6 +214,11 @@ export function buildHeadlessLaunch(o: HeadlessSeatOptions): HeadlessLaunch {
   }
   if (!isPlainObject(o.enabledPlugins) || !Object.values(o.enabledPlugins).every((v) => typeof v === 'boolean')) {
     throw new HeadlessSeatRefused('no plugin map (enabledPlugins) was given, so every plugin the owner enabled would load');
+  }
+  if ((Object.keys(o.enabledPlugins).length === 0) !== (o.noPlugins === true)) {
+    throw new HeadlessSeatRefused(o.noPlugins === true
+      ? 'the plugin map names plugins although noPlugins says there are none'
+      : 'the plugin map is empty; pass noPlugins: true when the owner has no plugins to list');
   }
   if (o.maxOutputBytes !== undefined && !(Number.isSafeInteger(o.maxOutputBytes) && o.maxOutputBytes > 0)) {
     throw new HeadlessSeatRefused('the output bound is not a positive whole number of bytes');

@@ -231,6 +231,15 @@ test('Given no plugin map, when the launch is built, then it is refused rather t
   assert.equal(fs.existsSync(f.settingsDir) && fs.readdirSync(f.settingsDir).length > 0, false, 'no settings file is written');
 });
 
+test('Given an empty plugin map, when the launch is built, then it is refused unless the caller says the agent has no plugins', (t) => {
+  const f = floor(t);
+  assert.throws(() => H.buildHeadlessLaunch(f.opts({ enabledPlugins: {} })), /plugin/);
+  const l = H.buildHeadlessLaunch(f.opts({ enabledPlugins: {}, noPlugins: true }));
+  assert.deepEqual(JSON.parse(fs.readFileSync(l.settingsFile, 'utf8')).enabledPlugins, {});
+  assert.throws(() => H.buildHeadlessLaunch(f.opts({ noPlugins: true })), /plugin/, 'the map is still required');
+  assert.throws(() => H.buildHeadlessLaunch(f.opts({ enabledPlugins: PLUGINS, noPlugins: true })), /plugin/, 'a map with entries is not "no plugins"');
+});
+
 // The headless session loads no user settings, so the owner's user settings cannot widen it and are not read. Managed
 // settings cannot be left out and outrank the generated file: a write root there outside the seat's roots would reach
 // the sandbox and the edit tools whatever the generated settings say.
