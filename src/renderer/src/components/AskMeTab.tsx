@@ -216,7 +216,14 @@ export function AskMeTab() {
       const result = updated
         ? await window.cth.hivePatchTask(task.id, { humanQA: updated.humanQA })
         : { ok: false };
-      if (!result.ok) throw new Error('task changed before answer could be saved');
+      if (!result.ok) {
+        // Nothing was written, so nothing is announced; the draft and images stay in the box.
+        setNotifyError(translate('askMe.answerNotSaved', {
+          title: task.title,
+          error: result.error ?? translate('askMe.cardChanged')
+        }));
+        return;
+      }
       setTasks(next);
       const askKey = askKeyOf(task.id, open.askedAt);
       if (askKey) noteAskSubmitted(askKey, answer);
@@ -235,8 +242,9 @@ export function AskMeTab() {
       setNotifyError(told.ok ? '' : translate('askMe.answerNotSent', { title: task.title, error: told.error ?? '?' }));
       setAnswerDraft(task.id, '');
       clearAttachments(task.id);
-    } catch {
-      /* leave the draft so the user can retry */
+    } catch (e) {
+      // Leave the draft so the user can retry, and say why.
+      setNotifyError(translate('askMe.answerNotSaved', { title: task.title, error: e instanceof Error ? e.message : String(e) }));
     } finally {
       // ALWAYS, and in a finally rather than at the end: `sending` is what
       // rejects the next send, and it is one value for the whole board, so a
