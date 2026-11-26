@@ -284,4 +284,3 @@ export function releaseFileLock(lock: string, own: OwnLock): void {
   try { confirmFileLock(lock, own, () => new Error('not this writer\'s lock')); } catch { return; }
   try { unlinkSync(lock); } catch { /* already gone */ }
 }
-
