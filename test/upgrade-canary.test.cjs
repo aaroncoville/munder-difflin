@@ -166,9 +166,9 @@ function withWork(fn) {
   try { return fn(dir); } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }
 
-/** A stand-in Claude executable: the settings schema for these key paths, minified the way the CLI carries it, with
- *  the network, filesystem and credentials objects built lazily and referred to by name. */
-const ANCHORED = { 'sandbox.network': 'Ja', 'sandbox.filesystem': 'Za', 'sandbox.credentials': 'el' };
+/** A stand-in Claude executable: the settings schema for these key paths, minified the way the CLI carries it, in a
+ *  bundled module that imports the zod builders, with some sub-objects built lazily and referred to by name. */
+const ANCHORED = { 'sandbox.network': 'Ja', 'sandbox.filesystem': 'Za', 'sandbox.credentials': 'el', 'sandbox.credentials.sigv4': 'Qa' };
 function schemaFor(paths) {
   const tree = {};
   for (const p of paths) { let n = tree; for (const part of p.split('.')) n = n[part] ??= {}; }
@@ -180,7 +180,7 @@ function schemaFor(paths) {
   }).join(',')}})`;
   const sandbox = `DGo=p(()=>${emit(tree.sandbox ?? {}, 'sandbox')})`;
   const perms = `function nr(e){return ${emit(tree.permissions ?? {}, 'permissions')}.passthrough()}`;
-  return `\0\0binary;${defs.join(';')};${sandbox};${perms};more\0`;
+  return `\0\0binary\n// @bun\nimport{M,u}from"/$bunfs/root/chunk-zod.js";${defs.join(';')};${sandbox};${perms};\n// @bun\nmore\0`;
 }
 const keyFixture = require('../tools/claude-settings-keys.json');
 const fakeBinaryDir = fs.mkdtempSync(path.join(os.tmpdir(), 'upgrade-canary-bin-'));
