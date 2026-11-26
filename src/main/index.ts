@@ -2117,8 +2117,9 @@ function dispatchWebhookWork(arg: {
     };
     // addTask appends against the latest on-disk ledger and is idempotent by task
     // id, so a concurrent card writer (Slack, god, voice, another webhook) can't
-    // have its card lost to our stale whole-ledger overwrite. (writeTasks(...existing)
-    // recreated exactly that race.) A fresh taskId never collides, so this always adds.
+    // have its card lost to our stale whole-ledger overwrite. (Writing back the whole
+    // ledger read earlier recreated exactly that race.) A fresh taskId never collides,
+    // so this always adds.
     hive.addTask(card);
   } catch (e) {
     console.error('[webhook] could not create task card:', e instanceof Error ? e.message : e);

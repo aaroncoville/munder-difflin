@@ -128,15 +128,10 @@ export function AskMeTab() {
     .sort((a, b) => compareByNewestAsk(openQuestion(a), openQuestion(b)));
 
   /**
-   * Apply `patch` to the OPEN humanQA entry of one card, on the RAW ledger.
-   * Returns whether it landed.
-   *
-   * Re-reads tasks.json first rather than writing this view's 5s-old snapshot,
-   * because `hive:writeTasks` treats the incoming array as the card MEMBERSHIP:
-   * writing our snapshot back would delete any card the god added since the last
-   * poll. Re-locating the open question by its text also means an answer can
-   * never land on a different question the god swapped in underneath us — in
-   * that case nothing is written and the draft is kept.
+   * An answer and a dismissal each send ONE card's humanQA to hive:patchTask,
+   * never this view's 5s-old snapshot of the whole ledger: the main process
+   * applies the patch to tasks.json as it is on disk, under its lock, so a card
+   * the god added since the last poll cannot be lost.
    */
 
   /**
