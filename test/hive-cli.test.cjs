@@ -251,14 +251,24 @@ test('a hive root that is not a folder fails without creating anything', (t) => 
   assert.equal(fs.existsSync(missing), false);
 });
 
-test('--help, no arguments and bad arguments print the usage and exit 2', () => {
-  for (const argv of [['--help'], [], ['tasks'], ['tasks', '--help'], ['tasks', 'frobnicate'], ['jobs', 'list'],
+test('--help prints the usage to stdout and exits 0, wherever it is given', () => {
+  for (const argv of [['--help'], ['-h'], ['tasks', '--help'], ['tasks', 'add', '--help'], ['--hive', '/nowhere', 'tasks', 'patch', 'a', '-h']]) {
+    const r = run(argv, {});
+    assert.equal(r.code, 0, argv.join(' '));
+    assert.match(r.stdout, /^usage: hive /, argv.join(' '));
+    assert.equal(r.stderr, '', argv.join(' '));
+  }
+});
+
+test('no arguments and bad arguments print the usage to stderr and exit 2', () => {
+  for (const argv of [[], ['tasks'], ['tasks', 'frobnicate'], ['jobs', 'list'],
     ['tasks', 'add'], ['tasks', 'patch', '--json', '{}'], ['tasks', 'ask', 'a'], ['tasks', 'add', '--json'],
     ['tasks', 'add', '--json', '{"id":"a"}', '--bogus'], ['tasks', 'patch', 'a', 'b', '--json', '{}']]) {
     const r = run(argv, { HIVE_ROOT: os.tmpdir() });
     assert.equal(r.code, 2, argv.join(' '));
-    assert.match(r.stderr + r.stdout, /usage: hive/, argv.join(' '));
-    assert.match(r.stderr + r.stdout, /@path|@<path>/, 'the usage says --json takes @path');
+    assert.match(r.stderr, /usage: hive/, argv.join(' '));
+    assert.equal(r.stdout, '', argv.join(' '));
+    assert.match(r.stderr, /@path|@<path>/, 'the usage says --json takes @path');
   }
 });
 

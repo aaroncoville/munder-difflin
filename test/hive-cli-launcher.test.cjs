@@ -48,8 +48,8 @@ test('ensureHive installs bin/hive, which runs the hive command on this hive wit
   assert.deepEqual(cards.map((c) => c.id), ['from-launcher']);
 
   const help = spawnSync(launcher, ['--help'], { env, encoding: 'utf8' });
-  assert.equal(help.status, 2);
-  assert.match(help.stderr, /^usage: hive /);
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /^usage: hive /);
 
   // HIVE_ROOT, when set, still wins.
   const other = path.join(home, 'other-hive');

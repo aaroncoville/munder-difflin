@@ -71,9 +71,9 @@ environment:
   HIVE_ROOT                   the hive folder, when --hive is not given
   HIVE_TASKS_LOCK_TIMEOUT_MS  how long to wait for the ledger lock (default 5000)
 
-exit status: 0 done; 1 error (unknown card, bad JSON, unreadable ledger);
-  2 usage; 75 the ledger lock stayed held by, or was taken over by, another
-  process; nothing was written (try again)
+exit status: 0 done, or --help; 1 error (unknown card, bad JSON, unreadable
+  ledger); 2 usage; 75 the ledger lock stayed held by, or was taken over by,
+  another process; nothing was written (try again)
 `;
 
 const EXIT_ERROR = 1;
@@ -159,7 +159,11 @@ export function runHiveCli(argv: string[], env: Record<string, string | undefine
   const readFile = io.readFile ?? ((path: string) => readFileBounded(path, HIVE_CLI_FILE_MAX_BYTES));
   try {
     const { positional, options, help } = parse(argv);
-    if (help || positional.length === 0) throw new UsageError('');
+    if (help) {
+      io.stdout(HIVE_CLI_USAGE);
+      return 0;
+    }
+    if (positional.length === 0) throw new UsageError('');
     const [group, command, ...rest] = positional;
     if (group !== 'tasks') throw new UsageError(`unknown command ${group}`);
     if (!command) throw new UsageError('');

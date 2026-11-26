@@ -41,8 +41,8 @@ test('the bundle is one self-contained CommonJS file that runs under plain node'
   assert.doesNotMatch(code, /\bimport\s*\(|^\s*import\s|^\s*export\s/m, 'CommonJS, not ESM');
 
   const help = spawnSync(process.execPath, [out, '--help'], { encoding: 'utf8', env: { PATH: process.env.PATH } });
-  assert.equal(help.status, 2);
-  assert.match(help.stderr, /^usage: hive /);
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /^usage: hive /);
 
   const hive = path.join(dir, 'hive');
   fs.mkdirSync(hive);
