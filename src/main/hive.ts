@@ -1456,14 +1456,21 @@ export class HiveManager {
     // lives for milliseconds, but a commit can land while another process holds the lock, and a writer that dies
     // leaves its temporary copy of the whole ledger behind.
     // `cost-ledger.jsonl.lock*`, `.cost-ledger.jsonl.lock.tmp-*`: the same lock (fileLock.ts) around a headless run's
-    // cost row (headlessStream.ts), its set-aside copies and its temporary record.
+    // or the app's cost row (costLedgerFile.ts), its set-aside copies and its temporary record.
     const want = ['fleet.json', 'hooks.sock', 'cost-ledger.jsonl', 'crashes/', '.DS_Store', 'usage/', ...AGENT_ALLOWLIST_IGNORE_LINES, `${SET_ASIDE_PREFIX}*/`,
       'tasks.json.lock', 'tasks.json.lock.stale-*', '.tasks.json.tmp-*', '.tasks.json.lock.tmp-*',
       'cost-ledger.jsonl.lock', 'cost-ledger.jsonl.lock.stale-*', '.cost-ledger.jsonl.lock.tmp-*'];
-    let lines: string[] = [];
-    if (existsSync(gitignore)) { try { lines = readFileSync(gitignore, 'utf8').split('\n'); } catch { lines = []; } }
+    // Missing rules are appended after the file's bytes, which stay as they are (an owner's blank lines and comments
+    // included), in the file's own line ending; a rule on a CRLF line is already there.
+    let text = '';
+    if (existsSync(gitignore)) { try { text = readFileSync(gitignore, 'utf8'); } catch { text = ''; } }
+    const lines = text.split('\n').map((l) => l.replace(/\r$/, ''));
     const missing = want.filter((w) => !lines.includes(w));
-    if (missing.length) writeFileSync(gitignore, [...lines.filter(Boolean), ...missing].join('\n') + '\n', 'utf8');
+    if (missing.length) {
+      const eol = text.includes('\r\n') ? '\r\n' : '\n';
+      const lead = text && !text.endsWith('\n') ? eol : '';
+      writeFileSync(gitignore, `${text}${lead}${missing.join(eol)}${eol}`, 'utf8');
+    }
 
     // The hook shim: a dumb pipe between a `claude` hook and our UDS. Refreshed
     // on every bootstrap so it tracks code changes.
