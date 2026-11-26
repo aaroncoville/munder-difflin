@@ -55,6 +55,8 @@ function floor(t, canned = { stdout: '{}' }) {
     prompt: 'Say ok.', hiveRoot, agentId: 'ag1', cwd, settingsDir, hookRuntime, cliPath: cli,
     parentEnv: { HOME: base, PATH: `${NODE_DIR}:/usr/bin:/bin`, USER: 'someone', LANG: 'en_US.UTF-8' },
     enabledPlugins: PLUGINS,
+    // The machine's own managed settings are not this test's: point the check at a file that is not there.
+    managedSettingsFile: path.join(base, 'managed', 'managed-settings.json'),
     ...more,
   });
   return { base, hiveRoot, cwd, settingsDir, hookRuntime, cli, record, opts };
@@ -218,6 +220,64 @@ test('Given no plugin map, when the launch is built, then it is refused rather t
   assert.throws(() => H.buildHeadlessLaunch(f.opts({ enabledPlugins: ['kept-tool@market'] })), /plugin/);
   assert.throws(() => H.buildHeadlessLaunch(f.opts({ enabledPlugins: { 'kept-tool@market': 'yes' } })), /plugin/);
   assert.equal(fs.existsSync(f.settingsDir) && fs.readdirSync(f.settingsDir).length > 0, false, 'no settings file is written');
+});
+
+// Claude merges the owner's managed and user settings into the headless session: a write root there outside the
+// seat's roots would reach the sandbox and the edit tools whatever the generated settings say.
+function ownerSettings(f, dir, json) {
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify(json));
+}
+const OTHER = (f) => path.join(f.hiveRoot, 'agents', 'other');
+
+test('Given user settings in CLAUDE_CONFIG_DIR that add another agent\'s folder, when the launch is built, then it is refused naming the root and nothing is written', (t) => {
+  for (const json of [
+    (f) => ({ sandbox: { filesystem: { allowWrite: [OTHER(f)] } } }),
+    (f) => ({ permissions: { additionalDirectories: [OTHER(f)] } }),
+    (f) => ({ permissions: { allow: [`Edit(/${OTHER(f)}/**)`] } }),
+  ]) {
+    const f = floor(t);
+    fs.mkdirSync(OTHER(f));
+    const cfg = path.join(f.base, 'cfg');
+    ownerSettings(f, cfg, json(f));
+    const parentEnv = { ...f.opts().parentEnv, CLAUDE_CONFIG_DIR: cfg };
+    assert.throws(() => H.buildHeadlessLaunch(f.opts({ parentEnv })), (e) => e.name === 'HeadlessSeatRefused' && /user settings/.test(e.message) && e.message.includes(OTHER(f)), JSON.stringify(json(f)));
+    assert.equal(fs.existsSync(f.settingsDir), false, 'no settings file is written');
+  }
+});
+
+test('Given the default user folder under HOME adds a root outside the seat, when the launch is built, then it is refused', (t) => {
+  const f = floor(t);
+  ownerSettings(f, path.join(f.base, '.claude'), { sandbox: { filesystem: { allowWrite: ['~/elsewhere'] } } });
+  assert.throws(() => H.buildHeadlessLaunch(f.opts()), /user settings: sandbox\.filesystem\.allowWrite/);
+});
+
+test('Given managed settings that add a root outside the seat, when the launch is built, then it is refused naming the managed source', (t) => {
+  const f = floor(t);
+  ownerSettings(f, path.join(f.base, 'managed'), { permissions: { additionalDirectories: [f.hiveRoot] } });
+  fs.renameSync(path.join(f.base, 'managed', 'settings.json'), path.join(f.base, 'managed', 'managed-settings.json'));
+  assert.throws(() => H.buildHeadlessLaunch(f.opts()), /managed settings/);
+});
+
+test('Given user settings that cannot be read or understood, when the launch is built, then it is refused', (t) => {
+  const f = floor(t);
+  const cfg = path.join(f.base, 'cfg');
+  fs.mkdirSync(cfg);
+  fs.writeFileSync(path.join(cfg, 'settings.json'), '{ not json');
+  assert.throws(() => H.buildHeadlessLaunch(f.opts({ parentEnv: { ...f.opts().parentEnv, CLAUDE_CONFIG_DIR: cfg } })), /could not be understood/);
+});
+
+test('Given a Claude user folder that cannot be placed, when the launch is built, then it is refused', (t) => {
+  const f = floor(t);
+  assert.throws(() => H.buildHeadlessLaunch(f.opts({ parentEnv: { ...f.opts().parentEnv, CLAUDE_CONFIG_DIR: 'relative/cfg' } })), /CLAUDE_CONFIG_DIR/);
+});
+
+test('Given user settings whose roots are all inside the seat\'s roots, when the launch is built, then it goes ahead', (t) => {
+  const f = floor(t);
+  const cfg = path.join(f.base, 'cfg');
+  ownerSettings(f, cfg, { sandbox: { filesystem: { allowWrite: [path.join(f.hiveRoot, 'evidence')] } }, permissions: { additionalDirectories: [f.cwd] } });
+  const l = H.buildHeadlessLaunch(f.opts({ parentEnv: { ...f.opts().parentEnv, CLAUDE_CONFIG_DIR: cfg } }));
+  assert.ok(fs.existsSync(l.settingsFile));
 });
 
 test('Given a working folder inside the private settings folder, when the launch is built, then it is refused', (t) => {
