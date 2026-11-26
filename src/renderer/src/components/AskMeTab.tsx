@@ -277,7 +277,7 @@ export function AskMeTab() {
         : { ok: false };
       if (!result.ok) {
         setTasks(tasks); // restore on failure so the user can retry
-        setNotifyError(translate('askMe.dismissNotSaved', { title: task.title, error: result.error ?? translate('askMe.cardChanged') }));
+        setNotifyError(translate('askMe.dismissNotSaved', { title: task.title, error: result.error ?? translate('askMe.cardChangedBeforeDismissal') }));
       } else {
         setNotifyError('');
       }

@@ -108,3 +108,14 @@ test('a dismissal that works after one that failed clears the failure line', asy
   view.render();
   assert.ok(!shown(view.tree).includes(BUSY), `the old failure must be gone; got:\n${shown(view.tree)}`);
 });
+
+test('a dismissal refused without a reason does not speak of an answer', async () => {
+  fakeBridge({ tasks: [task('A-2')], patched: { ok: false } });
+  const view = await open();
+  await find(view.tree, (n) => n.props && n.props['aria-label'] === 'dismiss this ask').props.onClick();
+  await settle();
+  view.render();
+  const words = shown(view.tree);
+  assert.ok(words.includes('was not dismissed'), `the failure is shown; got:\n${words}`);
+  assert.ok(!/answer could be saved/.test(words), `a dismissal is not an answer; got:\n${words}`);
+});
