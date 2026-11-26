@@ -32,7 +32,7 @@ process.env.USERPROFILE = FAKE_HOME;
 
 const loadTs = require('./load-ts.cjs');
 const { TelemetryCollector } = loadTs('src/main/telemetry.ts');
-const { projectDir, readAgentUsage } = loadTs('src/main/transcript.ts');
+const { projectDir, readAgentUsage } = loadTs('src/core/transcript.ts');
 
 function assistantLine(sessionId, messageId, outputTokens) {
   return JSON.stringify({

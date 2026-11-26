@@ -33,7 +33,7 @@ const {
   newestOwnedRolloutAt
 } = loadTs('src/main/codexActivity.ts');
 const { lastCatchupAt } = loadTs('src/main/codexCatchupLog.ts');
-const { snapshotUsageFor } = loadTs('src/main/usage.ts');
+const { snapshotUsageFor } = loadTs('src/core/usage.ts');
 
 const REPO = path.resolve(__dirname, '..');
 

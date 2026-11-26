@@ -30,7 +30,7 @@ process.env.USERPROFILE = FAKE_HOME;
 
 const loadTs = require('./load-ts.cjs');
 const { TelemetryCollector } = loadTs('src/main/telemetry.ts');
-const { projectDir } = loadTs('src/main/transcript.ts');
+const { projectDir } = loadTs('src/core/transcript.ts');
 const { WorkerWakeWatchdog, activityEvidenceAt, isStalledWorker, WORKER_WAKE_COOLDOWN_MS } = loadTs('src/main/workerWake.ts');
 
 function assistantRecord(sessionId, id) {

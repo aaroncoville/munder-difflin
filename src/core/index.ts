@@ -9,5 +9,7 @@
 export * from './costLifetime';
 export * from './codexUsage';
 export * from './pricing';
+export * from './transcript';
+export * from './usage';
 export * from './usageEvents';
 export * from './usageRef';

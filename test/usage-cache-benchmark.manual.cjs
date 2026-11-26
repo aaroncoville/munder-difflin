@@ -51,8 +51,9 @@ const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bench-out-'));
 const transpile = (srcFile) => ts.transpileModule(fs.readFileSync(srcFile, 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true }
 }).outputText;
-// pricing.ts sat beside transcript.ts in src/main before it moved to src/core.
-// Emit it at both places so either revision's `import ... from` resolves.
+// Depending on the revision, pricing.ts sits beside transcript.ts (both in
+// src/main, or both in src/core) or in ../core while transcript.ts is still in
+// src/main. Emit it at both places so either `import ... from` resolves.
 const pricingTs = fs.existsSync(path.join(srcDir, 'pricing.ts'))
   ? path.join(srcDir, 'pricing.ts')
   : path.join(srcDir, '..', 'core', 'pricing.ts');

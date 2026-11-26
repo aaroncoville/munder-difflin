@@ -26,7 +26,7 @@
 
 import { createHash } from 'node:crypto';
 import type { CircuitBreakerConfig } from './config';
-import type { AgentUsageSample } from './usage';
+import type { AgentUsageSample } from '../core/usage';
 
 export type BreakerLevel = 'healthy' | 'steering' | 'constrained' | 'stopped';
 

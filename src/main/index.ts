@@ -50,14 +50,14 @@ import { HeavyJobLock, heavyLimit, heavySlotNotice, probeProcesses } from './hea
 import { suiteJobLimit } from './heavyJobRules';
 import { CircuitBreaker, type BreakerInput } from './breaker';
 import { shouldReengage, doingTaskTally, suppressionReason } from './heartbeatPolicy';
-import { CumulativeSampleGate, RunBaseline, snapshotUsageFor, usesCumulativeGate, type UsageProvider } from './usage';
+import { CumulativeSampleGate, RunBaseline, snapshotUsageFor, usesCumulativeGate, type UsageProvider } from '../core/usage';
 import { MemoryManager } from './memory';
 import { testHindsightConnection } from './hindsightAdapter';
 import { KnowledgeManager } from './knowledge';
 import { MemoryReflector, type ReflectSettings } from './reflect';
 import { setHelperSettingsDir } from './hiddenClaude';
 import { PersistStore } from './db';
-import { readAgentUsage, readContextTokens, seedSessionTranscript, resolveSessionCwd } from './transcript';
+import { readAgentUsage, readContextTokens, seedSessionTranscript, resolveSessionCwd } from '../core/transcript';
 import { listIssues, listCIRuns } from './github';
 import { SlackWebhookServer, SlackReplyServer, postSlackReply, type SlackEventFile } from './slack';
 import {

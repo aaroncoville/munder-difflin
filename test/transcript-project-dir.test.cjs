@@ -11,7 +11,7 @@ const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 
-const { projectDir } = loadTs('src/main/transcript.ts');
+const { projectDir } = loadTs('src/core/transcript.ts');
 
 /** Give projectDir() a throwaway home so no case touches the real ~/.claude.
  *  os.homedir() reads HOME on POSIX and USERPROFILE on Windows. */

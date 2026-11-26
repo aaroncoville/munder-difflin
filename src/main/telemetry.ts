@@ -30,7 +30,7 @@ import { readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { readAgentUsage } from './transcript';
+import { readAgentUsage } from '../core/transcript';
 import { transcriptWrittenAt } from './transcriptWrittenAt';
 import { normalizeModel } from '../core/pricing';
 import { rolloutFileFor } from './codexActivity';

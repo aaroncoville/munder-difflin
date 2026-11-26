@@ -26,14 +26,14 @@ process.env.USERPROFILE = FAKE_HOME;
 
 const SRC = path.join(__dirname, '..', 'src');
 const out = fs.mkdtempSync(path.join(os.tmpdir(), 'transcript-'));
-for (const rel of ['core/pricing', 'main/transcript']) {
+for (const rel of ['core/pricing', 'core/transcript']) {
   const js = ts.transpileModule(fs.readFileSync(path.join(SRC, `${rel}.ts`), 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true }
   }).outputText;
   fs.mkdirSync(path.dirname(path.join(out, rel)), { recursive: true });
   fs.writeFileSync(path.join(out, `${rel}.js`), js, 'utf8');
 }
-const { readAgentUsage, projectDir } = require(path.join(out, 'main', 'transcript.js'));
+const { readAgentUsage, projectDir } = require(path.join(out, 'core', 'transcript.js'));
 
 /** A fake cwd whose projectDir we can write transcripts into. */
 function makeProject() {
