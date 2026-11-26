@@ -19,7 +19,7 @@ const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
-const { RegistryUnreadable } = loadTs('src/main/messageTarget.ts');
+const { RegistryUnreadable } = loadTs('src/core/messageTarget.ts');
 
 function liveFunctions() {
   const source = fs.readFileSync(path.resolve(__dirname, '..', 'src/main/index.ts'), 'utf8');

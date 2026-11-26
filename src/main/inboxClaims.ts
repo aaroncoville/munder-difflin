@@ -26,7 +26,7 @@
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { isFolderName } from './messageTarget';
+import { isFolderName } from '../core/messageTarget';
 import { WORKER_WAKE_TURN_CEILING_MS } from './workerWake';
 
 /**

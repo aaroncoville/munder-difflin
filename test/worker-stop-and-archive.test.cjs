@@ -19,7 +19,7 @@ const { withSeatSettings } = require('./seat-settings-dir.cjs');
 const { allCommitsIdle } = loadTs('src/main/hiveCommit.ts');
 
 const { HiveManager } = loadTs('src/main/hive.ts');
-const { RegistryUnreadable } = loadTs('src/main/messageTarget.ts');
+const { RegistryUnreadable } = loadTs('src/core/messageTarget.ts');
 const { workerExitEvent } = loadTs('src/main/workerExitLog.ts');
 const stopRetry = loadTs('src/main/workerStopRetry.ts');
 const { PtyManager } = loadTs('src/main/pty.ts');

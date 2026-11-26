@@ -87,7 +87,7 @@ import * as integrations from './integrations';
 import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
-import { isFolderName, RefusedRosterId, RegistryUnreadable, shortTarget } from './messageTarget';
+import { isFolderName, RefusedRosterId, RegistryUnreadable, shortTarget } from '../core/messageTarget';
 import { HookRuntimeUnavailable } from '../core/hookRuntime';
 import { PrivateDirRefused, registerPrivateDir } from '../core/privateDirs';
 import { sourceCheckout } from '../core/repoInstructions';

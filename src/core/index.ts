@@ -16,6 +16,7 @@ export * from './heavyJob';
 export * from './heavyJobRules';
 export * from './hookRuntime';
 export * from './launchLine';
+export * from './messageTarget';
 export * from './pricing';
 export * from './privateDirs';
 export * from './repoInstructions';

@@ -61,7 +61,7 @@ import { expandTilde } from './fs';
 import { refreshMineIgnoresOnce } from './hiveMineIgnore';
 import { carryHiveGitDir, excludeLine, hiveGitDirFor, hiveRepoPresent, SET_ASIDE_PREFIX, settleHiveGitDir, writeGitfile, writeMarker } from './hiveGitDir';
 import { AGENT_ALLOWLIST_IGNORE_LINES, CommitQueue, HIVE_MAINTENANCE_EVERY_MS, HIVE_MAINTENANCE_IDLE_MS, HIVE_MAINTENANCE_TASKS, HIVE_MAINTENANCE_TIMEOUT_MS, HIVE_STALE_LOCK_MS, HIVE_STALE_MAINTENANCE_LOCK_MS, maintenanceArgs, runGit, stopRunningGits, untrackIgnored, type GitResult } from './hiveCommit';
-import { agentFolderId, hasExactFolder, isAppSender, isFolderName, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, RegistryUnreadable, rosterIdFor, shortTarget } from './messageTarget';
+import { agentFolderId, hasExactFolder, isAppSender, isFolderName, isKnownTarget, isRosterId, newRosterIdRefusal, RefusedRosterId, RegistryUnreadable, rosterIdFor, shortTarget } from '../core/messageTarget';
 import { mailSender, PendingMail } from './mailLine';
 import { nodeLauncherScript } from './nodeLauncher';
 import { codexTrustEntry } from '../shared/codexTrust';
