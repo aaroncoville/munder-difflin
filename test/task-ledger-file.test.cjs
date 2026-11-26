@@ -619,3 +619,26 @@ test('the wait for the lock ends on time even when the wall clock runs backwards
   assert.equal(r.signal, null, 'the writer was still waiting after 5 s');
   assert.equal(r.status, 0, r.stderr.toString());
 });
+
+// The lock is taken by hard-linking its record to tasks.json.lock. Some volumes cannot make hard links
+// (some network and FUSE mounts, exFAT and FAT): there the ledger is not written at all, and the error
+// says why.
+
+test('where hard links are refused, nothing is written and the error says ledger writes are disabled', (t) => {
+  const { dir, file } = hive(t, { tasks: [{ id: 'a' }] });
+  const before = fs.readFileSync(file);
+  for (const code of ['EPERM', 'ENOTSUP', 'EXDEV', 'ENOSYS']) {
+    const link = () => { throw Object.assign(new Error(`${code}: link`), { code }); };
+    assert.throws(() => updateTaskLedgerFile(file, (c) => [...c, { id: 'b' }], { link }),
+      (e) => /does not support hard links/.test(e.message) && /task ledger writes are disabled/.test(e.message) && e.message.includes(code),
+      code);
+    assert.ok(fs.readFileSync(file).equals(before), `tasks.json is byte for byte as it was (${code})`);
+    assert.deepEqual(leftovers(dir), [], `no lock or temporary file is left (${code})`);
+  }
+});
+
+test('a link failure that is not about hard-link support is reported as it is', (t) => {
+  const { file } = hive(t, { tasks: [] });
+  const link = () => { throw Object.assign(new Error('EACCES: permission denied, link'), { code: 'EACCES' }); };
+  assert.throws(() => updateTaskLedgerFile(file, (c) => [...c, { id: 'b' }], { link }), (e) => /EACCES/.test(e.message) && !/hard links/.test(e.message));
+});

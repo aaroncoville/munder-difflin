@@ -8,7 +8,8 @@
  *  - takes an exclusive lock file next to the ledger (`tasks.json.lock`, holding the holder's pid, host,
  *    process start time, acquisition time and a random token), waiting a bounded time for a holder to
  *    finish. The record is written to a temporary file first and hard-linked to the lock's name, which
- *    fails if the lock exists, so a lock never exists without its record;
+ *    fails if the lock exists, so a lock never exists without its record. On a volume that cannot make hard
+ *    links, nothing is written and the error says so;
  *  - re-reads the ledger UNDER the lock, applies the caller's edit to that, and folds the result over the
  *    on-disk cards with mergeTaskLedger, so fields the caller does not model survive;
  *  - writes a temporary file in the same folder, fsyncs it and renames it over the ledger, so a reader sees
@@ -78,6 +79,8 @@ export interface TaskLedgerFileOptions {
    * hang. Not for production use.
    */
   startTime?: (pid: number, timeoutMs: number) => string | null;
+  /** Makes the hard link that takes the lock. Default fs.linkSync; a test can refuse it. Not for production use. */
+  link?: (existingPath: string, newPath: string) => void;
   /** Called between the steps of taking the lock, so a test can interleave writers. Not for production use. */
   hooks?: TaskLedgerLockHooks;
 }
@@ -268,9 +271,17 @@ function breakStale(lock: string, judged: HeldLock): boolean {
 /** The lock this writer holds: its token, and the file it created (`dev`/`ino`). */
 interface OwnLock { token: string; dev: number; ino: number }
 
+/**
+ * What link() fails with on a volume that cannot make hard links (some network and FUSE mounts, exFAT and
+ * FAT). The lock depends on them: it is only ever created by linking a complete record to its name, and a
+ * breaker that set a newer holder's lock aside by mistake puts it back with a link. There is no safe lock
+ * without them, so the ledger is not written there at all.
+ */
+const NO_HARD_LINKS = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EXDEV', 'ENOSYS']);
+
 function acquire(
   lock: string,
-  opts: Required<Pick<TaskLedgerFileOptions, 'waitMs' | 'staleMs' | 'retryMs' | 'startTime'>> & { hooks: TaskLedgerLockHooks }
+  opts: Required<Pick<TaskLedgerFileOptions, 'waitMs' | 'staleMs' | 'retryMs' | 'startTime' | 'link'>> & { hooks: TaskLedgerLockHooks }
 ): OwnLock {
   const token = randomBytes(12).toString('hex');
   // A monotonic clock: a wall-clock step back would stretch the wait, a step forward would cut it short.
@@ -293,10 +304,14 @@ function acquire(
     for (;;) {
       opts.hooks.beforeLockRecorded?.();
       try {
-        linkSync(tmp, lock);
+        opts.link(tmp, lock);
         return { token, dev, ino };
       } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+        const code = (e as NodeJS.ErrnoException).code;
+        if (code && NO_HARD_LINKS.has(code)) {
+          throw new Error(`${dirname(lock)}: this volume does not support hard links (${code}), which the lock on tasks.json needs; task ledger writes are disabled`);
+        }
+        if (code !== 'EEXIST') throw e;
       }
       const held = readLock(lock);
       if (held) {
@@ -437,6 +452,7 @@ export function updateTaskLedgerFile(
     staleMs: options.staleMs ?? 30_000,
     retryMs: options.retryMs ?? 20,
     startTime: options.startTime ?? defaultStartTime,
+    link: options.link ?? linkSync,
     hooks
   });
   try {
