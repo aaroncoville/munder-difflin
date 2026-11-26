@@ -343,13 +343,15 @@ function TaskCard({ task, accent, assigneeName, onOpen, onDismiss }: {
 // the big stage instead of the narrow side panel. Exported for App's
 // TaskDetailOverlay; opened via the store's openTaskDetail from anywhere.
 
-export function TaskDetail({ task, all, assigneeName, onMove, onAssign, onClose }: {
+export function TaskDetail({ task, all, assigneeName, onMove, onAssign, onClose, notice }: {
   task: HiveTask;
   all: HiveTask[];
   assigneeName?: string;
   onMove: (s: Status) => void;
   onAssign: () => void;
   onClose: () => void;
+  /** Why the last write from the task views was not saved, shown under the title. */
+  notice?: string;
 }) {
   const { t } = useTranslation();
   const rtl = useRtl();
@@ -381,6 +383,9 @@ export function TaskDetail({ task, all, assigneeName, onMove, onAssign, onClose 
                 {task.title}
               </div>
             </div>
+            {notice && (
+              <div style={{ fontSize: 12, color: 'var(--cth-coral)' }}>{notice}</div>
+            )}
 
             {/* Fact row */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>

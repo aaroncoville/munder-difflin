@@ -1186,6 +1186,7 @@
     "dismissTitle": "忽略此任务（从看板上移除）",
     "dismissAria": "忽略任务",
     "dismissNotSaved": "未能移除\"{{title}}\"：{{error}}",
+    "moveNotSaved": "未能移动\"{{title}}\"：{{error}}",
     "taskTitle": "任务",
     "unassigned": "未分配",
     "noDescription": "（此卡片没有描述）",

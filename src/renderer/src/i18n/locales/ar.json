@@ -1186,6 +1186,7 @@
     "dismissTitle": "تجاهل هذه المهمة (تُزال من اللوحة)",
     "dismissAria": "تجاهل المهمة",
     "dismissNotSaved": "لم تُحذف \"{{title}}\": {{error}}",
+    "moveNotSaved": "لم تُنقل \"{{title}}\": {{error}}",
     "taskTitle": "المهمة",
     "unassigned": "غير مُسنَدة",
     "noDescription": "(لا وصف على هذه البطاقة)",

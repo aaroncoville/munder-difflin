@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useUsageView } from '@/usage';
+import { useTranslation } from 'react-i18next';
 import { useStore } from '@/store/store';
 import { TaskDetail, parseTasks, type HiveTask } from './TasksKanban';
 
@@ -13,12 +14,15 @@ import { TaskDetail, parseTasks, type HiveTask } from './TasksKanban';
 const POLL_MS = 5000;
 
 export function TaskDetailOverlay() {
+  const { t } = useTranslation();
   const taskDetailId = useStore((s) => s.taskDetailId);
   useUsageView(taskDetailId ? 'task-detail' : null, { cardId: taskDetailId ?? undefined });
   const closeTaskDetail = useStore((s) => s.closeTaskDetail);
   const agents = useStore((s) => s.agents);
   const restorable = useStore((s) => s.restorableAgents);
   const [tasks, setTasks] = useState<HiveTask[]>([]);
+  const taskWriteError = useStore((s) => s.taskWriteError);
+  const setTaskWriteError = useStore((s) => s.setTaskWriteError);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const refresh = useCallback(async () => {
@@ -51,10 +55,19 @@ export function TaskDetailOverlay() {
   const move = async (status: HiveTask['status']) => {
     const next = tasks.map((t) => (t.id === task.id ? { ...t, status } : t));
     setTasks(next); // optimistic
+    // A refusal (a busy or unreadable ledger) snaps the card back and says why.
+    const notSaved = (error: string) => t('kanban.moveNotSaved', { title: task.title, error });
     try {
       const result = await window.cth.hivePatchTask(task.id, { status });
-      if (!result.ok) void refresh();
-    } catch { void refresh(); }
+      if (result.ok) setTaskWriteError('');
+      else {
+        setTaskWriteError(notSaved(result.error ?? '?'));
+        void refresh();
+      }
+    } catch (e) {
+      setTaskWriteError(notSaved(e instanceof Error ? e.message : String(e)));
+      void refresh();
+    }
   };
 
   const assign = () => {
@@ -77,6 +90,7 @@ export function TaskDetailOverlay() {
       onMove={(s) => void move(s)}
       onAssign={assign}
       onClose={closeTaskDetail}
+      notice={taskWriteError}
     />
   );
 }
