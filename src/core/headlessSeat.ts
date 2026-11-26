@@ -45,6 +45,12 @@ export const HEADLESS_SEAT_ENV: readonly string[] = [
   'AGENT_ID', 'AGENT_NAME', 'AGENT_DIR', 'HIVE_ROOT', 'HIVE_SOCK', 'HIVE_SPAWN_TOKEN', 'HIVE_SCOPED_ROOTS', 'HIVE_MEMORY_AGENT', 'HIVE_NODE',
 ];
 
+/** The --permission-mode values a headless seat may run with. bypassPermissions is left out: the edit tools are held
+ *  to the seat roots (permissions.additionalDirectories) by the permission layer, not by the Bash sandbox, and that
+ *  mode lets them write anywhere without asking. In a -p run nobody can answer a prompt, so the other modes refuse
+ *  such a write instead. */
+export const HEADLESS_PERMISSION_MODES: readonly string[] = ['default', 'acceptEdits', 'plan', 'dontAsk'];
+
 /** Set on every headless launch: a resumed session never runs a tool call a hook deferred. */
 export const DEFERRED_RESUME_ENV = 'CLAUDE_CODE_DISABLE_DEFERRED_TOOL_RESUME';
 
@@ -69,7 +75,7 @@ export interface HeadlessSeatOptions {
   model?: string;
   /** Passed to --max-budget-usd. */
   maxBudgetUsd?: number;
-  /** Passed to --permission-mode. */
+  /** Passed to --permission-mode; one of HEADLESS_PERMISSION_MODES. */
   permissionMode?: string;
   /** The seat's own hive values (names on HEADLESS_SEAT_ENV only). */
   seatEnv?: Record<string, string>;
@@ -157,6 +163,9 @@ export function buildHeadlessLaunch(o: HeadlessSeatOptions): HeadlessLaunch {
   if (o.model !== undefined && (typeof o.model !== 'string' || o.model.startsWith('-'))) {
     throw new HeadlessSeatRefused('the model is not text or starts with "-", which the CLI would read as an option');
   }
+  if (o.permissionMode !== undefined && !HEADLESS_PERMISSION_MODES.includes(o.permissionMode)) {
+    throw new HeadlessSeatRefused(`the permission mode is not one of ${HEADLESS_PERMISSION_MODES.join(', ')}`);
+  }
   if (o.maxBudgetUsd !== undefined && !(typeof o.maxBudgetUsd === 'number' && Number.isFinite(o.maxBudgetUsd) && o.maxBudgetUsd > 0)) {
     throw new HeadlessSeatRefused('the budget is not a positive number of dollars');
   }
@@ -183,7 +192,7 @@ export function buildHeadlessLaunch(o: HeadlessSeatOptions): HeadlessLaunch {
   const argv = [o.cliPath ?? 'claude', '-p', '--output-format', 'json', '--settings', settingsFile, '--setting-sources', CLAUDE_USER_SOURCES];
   if (o.model) argv.push('--model', o.model);
   if (o.maxBudgetUsd !== undefined) argv.push('--max-budget-usd', String(o.maxBudgetUsd));
-  if (o.permissionMode) argv.push('--permission-mode', o.permissionMode);
+  if (o.permissionMode !== undefined) argv.push('--permission-mode', o.permissionMode);
   argv.push(o.prompt);
   return { argv, env, cwd: o.cwd, settingsFile, roots };
 }

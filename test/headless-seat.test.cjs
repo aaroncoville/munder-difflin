@@ -111,6 +111,17 @@ test('Given a model that starts with a dash, when the launch is built, then it i
   assert.throws(() => H.buildHeadlessLaunch(f.opts({ model: '-p' })), /model/);
 });
 
+test('Given a permission mode, when the launch is built, then only default, acceptEdits, plan and dontAsk are accepted', (t) => {
+  const f = floor(t);
+  for (const mode of ['default', 'acceptEdits', 'plan', 'dontAsk']) {
+    const l = H.buildHeadlessLaunch(f.opts({ permissionMode: mode }));
+    assert.equal(l.argv[l.argv.indexOf('--permission-mode') + 1], mode);
+  }
+  for (const mode of ['bypassPermissions', 'auto', '--dangerously-skip-permissions', 'AcceptEdits', '']) {
+    assert.throws(() => H.buildHeadlessLaunch(f.opts({ permissionMode: mode })), /permission mode/, mode);
+  }
+});
+
 test('Given a budget that is not a positive number, when the launch is built, then it is refused', (t) => {
   const f = floor(t);
   assert.throws(() => H.buildHeadlessLaunch(f.opts({ maxBudgetUsd: 0 })), /budget/);
