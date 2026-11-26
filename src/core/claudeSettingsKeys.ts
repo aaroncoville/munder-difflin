@@ -82,7 +82,7 @@ export const CLAUDE_SETTINGS_KEYS: Readonly<Record<string, SettingsKey>> = {
   'sandbox.network.allowMachLookup': j('strings', 'each service reached runs outside the sandbox; only an empty list is admitted'),
   'sandbox.network.allowManagedDomainsOnly': r('boolean'),
   'sandbox.network.allowUnixSockets': j('strings', 'a socket can reach a daemon outside the sandbox; only an empty list is admitted'),
-  'sandbox.network.allowedDomains': j('strings', 'a domain list is admitted'),
+  'sandbox.network.allowedDomains': j('strings', 'an entry that matches every domain is refused'),
   'sandbox.network.deniedDomains': r('strings'),
   'sandbox.network.httpProxyPort': x('it replaces the proxy that filters sandboxed traffic'),
   'sandbox.network.socksProxyPort': x('it replaces the proxy that filters sandboxed traffic'),

@@ -172,3 +172,12 @@ test('every judged key in the table that is not an object has a judgement', () =
   const want = Object.entries(CLAUDE_SETTINGS_KEYS).filter(([, e]) => e.cls === 'judged' && e.type !== 'object').map(([k]) => k).sort();
   assert.deepEqual([...JUDGED_SETTINGS_KEYS].sort(), want);
 });
+
+test('strict: an allowedDomains entry made only of wildcards and dots is refused; a wildcard under a named domain is admitted', (t) => {
+  const f = floor(t);
+  for (const entry of ['*', '*.*', '**', '.*', '*.']) {
+    const r = f.judge({ sandbox: { network: { allowedDomains: ['example.com', entry] } } });
+    assert.ok(r && r.why.includes('managed settings: sandbox.network.allowedDomains'), `${entry} was admitted`);
+  }
+  assert.equal(f.judge({ sandbox: { network: { allowedDomains: ['*.example.com', 'api.example.org'] } } }), null);
+});

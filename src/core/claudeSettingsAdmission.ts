@@ -162,7 +162,8 @@ const JUDGES: Readonly<Record<string, Judge>> = {
   'sandbox.network.allowAllUnixSockets': refuseWhen(true),
   'sandbox.network.allowMachLookup': emptyOnly,
   'sandbox.network.allowUnixSockets': emptyOnly,
-  'sandbox.network.allowedDomains': () => null,
+  // An entry of wildcards and dots alone ('*', '*.*') matches every host and lifts the egress filter.
+  'sandbox.network.allowedDomains': (v, path) => ((v as string[]).some((d) => /^[*.]+$/.test(d.trim())) ? { key: path, why: 'an entry matches every domain' } : null),
 };
 
 /** The keys JUDGES has a judgement for. */
