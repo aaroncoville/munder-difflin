@@ -111,6 +111,19 @@ test('the hive repository ignores the ledger lock, its break-aside copies and th
   assert.ok(!ignored('tasks.json'), 'the ledger itself is still committed');
 });
 
+test('the hive repository ignores the cost ledger\'s lock, its break-aside copies and its temporary lock', (t) => {
+  const { hive } = floor(t);
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'md-cost-lock-ignore-'));
+  t.after(() => fs.rmSync(repo, { recursive: true, force: true }));
+  fs.copyFileSync(path.join(hive.root(), '.gitignore'), path.join(repo, '.gitignore'));
+  assert.equal(spawnSync('git', ['init', '-q'], { cwd: repo }).status, 0);
+  const ignored = (name) => spawnSync('git', ['check-ignore', '-q', name], { cwd: repo }).status === 0;
+  for (const name of ['cost-ledger.jsonl.lock', 'cost-ledger.jsonl.lock.stale-0a1b2c3d4e5f', '.cost-ledger.jsonl.lock.tmp-123-0a1b2c3d4e5f']) {
+    assert.ok(ignored(name), `${name} would be committed`);
+  }
+  assert.ok(!ignored('cost-ledger.jsonl.lockfile'), 'only the lock\'s own names');
+});
+
 test('add, patch and delete refuse an unreadable ledger instead of replacing it', (t) => {
   const { hive, file } = floor(t);
   const broken = '{ "tasks": [ {"id": "a"} ';
