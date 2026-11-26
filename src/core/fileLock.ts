@@ -172,24 +172,36 @@ function sameProcess(pid: number, started: unknown, startTime: (pid: number) => 
   return now === started;
 }
 
-interface StaleBounds { staleMs: number; startTime: (pid: number) => string | null }
+export interface StaleBounds { staleMs: number; startTime: (pid: number) => string | null }
+
+/** Who holds a lock, as its record says: the pid, host and process start time it was taken with. */
+export interface HolderRecord { pid?: unknown; host?: unknown; started?: unknown }
 
 /**
+ * Whether a holder recorded `ageMs` ago may be broken, by the rule in the header: a holder on this host that is
+ * still running (the same process, by start time where that can be read) is never broken, however old; one
+ * that has exited is, at once; a holder that cannot be identified (no record, another host, no usable pid) is
+ * stale after `staleMs`. Exported so that anything else that records a holder (a lease in a database, say)
+ * judges it by this same rule.
+ *
  * `owners` remembers, for the length of one wait, whether a recorded holder is still the process that wrote
  * it, so a waiter does not read a start time on every retry. A holder that exits meanwhile is still seen at
  * once, because whether the pid is alive is asked every time.
  */
-function isStale(lock: HeldLock, bounds: StaleBounds, owners: Map<string, boolean | null>): boolean {
-  const { record } = lock;
-  if (!record || record.host !== hostname() || !usablePid(record.pid)) return lock.ageMs > bounds.staleMs;
+export function isStaleHolder(record: HolderRecord | null, ageMs: number, bounds: StaleBounds, owners: Map<string, boolean | null> = new Map()): boolean {
+  if (!record || record.host !== hostname() || !usablePid(record.pid)) return ageMs > bounds.staleMs;
   if (!alive(record.pid)) return true;
   // A fresh lock with a running holder is never broken, so there is no need yet to ask which process it is.
-  if (lock.ageMs <= bounds.staleMs) return false;
+  if (ageMs <= bounds.staleMs) return false;
   const key = `${record.pid} ${String(record.started)}`;
   if (!owners.has(key)) owners.set(key, sameProcess(record.pid, record.started, bounds.startTime));
   const same = owners.get(key);
   // null: running, but which process cannot be told (see the header). Never broken on age.
   return same === false;
+}
+
+function isStale(lock: HeldLock, bounds: StaleBounds, owners: Map<string, boolean | null>): boolean {
+  return isStaleHolder(lock.record, lock.ageMs, bounds, owners);
 }
 
 function describe(held: HeldLock | null): string {
