@@ -159,6 +159,10 @@ function runCanary(o) {
   const limits = { ...LIMITS, ...(o.limits ?? {}) };
   if (!o.work) throw new Error('a work folder is required');
   if (!o.allowTempWork && isUnderTemp(o.work)) throw new Error(`the work folder ${o.work} is under a temp directory, where both sandboxes allow writes`);
+  // Probe folders have fixed names, so files a previous run left behind could stand in for this run's evidence.
+  let leftover = [];
+  try { leftover = fs.readdirSync(o.work); } catch { /* missing: created below */ }
+  if (leftover.length) throw new Error(`the work folder ${o.work} is not empty; use an empty or new folder so no earlier run's files are read as evidence`);
   fs.mkdirSync(o.work, { recursive: true });
   const started = now();
   const spend = { claudeUsd: 0, claudeTurns: 0, codexTokens: 0, codexTurns: 0 };
@@ -377,7 +381,9 @@ function main() {
   const made = !o.work;
   o.work = o.work ?? fs.mkdtempSync(path.join(os.homedir(), '.upgrade-canary-'));
   let res;
-  try { res = runCanary(o); } finally { if (made && !o.keep) fs.rmSync(o.work, { recursive: true, force: true }); }
+  let refused = null;
+  try { res = runCanary(o); } catch (e) { refused = e; } finally { if (made && !o.keep) fs.rmSync(o.work, { recursive: true, force: true }); }
+  if (refused) { console.error(refused.message); process.exit(2); }
   for (const r of res.results) console.log(JSON.stringify(r));
   const s = res.spend;
   console.log(`spend: claude $${s.claudeUsd.toFixed(4)} over ${s.claudeTurns} turns (limit $${LIMITS.claudeTotalUsd}); ` +

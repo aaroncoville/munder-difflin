@@ -298,3 +298,14 @@ test('only a touch of the target counts as the attempted call, not a command tha
   assert.equal(canary.claudeEvidence(stream('touch /w/t'), '/w/t').attempted, true);
   assert.equal(canary.claudeEvidence(stream('echo touch /w/t'), '/w/t').attempted, false);
 });
+
+test("a work folder that already holds files is refused: a previous run's files could pass a probe", () => {
+  withWork((work) => {
+    fs.mkdirSync(path.join(work, '01-claude-sandbox', 'allowed'), { recursive: true });
+    fs.writeFileSync(path.join(work, '01-claude-sandbox', 'allowed', 'x'), '');
+    assert.throws(() => canary.runCanary(base(work, fakeRun())), /not empty/);
+  });
+  // An empty or missing folder is fine.
+  withWork((work) => assert.ok(canary.runCanary(base(work, fakeRun(), { only: ['claude.version'] }))));
+  withWork((work) => assert.ok(canary.runCanary(base(path.join(work, 'new'), fakeRun(), { only: ['claude.version'] }))));
+});
