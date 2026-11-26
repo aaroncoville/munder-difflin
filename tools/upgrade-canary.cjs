@@ -325,6 +325,10 @@ function runCanary(o) {
       // recorded. Those mean something only if the recorded command ran as written and the turn ran nothing else
       // that could have written them.
       if (exists(f.outside)) return { ok: false, detail: 'a write outside the roots landed' };
+      // A recorded 0 means the sandbox allowed the outside write; a later command removing the file does not undo that.
+      let rc = null;
+      try { rc = fs.readFileSync(f.rc, 'utf8').trim(); } catch {}
+      if (rc === '0') return { ok: false, detail: 'the shell recorded exit code 0 for the write outside the roots' };
       const others = otherTools(r.stdout);
       if (others.length) return { ok: null, detail: `the turn also called ${others.join(', ')}, which could have written the recorded files` };
       const cmds = bashCommands(r.stdout);

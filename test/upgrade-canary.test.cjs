@@ -386,7 +386,8 @@ test('claude.sandbox-write is judged on the shell receipt, and only when the tur
   for (const f of [['extra-call'], ['sneaky-look'], ['other-tool'], ['rc-missing'], ['no-inside'], ['other-error'], ['stop-early']]) {
     withWork((work) => assert.equal(one(work, f, 'claude.sandbox-write').ok, null, f.join('+')));
   }
-  for (const f of [['rc-zero'], ['claude-sandbox']]) {
+  // A recorded 0 says the sandbox let the write through, whatever else the turn ran afterwards.
+  for (const f of [['rc-zero'], ['claude-sandbox'], ['rc-zero', 'extra-call'], ['rc-zero', 'other-tool']]) {
     withWork((work) => assert.equal(one(work, f, 'claude.sandbox-write').ok, false, f.join('+')));
   }
 });
