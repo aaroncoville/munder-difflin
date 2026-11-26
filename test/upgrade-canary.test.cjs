@@ -223,13 +223,31 @@ test('the run stops starting model turns at its wall-clock limit', () => {
   });
 });
 
-test('Codex token use is summed, and the run stops at its ceiling', () => {
+test('a Codex turn starts only if its allowance fits; the child turn is charged an allowance for its child', () => {
   withWork((work) => {
-    const res = canary.runCanary(base(work, fakeRun(), { limits: { codexTotalTokens: 1500 } }));
+    const limits = { codexTotalTokens: 3500, codexTurnReserveTokens: 1000, codexChildAllowanceTokens: 1000 };
+    const res = canary.runCanary(base(work, fakeRun(), { limits }));
+    // spawn and sandbox: 1,100 reported each; the child turn would need 1,000 + 1,000 on top of 2,200.
     assert.equal(res.spend.codexTokens, 2200);
     const r = res.results.find((x) => x.probe === 'codex.child-thread-roots');
     assert.equal(r.ok, null);
-    assert.match(r.detail, /Codex token limit/);
+    assert.match(r.detail, /Codex token budget/);
+  });
+  withWork((work) => {
+    const limits = { codexTotalTokens: 10_000, codexTurnReserveTokens: 1000, codexChildAllowanceTokens: 1000 };
+    const roomy = canary.runCanary(base(work, fakeRun(), { only: ['codex.child-thread-roots'], limits }));
+    assert.equal(roomy.spend.codexTokens, 1100 + 1000);
+  });
+});
+
+test('a Codex turn that reports no usage is charged its full allowance', () => {
+  withWork((work) => {
+    const run = (file, args, opts) => {
+      const r = fakeRun()(file, args, opts);
+      return { ...r, stdout: r.stdout.replace(/.*"turn\.completed".*\n/g, '') };
+    };
+    const res = canary.runCanary(base(work, run, { only: ['codex.spawn'], limits: { codexTurnReserveTokens: 5000 } }));
+    assert.equal(res.spend.codexTokens, 5000);
   });
 });
 
