@@ -119,3 +119,16 @@ test("the detail does not show a failure from the board, and its own failure goe
   view.render();
   assert.ok(!screen(view).words.includes(BUSY), `the line outlived the detail it was shown in:\n${screen(view).words}`);
 });
+
+test("the detail's line and the board's are separate: neither shows or replaces the other", async () => {
+  const view = await openDetail(() => ({ ok: false, error: BUSY }));
+  // The board fails to remove another card while this detail is open.
+  const board = 'Could not remove "another card" from the board';
+  useStore.getState().setTaskWriteError(board);
+  view.render();
+  assert.ok(!screen(view).words.includes('another card'), `the board's line showed in the open detail:\n${screen(view).words}`);
+
+  await moveTo(view, 'done');
+  assert.ok(screen(view).words.includes(BUSY), 'the detail says its move was not saved');
+  assert.equal(useStore.getState().taskWriteError, board, "the detail's failure did not replace the board's line");
+});
