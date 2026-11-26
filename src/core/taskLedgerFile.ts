@@ -20,7 +20,8 @@
  * Holding the lock, it also removes files that a writer which died part-way left beside the ledger: its
  * temporary ledger (`.tasks.json.tmp-*`), its temporary lock (`.tasks.json.lock.tmp-*`) and a lock it had
  * set aside to break (`tasks.json.lock.stale-*`), once they are a minute old. Each of these exists for
- * milliseconds while its writer is alive.
+ * milliseconds while its writer is alive, except a temporary lock, which a writer keeps while it waits for
+ * the lock, so one is kept while the pid in its name is running.
  *
  * A lock is stale, and is broken, when its holder on this host has exited. A holder on this host that is
  * still running is never broken, however old its lock: it may be slow (stopped in a debugger, a sleeping
@@ -312,6 +313,10 @@ function sweepLeftovers(path: string): void {
   const cutoff = Date.now() - LEFTOVER_MS;
   for (const entry of entries) {
     if (!prefixes.some((prefix) => entry.startsWith(prefix))) continue;
+    // A writer waiting for the lock keeps its record in `.tasks.json.lock.tmp-<pid>-*` for as long as it
+    // waits, which can be longer than a minute: spare it while that pid is running.
+    const waiter = entry.startsWith(`.${name}.lock.tmp-`) ? Number(entry.slice(`.${name}.lock.tmp-`.length).split('-')[0]) : NaN;
+    if (Number.isInteger(waiter) && waiter > 0 && alive(waiter)) continue;
     const file = join(dir, entry);
     try {
       const stat = lstatSync(file);

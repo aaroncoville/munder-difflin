@@ -490,7 +490,8 @@ test('the ledger keeps its file mode when it is replaced', (t) => {
 
 test('leftover lock, break-aside and temporary files older than a minute are swept; fresh ones are kept', (t) => {
   const { dir, file } = hive(t, { tasks: [] });
-  const names = ['.tasks.json.tmp-1-aaaaaa', 'tasks.json.lock.stale-aaaaaa', '.tasks.json.lock.tmp-1-aaaaaa'];
+  const dead = deadPid();
+  const names = [`.tasks.json.tmp-${dead}-aaaaaa`, 'tasks.json.lock.stale-aaaaaa', `.tasks.json.lock.tmp-${dead}-aaaaaa`];
   const old = new Date(Date.now() - 2 * 60_000);
   for (const name of names) {
     fs.writeFileSync(path.join(dir, `${name}-old`), 'x');
@@ -502,6 +503,17 @@ test('leftover lock, break-aside and temporary files older than a minute are swe
   fs.utimesSync(path.join(dir, 'notes.tmp-1'), old, old);
   updateTaskLedgerFile(file, (c) => [...c, { id: 'a' }]);
   assert.deepEqual(leftovers(dir).sort(), [...names.map((n) => `${n}-new`), 'notes.tmp-1'].sort());
+});
+
+test("a waiter's lock record is not swept while its process runs, however long it has waited", (t) => {
+  const { dir, file } = hive(t, { tasks: [] });
+  // A writer in a process that is still running, waiting longer than a minute for the lock.
+  const waiting = `.tasks.json.lock.tmp-${process.pid}-bbbbbb`;
+  fs.writeFileSync(path.join(dir, waiting), 'x');
+  const old = new Date(Date.now() - 2 * 60_000);
+  fs.utimesSync(path.join(dir, waiting), old, old);
+  updateTaskLedgerFile(file, (c) => [...c, { id: 'a' }]);
+  assert.deepEqual(leftovers(dir), [waiting]);
 });
 
 test('the wait for the lock ends on time even when the wall clock runs backwards', (t) => {
