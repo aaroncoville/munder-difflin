@@ -34,7 +34,7 @@ import type { AgentUsageSample } from '../core/usage';
 import { archiveOutboxFile, moveWithoutReplacing, quarantineOutboxFile, reportOutboxFailure, type OutboxStage } from './outboxFailure';
 import { stampSentCopy } from './sentStamp';
 import { RecentSends } from '../core/outboxResend';
-import { setAsideUnlessFolder } from './sentFolder';
+import { setAsideUnlessFolder } from '../core/sentFolder';
 import { COMMAND_GROUPS } from '../shared/claudeCommands';
 import { codexShortHomeRoot } from '../shared/codexRemote';
 import { PrivateDirRefused, privateDirsReach, registerPrivateDir } from '../core/privateDirs';

@@ -1,6 +1,6 @@
 import { closeSync, openSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { assertRealFolder } from './sentFolder';
+import { assertRealFolder } from '../core/sentFolder';
 
 /** The step of routing one outbox file that went wrong. A file only fails `not-delivered` after routing
  *  it finished without placing it anywhere. */

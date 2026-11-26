@@ -29,6 +29,7 @@ export * from './pricing';
 export * from './privateDirs';
 export * from './repoInstructions';
 export * from './seatSettings';
+export * from './sentFolder';
 export * from './taskLedger';
 export * from './transcript';
 export * from './usage';
