@@ -218,8 +218,9 @@ export function checkHeadlessOutput(seat: HeadlessSeatPlace, outputFile: string 
     const roots = seatWriteRoots({ root: seat.hiveRoot, agentId: seat.agentId, isGod: seat.isGod === true, cwd: seat.cwd });
     const realRoots = roots.flatMap((r) => { try { return [realpathSync(r)]; } catch { return []; } });
     if (!realRoots.some((r) => inside(r, real))) return no(`the output file ${outputFile} is outside the seat's write roots`);
-    // A file system that keeps whole seconds rounds a time down, so the start is rounded down the same way.
-    if (hooks.notBefore !== undefined && st.mtimeMs < Math.floor(hooks.notBefore / 1000) * 1000) return no(`the output file ${outputFile} was last written before the run started`);
+    // A file system that keeps whole seconds (HFS+, FAT, some network mounts) rounds a file's time down, so the start
+    // is rounded down the same way, but only for a time that is a whole second: a finer time is compared as it is.
+    if (hooks.notBefore !== undefined && st.mtimeMs < (st.mtimeMs % 1000 === 0 ? Math.floor(hooks.notBefore / 1000) * 1000 : hooks.notBefore)) return no(`the output file ${outputFile} was last written before the run started`);
     return { done: true, reason: null, file: { dev: st.dev, ino: st.ino } };
   } finally {
     closeSync(fd);
