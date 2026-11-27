@@ -15,19 +15,27 @@ export const LEDGER_LOCK_WAIT_MS = 5000;
 /** A lock whose holder cannot be identified (no readable record, or another host) is stale after this. */
 const LEDGER_LOCK_STALE_MS = 30_000;
 
-/** Test seams, and the wait for the lock (default LEDGER_LOCK_WAIT_MS). */
+/** Test seams, the wait for the lock (default LEDGER_LOCK_WAIT_MS), and the budget for each start-time read (see
+ *  FileLockOptions.startReadMs). */
 export interface CostLedgerIo {
-  writeSync?: typeof writeSync; lockWaitMs?: number; link?: (existingPath: string, newPath: string) => void;
+  writeSync?: typeof writeSync; lockWaitMs?: number; startReadMs?: number; link?: (existingPath: string, newPath: string) => void;
   hooks?: FileLockHooks & { afterLock?: () => void; afterOpen?: () => void };
 }
 
-/** Append `row` to `<hiveRoot>/cost-ledger.jsonl` as one line, whole or not at all; throws when it was not appended.
- *  The ledger's lock is held for the write, and confirmed to be still this writer's immediately before appending;
- *  a volume without hard links cannot hold it, so nothing is appended there (`disabled` names what stops, in that
- *  error). A ledger whose last line has no newline (a writer that stopped part-way) gets one first, so the row
- *  starts on a line of its own. The row is written in full (writeAllSync) and flushed; a write that stops short is
- *  undone, by cutting the ledger back to where it was when what follows that point is only this row's own bytes. */
+/** Append `row` to `<hiveRoot>/cost-ledger.jsonl` as one line, whole or not at all (appendCostLedgerRows). */
 export function appendCostLedgerRow(hiveRoot: string, row: object, disabled: string, io: CostLedgerIo = {}): void {
+  appendCostLedgerRows(hiveRoot, [row], disabled, io);
+}
+
+/** Append `rows` to `<hiveRoot>/cost-ledger.jsonl`, one line each, all or none; throws when they were not appended.
+ *  The ledger's lock is held once for the whole batch, which is written in one piece and flushed once, and it is
+ *  confirmed to be still this writer's immediately before appending; a volume without hard links cannot hold it, so
+ *  nothing is appended there (`disabled` names what stops, in that error). A ledger whose last line has no newline (a
+ *  writer that stopped part-way) gets one first, so the rows start on a line of their own. The bytes are written in
+ *  full (writeAllSync); a write that stops short is undone, by cutting the ledger back to where it was when what
+ *  follows that point is only this batch's own bytes. */
+export function appendCostLedgerRows(hiveRoot: string, rows: readonly object[], disabled: string, io: CostLedgerIo = {}): void {
+  if (rows.length === 0) return;
   const ledger = join(hiveRoot, COST_LEDGER_FILE);
   const lock = `${ledger}.lock`;
   let own: OwnLock | null = null;
@@ -35,7 +43,7 @@ export function appendCostLedgerRow(hiveRoot: string, row: object, disabled: str
   try {
     own = acquireFileLock(lock, {
       waitMs: io.lockWaitMs ?? LEDGER_LOCK_WAIT_MS, staleMs: LEDGER_LOCK_STALE_MS, retryMs: 10,
-      startTime: defaultStartTime, link: io.link ?? linkSync, hooks: io.hooks ?? {},
+      startTime: defaultStartTime, startReadMs: io.startReadMs, link: io.link ?? linkSync, hooks: io.hooks ?? {},
       name: COST_LEDGER_FILE, disabled,
       timeout: (l, waitedMs, holder) => new Error(`could not lock ${l} within ${waitedMs} ms: held by ${holder}`),
     });
@@ -52,7 +60,7 @@ export function appendCostLedgerRow(hiveRoot: string, row: object, disabled: str
       readSync(fd, last, 0, 1, before - 1);
       if (last[0] !== 0x0a) lead = '\n';
     }
-    const line = Buffer.from(`${lead}${JSON.stringify(row)}\n`, 'utf8');
+    const line = Buffer.from(`${lead}${rows.map((r) => JSON.stringify(r)).join('\n')}\n`, 'utf8');
     io.hooks?.afterOpen?.();
     confirm();
     try {
