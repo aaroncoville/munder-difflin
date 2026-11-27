@@ -1,75 +1,126 @@
 'use strict';
 
-// A heavy-job slot remembers the CLI that asked for it: the hook's parent process, resolved past the shell that ran
-// the hook, with its start time. The slot is judged by the file lock's holder rule (fileLock.ts isStaleHolder): it is
-// freed when that process has exited, or, once the call is older than HOLDER_STALE_MS, when its pid now names a
-// process that started at another time. A call from a subagent, whose agent id has no terminal of its own, is looked
-// for in the process table under that CLI, so its command is seen while it runs and the slot is freed once it is
-// gone. A call whose CLI is alive with the same start time is never freed early, and a call with no CLI pid (an older
-// hook, another provider) is judged as before.
+// A heavy-job slot remembers the CLI that asked for it, as the hook shim found it (hook_ppid). Nothing is read about
+// that process when the slot is taken (that runs on the app's main thread). Each scan reads the process table once,
+// for every slot. The first scan after a slot is taken confirms its CLI when the table shows that pid, and records its
+// start time; a pid the table does not show (a helper the CLI ran the hook through, a pid that was never the CLI) is
+// dropped, and the slot is judged as one whose hook gave no pid. Only a confirmed CLI frees a slot, by the file lock's
+// holder rule (fileLock.ts isStaleHolder): exited, at once; another start time, once the call is older than
+// HOLDER_STALE_MS. A call from a subagent, whose agent id has no terminal of its own, is looked for under its CLI.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { spawnSync } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const loadTs = require('./load-ts.cjs');
-const { HeavyJobLock, HEAVY_SCAN_MISSES, HOLDER_STALE_MS, resolveHookHolder, gateHeavyCall } = loadTs('src/core/heavyJob.ts');
+const { HeavyJobLock, HEAVY_SCAN_MISSES, gateHeavyCall, parsePsOutput } = loadTs('src/core/heavyJob.ts');
+/** The age under which a running holder is never asked which process it is: 30 s, written out here, not imported. */
+const HOLDER_STALE_MS = 30_000;
 
 const H = { heavy: true, kind: 'suite', why: 'npm test' };
-const CLI = process.pid; // a CLI that is running: this process
 /** The pid of a process that has exited. */
 const deadPid = () => Number(spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))']).stdout.toString());
+/** A running process standing in for a CLI; killed when the test ends. */
+function cli(t) {
+  const p = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  t.after(() => { try { p.kill('SIGKILL'); } catch { /* gone */ } });
+  return p;
+}
+const gone = async (p) => { p.kill('SIGKILL'); await new Promise((r) => (p.exitCode !== null || p.signalCode !== null ? r() : p.once('exit', r))); };
 
-/** A lock whose clock, process table and start times the test sets. Agent "god" has a terminal at pid 100, and the
- *  CLI (this process) runs under it. */
+/** A lock whose clock and process table the test sets; it counts the table reads. Agent "god" has a terminal at pid
+ *  100. A CLI listed in `world.clis` shows in the table under it, with the start time `world.started` gives. */
 function rig() {
   const logs = [];
-  const world = {
-    now: 1_000_000,
-    rows: [{ pid: 100, parentPid: 1, commandLine: 'zsh' }, { pid: CLI, parentPid: 100, commandLine: 'claude' }],
-    started: new Map([[CLI, 'ps:Mon 09:00']]),
-  };
+  const world = { now: 1_000_000, reads: 0, clis: new Set(), started: new Map(), extra: [], fail: false, hang: false };
   const l = new HeavyJobLock({
-    limit: () => 2, now: () => world.now,
+    limit: () => 64, now: () => world.now,
     setTimer: () => ({}), clearTimer: () => {},
     log: (r) => logs.push(r),
     roots: () => [{ agentId: 'god', pid: 100 }],
-    probe: async () => world.rows,
-    startTime: (pid) => world.started.get(pid) ?? null,
-    holderOf: (pid) => ({ pid, started: world.started.get(pid) ?? null }),
+    probe: async () => {
+      world.reads++;
+      if (world.hang) return new Promise(() => {});
+      if (world.fail) throw new Error('ps: Operation not permitted');
+      return [{ pid: 100, parentPid: 1, commandLine: 'zsh' },
+        ...[...world.clis].map((pid) => ({ pid, parentPid: 100, commandLine: '/usr/local/bin/claude -p', ...(world.started.has(pid) ? { started: world.started.get(pid) } : {}) })),
+        ...world.extra];
+    },
   });
   const released = () => logs.filter((r) => r.action === 'release').map((r) => r.reason);
-  return { l, world, released };
+  return { l, world, logs, released };
 }
 
-const take = (x, agent, hookPid) => x.l.acquire(agent, H, 'npm test', `${agent}-1`, false, undefined, hookPid);
+let n = 0;
+const take = (x, agent, hookPid) => x.l.acquire(agent, H, 'npm test', `${agent}-${n++}`, false, undefined, hookPid, 'claude');
 
-test('the CLI that asked for a slot has exited with the call still open: the slot is freed', async () => {
+test('a confirmed CLI that exits with the call still open frees the slot', async (t) => {
   const x = rig();
-  take(x, 'sub-1', deadPid());
+  const c = cli(t);
+  x.world.clis.add(c.pid); x.world.started.set(c.pid, 'ps:Mon 09:00');
+  take(x, 'sub-1', c.pid);
+  await x.l.scan();
+  assert.ok(x.logs.some((r) => r.action === 'holder-confirmed' && r.holderPid === c.pid && r.holderCommand === 'claude'));
+  await gone(c); x.world.clis.delete(c.pid);
   await x.l.scan();
   assert.equal(x.l.snapshot().length, 0);
   assert.deepEqual(x.released(), ['holder-exit']);
 });
 
-test('the CLI\'s pid now names another process (another start time): the slot is freed once the call is old enough', async () => {
+test('a confirmed CLI whose pid now shows another start time frees the slot once the call is old enough', async () => {
   const x = rig();
-  take(x, 'sub-1', CLI);
-  x.world.started.set(CLI, 'ps:Mon 10:30');
+  x.world.clis.add(process.pid); x.world.started.set(process.pid, 'ps:Mon 09:00');
+  take(x, 'sub-1', process.pid);
   await x.l.scan();
-  assert.equal(x.l.snapshot().length, 1, 'a fresh call is not asked which process holds it');
+  x.world.started.set(process.pid, 'ps:Mon 10:30');
+  x.world.now += HOLDER_STALE_MS - 1;
+  await x.l.scan();
+  assert.equal(x.l.snapshot().length, 1, 'a call younger than HOLDER_STALE_MS is not asked which process holds it');
+  x.world.now += 2;
+  await x.l.scan();
+  assert.equal(x.l.snapshot().length, 0, 'freed once the call is older than the bound');
+  assert.deepEqual(x.released(), ['holder-exit']);
+});
+
+test('a hook pid of 0 or 1 gives no holder', () => {
+  const x = rig();
+  take(x, 'sub-0', 0);
+  take(x, 'sub-1', 1);
+  const acquires = x.logs.filter((r) => r.action === 'acquire');
+  assert.equal(acquires.length, 2);
+  assert.ok(acquires.every((r) => !('holderPid' in r)), JSON.stringify(acquires));
+});
+
+test('a start time that arrives only in a later listing is still used', async () => {
+  const x = rig();
+  x.world.clis.add(process.pid);
+  take(x, 'sub-1', process.pid);
+  await x.l.scan();
+  x.world.started.set(process.pid, 'ps:Mon 09:00');
+  await x.l.scan();
+  x.world.started.set(process.pid, 'ps:Mon 10:30');
   x.world.now += HOLDER_STALE_MS + 1;
   await x.l.scan();
-  assert.equal(x.l.snapshot().length, 0);
   assert.deepEqual(x.released(), ['holder-exit']);
+});
+
+test('a hook pid never seen running (a helper the CLI ran the hook through) is dropped, and the slot is kept while the CLI lives', async () => {
+  const x = rig();
+  x.world.clis.add(process.pid); x.world.started.set(process.pid, 'ps:Mon 09:00');
+  take(x, 'god', deadPid());
+  for (let i = 0; i < HEAVY_SCAN_MISSES * 3; i++) { x.world.now += HOLDER_STALE_MS; await x.l.scan(); }
+  assert.equal(x.l.snapshot().length, 1, 'kept, as a slot whose hook gave no pid');
+  assert.ok(x.logs.some((r) => r.action === 'holder-dropped'));
+  assert.deepEqual(x.released(), []);
 });
 
 test('a subagent\'s command is seen under its CLI while it runs, and its slot is freed once the command is gone', async () => {
   const x = rig();
-  take(x, 'sub-1', CLI);
-  x.world.rows.push({ pid: 9001, parentPid: CLI, commandLine: 'sh -c npm test' });
+  x.world.clis.add(process.pid); x.world.started.set(process.pid, 'ps:Mon 09:00');
+  take(x, 'sub-1', process.pid);
+  x.world.extra.push({ pid: 9001, parentPid: process.pid, commandLine: 'sh -c npm test' });
   await x.l.scan();
   assert.equal(x.l.snapshot()[0].started, true, 'seen under the CLI');
-  x.world.rows.pop();
+  x.world.extra.pop();
   for (let i = 0; i < HEAVY_SCAN_MISSES; i++) await x.l.scan();
   assert.equal(x.l.snapshot().length, 0);
   assert.deepEqual(x.released(), ['process-exit']);
@@ -77,17 +128,18 @@ test('a subagent\'s command is seen under its CLI while it runs, and its slot is
 
 test('a long command whose CLI is alive with the same start time keeps its slot', async () => {
   const x = rig();
-  take(x, 'sub-1', CLI);
-  x.world.rows.push({ pid: 9001, parentPid: CLI, commandLine: 'sh -c npm test' });
+  x.world.clis.add(process.pid); x.world.started.set(process.pid, 'ps:Mon 09:00');
+  take(x, 'sub-1', process.pid);
+  x.world.extra.push({ pid: 9001, parentPid: process.pid, commandLine: 'sh -c npm test' });
   for (let i = 0; i < HEAVY_SCAN_MISSES * 3; i++) { x.world.now += HOLDER_STALE_MS; await x.l.scan(); }
   assert.equal(x.l.snapshot().length, 1);
   assert.deepEqual(x.released(), []);
 });
 
-test('a running CLI whose start time cannot be read is not freed early', async () => {
+test('a running CLI whose start time the listing never gives is not freed early', async () => {
   const x = rig();
-  take(x, 'sub-1', CLI);
-  x.world.started.delete(CLI);
+  x.world.clis.add(process.pid);
+  take(x, 'sub-1', process.pid);
   for (let i = 0; i < HEAVY_SCAN_MISSES * 3; i++) { x.world.now += HOLDER_STALE_MS; await x.l.scan(); }
   assert.equal(x.l.snapshot().length, 1);
 });
@@ -95,27 +147,51 @@ test('a running CLI whose start time cannot be read is not freed early', async (
 test('a call with no CLI pid is judged as before: a subagent\'s call never seen is kept', async () => {
   const x = rig();
   take(x, 'sub-1', undefined);
-  x.world.rows.push({ pid: 9001, parentPid: CLI, commandLine: 'sh -c npm test' });
+  x.world.extra.push({ pid: 9001, parentPid: process.pid, commandLine: 'sh -c npm test' });
   for (let i = 0; i < HEAVY_SCAN_MISSES * 3; i++) await x.l.scan();
   assert.equal(x.l.snapshot().length, 1);
   assert.equal(x.l.snapshot()[0].started, false);
 });
 
-test('the hook gate passes the hook\'s parent pid to the lock', async () => {
+test('sixteen slots with live CLIs cost one table read per scan, and taking a slot reads nothing', async () => {
   const x = rig();
-  gateHeavyCall(x.l, 'sub-1', { tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_use_id: 't1', hook_ppid: deadPid() });
+  const pids = Array.from({ length: 16 }, (_, i) => 40_000 + i);
+  for (const pid of pids) { x.world.clis.add(pid); x.world.started.set(pid, 'ps:Mon 09:00'); }
+  for (const pid of pids) take(x, `sub-${pid}`, pid);
+  assert.equal(x.world.reads, 0, 'no read when the slots are taken');
   await x.l.scan();
-  assert.equal(x.l.snapshot().length, 0, 'freed: the lock knew the CLI, and it had exited');
+  await x.l.scan();
+  assert.equal(x.world.reads, 2, 'one read per scan, for all sixteen');
 });
 
-test('the hook\'s parent is resolved past the shell that ran the hook, to the CLI', () => {
-  const table = new Map([
-    [700, { parentPid: 500, commandLine: '/bin/sh -c "/usr/local/bin/node" "/h/bin/cth-hook.cjs"' }],
-    [500, { parentPid: 100, commandLine: 'claude --settings x' }],
+test('a table read that fails, or never answers, frees nothing, and slots can still be taken', async () => {
+  const x = rig();
+  take(x, 'sub-1', deadPid());
+  x.world.fail = true;
+  await x.l.scan();
+  assert.equal(x.l.snapshot().length, 1);
+  x.world.fail = false; x.world.hang = true;
+  void x.l.scan();
+  assert.equal(take(x, 'sub-2', deadPid()).allow, true, 'taking a slot does not wait for the read');
+  assert.equal(x.l.snapshot().length, 2);
+});
+
+test('the hook gate passes the CLI pid and its command name to the lock', async (t) => {
+  const x = rig();
+  const c = cli(t);
+  x.world.clis.add(c.pid);
+  gateHeavyCall(x.l, 'sub-1', { tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_use_id: 't1', hook_ppid: c.pid, hook_ppid_command: 'claude' });
+  assert.ok(x.logs.some((r) => r.action === 'acquire' && r.holderPid === c.pid && r.holderCommand === 'claude'));
+  await x.l.scan();
+  await gone(c); x.world.clis.delete(c.pid);
+  await x.l.scan();
+  assert.equal(x.l.snapshot().length, 0, 'freed: the lock knew the CLI, and it exited');
+});
+
+test('the process listing reads each process\'s start time, and lines without one as before', () => {
+  assert.deepEqual(parsePsOutput('  10     1 Thu Nov 27 05:02:11 2026 /bin/zsh -c npm test\n 11 10 npm test\n'), [
+    { pid: 10, parentPid: 1, commandLine: '/bin/zsh -c npm test', started: 'ps:Thu Nov 27 05:02:11 2026' },
+    { pid: 11, parentPid: 10, commandLine: 'npm test' },
   ]);
-  const read = (pid) => table.get(pid) ?? null;
-  const start = (pid) => `ps:start of ${pid}`;
-  assert.deepEqual(resolveHookHolder(700, read, start), { pid: 500, started: 'ps:start of 500' });
-  assert.deepEqual(resolveHookHolder(500, read, start), { pid: 500, started: 'ps:start of 500' });
-  assert.equal(resolveHookHolder(999, read, start), null, 'a parent that cannot be read gives no holder');
+  assert.deepEqual(parsePsOutput(' 12 1 Mon Dec  1 09:00:00 2026 node x')[0].started, 'ps:Mon Dec  1 09:00:00 2026');
 });

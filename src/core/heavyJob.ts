@@ -17,9 +17,9 @@
  * The classifier and the lock are adapted from Agent Stage (https://github.com/jdell64/agent-stage,
  * MIT, Copyright (c) 2026 Richard J Tindell II), which ported them from guppyos (MIT).
  */
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { hostname } from 'node:os';
-import { defaultStartTime, isStaleHolder } from './fileLock';
+import { isStaleHolder } from './fileLock';
 import { carriesCommand, classifyGradle, classifyMaven, classifyPackageExtras, classifyPlaywright, classifyWorker, E2E_SCRIPT, RUN_PREFIXES, unwrapGroup } from './heavyJobRules';
 
 export type HeavyKind = 'install' | 'build' | 'suite' | 'bench';
@@ -281,15 +281,18 @@ export interface HeavyCall {
   pid?: number;
   /** Consecutive watcher scans that found no job for this call. */
   misses: number;
-  /** The CLI that asked for the slot (the hook's parent, past the shell that ran the hook), with its start time
-   *  (null when it could not be read). Absent when the hook did not say (an older hook, another provider). */
+  /** The CLI that asked for the slot, as the hook shim found it (its parent, past the shell that ran the hook), with
+   *  its start time from the first process listing that showed it (null until then). Absent when the hook did not say
+   *  (an older hook, another provider, a shim that could not tell). */
   holder?: HookHolder;
 }
 
-/** A CLI process, by pid and start time (fileLock's defaultStartTime). */
-export interface HookHolder { pid: number; started: string | null }
+/** A CLI process, by pid and start time (as the process listing gives it). `confirmed`: a scan has seen it running
+ *  since the call took its slot; only then may it free the slot. */
+export interface HookHolder { pid: number; started: string | null; confirmed: boolean }
 
-export interface ProcRow { pid: number; parentPid: number; commandLine: string }
+/** A process listing row; `started` is its start time, where the listing gives one. */
+export interface ProcRow { pid: number; parentPid: number; commandLine: string; started?: string }
 export interface HeavyLockDeps {
   limit: () => HeavyLimit;
   /** How many of the held and reserved slots may be test suites. Absent = no limit beyond `limit`. */
@@ -307,10 +310,6 @@ export interface HeavyLockDeps {
   /** Tell a queued agent that a slot is reserved for it until `until`. Returns whether any channel
    *  took the message. */
   notify?: (agentId: string, kind: HeavyKind, until: number) => boolean;
-  /** The CLI behind a hook whose parent is `hookPid` (resolveHookHolder), or null when it cannot be told. */
-  holderOf?: (hookPid: number) => HookHolder | null;
-  /** When process `pid` started. Default: fileLock's defaultStartTime. */
-  startTime?: (pid: number) => string | null;
 }
 
 export const HEAVY_TTL_MS = 60 * 60_000;
@@ -360,8 +359,9 @@ export class HeavyJobLock {
   }
 
   /** PreToolUse: a heavy call from `agentId`. Take a slot, or queue it. */
-  /** `hookPid`: the parent of the hook that asked (the CLI, or the shell the CLI ran the hook in), when it said. */
-  acquire(agentId: string, cls: HeavyClass, command: string, callId: string, background: boolean, session?: string, hookPid?: number): HeavyDecision {
+  /** `hookPid`: the CLI that asked, as the hook shim found it, when it said. Recorded as it is: no process is read
+   *  here (this runs on the app's main thread); its start time is filled in by the next scan. */
+  acquire(agentId: string, cls: HeavyClass, command: string, callId: string, background: boolean, session?: string, hookPid?: number, hookCommand?: string): HeavyDecision {
     const limit = this.d.limit();
     if (limit === 'off' || !cls.heavy || !cls.kind) {
       if (limit === 'off') this.dropWaiting(agentId);
@@ -375,12 +375,12 @@ export class HeavyJobLock {
     if (!reserved && this.calls.size + this.reservations.size >= limit) return this.refuse(agentId, cls, limit);
     const now = this.now();
     const key = this.nextKey++;
-    let holder: HookHolder | null = null;
-    if (hookPid !== undefined && Number.isSafeInteger(hookPid) && hookPid > 1) { try { holder = this.d.holderOf?.(hookPid) ?? null; } catch { holder = null; } }
+    const holder: HookHolder | null = hookPid !== undefined && Number.isSafeInteger(hookPid) && hookPid > 1 ? { pid: hookPid, started: null, confirmed: false } : null;
     this.calls.set(key, { key, agentId, callId, kind: cls.kind, label: cls.why ?? cls.kind, command: command.slice(0, COMMAND_KEEP), why: cls.why, session, since: now, touched: now, background, posted: false, seen: false, misses: 0, ...(holder ? { holder } : {}) });
     // How long the agent queued for this slot, for the usage log (measure only).
     const waitMs = reserved && reservation?.queuedSince !== undefined ? now - reservation.queuedSince : undefined;
-    this.log({ kind: 'heavy-lock', action: 'acquire', agentId, heavyKind: cls.kind, job: cls.why, background, limit, reserved, ...(waitMs !== undefined ? { waitMs } : {}) });
+    this.log({ kind: 'heavy-lock', action: 'acquire', agentId, heavyKind: cls.kind, job: cls.why, background, limit, reserved, ...(waitMs !== undefined ? { waitMs } : {}),
+      ...(holder ? { holderPid: holder.pid, ...(hookCommand ? { holderCommand: hookCommand.slice(0, 64) } : {}) } : {}) });
     this.arm();
     return { allow: true, acquired: true };
   }
@@ -521,18 +521,33 @@ export class HeavyJobLock {
    *  turn ending, the PTY exiting or the TTL. */
   async scan(): Promise<void> {
     this.expire();
-    // The CLI that asked is judged by the file lock's holder rule (isStaleHolder): exited, at once; running, never on
-    // age, unless its pid is now another process (another start time), which is told once the call is older than
-    // HOLDER_STALE_MS. A start time that cannot be read is no evidence either way.
-    const bounds = { staleMs: HOLDER_STALE_MS, startTime: this.d.startTime ?? ((pid: number) => defaultStartTime(pid, HOLDER_START_READ_MS)) };
-    const host = hostname();
-    for (const c of [...this.calls.values()]) {
-      if (!c.holder) continue;
-      if (isStaleHolder({ pid: c.holder.pid, host, started: c.holder.started ?? undefined }, this.now() - c.since, bounds)) this.release(c.key, 'holder-exit');
-    }
     if (!this.calls.size || !this.d.probe || !this.d.roots) return;
     let procs: ProcRow[];
     try { procs = await this.d.probe(); } catch { return; }
+    // The CLI that asked is judged from this one listing. The first listing after the call took its slot confirms it,
+    // when it shows that pid running, and records its start time; one that does not show it drops it, and the call is
+    // judged as one whose hook gave no pid (a helper the CLI ran the hook through, a pid that was never the CLI).
+    // A confirmed holder is judged by the file lock's holder rule (isStaleHolder): exited, at once; running, never on
+    // age, unless its pid now shows another start time than the one first seen, which is asked once the call is older
+    // than HOLDER_STALE_MS. A listing that cannot be read judges no one.
+    const listedRow = new Map(procs.map((p) => [p.pid, p]));
+    const startOf = (pid: number): string | null => listedRow.get(pid)?.started ?? null;
+    const bounds = { staleMs: HOLDER_STALE_MS, startTime: startOf };
+    const host = hostname();
+    for (const c of [...this.calls.values()]) {
+      const h = c.holder;
+      if (!h) continue;
+      if (!h.confirmed) {
+        const row = listedRow.get(h.pid);
+        const command = row ? (row.commandLine.split(/\s+/)[0] ?? '').split('/').pop()?.slice(0, 64) : undefined;
+        if (row) { h.confirmed = true; h.started = startOf(h.pid); this.log({ kind: 'heavy-lock', action: 'holder-confirmed', agentId: c.agentId, holderPid: h.pid, holderCommand: command }); }
+        else { c.holder = undefined; this.log({ kind: 'heavy-lock', action: 'holder-dropped', agentId: c.agentId, holderPid: h.pid }); }
+        continue;
+      }
+      if (h.started === null) h.started = startOf(h.pid);
+      if (isStaleHolder({ pid: h.pid, host, started: h.started ?? undefined }, this.now() - c.since, bounds)) this.release(c.key, 'holder-exit');
+    }
+    if (!this.calls.size) return;
     const parent = new Map(procs.map((p) => [p.pid, p.parentPid]));
     const rootOf = new Map(this.d.roots().map((r) => [r.pid, r.agentId]));
     const lineage = (pid: number): number[] => {
@@ -582,7 +597,7 @@ export class HeavyJobLock {
 
 // — the hook boundary —
 
-interface HeavyHookPayload { tool_name?: string; tool_input?: unknown; tool_use_id?: unknown; notification_type?: string; tool_session_id?: string; hook_ppid?: unknown }
+interface HeavyHookPayload { tool_name?: string; tool_input?: unknown; tool_use_id?: unknown; notification_type?: string; tool_session_id?: string; hook_ppid?: unknown; hook_ppid_command?: unknown }
 
 
 /** The id that pairs a call's PreToolUse with its PostToolUse: the provider's tool-use id when it
@@ -599,7 +614,7 @@ export function gateHeavyCall(lock: HeavyJobLock, agentId: string, p: HeavyHookP
   const cls = classifyHeavy(p.tool_name, p.tool_input);
   if (!cls.heavy) return null;
   const d = lock.acquire(agentId, cls, commandFromToolInput(p.tool_input) ?? '', heavyCallId(p), isBackground(p.tool_input), p.tool_session_id,
-    typeof p.hook_ppid === 'number' ? p.hook_ppid : undefined);
+    typeof p.hook_ppid === 'number' ? p.hook_ppid : undefined, typeof p.hook_ppid_command === 'string' ? p.hook_ppid_command : undefined);
   return d.allow ? null : d.reason;
 }
 
@@ -623,41 +638,16 @@ export function heavySlotNotice(kind: HeavyKind, until: number): { subject: stri
 
 // — process listing —
 
-/** The most one start-time read of a slot's CLI may take. */
-const HOLDER_START_READ_MS = 100;
 /** A slot's CLI that is still running is asked whether it is the same process only once the call is this old. */
 export const HOLDER_STALE_MS = 30_000;
 
-/** The parent pid and command line of process `pid`, from ps; null when it cannot be read. */
-export function readProcessRow(pid: number): { parentPid: number; commandLine: string } | null {
-  if (process.platform === 'win32') return null;
-  try {
-    const out = execFileSync('ps', ['-o', 'ppid=,command=', '-p', String(pid)], {
-      env: { PATH: '/bin:/usr/bin', LC_ALL: 'C' }, stdio: ['ignore', 'pipe', 'ignore'], timeout: HOLDER_START_READ_MS,
-    }).toString();
-    const m = /^\s*(\d+)\s+(.*?)\s*$/.exec(out.split('\n')[0] ?? '');
-    return m ? { parentPid: Number(m[1]), commandLine: m[2] } : null;
-  } catch { return null; }
-}
-
-/** The CLI behind a hook whose parent is `hookPid`: that process, or, when it is the shell the CLI ran the hook in
- *  (its command names the hook shim), that shell's parent; with its start time. Null when the process cannot be read,
- *  so the call is judged as before. */
-export function resolveHookHolder(hookPid: number, read: (pid: number) => { parentPid: number; commandLine: string } | null = readProcessRow,
-  startTime: (pid: number) => string | null = (pid) => defaultStartTime(pid, HOLDER_START_READ_MS)): HookHolder | null {
-  const row = read(hookPid);
-  if (!row) return null;
-  const pid = /cth-hook\.cjs/.test(row.commandLine) ? row.parentPid : hookPid;
-  if (!(pid > 1)) return null;
-  return { pid, started: startTime(pid) };
-}
-
-/** Parse `ps -axo pid=,ppid=,command=`. */
+/** Parse `ps -axo pid=,ppid=,lstart=,command=` (or the same without lstart). */
 export function parsePsOutput(out: string): ProcRow[] {
   const rows: ProcRow[] = [];
   for (const line of out.split('\n')) {
-    const m = /^\s*(\d+)\s+(\d+)\s+(.*?)\s*$/.exec(line);
-    if (m) rows.push({ pid: Number(m[1]), parentPid: Number(m[2]), commandLine: m[3] });
+    // lstart, under LC_ALL=C: "Thu Nov 27 05:02:11 2026".
+    const m = /^\s*(\d+)\s+(\d+)\s+(?:([A-Z][a-z]{2} [A-Z][a-z]{2} [ \d]\d \d\d:\d\d:\d\d \d{4})\s+)?(.*?)\s*$/.exec(line);
+    if (m) rows.push({ pid: Number(m[1]), parentPid: Number(m[2]), commandLine: m[4], ...(m[3] ? { started: `ps:${m[3]}` } : {}) });
   }
   return rows;
 }
@@ -668,7 +658,8 @@ export function parsePsOutput(out: string): ProcRow[] {
 export function probeProcesses(): Promise<ProcRow[]> {
   const options = { windowsHide: true, timeout: 10_000, maxBuffer: 16 * 1024 * 1024 };
   if (process.platform !== 'win32') {
-    return new Promise((resolve, reject) => execFile('ps', ['-axo', 'pid=,ppid=,command='], options, (err, stdout) => {
+    const env = { ...process.env, LC_ALL: 'C', TZ: 'UTC' };
+    return new Promise((resolve, reject) => execFile('ps', ['-axo', 'pid=,ppid=,lstart=,command='], { ...options, env }, (err, stdout) => {
       if (err) return reject(err);
       const rows = parsePsOutput(stdout);
       if (rows.length) resolve(rows); else reject(new Error('Process probe returned no rows'));
