@@ -34,6 +34,10 @@ export interface FileLockOptions {
   retryMs: number;
   /** When process `pid` started, or null when that cannot be read within `timeoutMs` (defaultStartTime). */
   startTime: (pid: number, timeoutMs: number) => string | null;
+  /** The most each start-time read may take. Default: what is left of `waitMs`, at most START_READ_MS. A writer
+   *  that does not wait for the lock (waitMs 0) gives the reads a budget of their own, or it records no start time
+   *  and cannot tell a running holder's process from another that took its pid. */
+  startReadMs?: number;
   /** Makes the hard link that takes the lock (fs.linkSync). */
   link: (existingPath: string, newPath: string) => void;
   hooks: FileLockHooks;
@@ -234,11 +238,11 @@ export function acquireFileLock(lock: string, opts: FileLockOptions): OwnLock {
   const token = randomBytes(12).toString('hex');
   // A monotonic clock: a wall-clock step back would stretch the wait, a step forward would cut it short.
   const deadline = performance.now() + opts.waitMs;
-  // Start-time reads count against the wait: each gets at most START_READ_MS, and no more than is left of
-  // it. A read that runs out of time cannot tell whether a holder is the process that wrote its record,
+  // Start-time reads count against the wait, unless startReadMs gives them a budget of their own: each gets at most
+  // START_READ_MS, and no more than is left of it. A read that runs out of time cannot tell whether a holder is the process that wrote its record,
   // so that holder is taken to be alive (see isStale), and the wait still ends on time.
   const readStart = (pid: number): string | null => {
-    const left = Math.min(START_READ_MS, Math.floor(deadline - performance.now()));
+    const left = opts.startReadMs ?? Math.min(START_READ_MS, Math.floor(deadline - performance.now()));
     return left > 0 ? opts.startTime(pid, left) : null;
   };
   const started = readStart(process.pid);
