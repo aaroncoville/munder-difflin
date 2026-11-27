@@ -19,7 +19,7 @@ const { HiveManager } = loadTs('src/main/hive.ts');
 const psWorks = spawnSync('ps', ['-o', 'ppid=', '-p', String(process.pid)]).status === 0;
 
 /** The frame the real shim sends when started by `argv` with `payload` on stdin. */
-async function frame(t, argv, payload) {
+async function frame(t, argv, payload, PATH = process.env.PATH) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-shim-ppid-'));
   const short = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-'));
   t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); fs.rmSync(short, { recursive: true, force: true }); });
@@ -33,7 +33,7 @@ async function frame(t, argv, payload) {
   t.after(() => srv.close());
   await new Promise((resolve) => {
     const [cmd, ...args] = argv(shim);
-    const child = spawn(cmd, args, { env: { PATH: process.env.PATH, ELECTRON_RUN_AS_NODE: '1', HIVE_SOCK: sock, AGENT_ID: 'ag1' } });
+    const child = spawn(cmd, args, { env: { PATH, ELECTRON_RUN_AS_NODE: '1', HIVE_SOCK: sock, AGENT_ID: 'ag1' } });
     child.on('close', resolve);
     child.stdin.end(JSON.stringify(payload));
   });
@@ -58,4 +58,14 @@ test('a pid the payload carried is dropped, and a call with no command sends non
   const planted = await frame(t, (shim) => [process.execPath, shim], { hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path: '/x' }, hook_ppid: 4242, hook_ppid_command: 'forged' });
   assert.equal(Object.hasOwn(planted, 'hook_ppid'), false);
   assert.equal(Object.hasOwn(planted, 'hook_ppid_command'), false);
+});
+
+test('the shim runs /bin/ps, never a program named ps earlier on the CLI\'s PATH', { skip: !psWorks && 'ps cannot run here' }, async (t) => {
+  const fake = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-ps-'));
+  t.after(() => fs.rmSync(fake, { recursive: true, force: true }));
+  const marker = path.join(fake, 'ran');
+  fs.writeFileSync(path.join(fake, 'ps'), `#!/bin/sh\necho ran > "${marker}"\necho "1 claude"\n`, { mode: 0o755 });
+  const sent = await frame(t, (shim) => [process.execPath, shim], BASH, `${fake}:${process.env.PATH}`);
+  assert.equal(fs.existsSync(marker), false, 'the fake ps was not run');
+  assert.equal(sent.hook_ppid, process.pid, 'the real ps answered');
 });

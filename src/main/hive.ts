@@ -4826,7 +4826,10 @@ process.stdin.on('end', () => {
     try {
       const cp = require('child_process');
       const read = (pid) => {
-        const out = cp.execFileSync('ps', ['-o', 'ppid=,command=', '-p', String(pid)], { encoding: 'utf8', timeout: 300, stdio: ['ignore', 'pipe', 'ignore'] });
+        // /bin/ps by its path, with an environment of its own: a hook runs outside the seat's sandbox, so a program
+        // named ps earlier on the CLI's PATH must not be run here.
+        const out = cp.execFileSync('/bin/ps', ['-o', 'ppid=,command=', '-p', String(pid)],
+          { encoding: 'utf8', timeout: 300, stdio: ['ignore', 'pipe', 'ignore'], env: { PATH: '/bin:/usr/bin', LC_ALL: 'C' } });
         const m = /^\\s*(\\d+)\\s+(.*?)\\s*$/.exec(out.split('\\n')[0] || '');
         return m ? { ppid: Number(m[1]), command: m[2] } : null;
       };
