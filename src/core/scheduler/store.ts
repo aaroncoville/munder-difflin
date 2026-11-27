@@ -53,7 +53,7 @@ export const SCHEDULER_MODULE: CoreModuleDeclaration = {
 
 /** Columns added to scheduler_runs at version 2: the process the current attempt's runner started. */
 const RUNNER_COLUMNS: ReadonlyArray<[string, string]> = [
-  ['runner_pid', 'INTEGER'], ['runner_pgid', 'INTEGER'], ['runner_host', 'TEXT'], ['runner_started', 'TEXT'],
+  ['runner_pid', 'INTEGER'], ['runner_pgid', 'INTEGER'], ['runner_host', 'TEXT'], ['runner_started', 'TEXT'], ['runner_marker', 'TEXT'],
 ];
 
 /** Adds each of `columns` that `table` lacks. A database written by an earlier build of version 1 may already carry
@@ -179,6 +179,9 @@ export interface StoredRun {
   /** The process the current attempt's runner started (the headless CLI), as recorded when it started: its pid, the
    *  process group it leads, the host, and its start time once read. Null when the runner reported none. */
   runner: RunnerProcess | null;
+  /** What the current attempt's runner said, before starting its process, that process's command line holds: for a
+   *  later scheduler to find it by when its pid was never recorded. */
+  runnerMarker: string | null;
 }
 
 /** A runner's process, recorded so that a later scheduler can tell whether it is still running. */
@@ -197,6 +200,7 @@ function toRun(r: Row): StoredRun {
     costReason: (r.cost_reason as string | null) ?? null, mailState: (r.mail_state as string | null) ?? null, mailId: (r.mail_id as string | null) ?? null,
     runner: r.runner_pid === null || r.runner_pid === undefined ? null
       : { pid: Number(r.runner_pid), pgid: num(r.runner_pgid), host: String(r.runner_host), started: (r.runner_started as string | null) ?? null },
+    runnerMarker: (r.runner_marker as string | null) ?? null,
   };
 }
 

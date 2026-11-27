@@ -7,8 +7,9 @@
  * cost row and done message are switched off through its `effects` option, because the scheduler writes both, keyed
  * by the run id, so that a resumed run cannot repeat them. The adapter itself writes nothing in the hive.
  *
- * The CLI's pid and process group are handed to the scheduler as soon as it starts (the seat's onSpawn, the job's
- * onProcess), so a scheduler that dies while the CLI runs leaves a record the next one can check before starting
+ * Before the CLI starts, the scheduler is given what its command line holds that no other seat's does: the settings
+ * file argument (the seat's onLaunch, the job's onLaunch). The CLI's pid and process group are handed to it as soon as
+ * it starts (the seat's onSpawn, the job's onProcess), so a scheduler that dies while the CLI runs leaves a record the next one can check before starting
  * another. A definition with no timeout gets DEFAULT_SCHEDULED_TIMEOUT_MS: the scheduler heartbeats its lease for as
  * long as the runner works, so a run with no limit could hold its task for good.
  *
@@ -21,7 +22,7 @@ import { seatWriteRoots } from '../writeRoots';
 import type { Runner } from './scheduler';
 
 /** What a seat needs besides the task definition. */
-export type HeadlessRunnerSeat = Omit<HeadlessStreamOptions, 'prompt' | 'agentId' | 'model' | 'maxBudgetUsd' | 'cwd' | 'outputFile' | 'timeoutMs' | 'effects' | 'onSpawn'>;
+export type HeadlessRunnerSeat = Omit<HeadlessStreamOptions, 'prompt' | 'agentId' | 'model' | 'maxBudgetUsd' | 'cwd' | 'outputFile' | 'timeoutMs' | 'effects' | 'onSpawn' | 'onLaunch'>;
 
 /** The time limit of a scheduled run whose definition sets none. */
 export const DEFAULT_SCHEDULED_TIMEOUT_MS = 30 * 60_000;
@@ -43,6 +44,7 @@ export function headlessStreamRunner(seat: HeadlessRunnerSeat, deps: HeadlessRun
       prompt: s.prompt, agentId: s.agentId, model: s.model, cwd: s.cwd, outputFile: s.outputFile,
       maxBudgetUsd: job.maxBudgetUsd,
       timeoutMs: s.timeoutMs ?? DEFAULT_SCHEDULED_TIMEOUT_MS,
+      onLaunch: (l) => job.onLaunch(`--settings ${l.settingsFile} `),
       onSpawn: job.onProcess,
       effects: { recordCost: () => LEFT_TO_SCHEDULER, publish: () => '' },
     });

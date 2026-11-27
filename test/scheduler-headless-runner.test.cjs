@@ -103,3 +103,11 @@ test('Given a job, when the adapter runs it, then the seat reports the CLI it st
   await R.headlessStreamRunner(seat(f), { runHeadlessStream: async (o) => { o.onSpawn({ pid: 4242, pgid: 4242 }); return s.fn(o); } })({ ...job(f), onProcess: (p) => seen.push(p) });
   assert.deepEqual(seen, [{ pid: 4242, pgid: 4242 }]);
 });
+
+test('Given a job, when the seat is about to start the CLI, then the job is told the settings argument to find it by', async (t) => {
+  const f = floor(t);
+  const s = fakeStream();
+  const seen = [];
+  await R.headlessStreamRunner(seat(f), { runHeadlessStream: async (o) => { o.onLaunch({ settingsFile: '/s/headless.json', argv: [] }); return s.fn(o); } })({ ...job(f), onLaunch: (m) => seen.push(m), onProcess: () => {} });
+  assert.deepEqual(seen, ['--settings /s/headless.json ']);
+});

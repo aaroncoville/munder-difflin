@@ -27,9 +27,12 @@
  *    operator's call.
  *  - gone, or never reported: the attempt counts. The runner is started again only while fewer than MAX_RUN_ATTEMPTS
  *    attempts have been made; after that the run is marked failed with the reason.
- * The record is written in the same synchronous turn as the spawn, with no await between, so only a kill landing
- * between those two calls leaves a running CLI unrecorded; that run then counts as an attempt, so at most
- * MAX_RUN_ATTEMPTS CLIs can ever be started for one run.
+ * Before the process is started, the runner says what its command line will hold that no other process's does (the
+ * headless seat's settings file argument), and that is written to the run row first; a runner that cannot have it
+ * written does not start the process. So a crash between the start and the pid's record cannot hide the process: a
+ * later scheduler that finds a "running" run with that text but no pid reads the process table once, and a process
+ * holding the text is recorded and judged as above. A run whose runner gave no such text, or whose process is not
+ * found, counts as an attempt, so at most MAX_RUN_ATTEMPTS processes can ever be started for one run.
  *
  * In this process, a task whose turn is still going is not started again by a second tick (a lease whose holder's
  * host name has changed would otherwise look like another machine's, and be taken over by its own process).
@@ -57,6 +60,7 @@ import { closeSync, fstatSync, openSync, readdirSync, readSync, statSync } from 
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { defaultStartTime, isStaleHolder } from '../fileLock';
+import { probeProcessGroups, type GroupProcRow } from '../processGroups';
 import type { HeadlessRun } from '../headlessSeat';
 import { appendCostLedgerRow, COST_LEDGER_FILE } from '../costLedgerFile';
 import { headlessCostRow, headlessDoneMessage, writeOutboxMessage } from '../headlessStream';
@@ -74,6 +78,10 @@ export interface RunJob {
   /** The runner calls this as soon as it has started the process that does the work (the headless CLI), with its
    *  pid and the process group it leads, before awaiting anything: see the header. */
   onProcess: (proc: { pid: number; pgid: number | null }) => void;
+  /** The runner calls this just before it starts that process, with text its command line will hold and no other
+   *  process's will (the headless seat's settings file argument): see the header. If it throws, the runner must not
+   *  start the process. */
+  onLaunch: (marker: string) => void;
 }
 
 /** What a runner returns: the finished headless run, and whether its output is in place. */
@@ -116,6 +124,8 @@ export interface SchedulerOptions {
   heartbeatMs?: number;
   /** When process `pid` started (fileLock.ts defaultStartTime). */
   startTime?: (pid: number, timeoutMs: number) => string | null;
+  /** One read of the process table, with process groups (processGroups.ts probeProcessGroups). */
+  processTable?: () => Promise<GroupProcRow[]>;
   hooks?: SchedulerHooks;
 }
 
@@ -246,6 +256,14 @@ export class Scheduler {
     this.inFlight.add(taskId);
     try {
       let run = this.openRun(taskId);
+      if (run && run.state === 'running' && !run.runner && run.runnerMarker) {
+        const why = await this.adoptUnrecorded(run, lease);
+        if (why) {
+          report.skipped.push({ taskId, reason: why });
+          return;
+        }
+        run = this.store.run(run.id) as StoredRun;
+      }
       if (run && run.state === 'running' && run.runner) {
         const why = this.survivor(run, run.runner);
         if (why) {
@@ -283,6 +301,24 @@ export class Scheduler {
     const what = cliAlive ? `its runner's process (pid ${p.pid}${p.pgid === null ? '' : `, group ${p.pgid}`})` : `a process in its runner's group ${p.pgid}`;
     return `task ${run.taskId}: run ${run.id} was started by a scheduler that has since stopped, and ${what} on ${p.host} is still running; `
       + 'it is not started again, and the run goes on once that process has ended: if it is stuck, stopping it frees the run';
+  }
+
+  /** For a run whose runner said what its process's command line holds but whose pid was never recorded (a crash
+   *  between the two): one read of the process table, and a process found holding that text is recorded as the
+   *  runner's, to be judged as any recorded one. Returns why the run must wait when the table cannot be read. */
+  private async adoptUnrecorded(run: StoredRun, lease: HeldLease): Promise<string | null> {
+    const marker = run.runnerMarker as string;
+    let rows: GroupProcRow[];
+    try {
+      rows = await (this.o.processTable ?? probeProcessGroups)();
+    } catch (e) {
+      return `task ${run.taskId}: run ${run.id} was started by a scheduler that has since stopped before recording its runner's process, and the process table, where it would be found, could not be read (${(e as Error).message}); it is not started again this time`;
+    }
+    const found = rows.find((r) => r.pid !== process.pid && ` ${r.commandLine} `.includes(` ${marker}`));
+    if (found) {
+      this.guarded(lease, 'UPDATE scheduler_runs SET runner_pid = ?, runner_pgid = ?, runner_host = ? WHERE id = ?', found.pid, found.pgid ?? null, hostname(), run.id);
+    }
+    return null;
   }
 
   /** Records the runner's process on the run row; see the header. The start time is read after, off the spawn path. A
@@ -334,7 +370,7 @@ export class Scheduler {
         return 'failed';
       }
       this.hooks.beforeRunnerStart?.();
-      this.guarded(lease, "UPDATE scheduler_runs SET state = 'running', attempt = attempt + 1, started_at = ?, runner_pid = NULL, runner_pgid = NULL, runner_host = NULL, runner_started = NULL WHERE id = ?", this.now(), run.id);
+      this.guarded(lease, "UPDATE scheduler_runs SET state = 'running', attempt = attempt + 1, started_at = ?, runner_pid = NULL, runner_pgid = NULL, runner_host = NULL, runner_started = NULL, runner_marker = NULL WHERE id = ?", this.now(), run.id);
       const beat = setInterval(() => { try { renewLease(this.store, lease, this.now()); } catch { /* the next beat tries again */ } }, this.heartbeatMs);
       let outcome: RunnerOutcome;
       try {
@@ -342,6 +378,7 @@ export class Scheduler {
         outcome = await this.o.runner({
           runId: run.id, taskId: run.taskId, slot: run.slot, snapshot: run.snapshot, maxBudgetUsd: run.snapshot.maxBudgetUsd,
           onProcess: (proc) => this.recordRunner(started, lease, proc, problem),
+          onLaunch: (marker) => this.guarded(lease, 'UPDATE scheduler_runs SET runner_marker = ? WHERE id = ?', marker, started.id),
         });
         if (!outcome || typeof outcome !== 'object' || !outcome.run) throw new Error('the runner returned no run');
       } catch (e) {

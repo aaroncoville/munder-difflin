@@ -588,3 +588,46 @@ test('Given the runner\'s process cannot be recorded, when the runner reports it
   assert.ok(report.errors.some((e) => /pid 4242\) could not be recorded/.test(e.error)), JSON.stringify(report.errors));
   assert.equal(runsOf(store)[0].runner, null);
 });
+
+test('Given a scheduler killed after starting its CLI but before recording its pid, when a scheduler restarts, then it finds the CLI by its settings argument in the process table and does not start another; once it has ended, the run goes on', LIMIT, async (t) => {
+  const f = floor(t);
+  const store = open(t, f);
+  store.putTask(taskDef(f), at(0, 6));
+  const cliLog = path.join(f.base, 'cli.log');
+  t.after(() => { for (const pid of cliPids(cliLog)) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } } });
+  const opts = { dbPath: f.dbPath, hiveRoot: f.hiveRoot, calls: f.calls, cliLog, now: at(1, 7, 20), mode: 'detached', cliMs: 60_000, unreported: true };
+  const first = child(t, opts);
+  await waitFor(cliLog);
+  const [cli] = cliPids(cliLog);
+  assert.match(runsOf(store)[0].runnerMarker, /^--settings .*\.settings\.json $/, 'what to look for was recorded before the start');
+  assert.equal(runsOf(store)[0].runner, null, 'its pid was never recorded');
+  process.kill(first.pid, 'SIGKILL');
+  await first.exited;
+  const again = await within(child(t, { ...opts, now: at(1, 7, 25) }).exited, 10_000, 'a restart did not return: it started the runner again beside the unrecorded CLI');
+  assert.equal(again.code, 0, again.err);
+  assert.match(JSON.parse(again.out).skipped[0].reason, new RegExp(`pid ${cli}.*still running`));
+  assert.equal(runsOf(store)[0].runner.pid, cli, 'the CLI found is recorded as the runner\'s');
+  assert.equal(calls(f).length, 1);
+
+  process.kill(cli, 'SIGKILL');
+  await gone(cli);
+  const last = await within(child(t, { ...opts, now: at(1, 7, 30), cliMs: 50 }).exited, 10_000, 'the last restart did not finish');
+  assert.equal(last.code, 0, last.err);
+  assert.equal(calls(f).length, 2);
+  exactlyOnce(f, store);
+});
+
+test('Given an unrecorded runner process and a process table that cannot be read, when a scheduler resumes the run, then it is not started again and the reason says why', LIMIT, async (t) => {
+  const f = floor(t);
+  const store = open(t, f);
+  store.putTask(taskDef(f), at(0, 6));
+  const { runner } = stub(f);
+  const s = new Scheduler({ store, hiveRoot: f.hiveRoot, runner, now: () => at(1, 7, 20), processTable: async () => { throw new Error('ps is not allowed here'); } });
+  // A run left "running" by a scheduler that stopped after recording what to look for, before the pid.
+  store.db.prepare(`INSERT INTO scheduler_runs (id, task_id, slot, slot_at, state, snapshot, claimed_at, attempt, runner_marker)
+    VALUES ('r-x', 'daily-scan', '2026-11-21T07:19', ?, 'running', ?, ?, 1, '--settings /nowhere.json ')`).run(at(1, 7, 19), JSON.stringify(taskDef(f)), at(1, 7, 19));
+  const report = await s.tick();
+  assert.equal(calls(f).length, 0);
+  assert.match(report.skipped[0].reason, /process table.*could not be read.*ps is not allowed here/);
+  assert.equal(store.run('r-x').attempt, 1);
+});

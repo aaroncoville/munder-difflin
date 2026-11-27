@@ -35,8 +35,12 @@ const runner = async (job) => {
     // which logs its pid after the stand-in's and lives a minute.
     const sub = o.cliChild ? `require('node:child_process').spawn(process.execPath, ['-e', \`require('node:fs').appendFileSync(${JSON.stringify(o.cliLog)}, process.pid + '\\\\n'); setTimeout(() => {}, 60000);\`], { stdio: 'ignore' }).unref();` : '';
     const script = `require('node:fs').appendFileSync(${JSON.stringify(o.cliLog)}, process.pid + '\\n'); ${sub} setTimeout(() => {}, ${Number(o.cliMs)});`;
-    const cli = spawn(process.execPath, ['-e', script], { detached: true, stdio: 'ignore' });
-    job.onProcess({ pid: cli.pid, pgid: cli.pid });
+    // With unreported, the stand-in's command line carries a settings argument as the seat's does, which the runner
+    // names through job.onLaunch before starting it, and its pid is never reported: as after a crash between the two.
+    const settings = `${o.cliLog}.settings.json`;
+    if (o.unreported) job.onLaunch(`--settings ${settings} `);
+    const cli = spawn(process.execPath, ['-e', script, '--', '--settings', settings, 'x'], { detached: true, stdio: 'ignore' });
+    if (!o.unreported) job.onProcess({ pid: cli.pid, pgid: cli.pid });
     await new Promise((r) => cli.on('exit', r));
   }
   return { run: headlessRun(), done: true, doneReason: null };
