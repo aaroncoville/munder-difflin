@@ -71,3 +71,15 @@ test('Given an open store, when it opens again, then it is not migrated twice an
   assert.equal(b.getTask('x').prompt, 'p');
   b.close();
 });
+
+test('Given a new core.db, or one made readable by others, when the store opens it and writes, then the database and its WAL files are readable by the owner only', (t) => {
+  const f = floor(t);
+  const mode = (p) => fs.statSync(p).mode & 0o777;
+  const store = S.openSchedulerStore({ path: f.dbPath, hiveRoots: [f.hiveRoot] });
+  store.putTask({ id: 'a', agentId: 'x', prompt: 'p', schedule: { daily: '07:00' }, model: 'm', maxBudgetUsd: 1, outputFile: '/o', cwd: '/c', roots: [] });
+  for (const p of [f.dbPath, `${f.dbPath}-wal`, `${f.dbPath}-shm`]) assert.equal(mode(p), 0o600, p);
+  store.close();
+  fs.chmodSync(f.dbPath, 0o644);
+  S.openSchedulerStore({ path: f.dbPath, hiveRoots: [f.hiveRoot] }).close();
+  assert.equal(mode(f.dbPath), 0o600);
+});

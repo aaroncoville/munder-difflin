@@ -14,7 +14,7 @@
  * The binding is node:sqlite (Node's built-in SQLite): no native module to rebuild for Electron, and the core may use
  * Node builtins without widening the list of packages it is allowed (test/core-boundary.test.cjs).
  */
-import { mkdirSync } from 'node:fs';
+import { chmodSync, closeSync, mkdirSync, openSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, posix, win32 } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -251,13 +251,17 @@ export interface OpenStoreOptions {
   busyTimeoutMs?: number;
 }
 
-/** Opens (creating it and its folder when needed) core.db at `path`, and brings the scheduler's tables to
+/** Opens (creating it and its folder when needed, the file readable by its owner only) core.db at `path`, and brings the scheduler's tables to
  *  SCHEDULER_SCHEMA_VERSION. Throws CoreDbRefused for a path inside a hive root, before anything is made, and for a
  *  database whose scheduler tables are newer than this code. */
 export function openSchedulerStore(o: OpenStoreOptions): SchedulerStore {
   const why = refusal(o.path, o.hiveRoots);
   if (why) throw new CoreDbRefused(why);
   mkdirSync(join(o.path, '..'), { recursive: true, mode: 0o700 });
+  // core.db holds task prompts and paths: readable by its owner only. SQLite gives its -wal and -shm files the mode
+  // of the database file, so they follow. An existing file made with a wider mode is narrowed.
+  closeSync(openSync(o.path, 'a', 0o600));
+  chmodSync(o.path, 0o600);
   const db = new DatabaseSync(o.path, { timeout: o.busyTimeoutMs ?? 5000 });
   try {
     db.exec('PRAGMA journal_mode = WAL');
