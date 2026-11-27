@@ -39,6 +39,7 @@
  * timeout has no result object, so its cost is unknown: totalCostUsd is null, not 0.
  */
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import { rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute } from 'node:path';
 import { CLAUDE_CONFIG_KEEP } from './claudeEnv';
@@ -147,6 +148,16 @@ export interface HeadlessSeatOptions {
    *  the CLI again if the caller itself dies, since the CLI is detached and outlives it. An error it throws is
    *  ignored. */
   onSpawn?: (cli: { pid: number; pgid: number | null }) => void;
+  /** Called once, synchronously, just before the CLI is started, with the settings file its launch line names (a
+   *  path unique to the hive and the seat) and the whole launch line: for a caller that must record what to look for
+   *  before the process exists, so that a crash between the start and onSpawn cannot leave it unfindable. When it
+   *  throws, the CLI is not started and the run fails with that reason. */
+  onLaunch?: (launch: { settingsFile: string; argv: readonly string[] }) => void;
+  /** A key for this launch alone (letters, digits, '.', '_' and '-'). With it, the launch gets a settings file of its
+   *  own, written the same way to the same private folder but named from the hive, the agent and this key, so the
+   *  path its launch line names belongs to this launch and no other one of the agent's; the file is removed when the
+   *  run ends. Without it, every headless launch of the agent shares one settings file. */
+  launchKey?: string;
 }
 
 /** The default time between SIGTERM and SIGKILL for a run that timed out. */
@@ -278,6 +289,9 @@ export function buildHeadlessLaunch(o: HeadlessSeatOptions): HeadlessLaunch {
       ? 'the plugin map names plugins although noPlugins says there are none'
       : 'the plugin map is empty; pass noPlugins: true when the owner has no plugins to list');
   }
+  if (o.launchKey !== undefined && !/^[A-Za-z0-9._-]{1,128}$/.test(o.launchKey)) {
+    throw new HeadlessSeatRefused('the launch key is not 1 to 128 letters, digits, dots, underscores or dashes');
+  }
   if (o.maxOutputBytes !== undefined && !(Number.isSafeInteger(o.maxOutputBytes) && o.maxOutputBytes > 0)) {
     throw new HeadlessSeatRefused('the output bound is not a positive whole number of bytes');
   }
@@ -310,7 +324,8 @@ export function buildHeadlessLaunch(o: HeadlessSeatOptions): HeadlessLaunch {
   if (excess) throw new HeadlessSeatRefused(`the owner's ${excess.why} would widen the seat beyond its roots${excess.root ? `: ${excess.root}` : ''}`);
   const settings = headlessSeatSettings(roots, hookCommandFor(o.hookRuntime, true), o.enabledPlugins);
   // Its own file name, so it never replaces the settings of the same agent's interactive seat.
-  const settingsFile = writeSeatSettings(o.settingsDir, o.hiveRoot, `headless:${o.agentId}`, JSON.stringify(settings, null, 2));
+  const settingsKey = o.launchKey === undefined ? `headless:${o.agentId}` : `headless:${o.agentId}:launch:${o.launchKey}`;
+  const settingsFile = writeSeatSettings(o.settingsDir, o.hiveRoot, settingsKey, JSON.stringify(settings, null, 2));
   const argv = [o.cliPath ?? 'claude', '-p', '--output-format', 'json', '--settings', settingsFile, '--setting-sources', HEADLESS_SETTING_SOURCES];
   // MCP servers are not settings: the owner's global config (~/.claude.json) and plugins declare them, and an empty
   // --setting-sources does not stop those. --strict-mcp-config with no --mcp-config starts none.
@@ -420,6 +435,8 @@ export function runHeadlessSeat(o: HeadlessSeatOptions): Promise<HeadlessRun> {
       if (settled) return;
       settled = true;
       for (const t of timers) { clearTimeout(t); clearInterval(t); }
+      // A launch's own settings file is used by this run only.
+      if (o.launchKey !== undefined) { try { rmSync(launch.settingsFile, { force: true }); } catch { /* left for the folder's owner */ } }
       const { stdout, stderr } = out;
       const r = spawnError || overflow || timedOut ? null : parseHeadlessOutput(stdout).result;
       const cost = r && typeof r.total_cost_usd === 'number' && Number.isFinite(r.total_cost_usd) ? r.total_cost_usd : null;
@@ -448,6 +465,9 @@ export function runHeadlessSeat(o: HeadlessSeatOptions): Promise<HeadlessRun> {
     };
     let child: ChildProcess;
     const startedAt = Date.now();
+    try {
+      o.onLaunch?.({ settingsFile: launch.settingsFile, argv: launch.argv });
+    } catch (e) { finish(null, null, `the CLI was not started: its caller refused the launch: ${(e as Error).message}`); return; }
     try {
       // detached: the CLI leads a new process group, which its own children join unless they start their own.
       child = spawn(launch.argv[0], launch.argv.slice(1), { cwd: launch.cwd, env: launch.env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });

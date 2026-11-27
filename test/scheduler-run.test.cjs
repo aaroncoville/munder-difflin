@@ -381,6 +381,19 @@ test('Given a scheduler run in a process whose home is a temporary folder, when 
 const isAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 const cliPids = (file) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map(Number) : []);
 
+/** `p`, or a failure naming `what` once `ms` have passed: a restart that started the runner again would wait for its
+ *  CLI, so this turns that into a failed assertion rather than a test that ends by its time limit. */
+function within(p, ms, what) {
+  let timer;
+  return Promise.race([p, new Promise((_, reject) => { timer = setTimeout(() => reject(new assert.AssertionError({ message: what })), ms); })])
+    .finally(() => clearTimeout(timer));
+}
+
+/** Whether the real process table can be read here; skips the test when it cannot (inside an agent sandbox). */
+async function psRuns(t) {
+  try { await loadTs('src/core/processGroups.ts').probeProcessGroups(); return true; } catch (e) { t.skip(`ps cannot run here: ${e.message}`); return false; }
+}
+
 async function gone(pid, ms = 10_000) {
   const end = Date.now() + ms;
   while (isAlive(pid)) {
@@ -407,7 +420,7 @@ test('Given a scheduler killed while the detached CLI it started keeps running, 
   await first.exited;
   assert.ok(isAlive(cli), 'the detached CLI outlived its scheduler');
   for (let i = 0; i < 3; i++) {
-    const again = await child(t, { ...opts, now: at(1, 7, 25 + i) }).exited;
+    const again = await within(child(t, { ...opts, now: at(1, 7, 25 + i) }).exited, 10_000, 'a restart did not return: it started the runner again beside the survivor');
     assert.equal(again.code, 0, again.err);
     const report = JSON.parse(again.out);
     assert.equal(report.ran.length, 0);
@@ -512,4 +525,268 @@ test('Given a lease taken over while the runner worked, when the runner returns,
   assert.match(report.errors[0].error, /taken over/);
   assert.equal(ledgerRows(f).length, 1, 'no cost row');
   assert.equal(mail(f).length, 0, 'no mail');
+});
+
+test('Given a scheduler killed and then its CLI, while a subprocess the CLI started still runs in its group, when a scheduler restarts, then the run is not started again; once the group is empty, it is', LIMIT, async (t) => {
+  const f = floor(t);
+  const store = open(t, f);
+  store.putTask(taskDef(f), at(0, 6));
+  const cliLog = path.join(f.base, 'cli.log');
+  t.after(() => { for (const pid of cliPids(cliLog)) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } } });
+  const opts = { dbPath: f.dbPath, hiveRoot: f.hiveRoot, calls: f.calls, cliLog, now: at(1, 7, 20), mode: 'detached', cliMs: 60_000, cliChild: true };
+  const first = child(t, opts);
+  const end = Date.now() + 10_000;
+  while (cliPids(cliLog).length < 2 || !runsOf(store)[0]?.runner) { if (Date.now() > end) throw new Error('the CLI and its subprocess never started'); await new Promise((r) => setTimeout(r, 20)); }
+  const [cli, sub] = cliPids(cliLog);
+  process.kill(first.pid, 'SIGKILL');
+  await first.exited;
+  process.kill(cli, 'SIGKILL');
+  await gone(cli);
+  assert.ok(isAlive(sub), 'the subprocess outlived the CLI');
+  const again = await within(child(t, { ...opts, now: at(1, 7, 25), cliChild: false }).exited, 10_000, 'a restart did not return: it started the runner again beside the group');
+  assert.equal(again.code, 0, again.err);
+  const report = JSON.parse(again.out);
+  assert.equal(report.ran.length, 0);
+  assert.match(report.skipped[0].reason, new RegExp(`group ${cli}.*still running`));
+  assert.equal(calls(f).length, 1);
+
+  process.kill(sub, 'SIGKILL');
+  await gone(sub);
+  const last = await within(child(t, { ...opts, now: at(1, 7, 30), cliMs: 50, cliChild: false }).exited, 10_000, 'the last restart did not finish');
+  assert.equal(last.code, 0, last.err);
+  assert.equal(calls(f).length, 2, 'started again once the group was empty');
+  exactlyOnce(f, store);
+});
+
+test('Given a live survivor recorded under a host name the machine no longer has, when a scheduler restarts, then it is still not started again', LIMIT, async (t) => {
+  const f = floor(t);
+  const store = open(t, f);
+  store.putTask(taskDef(f), at(0, 6));
+  const cliLog = path.join(f.base, 'cli.log');
+  t.after(() => { for (const pid of cliPids(cliLog)) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } } });
+  const opts = { dbPath: f.dbPath, hiveRoot: f.hiveRoot, calls: f.calls, cliLog, now: at(1, 7, 20), mode: 'detached', cliMs: 60_000 };
+  const first = child(t, opts);
+  const end = Date.now() + 10_000;
+  while (!runsOf(store)[0]?.runner) { if (Date.now() > end) throw new Error('the CLI was never recorded'); await new Promise((r) => setTimeout(r, 20)); }
+  process.kill(first.pid, 'SIGKILL');
+  await first.exited;
+  // As after the machine took another name on another network.
+  store.db.prepare('UPDATE scheduler_runs SET runner_host = ?').run('renamed.local');
+  const again = await within(child(t, { ...opts, now: at(1, 7, 35) }).exited, 10_000, 'a restart did not return: it started the runner again beside the survivor');
+  assert.equal(again.code, 0, again.err);
+  assert.match(JSON.parse(again.out).skipped[0].reason, /still running/);
+  assert.equal(calls(f).length, 1);
+  assert.equal(cliPids(cliLog).length, 1);
+});
+
+test('Given the runner\'s process cannot be recorded, when the runner reports it, then the tick reports that, naming the pid', LIMIT, async (t) => {
+  const f = floor(t);
+  const store = open(t, f);
+  store.putTask(taskDef(f), at(0, 6));
+  const runner = async (job) => {
+    // The lease is taken over, so the record write is refused.
+    store.db.prepare('UPDATE scheduler_leases SET token = ?').run('another-holder');
+    job.onProcess({ pid: 4242, pgid: 4242 });
+    return { run: headlessRun(), done: true, doneReason: null };
+  };
+  const report = await new Scheduler({ store, hiveRoot: f.hiveRoot, runner, now: () => at(1, 7, 20) }).tick();
+  assert.ok(report.errors.some((e) => /pid 4242\) could not be recorded/.test(e.error)), JSON.stringify(report.errors));
+  assert.equal(runsOf(store)[0].runner, null);
+});
+
+test('Given a scheduler killed after starting its CLI but before recording its pid, when a scheduler restarts, then it finds the CLI by its settings argument in the process table and does not start another; once it has ended, the run goes on (skipped where ps cannot run)', LIMIT, async (t) => {
+  if (!(await psRuns(t))) return;
+  const f = floor(t);
+  const store = open(t, f);
+  store.putTask(taskDef(f), at(0, 6));
+  const cliLog = path.join(f.base, 'cli.log');
+  t.after(() => { for (const pid of cliPids(cliLog)) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } } });
+  const opts = { dbPath: f.dbPath, hiveRoot: f.hiveRoot, calls: f.calls, cliLog, now: at(1, 7, 20), mode: 'detached', cliMs: 60_000, unreported: true };
+  const first = child(t, opts);
+  await waitFor(cliLog);
+  const [cli] = cliPids(cliLog);
+  assert.equal(runsOf(store)[0].runnerMarker, `--settings ${cliLog}.${runsOf(store)[0].id}.a1.json `, 'what to look for, naming the run and attempt, was recorded before the start');
+  assert.equal(runsOf(store)[0].runner, null, 'its pid was never recorded');
+  process.kill(first.pid, 'SIGKILL');
+  await first.exited;
+  const again = await within(child(t, { ...opts, now: at(1, 7, 25) }).exited, 10_000, 'a restart did not return: it started the runner again beside the unrecorded CLI');
+  assert.equal(again.code, 0, again.err);
+  assert.match(JSON.parse(again.out).skipped[0].reason, new RegExp(`pid ${cli}.*still running`));
+  assert.equal(runsOf(store)[0].runner.pid, cli, 'the CLI found is recorded as the runner\'s');
+  assert.equal(calls(f).length, 1);
+
+  process.kill(cli, 'SIGKILL');
+  await gone(cli);
+  const last = await within(child(t, { ...opts, now: at(1, 7, 30), cliMs: 50 }).exited, 10_000, 'the last restart did not finish');
+  assert.equal(last.code, 0, last.err);
+  assert.equal(calls(f).length, 2);
+  exactlyOnce(f, store);
+});
+
+test('Given an unrecorded runner process and a process table that cannot be read, when a scheduler resumes the run, then it is not started again and the reason says why', LIMIT, async (t) => {
+  const f = floor(t);
+  const store = open(t, f);
+  store.putTask(taskDef(f), at(0, 6));
+  const { runner } = stub(f);
+  const s = new Scheduler({ store, hiveRoot: f.hiveRoot, runner, now: () => at(1, 7, 20), processTable: async () => { throw new Error('ps is not allowed here'); } });
+  // A run left "running" by a scheduler that stopped after recording what to look for, before the pid.
+  store.db.prepare(`INSERT INTO scheduler_runs (id, task_id, slot, slot_at, state, snapshot, claimed_at, attempt, runner_marker)
+    VALUES ('r-x', 'daily-scan', '2026-11-21T07:19', ?, 'running', ?, ?, 1, '--settings /nowhere.json ')`).run(at(1, 7, 19), JSON.stringify(taskDef(f)), at(1, 7, 19));
+  const report = await s.tick();
+  assert.equal(calls(f).length, 0);
+  assert.match(report.skipped[0].reason, /process table.*could not be read.*ps is not allowed here/);
+  assert.equal(store.run('r-x').attempt, 1);
+});
+
+test('Given one tick with the clock a week ahead, when the clock is put right, then every tick and the status report the slot claimed ahead of it, naming it', LIMIT, async (t) => {
+  const f = floor(t);
+  const store = open(t, f);
+  store.putTask(taskDef(f), at(0, 6));
+  const { runner } = stub(f);
+  const clock = { now: at(8, 7, 20) };
+  const s = new Scheduler({ store, hiveRoot: f.hiveRoot, runner, now: () => clock.now });
+  const wrong = await s.tick();
+  assert.deepEqual(wrong.ahead, []);
+  clock.now = at(2, 7, 20);
+  for (let i = 0; i < 2; i++) {
+    const report = await s.tick();
+    assert.equal(report.ahead.length, 1);
+    assert.equal(report.ahead[0].slot, '2026-11-28T07:19');
+    assert.match(report.ahead[0].reason, /2026-11-28T07:19.*after the clock.*runs nothing until/);
+  }
+  assert.equal(calls(f).length, 1, 'no slot fired twice or out of order');
+  assert.deepEqual(schedulerStatus(store, { now: at(2, 7, 21) }).ahead.map((a) => a.slot), ['2026-11-28T07:19']);
+  assert.deepEqual(schedulerStatus(store, { now: at(9, 7, 21) }).ahead, [], 'nothing is reported once the clock has passed it');
+});
+
+test('Given a finished run whose done mail cannot be written, when ticks go on, then it is reported and shown in the status, later slots still run, and once the write can succeed it is finished once', LIMIT, async (t) => {
+  const f = floor(t);
+  const store = open(t, f);
+  store.putTask(taskDef(f), at(0, 6));
+  const seat = path.dirname(f.outbox);
+  fs.rmSync(seat, { recursive: true });
+  const { runner } = stub(f);
+  const clock = { now: at(1, 7, 20) };
+  const s = new Scheduler({ store, hiveRoot: f.hiveRoot, runner, now: () => clock.now });
+  const first = await s.tick();
+  const [stuck] = runsOf(store);
+  assert.equal(stuck.state, 'ran');
+  assert.match(first.errors[0].error, new RegExp(`run ${stuck.id}: its cost row or done mail could not be written`));
+  assert.match(schedulerStatus(store, { now: clock.now }).openRuns[0].effectsError, /could not be written/);
+
+  clock.now = at(2, 7, 20);
+  await s.tick();
+  assert.equal(calls(f).length, 2, 'the next day\'s slot ran although the first run is still unfinished');
+
+  fs.mkdirSync(f.outbox, { recursive: true });
+  clock.now = at(2, 7, 25);
+  await s.tick();
+  const runs = runsOf(store);
+  assert.deepEqual(runs.map((r) => r.state), ['done', 'done']);
+  assert.equal(runs[0].effectsError, null);
+  for (const r of runs) assert.equal(rowsFor(f, r.id).length, 1, 'one cost row each');
+  assert.equal(mail(f).length, 2, 'one done mail each');
+  assert.equal(calls(f).length, 2, 'no runner was called again');
+});
+
+test('Given two live CLIs of the same seat, one another run\'s and one this run\'s orphan whose pid was never recorded, when a scheduler restarts, then it adopts the orphan, not the other, and never starts the run again while the orphan lives (skipped where ps cannot run)', LIMIT, async (t) => {
+  if (!(await psRuns(t))) return;
+  const f = floor(t);
+  const store = open(t, f);
+  store.putTask(taskDef(f), at(0, 6));
+  const cliLog = path.join(f.base, 'cli.log');
+  t.after(() => { for (const pid of cliPids(cliLog)) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } } });
+  // Another task's CLI on the same seat, started first, so it comes first in the process table.
+  const other = spawn(process.execPath, ['-e', `require('node:fs').appendFileSync(${JSON.stringify(cliLog)}, process.pid + '\\n'); setTimeout(() => {}, 60000);`,
+    '--', '--settings', `${cliLog}.r-another-run.a1.json`, 'x'], { detached: true, stdio: 'ignore' });
+  other.unref();
+  await waitFor(cliLog);
+  const opts = { dbPath: f.dbPath, hiveRoot: f.hiveRoot, calls: f.calls, cliLog, now: at(1, 7, 20), mode: 'detached', cliMs: 60_000, unreported: true };
+  const first = child(t, opts);
+  const end = Date.now() + 10_000;
+  while (cliPids(cliLog).length < 2) { if (Date.now() > end) throw new Error('the orphan never started'); await new Promise((r) => setTimeout(r, 20)); }
+  const orphan = cliPids(cliLog)[1];
+  process.kill(first.pid, 'SIGKILL');
+  await first.exited;
+
+  const again = await within(child(t, { ...opts, now: at(1, 7, 25) }).exited, 10_000, 'a restart did not return: it started the runner again');
+  assert.equal(again.code, 0, again.err);
+  assert.equal(runsOf(store)[0].runner.pid, orphan, 'the run\'s own orphan is adopted, not the other run\'s CLI');
+  process.kill(other.pid, 'SIGKILL');
+  await gone(other.pid);
+  const still = await within(child(t, { ...opts, now: at(1, 7, 30) }).exited, 10_000, 'a restart started the run again beside its live orphan');
+  assert.match(JSON.parse(still.out).skipped[0].reason, new RegExp(`pid ${orphan}.*still running`));
+  assert.equal(calls(f).length, 1, 'never started again while the orphan lives');
+
+  process.kill(orphan, 'SIGKILL');
+  await gone(orphan);
+  const last = await within(child(t, { ...opts, now: at(1, 7, 35), cliMs: 50 }).exited, 10_000, 'the last restart did not finish');
+  assert.equal(last.code, 0, last.err);
+  assert.equal(calls(f).length, 2);
+  exactlyOnce(f, store);
+});
+
+/** A run left "running" by a scheduler that stopped, as core.db holds it. */
+function leftRunning(store, f, cols = {}) {
+  const names = Object.keys(cols);
+  store.db.prepare(`INSERT INTO scheduler_runs (id, task_id, slot, slot_at, state, snapshot, claimed_at, attempt${names.map((n) => `, ${n}`).join('')})
+    VALUES ('r-x', 'daily-scan', '2026-11-21T07:19', ?, 'running', ?, ?, 1${names.map(() => ', ?').join('')})`)
+    .run(at(1, 7, 19), JSON.stringify(taskDef(f)), at(1, 7, 19), ...Object.values(cols));
+}
+
+/** A process that sleeps for a minute, killed after the test. */
+function sleeper(t) {
+  const p = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' });
+  t.after(() => { try { p.kill('SIGKILL'); } catch { /* gone */ } });
+  return p;
+}
+
+test('Given a process table in which only the scheduler itself holds the run\'s settings argument, when it resumes the run, then it does not adopt itself', LIMIT, async (t) => {
+  const f = floor(t);
+  const store = open(t, f);
+  store.putTask(taskDef(f), at(0, 6));
+  leftRunning(store, f, { runner_marker: '--settings /s/x.json ' });
+  const { runner } = stub(f);
+  const table = async () => [{ pid: process.pid, parentPid: 1, pgid: process.pid, commandLine: `node sched.js --settings /s/x.json x` }];
+  await new Scheduler({ store, hiveRoot: f.hiveRoot, runner, now: () => at(1, 7, 25), processTable: table }).tick();
+  assert.equal(calls(f).length, 1, 'counted as gone and started again');
+  assert.equal(store.run('r-x').attempt, 2);
+});
+
+test('Given an adopted process, when it is recorded, then its start time is recorded with it', LIMIT, async (t) => {
+  const f = floor(t);
+  const store = open(t, f);
+  store.putTask(taskDef(f), at(0, 6));
+  leftRunning(store, f, { runner_marker: '--settings /s/x.json ' });
+  const p = sleeper(t);
+  const table = async () => [{ pid: p.pid, parentPid: 1, pgid: p.pid, commandLine: `claude -p --settings /s/x.json --x` }];
+  const report = await new Scheduler({ store, hiveRoot: f.hiveRoot, runner: stub(f).runner, now: () => at(1, 7, 25), processTable: table,
+    startTime: (pid) => (pid === p.pid ? 'test:started-at-1' : null) }).tick();
+  assert.equal(store.run('r-x').runner.pid, p.pid);
+  assert.equal(store.run('r-x').runner.started, 'test:started-at-1');
+  assert.match(report.skipped[0].reason, /still running/);
+});
+
+test('Given a live runner recorded with no process group and another host name, when a scheduler resumes the run, then it is judged alive on this machine and not started again', LIMIT, async (t) => {
+  const f = floor(t);
+  const store = open(t, f);
+  store.putTask(taskDef(f), at(0, 6));
+  const p = sleeper(t);
+  leftRunning(store, f, { runner_pid: p.pid, runner_host: 'renamed.local' });
+  const report = await new Scheduler({ store, hiveRoot: f.hiveRoot, runner: stub(f).runner, now: () => at(1, 7, 25) }).tick();
+  assert.equal(calls(f).length, 0);
+  assert.match(report.skipped[0].reason, new RegExp(`pid ${p.pid}.*still running`));
+});
+
+test('Given a clock put right to before the task was first stored, after a tick far ahead, when the scheduler ticks, then the tick reports the slot ahead, as the status does', LIMIT, async (t) => {
+  const f = floor(t);
+  const store = open(t, f);
+  store.putTask(taskDef(f), at(1, 6));
+  const clock = { now: at(8, 7, 20) };
+  const s = new Scheduler({ store, hiveRoot: f.hiveRoot, runner: stub(f).runner, now: () => clock.now });
+  await s.tick();
+  clock.now = at(0, 7, 20);
+  const report = await s.tick();
+  assert.deepEqual(report.ahead.map((a) => a.slot), ['2026-11-28T07:19']);
+  assert.deepEqual(schedulerStatus(store, { now: clock.now }).ahead.map((a) => a.slot), ['2026-11-28T07:19']);
 });

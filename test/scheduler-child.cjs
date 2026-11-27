@@ -4,7 +4,8 @@
 //  - mode "ok": the stub runner returns a finished run at once; "slow": after 200 ms; "hang": never returns;
 //    "block": blocks this process's event loop for good (alive, but it can no longer heartbeat);
 //    "detached": starts a stand-in CLI detached into a process group of its own, as the headless seat does, reports it
-//    through job.onProcess, and returns once it exits. The stand-in appends its pid to `cliLog` and lives `cliMs`.
+//    through job.onProcess, and returns once it exits. The stand-in appends its pid to `cliLog` and lives `cliMs`;
+//    with `cliChild`, it also starts a subprocess in its group (see there).
 //  - crashAt names a point inside the scheduler where this process kills itself with SIGKILL, as a crash would.
 //  - put: a task definition to store before the tick.
 // The stub runner appends "<runId> <prompt>" to `calls` and, when `started` is given, creates that file.
@@ -30,9 +31,16 @@ const runner = async (job) => {
   if (o.mode === 'hang') await new Promise(() => {});
   if (o.mode === 'block') Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
   if (o.mode === 'detached') {
-    const script = `require('node:fs').appendFileSync(${JSON.stringify(o.cliLog)}, process.pid + '\\n'); setTimeout(() => {}, ${Number(o.cliMs)});`;
-    const cli = spawn(process.execPath, ['-e', script], { detached: true, stdio: 'ignore' });
-    job.onProcess({ pid: cli.pid, pgid: cli.pid });
+    // With cliChild, the stand-in also starts a subprocess in its own group (as the CLI's own subprocesses join it),
+    // which logs its pid after the stand-in's and lives a minute.
+    const sub = o.cliChild ? `require('node:child_process').spawn(process.execPath, ['-e', \`require('node:fs').appendFileSync(${JSON.stringify(o.cliLog)}, process.pid + '\\\\n'); setTimeout(() => {}, 60000);\`], { stdio: 'ignore' }).unref();` : '';
+    const script = `require('node:fs').appendFileSync(${JSON.stringify(o.cliLog)}, process.pid + '\\n'); ${sub} setTimeout(() => {}, ${Number(o.cliMs)});`;
+    // With unreported, the stand-in's command line carries a settings argument as the seat's does, which the runner
+    // names through job.onLaunch before starting it, and its pid is never reported: as after a crash between the two.
+    const settings = `${o.cliLog}.${job.runId}.a${job.attempt}.json`;
+    if (o.unreported) job.onLaunch(`--settings ${settings} `);
+    const cli = spawn(process.execPath, ['-e', script, '--', '--settings', settings, 'x'], { detached: true, stdio: 'ignore' });
+    if (!o.unreported) job.onProcess({ pid: cli.pid, pgid: cli.pid });
     await new Promise((r) => cli.on('exit', r));
   }
   return { run: headlessRun(), done: true, doneReason: null };

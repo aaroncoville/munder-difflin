@@ -424,6 +424,25 @@ test('Given a caller that asks to be told when the CLI starts, when the seat run
   assert.deepEqual(seen, [{ pid, pgid: process.platform === 'win32' ? null : pid, ended: false }]);
 });
 
+test('Given a caller that asks to be told before the CLI starts, when the seat runs, then it is told the settings file and launch line before the CLI runs', async (t) => {
+  const f = floor(t, { stdout: JSON.stringify(SUCCESS) + '\n' });
+  const seen = [];
+  const r = await H.runHeadlessSeat(f.opts({ onLaunch: (l) => seen.push({ ...l, cliRan: fs.existsSync(path.join(path.dirname(f.cli), 'record.json')) }) }));
+  assert.equal(r.ok, true);
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].settingsFile, r.settingsFile);
+  assert.deepEqual(seen[0].argv, r.argv);
+  assert.equal(seen[0].cliRan, false, 'told before the CLI ran');
+});
+
+test('Given a launch callback that throws, when the seat runs, then the CLI is not started and the run fails with the reason', async (t) => {
+  const f = floor(t, { stdout: JSON.stringify(SUCCESS) + '\n' });
+  const r = await H.runHeadlessSeat(f.opts({ onLaunch: () => { throw new Error('could not record it'); } }));
+  assert.equal(r.ok, false);
+  assert.match(r.error, /not started.*could not record it/);
+  assert.equal(fs.existsSync(path.join(path.dirname(f.cli), 'record.json')), false, 'the CLI never ran');
+});
+
 test('Given a spawn callback that throws, when the seat runs, then the run goes on as before', async (t) => {
   const f = floor(t, { stdout: JSON.stringify(SUCCESS) + '\n' });
   const r = await H.runHeadlessSeat(f.opts({ onSpawn: () => { throw new Error('boom'); } }));
@@ -866,4 +885,25 @@ test('Given a CLI that exits just before its timeout while the after-exit sweep 
   assert.equal(r.exitCode, 0);
   assert.equal(r.ok, true, r.error);
   assert.equal(r.totalCostUsd, 0.0042);
+});
+
+test('Given launch keys, when the seat runs, then each launch has a settings file of its own in the private folder, removed when its run ends; without a key the shared file is used', async (t) => {
+  const f = floor(t, { stdout: JSON.stringify(SUCCESS) + '\n' });
+  const seen = [];
+  const a = await H.runHeadlessSeat(f.opts({ launchKey: 'r-1.a1', onLaunch: (l) => seen.push(fs.existsSync(l.settingsFile)) }));
+  const b = await H.runHeadlessSeat(f.opts({ launchKey: 'r-1.a2' }));
+  const shared = await H.runHeadlessSeat(f.opts());
+  assert.equal(path.dirname(a.settingsFile), f.settingsDir);
+  assert.notEqual(a.settingsFile, b.settingsFile);
+  assert.notEqual(a.settingsFile, shared.settingsFile);
+  assert.deepEqual(seen, [true], 'the file was there for the CLI');
+  assert.equal(fs.existsSync(a.settingsFile), false, 'removed when its run ended');
+  assert.equal(fs.existsSync(b.settingsFile), false);
+  assert.equal(fs.existsSync(shared.settingsFile), true, 'the shared file is kept');
+  assert.equal(f.record().argv[f.record().argv.indexOf('--settings') + 1], shared.settingsFile);
+});
+
+test('Given a launch key that is not a plain name, when the launch is built, then it is refused', (t) => {
+  const f = floor(t);
+  for (const k of ['', 'a/b', 'a b', '../x', 'x'.repeat(129)]) assert.throws(() => H.buildHeadlessLaunch(f.opts({ launchKey: k })), /launch key/, k);
 });

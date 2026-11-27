@@ -27,7 +27,7 @@ export const CORE_DB_FILE = 'core.db';
 const APP_DATA_NAME = 'munder-difflin';
 
 /** The schema version of the scheduler's tables this code writes. */
-export const SCHEDULER_SCHEMA_VERSION = 1;
+export const SCHEDULER_SCHEMA_VERSION = 2;
 
 /** What a core module declares about its part of core.db and of the hive. */
 export interface CoreModuleDeclaration {
@@ -51,8 +51,22 @@ export const SCHEDULER_MODULE: CoreModuleDeclaration = {
   ],
 };
 
+/** Columns added to scheduler_runs at version 2: the process the current attempt's runner started, and why the
+ *  run's cost row or done mail could not be written. */
+const RUNNER_COLUMNS: ReadonlyArray<[string, string]> = [
+  ['runner_pid', 'INTEGER'], ['runner_pgid', 'INTEGER'], ['runner_host', 'TEXT'], ['runner_started', 'TEXT'], ['runner_marker', 'TEXT'],
+  ['effects_error', 'TEXT'],
+];
+
+/** Adds each of `columns` that `table` lacks. A database written by an earlier build of version 1 may already carry
+ *  some of them, added there before they had a version of their own. */
+function addMissingColumns(db: DatabaseSync, table: string, columns: ReadonlyArray<[string, string]>): void {
+  const have = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Row[]).map((c) => String(c.name)));
+  for (const [name, type] of columns) if (!have.has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
+}
+
 /** Each migration takes the scheduler's tables from version (index) to version (index + 1). */
-const MIGRATIONS: readonly string[] = [
+const MIGRATIONS: ReadonlyArray<string | ((db: DatabaseSync) => void)> = [
   `CREATE TABLE scheduler_tasks (
      id TEXT PRIMARY KEY,
      definition TEXT NOT NULL,
@@ -77,10 +91,6 @@ const MIGRATIONS: readonly string[] = [
      cost_reason TEXT,
      mail_state TEXT,
      mail_id TEXT,
-     runner_pid INTEGER,
-     runner_pgid INTEGER,
-     runner_host TEXT,
-     runner_started TEXT,
      UNIQUE (task_id, slot)
    );
    CREATE TABLE scheduler_leases (
@@ -93,6 +103,7 @@ const MIGRATIONS: readonly string[] = [
      heartbeat_at INTEGER NOT NULL,
      lease_ms INTEGER NOT NULL
    );`,
+  (db) => addMissingColumns(db, 'scheduler_runs', RUNNER_COLUMNS),
 ];
 
 /** A core.db path that may not be used, or a database that may not be opened. */
@@ -170,6 +181,11 @@ export interface StoredRun {
   /** The process the current attempt's runner started (the headless CLI), as recorded when it started: its pid, the
    *  process group it leads, the host, and its start time once read. Null when the runner reported none. */
   runner: RunnerProcess | null;
+  /** What the current attempt's runner said, before starting its process, that process's command line holds: for a
+   *  later scheduler to find it by when its pid was never recorded. */
+  runnerMarker: string | null;
+  /** Why the run's cost row or done mail could not be written at the last try, while it is "ran". */
+  effectsError: string | null;
 }
 
 /** A runner's process, recorded so that a later scheduler can tell whether it is still running. */
@@ -188,6 +204,8 @@ function toRun(r: Row): StoredRun {
     costReason: (r.cost_reason as string | null) ?? null, mailState: (r.mail_state as string | null) ?? null, mailId: (r.mail_id as string | null) ?? null,
     runner: r.runner_pid === null || r.runner_pid === undefined ? null
       : { pid: Number(r.runner_pid), pgid: num(r.runner_pgid), host: String(r.runner_host), started: (r.runner_started as string | null) ?? null },
+    runnerMarker: (r.runner_marker as string | null) ?? null,
+    effectsError: (r.effects_error as string | null) ?? null,
   };
 }
 
@@ -273,7 +291,10 @@ export function openSchedulerStore(o: OpenStoreOptions): SchedulerStore {
       if (have > SCHEDULER_SCHEMA_VERSION) {
         throw new CoreDbRefused(`${o.path}: its ${SCHEDULER_MODULE.name} tables are at schema version ${have}, newer than version ${SCHEDULER_SCHEMA_VERSION} that this build knows; refusing to open it rather than write it in an older shape`);
       }
-      for (let v = have; v < SCHEDULER_SCHEMA_VERSION; v++) db.exec(MIGRATIONS[v]);
+      for (let v = have; v < SCHEDULER_SCHEMA_VERSION; v++) {
+        const step = MIGRATIONS[v];
+        if (typeof step === 'string') db.exec(step); else step(db);
+      }
       if (have < SCHEDULER_SCHEMA_VERSION) {
         db.prepare('INSERT INTO core_schema (module, version) VALUES (?, ?) ON CONFLICT (module) DO UPDATE SET version = excluded.version')
           .run(SCHEDULER_MODULE.name, SCHEDULER_SCHEMA_VERSION);

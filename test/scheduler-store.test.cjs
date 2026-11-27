@@ -83,3 +83,32 @@ test('Given a new core.db, or one made readable by others, when the store opens 
   S.openSchedulerStore({ path: f.dbPath, hiveRoots: [f.hiveRoot] }).close();
   assert.equal(mode(f.dbPath), 0o600);
 });
+
+/** The scheduler's tables as version 1 created them, before the runner columns: what an earlier build left. */
+const V1 = `CREATE TABLE core_schema (module TEXT PRIMARY KEY, version INTEGER NOT NULL);
+  INSERT INTO core_schema VALUES ('scheduler', 1);
+  CREATE TABLE scheduler_tasks (id TEXT PRIMARY KEY, definition TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+  CREATE TABLE scheduler_runs (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, slot TEXT NOT NULL, slot_at INTEGER NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('claimed', 'running', 'ran', 'done', 'failed')), snapshot TEXT NOT NULL, claimed_at INTEGER NOT NULL,
+    attempt INTEGER NOT NULL DEFAULT 0, started_at INTEGER, ended_at INTEGER, outcome TEXT, failure TEXT, cost_state TEXT, cost_from INTEGER,
+    cost_reason TEXT, mail_state TEXT, mail_id TEXT, UNIQUE (task_id, slot));
+  CREATE TABLE scheduler_leases (task_id TEXT PRIMARY KEY, pid INTEGER NOT NULL, host TEXT NOT NULL, started TEXT, token TEXT NOT NULL,
+    acquired_at INTEGER NOT NULL, heartbeat_at INTEGER NOT NULL, lease_ms INTEGER NOT NULL);
+  INSERT INTO scheduler_runs (id, task_id, slot, slot_at, state, snapshot, claimed_at) VALUES ('r1', 'a', '2026-11-21T07:00', 1, 'claimed', '{}', 1);`;
+
+for (const [name, extra] of [['without the runner columns', ''], ['that already carries the runner columns', 'ALTER TABLE scheduler_runs ADD COLUMN runner_pid INTEGER; ALTER TABLE scheduler_runs ADD COLUMN runner_pgid INTEGER; ALTER TABLE scheduler_runs ADD COLUMN runner_host TEXT; ALTER TABLE scheduler_runs ADD COLUMN runner_started TEXT;']]) {
+  test(`Given a version-1 core.db ${name}, when the store opens it, then it is brought to version 2 with its runs kept and the runner columns in place`, (t) => {
+    const f = floor(t);
+    const raw = new DatabaseSync(f.dbPath);
+    raw.exec(V1 + extra);
+    raw.close();
+    const store = S.openSchedulerStore({ path: f.dbPath, hiveRoots: [f.hiveRoot] });
+    t.after(() => store.close());
+    assert.equal(store.db.prepare('SELECT version FROM core_schema WHERE module = ?').get('scheduler').version, 2);
+    const cols = store.db.prepare('PRAGMA table_info(scheduler_runs)').all().map((c) => c.name);
+    for (const c of ['runner_pid', 'runner_pgid', 'runner_host', 'runner_started']) assert.ok(cols.includes(c), c);
+    assert.equal(store.run('r1').runner, null);
+    store.db.prepare('UPDATE scheduler_runs SET runner_pid = 7, runner_host = ? WHERE id = ?').run('h', 'r1');
+    assert.equal(store.run('r1').runner.pid, 7);
+  });
+}
