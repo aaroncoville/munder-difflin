@@ -199,8 +199,41 @@ test('Given a live process that names a finished run\'s launch file through anot
   const r = await sweep(s, { processTable: table });
   assert.deepEqual(r.removed, []);
   assert.ok(fs.existsSync(p));
-  const elsewhere = async () => [{ pid: 4242, parentPid: 1, pgid: 4242, commandLine: `claude -p --settings /x/other.json --note /tmp/${path.basename(p)} ` }];
-  assert.deepEqual((await sweep(s, { processTable: elsewhere })).removed, [p], 'a name outside the --settings argument does not count');
+});
+
+test('Given a live process that names a finished run\'s launch file in any form, when the sweep runs, then the file is kept; a longer name that only contains it, or no mention, does not keep it', async (t) => {
+  const s = sweepFloor(t, [['r-done', 'done', 1]]);
+  const p = s.file('r-done', 1);
+  const name = path.basename(p);
+  const spaced = path.join(s.f.base, 'Application Support', 'seat-settings', name);
+  const kept = {
+    'separate, raw': `claude -p --settings ${p} --setting-sources `,
+    'separate, single-quoted': `claude -p --settings '${p}' --setting-sources `,
+    'separate, double-quoted': `claude -p --settings "${p}" --setting-sources `,
+    'equals, raw': `claude -p --settings=${p} --setting-sources `,
+    'equals, quoted': `claude -p --settings="${p}"`,
+    'a folder with spaces': `claude -p --settings ${spaced} -x`,
+    'a trailing separator before it': `claude -p --settings ${s.dir}//${name}`,
+    'a later positional': `claude -p --settings /x/other.json do-it ${name}`,
+    'under another flag': `claude -p --settings /x/other.json --note /tmp/${name}`,
+  };
+  for (const [form, commandLine] of Object.entries(kept)) {
+    fs.writeFileSync(p, '{}');
+    const r = await sweep(s, { processTable: async () => [{ pid: 1, parentPid: 0, pgid: 1, commandLine: 'launchd' }, { pid: 4242, parentPid: 1, pgid: 4242, commandLine }] });
+    assert.deepEqual(r.removed, [], form);
+    assert.ok(fs.existsSync(p), form);
+  }
+  const removed = {
+    'a longer name that ends in it': `claude --settings /x/pre${name}`,
+    'a longer name that contains it': `claude --settings /x/${name}.bak`,
+    'another digest': `claude --settings /x/launch-${'0'.repeat(64)}.json`,
+    'no mention': 'claude -p --settings /x/other.json',
+  };
+  for (const [form, commandLine] of Object.entries(removed)) {
+    fs.writeFileSync(p, '{}');
+    const r = await sweep(s, { processTable: async () => [{ pid: 4242, parentPid: 1, pgid: 4242, commandLine }] });
+    assert.deepEqual(r.removed, [p], form);
+  }
 });
 
 test('Given a link and a folder named as launch files, when the sweep runs, then neither is removed', async (t) => {

@@ -83,8 +83,8 @@ const OPEN_STATES: ReadonlyArray<StoredRun['state']> = ['claimed', 'running', 'r
  * Only files named as a launch's own (LAUNCH_SETTINGS_PREFIX) are looked at; a seat's shared settings file is never
  * touched. Each is matched to its run through core.db (every attempt of every run, by the name the adapter gives its
  * launch). A file is removed only when it is a regular file at least LAUNCH_SETTINGS_MIN_AGE_MS old, its run is over
- * or unknown to core.db, and no running process's command line names it after --settings (one read of the process
- * table), however that process spelled the folder: an orphaned CLI may still be reading it. When the folder, the hive
+ * or unknown to core.db, and its name appears in no running process's command line (one read of the process table):
+ * an orphaned CLI may still be reading it. When the folder, the hive
  * or the table cannot be read, nothing is removed and the error says why.
  */
 export async function sweepLaunchSettings(o: {
@@ -117,17 +117,14 @@ export async function sweepLaunchSettings(o: {
   } catch (e) {
     return { ...out, error: `the process table could not be read, so no launch settings file was removed: ${(e as Error).message}` };
   }
-  // By the file's name after --settings, whatever folder text comes before it (a link, a relative path): the name is a
-  // digest no other file in any folder shares.
-  const named = (name: string): boolean => rows.some((r) => {
-    const line = ` ${r.commandLine} `;
-    for (let i = line.indexOf(' --settings '); i !== -1; i = line.indexOf(' --settings ', i + 1)) {
-      const end = line.indexOf(`${name} `, i + 12);
-      const inArgument = end !== -1 && !line.slice(i + 12, end).includes(' --');
-      if (inArgument && (line[end - 1] === '/' || line[end - 1] === '\\' || end === i + 12)) return true;
-    }
-    return false;
-  });
+  // By the file's name anywhere on any command line, whatever the flag form, quoting, folder spelling or position: the
+  // name holds a digest no other file shares, and a process table gives no reliable way to split arguments. Erring
+  // this way only keeps a small private file a while longer; a file removed from under a running CLI cannot be put
+  // back. The name must stand as a whole token, so a longer name that merely contains it does not count.
+  const named = (name: string): boolean => {
+    const token = new RegExp(`(?<![A-Za-z0-9._-])${name.replace(/[.]/g, '\\.')}(?![A-Za-z0-9._-])`);
+    return rows.some((r) => token.test(r.commandLine));
+  };
   const now = (o.now ?? Date.now)();
   for (const name of names) {
     const file = join(o.settingsDir, name);
