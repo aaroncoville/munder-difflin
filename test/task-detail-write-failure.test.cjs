@@ -59,6 +59,7 @@ test('a move the ledger refused snaps back, and the detail says why', async () =
   const { detail, words } = screen(view);
   assert.equal(detail.props.task.status, 'todo', 'the card is back in its column');
   assert.ok(words.includes(BUSY), `the main process's reason must be on screen; got:\n${words}`);
+  assert.ok(words.includes(`\u2068${BUSY}\u2069`), 'the reason is isolated (FSI \u2026 PDI) in its right-to-left sentence');
   assert.ok(words.includes('write the docs'), 'the message names the card');
 });
 

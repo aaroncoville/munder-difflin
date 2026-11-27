@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useUsageView } from '@/usage';
 import { useTranslation } from 'react-i18next';
 import { useStore } from '@/store/store';
+import { isolate } from '@/i18n/isolate';
 import { TaskDetail, parseTasks, type HiveTask } from './TasksKanban';
 
 /**
@@ -59,7 +60,7 @@ export function TaskDetailOverlay() {
     const next = tasks.map((t) => (t.id === task.id ? { ...t, status } : t));
     setTasks(next); // optimistic
     // A refusal (a busy or unreadable ledger) snaps the card back and says why.
-    const notSaved = (error: string) => t('kanban.moveNotSaved', { title: task.title, error });
+    const notSaved = (error: string) => t('kanban.moveNotSaved', { title: isolate(task.title), error: isolate(error) });
     try {
       const result = await window.cth.hivePatchTask(task.id, { status });
       if (result.ok) setTaskWriteError('');

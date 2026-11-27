@@ -1,4 +1,5 @@
 import i18n from '@/i18n';
+import { isolate } from '@/i18n/isolate';
 import { useStore, type QueuedMessage } from '@/store/store';
 
 // Promote a genuine Slack-origin work item to a stamped kanban card the first
@@ -45,5 +46,5 @@ export async function ensureSlackCard(m: QueuedMessage): Promise<void> {
 function notSaved(text: string, error: string): void {
   const title = text.length > 80 ? `${text.slice(0, 79)}…` : text;
   console.warn(`[slack] the Slack message "${title}" was not added to the task board: ${error}`);
-  useStore.getState().setTaskWriteError(i18n.t('kanban.slackCardNotSaved', { title, error }));
+  useStore.getState().setTaskWriteError(i18n.t('kanban.slackCardNotSaved', { title: isolate(title), error: isolate(error) }));
 }

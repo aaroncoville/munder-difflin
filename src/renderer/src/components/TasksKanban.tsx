@@ -7,6 +7,7 @@ import { Icon } from './Icon';
 import { useStore } from '@/store/store';
 import { MarkdownPreview } from '@/markdown/MarkdownPreview';
 import { useRtl } from '@/i18n/useDirection';
+import { isolate } from '@/i18n/isolate';
 
 /** A card on the task kanban. Mirrors HiveTask in the main/preload process —
  *  re-declared locally so the renderer doesn't reach into the preload package
@@ -185,11 +186,11 @@ export function TasksKanban() {
       const result = await window.cth.hiveDeleteTask(task.id);
       if (result.ok) setTaskWriteError('');
       else {
-        setTaskWriteError(t('kanban.dismissNotSaved', { title: task.title, error: result.error ?? '?' }));
+        setTaskWriteError(t('kanban.dismissNotSaved', { title: isolate(task.title), error: isolate(result.error ?? '?') }));
         void refresh();
       }
     } catch (e) {
-      setTaskWriteError(t('kanban.dismissNotSaved', { title: task.title, error: e instanceof Error ? e.message : String(e) }));
+      setTaskWriteError(t('kanban.dismissNotSaved', { title: isolate(task.title), error: isolate(e instanceof Error ? e.message : String(e)) }));
       void refresh();
     }
   }, [refresh, setTaskWriteError, t]);
