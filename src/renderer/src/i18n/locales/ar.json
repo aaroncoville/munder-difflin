@@ -1188,6 +1188,7 @@
     "dismissAria": "تجاهل المهمة",
     "dismissNotSaved": "لم تُحذف \"{{title}}\": {{error}}",
     "closeNotice": "إغلاق هذه الرسالة",
+    "costRowsNotSaved": "لا تُكتب صفوف التكلفة في cost-ledger.jsonl ({{count}} في الانتظار)، فلا يُسجَّل الإنفاق حتى يُحلّ هذا: {{error}}",
     "moveNotSaved": "لم تُنقل \"{{title}}\": {{error}}",
     "slackCardNotSaved": "لم تُضف رسالة Slack \"{{title}}\" إلى اللوحة، لذا لن يصل رد إلى سلسلتها عند إنجاز العمل: {{error}}",
     "taskTitle": "المهمة",

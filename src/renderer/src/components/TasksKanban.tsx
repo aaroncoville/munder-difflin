@@ -162,6 +162,15 @@ export function TasksKanban() {
   // A refusal (a busy or unreadable ledger) brings the card back and says why.
   const taskWriteError = useStore((s) => s.taskWriteError);
   const setTaskWriteError = useStore((s) => s.setTaskWriteError);
+  // The app's own cost rows not being written (a linked ledger, a volume without hard links, a lock that never frees)
+  // is shown on the same notice line until they are written again; it is not the user's to close.
+  const [costLedgerFailing, setCostLedgerFailing] = useState<{ failing: string | null; queued: number } | null>(null);
+  useEffect(() => {
+    let live = true;
+    void window.cth.hiveCostLedgerStatus?.().then((s) => { if (live) setCostLedgerFailing(s); }, () => {});
+    const stop = window.cth.onHiveCostLedgerStatus?.((s) => setCostLedgerFailing(s));
+    return () => { live = false; stop?.(); };
+  }, []);
   const dismissTask = useCallback(async (task: HiveTask) => {
     setTasks((prev) => prev.filter((t) => t.id !== task.id)); // optimistic
     try {
@@ -225,6 +234,12 @@ export function TasksKanban() {
               color: 'var(--cth-ink-500)', fontFamily: 'var(--cth-font-ui)', fontSize: 12, lineHeight: 1
             }}
           >✕</button>
+        </div>
+      )}
+
+      {costLedgerFailing?.failing && (
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 12, color: 'var(--cth-coral)', padding: '6px 10px 0' }}>
+          <span style={{ flex: 1, minWidth: 0 }}>{t('kanban.costRowsNotSaved', { error: costLedgerFailing.failing, count: costLedgerFailing.queued })}</span>
         </div>
       )}
 
