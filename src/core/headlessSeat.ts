@@ -147,6 +147,11 @@ export interface HeadlessSeatOptions {
    *  the CLI again if the caller itself dies, since the CLI is detached and outlives it. An error it throws is
    *  ignored. */
   onSpawn?: (cli: { pid: number; pgid: number | null }) => void;
+  /** Called once, synchronously, just before the CLI is started, with the settings file its launch line names (a
+   *  path unique to the hive and the seat) and the whole launch line: for a caller that must record what to look for
+   *  before the process exists, so that a crash between the start and onSpawn cannot leave it unfindable. When it
+   *  throws, the CLI is not started and the run fails with that reason. */
+  onLaunch?: (launch: { settingsFile: string; argv: readonly string[] }) => void;
 }
 
 /** The default time between SIGTERM and SIGKILL for a run that timed out. */
@@ -448,6 +453,9 @@ export function runHeadlessSeat(o: HeadlessSeatOptions): Promise<HeadlessRun> {
     };
     let child: ChildProcess;
     const startedAt = Date.now();
+    try {
+      o.onLaunch?.({ settingsFile: launch.settingsFile, argv: launch.argv });
+    } catch (e) { finish(null, null, `the CLI was not started: its caller refused the launch: ${(e as Error).message}`); return; }
     try {
       // detached: the CLI leads a new process group, which its own children join unless they start their own.
       child = spawn(launch.argv[0], launch.argv.slice(1), { cwd: launch.cwd, env: launch.env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });

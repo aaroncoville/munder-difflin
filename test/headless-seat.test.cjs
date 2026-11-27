@@ -424,6 +424,25 @@ test('Given a caller that asks to be told when the CLI starts, when the seat run
   assert.deepEqual(seen, [{ pid, pgid: process.platform === 'win32' ? null : pid, ended: false }]);
 });
 
+test('Given a caller that asks to be told before the CLI starts, when the seat runs, then it is told the settings file and launch line before the CLI runs', async (t) => {
+  const f = floor(t, { stdout: JSON.stringify(SUCCESS) + '\n' });
+  const seen = [];
+  const r = await H.runHeadlessSeat(f.opts({ onLaunch: (l) => seen.push({ ...l, cliRan: fs.existsSync(path.join(path.dirname(f.cli), 'record.json')) }) }));
+  assert.equal(r.ok, true);
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].settingsFile, r.settingsFile);
+  assert.deepEqual(seen[0].argv, r.argv);
+  assert.equal(seen[0].cliRan, false, 'told before the CLI ran');
+});
+
+test('Given a launch callback that throws, when the seat runs, then the CLI is not started and the run fails with the reason', async (t) => {
+  const f = floor(t, { stdout: JSON.stringify(SUCCESS) + '\n' });
+  const r = await H.runHeadlessSeat(f.opts({ onLaunch: () => { throw new Error('could not record it'); } }));
+  assert.equal(r.ok, false);
+  assert.match(r.error, /not started.*could not record it/);
+  assert.equal(fs.existsSync(path.join(path.dirname(f.cli), 'record.json')), false, 'the CLI never ran');
+});
+
 test('Given a spawn callback that throws, when the seat runs, then the run goes on as before', async (t) => {
   const f = floor(t, { stdout: JSON.stringify(SUCCESS) + '\n' });
   const r = await H.runHeadlessSeat(f.opts({ onSpawn: () => { throw new Error('boom'); } }));
