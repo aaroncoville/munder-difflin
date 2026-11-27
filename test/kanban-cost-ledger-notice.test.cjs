@@ -11,7 +11,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 // MUST come before loadTs of any component — it seeds require.cache for react.
-const { mount, text } = require('./render-hooks.cjs');
+const { mount, text, flatten } = require('./render-hooks.cjs');
 const loadTs = require('./load-ts.cjs');
 
 const { TasksKanban } = loadTs('src/renderer/src/components/TasksKanban.tsx');
@@ -86,4 +86,30 @@ test('the notice gives no count of waiting rows, which would go stale as more ro
   const b = board();
   await b.answer({ failing: REASON, seq: 1 });
   assert.doesNotMatch(shown(b.view), /waiting|\(\d+/);
+});
+
+test('the reason is set apart in a <bdi> element, so it keeps its own direction inside a right-to-left sentence', async () => {
+  const b = board();
+  await b.answer({ failing: REASON, seq: 1 });
+  b.view.render();
+  const bdi = flatten(b.view.tree).map((e) => e.node).find((n) => n && n.type === 'bdi');
+  assert.ok(bdi, 'a bdi element is rendered');
+  assert.equal(bdi.props.dir, 'ltr');
+  assert.equal(text(bdi).join(''), REASON);
+});
+
+test('the board subscribes before it asks: an event sent while the question is on its way is not lost', async () => {
+  let push = null;
+  global.window = {
+    cth: {
+      hiveTasks: async () => ({ tasks: [] }),
+      // Main answers with the status as it was, and a change happens while that answer is on its way.
+      hiveCostLedgerStatus: () => { push?.({ failing: REASON, seq: 1 }); return Promise.resolve({ failing: null, seq: 0 }); },
+      onHiveCostLedgerStatus: (cb) => { push = cb; return () => { push = null; }; },
+    }
+  };
+  const view = mount(TasksKanban, {});
+  mounted.push(view);
+  await settle(); await settle();
+  assert.match(shown(view), NOTICE);
 });
