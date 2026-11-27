@@ -195,3 +195,22 @@ test('the process listing reads each process\'s start time, and lines without on
   ]);
   assert.deepEqual(parsePsOutput(' 12 1 Mon Dec  1 09:00:00 2026 node x')[0].started, 'ps:Mon Dec  1 09:00:00 2026');
 });
+
+test('a listing that was already being read when the slot was taken does not confirm its holder', async () => {
+  const x = rig();
+  // A helper the CLI ran the hook through, shown by a listing taken while the hook was still running.
+  const helper = 41_001;
+  let answer = null;
+  const late = new HeavyJobLock({
+    limit: () => 64, now: () => x.world.now, setTimer: () => ({}), clearTimer: () => {},
+    log: (r) => x.logs.push(r), roots: () => [{ agentId: 'god', pid: 100 }],
+    probe: () => new Promise((resolve) => { answer = resolve; }),
+  });
+  late.acquire('other', H, 'npm test', 'other-a', false);
+  const inFlight = late.scan();
+  late.acquire('sub-1', H, 'npm test', 'sub-1-a', false, undefined, helper, 'sh');
+  answer([{ pid: 100, parentPid: 1, commandLine: 'zsh' }, { pid: helper, parentPid: 100, commandLine: 'sh -c cth-hook', started: 'ps:Mon 09:00' }]);
+  await inFlight;
+  assert.ok(!x.logs.some((r) => r.action === 'holder-confirmed'), 'the in-flight listing did not confirm the helper');
+});
+

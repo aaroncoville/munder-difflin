@@ -285,6 +285,8 @@ export interface HeavyCall {
    *  its start time from the first process listing that showed it (null until then). Absent when the hook did not say
    *  (an older hook, another provider, a shim that could not tell). */
   holder?: HookHolder;
+  /** How many scans had started when the call took its slot: only a scan started after it may confirm its holder. */
+  takenAtScan: number;
 }
 
 /** A CLI process, by pid and start time (as the process listing gives it). `confirmed`: a scan has seen it running
@@ -325,6 +327,8 @@ const clock = (ms: number): string => `${new Date(ms).toISOString().slice(11, 19
 export class HeavyJobLock {
   private readonly calls = new Map<number, HeavyCall>();
   private nextKey = 1;
+  /** Scans started so far. */
+  private scansStarted = 0;
   private readonly queue: Array<{ agentId: string; kind: HeavyKind; since: number }> = [];
   private readonly reservations = new Map<string, { kind: HeavyKind; until: number; queuedSince?: number }>();
   private timer: unknown = null;
@@ -376,7 +380,7 @@ export class HeavyJobLock {
     const now = this.now();
     const key = this.nextKey++;
     const holder: HookHolder | null = hookPid !== undefined && Number.isSafeInteger(hookPid) && hookPid > 1 ? { pid: hookPid, started: null, confirmed: false } : null;
-    this.calls.set(key, { key, agentId, callId, kind: cls.kind, label: cls.why ?? cls.kind, command: command.slice(0, COMMAND_KEEP), why: cls.why, session, since: now, touched: now, background, posted: false, seen: false, misses: 0, ...(holder ? { holder } : {}) });
+    this.calls.set(key, { key, agentId, callId, kind: cls.kind, label: cls.why ?? cls.kind, command: command.slice(0, COMMAND_KEEP), why: cls.why, session, since: now, touched: now, background, posted: false, seen: false, misses: 0, takenAtScan: this.scansStarted, ...(holder ? { holder } : {}) });
     // How long the agent queued for this slot, for the usage log (measure only).
     const waitMs = reserved && reservation?.queuedSince !== undefined ? now - reservation.queuedSince : undefined;
     this.log({ kind: 'heavy-lock', action: 'acquire', agentId, heavyKind: cls.kind, job: cls.why, background, limit, reserved, ...(waitMs !== undefined ? { waitMs } : {}),
@@ -522,6 +526,7 @@ export class HeavyJobLock {
   async scan(): Promise<void> {
     this.expire();
     if (!this.calls.size || !this.d.probe || !this.d.roots) return;
+    const scanNo = ++this.scansStarted;
     let procs: ProcRow[];
     try { procs = await this.d.probe(); } catch { return; }
     // The CLI that asked is judged from this one listing. The first listing after the call took its slot confirms it,
@@ -538,6 +543,8 @@ export class HeavyJobLock {
       const h = c.holder;
       if (!h) continue;
       if (!h.confirmed) {
+        // A listing begun before the call took its slot can show a helper that was running the hook just then.
+        if (scanNo <= c.takenAtScan) continue;
         const row = listedRow.get(h.pid);
         const command = row ? (row.commandLine.split(/\s+/)[0] ?? '').split('/').pop()?.slice(0, 64) : undefined;
         if (row) { h.confirmed = true; h.started = startOf(h.pid); this.log({ kind: 'heavy-lock', action: 'holder-confirmed', agentId: c.agentId, holderPid: h.pid, holderCommand: command }); }
