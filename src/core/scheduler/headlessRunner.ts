@@ -9,7 +9,8 @@
  *
  * The CLI's pid and process group are handed to the scheduler as soon as it starts (the seat's onSpawn, the job's
  * onProcess), so a scheduler that dies while the CLI runs leaves a record the next one can check before starting
- * another.
+ * another. A definition with no timeout gets DEFAULT_SCHEDULED_TIMEOUT_MS: the scheduler heartbeats its lease for as
+ * long as the runner works, so a run with no limit could hold its task for good.
  *
  * A definition naming a root the seat could not write (outside the seat's write roots for that working folder) is
  * refused before anything runs: the run fails with that reason rather than run without the folder it was written for.
@@ -21,6 +22,9 @@ import type { Runner } from './scheduler';
 
 /** What a seat needs besides the task definition. */
 export type HeadlessRunnerSeat = Omit<HeadlessStreamOptions, 'prompt' | 'agentId' | 'model' | 'maxBudgetUsd' | 'cwd' | 'outputFile' | 'timeoutMs' | 'effects' | 'onSpawn'>;
+
+/** The time limit of a scheduled run whose definition sets none. */
+export const DEFAULT_SCHEDULED_TIMEOUT_MS = 30 * 60_000;
 
 export interface HeadlessRunnerDeps {
   runHeadlessStream: (o: HeadlessStreamOptions) => Promise<HeadlessStreamResult>;
@@ -38,7 +42,7 @@ export function headlessStreamRunner(seat: HeadlessRunnerSeat, deps: HeadlessRun
       ...seat,
       prompt: s.prompt, agentId: s.agentId, model: s.model, cwd: s.cwd, outputFile: s.outputFile,
       maxBudgetUsd: job.maxBudgetUsd,
-      ...(s.timeoutMs === undefined ? {} : { timeoutMs: s.timeoutMs }),
+      timeoutMs: s.timeoutMs ?? DEFAULT_SCHEDULED_TIMEOUT_MS,
       onSpawn: job.onProcess,
       effects: { recordCost: () => LEFT_TO_SCHEDULER, publish: () => '' },
     });

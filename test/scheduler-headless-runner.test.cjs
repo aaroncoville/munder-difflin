@@ -88,6 +88,14 @@ test('Given the scheduler with the adapter, when a task runs, then exactly one c
   assert.equal(mail(f).length, 1);
 });
 
+test('Given a definition with no timeout, when the adapter runs it, then the stream gets the default limit, so no run holds its task for good', async (t) => {
+  const f = floor(t);
+  const s = fakeStream();
+  await R.headlessStreamRunner(seat(f), { runHeadlessStream: s.fn })(job(f, { timeoutMs: undefined }));
+  assert.equal(s.seen[0].timeoutMs, R.DEFAULT_SCHEDULED_TIMEOUT_MS);
+  assert.equal(R.DEFAULT_SCHEDULED_TIMEOUT_MS, 30 * 60_000);
+});
+
 test('Given a job, when the adapter runs it, then the seat reports the CLI it starts to the job\'s onProcess', async (t) => {
   const f = floor(t);
   const s = fakeStream();
