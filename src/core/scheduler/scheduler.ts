@@ -261,7 +261,7 @@ export class Scheduler {
     if (!def) return;
     const now = this.now();
     const ahead = newestAhead(this.store, taskId, now);
-    if (ahead && slotAtOrBefore(def.schedule, now).at >= createdAt) {
+    if (ahead) {
       report.ahead.push({ taskId, slot: ahead.slot, slotAt: ahead.slotAt, reason: `task ${taskId}: its newest run is for slot ${ahead.slot}, `
         + `which lies after the clock's reading now (${new Date(now).toISOString()}), so a clock that ran ahead claimed it; no earlier slot fires `
         + 'after a later one, so the task runs nothing until that slot\'s time comes. If the clock was wrong, removing that run lets the task go on' });

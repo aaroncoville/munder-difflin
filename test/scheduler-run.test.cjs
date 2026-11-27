@@ -778,3 +778,15 @@ test('Given a live runner recorded with no process group and another host name, 
   assert.match(report.skipped[0].reason, new RegExp(`pid ${p.pid}.*still running`));
 });
 
+test('Given a clock put right to before the task was first stored, after a tick far ahead, when the scheduler ticks, then the tick reports the slot ahead, as the status does', LIMIT, async (t) => {
+  const f = floor(t);
+  const store = open(t, f);
+  store.putTask(taskDef(f), at(1, 6));
+  const clock = { now: at(8, 7, 20) };
+  const s = new Scheduler({ store, hiveRoot: f.hiveRoot, runner: stub(f).runner, now: () => clock.now });
+  await s.tick();
+  clock.now = at(0, 7, 20);
+  const report = await s.tick();
+  assert.deepEqual(report.ahead.map((a) => a.slot), ['2026-11-28T07:19']);
+  assert.deepEqual(schedulerStatus(store, { now: clock.now }).ahead.map((a) => a.slot), ['2026-11-28T07:19']);
+});
