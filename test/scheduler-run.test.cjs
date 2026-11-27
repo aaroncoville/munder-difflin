@@ -455,3 +455,30 @@ test('Given a scheduler killed while its runner worked, twice, when a scheduler 
   assert.equal(mail(f).length, 0, 'no mail');
 });
 
+test('Given a task whose turn is still going in this scheduler, when its lease looks like another host\'s and has expired, then a second tick does not start it again', LIMIT, async (t) => {
+  const f = floor(t);
+  const store = open(t, f);
+  store.putTask(taskDef(f), at(0, 6));
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  t.after(() => release());
+  let n = 0;
+  const runner = async () => { n++; await gate; return { run: headlessRun(), done: true, doneReason: null }; };
+  const clock = { now: at(1, 7, 20) };
+  const s = new Scheduler({ store, hiveRoot: f.hiveRoot, runner, now: () => clock.now, leaseMs: 1000, heartbeatMs: 60_000 });
+  const firstTick = s.tick();
+  while (n === 0) await new Promise((r) => setImmediate(r));
+  // As after a sleep in which the machine took another host name: the lease has missed its heartbeats, and its holder
+  // no longer looks like this host's.
+  store.db.prepare('UPDATE scheduler_leases SET host = ?').run('renamed.local');
+  clock.now = at(1, 7, 30);
+  const secondTick = s.tick();
+  await new Promise((r) => setTimeout(r, 50));
+  release();
+  const second = await secondTick;
+  assert.equal(n, 1, 'the runner was called once');
+  assert.match(second.skipped[0].reason, /already running it/);
+  await firstTick;
+  exactlyOnce(f, store);
+});
+

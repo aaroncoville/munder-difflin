@@ -30,6 +30,9 @@
  * between those two calls leaves a running CLI unrecorded; that run then counts as an attempt, so at most
  * MAX_RUN_ATTEMPTS CLIs can ever be started for one run.
  *
+ * In this process, a task whose turn is still going is not started again by a second tick (a lease whose holder's
+ * host name has changed would otherwise look like another machine's, and be taken over by its own process).
+ *
  * Side effects, keyed by the run id. A finished run gets at most one cost-ledger row and one done mail, however often
  * it is resumed:
  *  - the cost row carries the run id (run_id). Before appending, the run row records "pending" and the ledger's size;
@@ -190,6 +193,8 @@ export class Scheduler {
   private readonly leaseMs: number;
   private readonly heartbeatMs: number;
   private readonly hooks: SchedulerHooks;
+  /** Tasks whose turn is going on in this process. */
+  private readonly inFlight = new Set<string>();
 
   constructor(private readonly o: SchedulerOptions) {
     this.store = o.store;
@@ -225,12 +230,17 @@ export class Scheduler {
     if (!def) return;
     const now = this.now();
     if (!this.openRun(taskId) && !this.dueSlot(def, createdAt, now)) return;
+    if (this.inFlight.has(taskId)) {
+      report.skipped.push({ taskId, reason: `task ${taskId}: this scheduler is already running it` });
+      return;
+    }
     const took = takeLease(this.store, taskId, now, { leaseMs: this.leaseMs, startTime: this.o.startTime });
     if (!took.ok) {
       report.skipped.push({ taskId, reason: took.holder.summary, holder: took.holder });
       return;
     }
     const lease = took.lease;
+    this.inFlight.add(taskId);
     try {
       let run = this.openRun(taskId);
       if (run && run.state === 'running' && run.runner) {
@@ -251,6 +261,7 @@ export class Scheduler {
       report.errors.push({ taskId, error: (e as Error).message });
     } finally {
       releaseLease(this.store, lease);
+      this.inFlight.delete(taskId);
     }
   }
 
