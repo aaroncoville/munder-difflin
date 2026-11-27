@@ -726,3 +726,32 @@ test('Given two live CLIs of the same seat, one another run\'s and one this run\
   exactlyOnce(f, store);
 });
 
+/** A run left "running" by a scheduler that stopped, as core.db holds it. */
+function leftRunning(store, f, cols = {}) {
+  const names = Object.keys(cols);
+  store.db.prepare(`INSERT INTO scheduler_runs (id, task_id, slot, slot_at, state, snapshot, claimed_at, attempt${names.map((n) => `, ${n}`).join('')})
+    VALUES ('r-x', 'daily-scan', '2026-11-21T07:19', ?, 'running', ?, ?, 1${names.map(() => ', ?').join('')})`)
+    .run(at(1, 7, 19), JSON.stringify(taskDef(f)), at(1, 7, 19), ...Object.values(cols));
+}
+
+/** A process that sleeps for a minute, killed after the test. */
+function sleeper(t) {
+  const p = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' });
+  t.after(() => { try { p.kill('SIGKILL'); } catch { /* gone */ } });
+  return p;
+}
+
+test('Given an adopted process, when it is recorded, then its start time is recorded with it', LIMIT, async (t) => {
+  const f = floor(t);
+  const store = open(t, f);
+  store.putTask(taskDef(f), at(0, 6));
+  leftRunning(store, f, { runner_marker: '--settings /s/x.json ' });
+  const p = sleeper(t);
+  const table = async () => [{ pid: p.pid, parentPid: 1, pgid: p.pid, commandLine: `claude -p --settings /s/x.json --x` }];
+  const report = await new Scheduler({ store, hiveRoot: f.hiveRoot, runner: stub(f).runner, now: () => at(1, 7, 25), processTable: table,
+    startTime: (pid) => (pid === p.pid ? 'test:started-at-1' : null) }).tick();
+  assert.equal(store.run('r-x').runner.pid, p.pid);
+  assert.equal(store.run('r-x').runner.started, 'test:started-at-1');
+  assert.match(report.skipped[0].reason, /still running/);
+});
+

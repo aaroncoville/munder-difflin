@@ -32,7 +32,7 @@
  * is written to the run row first; a runner that cannot have it
  * written does not start the process. So a crash between the start and the pid's record cannot hide the process: a
  * later scheduler that finds a "running" run with that text but no pid reads the process table once, and a process
- * (not itself) holding exactly that text is recorded and judged as above. Since the text names
+ * (not itself) holding exactly that text is recorded, with its start time, and judged as above. Since the text names
  * the run and the attempt, another task's CLI on the same seat never matches. A run whose runner gave no such text, or whose process is not
  * found, counts as an attempt, so at most MAX_RUN_ATTEMPTS processes can ever be started for one run.
  *
@@ -345,7 +345,10 @@ export class Scheduler {
     }
     const found = rows.find((r) => r.pid !== process.pid && ` ${r.commandLine} `.includes(` ${marker}`));
     if (found) {
-      this.guarded(lease, 'UPDATE scheduler_runs SET runner_pid = ?, runner_pgid = ?, runner_host = ? WHERE id = ?', found.pid, found.pgid ?? null, hostname(), run.id);
+      // Its start time too, so that a later reuse of the pid can be told from it.
+      const started = (this.o.startTime ?? defaultStartTime)(found.pid, START_READ_MS);
+      this.guarded(lease, 'UPDATE scheduler_runs SET runner_pid = ?, runner_pgid = ?, runner_host = ?, runner_started = ? WHERE id = ?',
+        found.pid, found.pgid ?? null, hostname(), started, run.id);
     }
     return null;
   }
