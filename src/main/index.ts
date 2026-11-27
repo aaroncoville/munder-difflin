@@ -47,7 +47,7 @@ import { UsageLog, recordFromRenderer } from '../core/usageLog';
 import { ScopedRootsRefused, WriteRootsDryRun, seatGate, spawnLaunchFacts, type SpawnRecord } from '../core/writeRoots';
 import { writeWeeklyDigest } from '../core/usageDigest';
 import { HookServer } from './hooks';
-import { HeavyJobLock, heavyLimit, heavySlotNotice, probeProcesses } from '../core/heavyJob';
+import { HeavyJobLock, heavyLimit, heavySlotNotice, probeProcesses, resolveHookHolder } from '../core/heavyJob';
 import { suiteJobLimit } from '../core/heavyJobRules';
 import { CircuitBreaker, type BreakerInput } from '../core/breaker';
 import { shouldReengage, doingTaskTally, suppressionReason } from './heartbeatPolicy';
@@ -423,6 +423,7 @@ const heavyLock = new HeavyJobLock({
   suiteLimit: () => suiteJobLimit(readConfig().suiteJobsAtOnce),
   roots: () => ptyManager.list().flatMap((s) => { const a = ptyToAgent.get(s.id); return a && s.pid > 0 ? [{ agentId: a, pid: s.pid }] : []; }),
   probe: probeProcesses,
+  holderOf: (hookPid) => resolveHookHolder(hookPid),
   log: (row) => { try { hive.appendLog(row); } catch { /* best effort */ } },
   alive: (agentId) => [...ptyToAgent.values()].includes(agentId),
   notify: (agentId, kind, until) => {

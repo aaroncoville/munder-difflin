@@ -17,7 +17,9 @@
  * The classifier and the lock are adapted from Agent Stage (https://github.com/jdell64/agent-stage,
  * MIT, Copyright (c) 2026 Richard J Tindell II), which ported them from guppyos (MIT).
  */
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { hostname } from 'node:os';
+import { defaultStartTime, isStaleHolder } from './fileLock';
 import { carriesCommand, classifyGradle, classifyMaven, classifyPackageExtras, classifyPlaywright, classifyWorker, E2E_SCRIPT, RUN_PREFIXES, unwrapGroup } from './heavyJobRules';
 
 export type HeavyKind = 'install' | 'build' | 'suite' | 'bench';
@@ -279,7 +281,13 @@ export interface HeavyCall {
   pid?: number;
   /** Consecutive watcher scans that found no job for this call. */
   misses: number;
+  /** The CLI that asked for the slot (the hook's parent, past the shell that ran the hook), with its start time
+   *  (null when it could not be read). Absent when the hook did not say (an older hook, another provider). */
+  holder?: HookHolder;
 }
+
+/** A CLI process, by pid and start time (fileLock's defaultStartTime). */
+export interface HookHolder { pid: number; started: string | null }
 
 export interface ProcRow { pid: number; parentPid: number; commandLine: string }
 export interface HeavyLockDeps {
@@ -299,6 +307,10 @@ export interface HeavyLockDeps {
   /** Tell a queued agent that a slot is reserved for it until `until`. Returns whether any channel
    *  took the message. */
   notify?: (agentId: string, kind: HeavyKind, until: number) => boolean;
+  /** The CLI behind a hook whose parent is `hookPid` (resolveHookHolder), or null when it cannot be told. */
+  holderOf?: (hookPid: number) => HookHolder | null;
+  /** When process `pid` started. Default: fileLock's defaultStartTime. */
+  startTime?: (pid: number) => string | null;
 }
 
 export const HEAVY_TTL_MS = 60 * 60_000;
@@ -308,7 +320,7 @@ export const HEAVY_RESERVE_MS = 5 * 60_000;
 const COMMAND_KEEP = 200;
 
 export type HeavyDecision = { allow: true; acquired: boolean } | { allow: false; reason: string };
-type ReleaseReason = 'posttool' | 'turn-end' | 'process-exit' | 'pty-exit' | 'ttl';
+type ReleaseReason = 'posttool' | 'turn-end' | 'process-exit' | 'pty-exit' | 'ttl' | 'holder-exit';
 const clock = (ms: number): string => `${new Date(ms).toISOString().slice(11, 19)}Z`;
 
 export class HeavyJobLock {
@@ -348,7 +360,8 @@ export class HeavyJobLock {
   }
 
   /** PreToolUse: a heavy call from `agentId`. Take a slot, or queue it. */
-  acquire(agentId: string, cls: HeavyClass, command: string, callId: string, background: boolean, session?: string): HeavyDecision {
+  /** `hookPid`: the parent of the hook that asked (the CLI, or the shell the CLI ran the hook in), when it said. */
+  acquire(agentId: string, cls: HeavyClass, command: string, callId: string, background: boolean, session?: string, hookPid?: number): HeavyDecision {
     const limit = this.d.limit();
     if (limit === 'off' || !cls.heavy || !cls.kind) {
       if (limit === 'off') this.dropWaiting(agentId);
@@ -362,7 +375,9 @@ export class HeavyJobLock {
     if (!reserved && this.calls.size + this.reservations.size >= limit) return this.refuse(agentId, cls, limit);
     const now = this.now();
     const key = this.nextKey++;
-    this.calls.set(key, { key, agentId, callId, kind: cls.kind, label: cls.why ?? cls.kind, command: command.slice(0, COMMAND_KEEP), why: cls.why, session, since: now, touched: now, background, posted: false, seen: false, misses: 0 });
+    let holder: HookHolder | null = null;
+    if (hookPid !== undefined && Number.isSafeInteger(hookPid) && hookPid > 1) { try { holder = this.d.holderOf?.(hookPid) ?? null; } catch { holder = null; } }
+    this.calls.set(key, { key, agentId, callId, kind: cls.kind, label: cls.why ?? cls.kind, command: command.slice(0, COMMAND_KEEP), why: cls.why, session, since: now, touched: now, background, posted: false, seen: false, misses: 0, ...(holder ? { holder } : {}) });
     // How long the agent queued for this slot, for the usage log (measure only).
     const waitMs = reserved && reservation?.queuedSince !== undefined ? now - reservation.queuedSince : undefined;
     this.log({ kind: 'heavy-lock', action: 'acquire', agentId, heavyKind: cls.kind, job: cls.why, background, limit, reserved, ...(waitMs !== undefined ? { waitMs } : {}) });
@@ -506,6 +521,15 @@ export class HeavyJobLock {
    *  turn ending, the PTY exiting or the TTL. */
   async scan(): Promise<void> {
     this.expire();
+    // The CLI that asked is judged by the file lock's holder rule (isStaleHolder): exited, at once; running, never on
+    // age, unless its pid is now another process (another start time), which is told once the call is older than
+    // HOLDER_STALE_MS. A start time that cannot be read is no evidence either way.
+    const bounds = { staleMs: HOLDER_STALE_MS, startTime: this.d.startTime ?? ((pid: number) => defaultStartTime(pid, HOLDER_START_READ_MS)) };
+    const host = hostname();
+    for (const c of [...this.calls.values()]) {
+      if (!c.holder) continue;
+      if (isStaleHolder({ pid: c.holder.pid, host, started: c.holder.started ?? undefined }, this.now() - c.since, bounds)) this.release(c.key, 'holder-exit');
+    }
     if (!this.calls.size || !this.d.probe || !this.d.roots) return;
     let procs: ProcRow[];
     try { procs = await this.d.probe(); } catch { return; }
@@ -526,6 +550,13 @@ export class HeavyJobLock {
       const a = ownerOf(p.pid);
       if (a) under.set(a, [...(under.get(a) ?? []), p]);
     }
+    // A call from an agent id with no terminal of its own (a subagent) is looked for under the CLI that asked for it.
+    const agents = new Set(rootOf.values());
+    const candidates = (c: HeavyCall): ProcRow[] => {
+      if (agents.has(c.agentId) || !c.holder) return under.get(c.agentId) ?? [];
+      const cli = c.holder.pid;
+      return procs.filter((p) => p.pid !== cli && lineage(p.pid).includes(cli));
+    };
     const listed = new Set(procs.map((p) => p.pid));
     const claimed = new Set<number>();
     for (const c of this.calls.values()) if (c.pid !== undefined && listed.has(c.pid)) claimed.add(c.pid);
@@ -533,7 +564,7 @@ export class HeavyJobLock {
       if (!this.calls.has(c.key)) continue;
       if (c.pid === undefined || !listed.has(c.pid)) {
         c.pid = undefined;
-        const matches = (under.get(c.agentId) ?? []).filter((p) => !claimed.has(p.pid) && !lineage(p.pid).some((a) => claimed.has(a))
+        const matches = candidates(c).filter((p) => !claimed.has(p.pid) && !lineage(p.pid).some((a) => claimed.has(a))
           && (carriesCommand(p.commandLine, c.command, c.command.length >= COMMAND_KEEP) || (!!c.why && classifyCommand(p.commandLine).why === c.why)));
         const mine = new Set(matches.map((p) => p.pid));
         c.pid = matches.find((p) => !lineage(p.pid).some((a) => mine.has(a)))?.pid;
@@ -551,7 +582,7 @@ export class HeavyJobLock {
 
 // — the hook boundary —
 
-interface HeavyHookPayload { tool_name?: string; tool_input?: unknown; tool_use_id?: unknown; notification_type?: string; tool_session_id?: string }
+interface HeavyHookPayload { tool_name?: string; tool_input?: unknown; tool_use_id?: unknown; notification_type?: string; tool_session_id?: string; hook_ppid?: unknown }
 
 
 /** The id that pairs a call's PreToolUse with its PostToolUse: the provider's tool-use id when it
@@ -567,7 +598,8 @@ function heavyCallId(p: HeavyHookPayload): string {
 export function gateHeavyCall(lock: HeavyJobLock, agentId: string, p: HeavyHookPayload): string | null {
   const cls = classifyHeavy(p.tool_name, p.tool_input);
   if (!cls.heavy) return null;
-  const d = lock.acquire(agentId, cls, commandFromToolInput(p.tool_input) ?? '', heavyCallId(p), isBackground(p.tool_input), p.tool_session_id);
+  const d = lock.acquire(agentId, cls, commandFromToolInput(p.tool_input) ?? '', heavyCallId(p), isBackground(p.tool_input), p.tool_session_id,
+    typeof p.hook_ppid === 'number' ? p.hook_ppid : undefined);
   return d.allow ? null : d.reason;
 }
 
@@ -590,6 +622,35 @@ export function heavySlotNotice(kind: HeavyKind, until: number): { subject: stri
 }
 
 // — process listing —
+
+/** The most one start-time read of a slot's CLI may take. */
+const HOLDER_START_READ_MS = 100;
+/** A slot's CLI that is still running is asked whether it is the same process only once the call is this old. */
+export const HOLDER_STALE_MS = 30_000;
+
+/** The parent pid and command line of process `pid`, from ps; null when it cannot be read. */
+export function readProcessRow(pid: number): { parentPid: number; commandLine: string } | null {
+  if (process.platform === 'win32') return null;
+  try {
+    const out = execFileSync('ps', ['-o', 'ppid=,command=', '-p', String(pid)], {
+      env: { PATH: '/bin:/usr/bin', LC_ALL: 'C' }, stdio: ['ignore', 'pipe', 'ignore'], timeout: HOLDER_START_READ_MS,
+    }).toString();
+    const m = /^\s*(\d+)\s+(.*?)\s*$/.exec(out.split('\n')[0] ?? '');
+    return m ? { parentPid: Number(m[1]), commandLine: m[2] } : null;
+  } catch { return null; }
+}
+
+/** The CLI behind a hook whose parent is `hookPid`: that process, or, when it is the shell the CLI ran the hook in
+ *  (its command names the hook shim), that shell's parent; with its start time. Null when the process cannot be read,
+ *  so the call is judged as before. */
+export function resolveHookHolder(hookPid: number, read: (pid: number) => { parentPid: number; commandLine: string } | null = readProcessRow,
+  startTime: (pid: number) => string | null = (pid) => defaultStartTime(pid, HOLDER_START_READ_MS)): HookHolder | null {
+  const row = read(hookPid);
+  if (!row) return null;
+  const pid = /cth-hook\.cjs/.test(row.commandLine) ? row.parentPid : hookPid;
+  if (!(pid > 1)) return null;
+  return { pid, started: startTime(pid) };
+}
 
 /** Parse `ps -axo pid=,ppid=,command=`. */
 export function parsePsOutput(out: string): ProcRow[] {
