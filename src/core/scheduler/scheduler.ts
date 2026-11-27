@@ -258,7 +258,7 @@ export class Scheduler {
         if (!run) return;
         this.hooks.afterClaim?.();
       }
-      const end = await this.execute(run, lease);
+      const end = await this.execute(run, lease, (error) => report.errors.push({ taskId, error }));
       report.ran.push({ taskId, runId: run.id, slot: run.slot, state: end });
     } catch (e) {
       report.errors.push({ taskId, error: (e as Error).message });
@@ -285,17 +285,19 @@ export class Scheduler {
       + 'it is not started again, and the run goes on once that process has ended: if it is stuck, stopping it frees the run';
   }
 
-  /** Records the runner's process on the run row; see the header. The start time is read after, off the spawn path. */
-  private recordRunner(run: StoredRun, lease: HeldLease, proc: { pid: number; pgid: number | null }): void {
+  /** Records the runner's process on the run row; see the header. The start time is read after, off the spawn path. A
+   *  write that fails is reported through `problem`: the run then counts as unrecorded if this scheduler stops. */
+  private recordRunner(run: StoredRun, lease: HeldLease, proc: { pid: number; pgid: number | null }, problem: (error: string) => void): void {
+    const failed = (what: string, e: unknown): void => problem(`run ${run.id}: ${what} of its runner's process (pid ${proc.pid}) could not be recorded, so a scheduler that restarts while it runs cannot judge it by that: ${(e as Error).message}`);
     try {
       this.guarded(lease, 'UPDATE scheduler_runs SET runner_pid = ?, runner_pgid = ?, runner_host = ? WHERE id = ?', proc.pid, proc.pgid, hostname(), run.id);
-    } catch { return; /* the lease is gone; the next holder judges the run without it */ }
+    } catch (e) { failed('the pid', e); return; }
     setImmediate(() => {
       const started = (this.o.startTime ?? defaultStartTime)(proc.pid, START_READ_MS);
       if (started === null) return;
       try {
         this.guarded(lease, 'UPDATE scheduler_runs SET runner_started = ? WHERE id = ? AND runner_pid = ?', started, run.id, proc.pid);
-      } catch { /* as above */ }
+      } catch (e) { failed('the start time', e); }
     });
   }
 
@@ -323,7 +325,7 @@ export class Scheduler {
     });
   }
 
-  private async execute(claimed: StoredRun, lease: HeldLease): Promise<StoredRun['state']> {
+  private async execute(claimed: StoredRun, lease: HeldLease, problem: (error: string) => void): Promise<StoredRun['state']> {
     let run = claimed;
     if (run.state === 'claimed' || run.state === 'running') {
       if (run.attempt >= MAX_RUN_ATTEMPTS) {
@@ -339,7 +341,7 @@ export class Scheduler {
         const started = run;
         outcome = await this.o.runner({
           runId: run.id, taskId: run.taskId, slot: run.slot, snapshot: run.snapshot, maxBudgetUsd: run.snapshot.maxBudgetUsd,
-          onProcess: (proc) => this.recordRunner(started, lease, proc),
+          onProcess: (proc) => this.recordRunner(started, lease, proc, problem),
         });
         if (!outcome || typeof outcome !== 'object' || !outcome.run) throw new Error('the runner returned no run');
       } catch (e) {

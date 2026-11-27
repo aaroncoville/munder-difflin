@@ -573,3 +573,18 @@ test('Given a live survivor recorded under a host name the machine no longer has
   assert.equal(calls(f).length, 1);
   assert.equal(cliPids(cliLog).length, 1);
 });
+
+test('Given the runner\'s process cannot be recorded, when the runner reports it, then the tick reports that, naming the pid', LIMIT, async (t) => {
+  const f = floor(t);
+  const store = open(t, f);
+  store.putTask(taskDef(f), at(0, 6));
+  const runner = async (job) => {
+    // The lease is taken over, so the record write is refused.
+    store.db.prepare('UPDATE scheduler_leases SET token = ?').run('another-holder');
+    job.onProcess({ pid: 4242, pgid: 4242 });
+    return { run: headlessRun(), done: true, doneReason: null };
+  };
+  const report = await new Scheduler({ store, hiveRoot: f.hiveRoot, runner, now: () => at(1, 7, 20) }).tick();
+  assert.ok(report.errors.some((e) => /pid 4242\) could not be recorded/.test(e.error)), JSON.stringify(report.errors));
+  assert.equal(runsOf(store)[0].runner, null);
+});
