@@ -89,10 +89,13 @@ test('a failure is reported once when it starts, and once more when rows are wri
   r.q.push({ n: 1 });
   r.tick(); r.tick();
   r.q.push({ n: 2 });
-  assert.deepEqual(r.reports, [{ kind: 'failing', reason: 'could not lock cost-ledger.jsonl.lock', queued: 1 }]);
+  assert.deepEqual(r.reports, [
+    { kind: 'failing', reason: 'could not lock cost-ledger.jsonl.lock', queued: 1 },
+    { kind: 'lasting', reason: 'could not lock cost-ledger.jsonl.lock' },
+  ]);
   r.state.busy = false;
   r.tick();
-  assert.deepEqual(r.reports.map((e) => e.kind), ['failing', 'recovered']);
+  assert.deepEqual(r.reports.map((e) => e.kind), ['failing', 'lasting', 'recovered']);
 });
 
 test('a full queue drops its oldest row and says so, and says how many when it recovers', () => {
@@ -152,11 +155,35 @@ test('a failure that does not clear drops to a slow probe, and the probe writes 
   for (let i = 0; i < 8; i++) waits.push(r.tick());
   // Five failures on the fast schedule (the last wait repeating), then the slow probe.
   assert.deepEqual(waits, [10, 20, 40, 40, 60_000, 60_000, 60_000, 60_000]);
-  assert.deepEqual(r.reports.map((e) => e.kind), ['failing'], 'reported once');
+  assert.deepEqual(r.reports.map((e) => e.kind), ['failing', 'lasting'], 'reported once, and once as lasting');
   r.state.busy = false;
   r.tick();
   assert.deepEqual(r.written, [1]);
   r.state.busy = true;
   r.q.push({ n: 2 });
   assert.equal(r.tick(), 10, 'after a recovery, a new failure starts on the fast schedule again');
+});
+
+test('brief contention is not reported as lasting; a failure through three attempts is, once', () => {
+  const r = rig();
+  r.state.busy = true;
+  r.q.push({ n: 1 });
+  r.tick();
+  r.state.busy = false;
+  r.tick();
+  assert.ok(!r.reports.some((e) => e.kind === 'lasting'), 'two failed attempts then a write: nothing lasting');
+  r.reports.length = 0;
+  r.state.busy = true;
+  r.q.push({ n: 2 });
+  r.tick(); r.tick(); r.tick(); r.tick();
+  assert.deepEqual(r.reports.filter((e) => e.kind === 'lasting'), [{ kind: 'lasting', reason: 'could not lock cost-ledger.jsonl.lock' }]);
+});
+
+test('a failure that has gone on for a second is lasting at its next attempt, before its third', () => {
+  const r = rig();
+  r.state.busy = true;
+  r.q.push({ n: 1 });
+  r.clock.t += 1000;
+  r.tick();
+  assert.equal(r.reports.filter((e) => e.kind === 'lasting').length, 1, 'second attempt, a second after the first');
 });

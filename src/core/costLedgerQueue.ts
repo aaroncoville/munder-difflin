@@ -20,6 +20,10 @@ export const COST_QUEUE_RETRY_MS = [100, 250, 500, 1000, 2000, 5000] as const;
 export const COST_QUEUE_SLOW_AFTER = 12;
 /** The wait between attempts once a failure has not cleared. */
 export const COST_QUEUE_PROBE_MS = 60_000;
+/** A failure is lasting once this many attempts in a row have failed... */
+export const COST_QUEUE_LASTING_AFTER = 3;
+/** ...or once it has gone on this long, at its next attempt. */
+export const COST_QUEUE_LASTING_MS = 1000;
 /** The most rows the queue holds. */
 export const COST_QUEUE_CAP = 1000;
 /** The most rows one attempt on the timer writes. */
@@ -29,8 +33,10 @@ export interface CostLedgerQueueOptions {
   /** Appends `rows` (oldest first) under the ledger's lock, waiting at most `waitMs` for it, and returns how many of
    *  them, from the first, it wrote (at least one); throws when it wrote none. */
   append: (rows: readonly object[], waitMs: number) => number;
-  /** Told once when appends start failing (with why) or rows are dropped, and once when appends succeed again. */
-  report: (event: { kind: 'failing'; reason: string; queued: number } | { kind: 'dropped'; count: number } | { kind: 'recovered' }) => void;
+  /** Told once when appends start failing (with why); once more when the failure has lasted (LASTING_AFTER attempts
+   *  or LASTING_MS, whichever comes first), so brief contention for the lock is not mistaken for a fault; once when
+   *  rows are dropped; and once when appends succeed again. */
+  report: (event: { kind: 'failing'; reason: string; queued: number } | { kind: 'lasting'; reason: string } | { kind: 'dropped'; count: number } | { kind: 'recovered' }) => void;
   cap?: number;
   perTick?: number;
   retryMs?: readonly number[];
@@ -47,6 +53,8 @@ export class CostLedgerQueue {
   private timer: unknown = null;
   private failures = 0;
   private dropped = 0;
+  private failingSince = 0;
+  private lasting = false;
   private readonly cap: number;
   private readonly perTick: number;
   private readonly retryMs: readonly number[];
@@ -106,7 +114,15 @@ export class CostLedgerQueue {
     try {
       wrote = this.opts.append(this.rows.slice(0, max), waitMs);
     } catch (e) {
-      if (this.failures++ === 0) this.opts.report({ kind: 'failing', reason: (e as Error).message, queued: this.rows.length });
+      const reason = (e as Error).message;
+      if (this.failures++ === 0) {
+        this.failingSince = this.now();
+        this.opts.report({ kind: 'failing', reason, queued: this.rows.length });
+      }
+      if (!this.lasting && (this.failures >= COST_QUEUE_LASTING_AFTER || this.now() - this.failingSince >= COST_QUEUE_LASTING_MS)) {
+        this.lasting = true;
+        this.opts.report({ kind: 'lasting', reason });
+      }
       const wait = this.failures >= this.slowAfter ? this.probeMs : this.retryMs[Math.min(this.failures - 1, this.retryMs.length - 1)];
       this.timer = this.setTimer(() => { this.timer = null; this.tick(); }, wait);
       return false;
@@ -116,6 +132,7 @@ export class CostLedgerQueue {
       if (this.dropped > 1) this.opts.report({ kind: 'dropped', count: this.dropped });
       this.failures = 0;
       this.dropped = 0;
+      this.lasting = false;
       this.opts.report({ kind: 'recovered' });
     }
     return true;
