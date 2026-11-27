@@ -122,6 +122,9 @@ test('Given a job, when the adapter runs it, then the seat is given a launch key
 const { headlessLaunchSettingsFile } = loadTs('src/core/headlessSeat.ts');
 const { seatSettingsFile } = loadTs('src/core/seatSettings.ts');
 
+/** A clock 20 minutes on, so that files written by the test are old enough to be swept. */
+const later = () => Date.now() + 20 * 60_000;
+
 /** A store holding runs in the given states, each with the attempts given. */
 function storeWith(t, f, runs) {
   const store = S.openSchedulerStore({ path: f.dbPath, hiveRoots: [f.hiveRoot] });
@@ -146,7 +149,7 @@ test('Given launch settings files a dead scheduler left, when the sweep runs, th
   };
   for (const p of Object.values(all)) fs.writeFileSync(p, '{}');
   const table = async () => [{ pid: 99999, parentPid: 1, pgid: 99999, commandLine: `claude -p --settings ${all.held} --setting-sources ` }];
-  const r = await R.sweepLaunchSettings({ store, settingsDir: dir, hiveRoot: f.hiveRoot, processTable: table });
+  const r = await R.sweepLaunchSettings({ store, settingsDir: dir, hiveRoot: f.hiveRoot, processTable: table, now: later });
   assert.equal(r.error, null);
   assert.deepEqual(r.removed.sort(), [all.done1, all.done2, all.failed, all.unknown].sort());
   for (const k of ['running', 'ran', 'held', 'again', 'seat', 'interactive']) assert.ok(fs.existsSync(all[k]), `${k} is kept`);
@@ -160,8 +163,106 @@ test('Given a process table that cannot be read, when the sweep runs, then nothi
   const store = storeWith(t, f, [['r-done', 'done', 1]]);
   const p = headlessLaunchSettingsFile(dir, f.hiveRoot, AGENT, 'r-done.a1');
   fs.writeFileSync(p, '{}');
-  const r = await R.sweepLaunchSettings({ store, settingsDir: dir, hiveRoot: f.hiveRoot, processTable: async () => { throw new Error('ps refused'); } });
+  const r = await R.sweepLaunchSettings({ store, settingsDir: dir, hiveRoot: f.hiveRoot, processTable: async () => { throw new Error('ps refused'); }, now: later });
   assert.deepEqual(r.removed, []);
   assert.match(r.error, /process table could not be read.*ps refused/);
+  assert.ok(fs.existsSync(p));
+});
+
+/** A settings folder with a store holding the given runs, and a writer for launch files of `AGENT`. */
+function sweepFloor(t, runs) {
+  const f = floor(t);
+  const dir = path.join(f.base, 'app', 'seat-settings');
+  fs.mkdirSync(dir, { recursive: true });
+  const store = storeWith(t, f, runs);
+  const file = (run, n) => headlessLaunchSettingsFile(dir, f.hiveRoot, AGENT, `${run}.a${n}`);
+  return { f, dir, store, file };
+}
+const sweep = (s, more = {}) => R.sweepLaunchSettings({ store: s.store, settingsDir: s.dir, hiveRoot: s.f.hiveRoot, processTable: async () => [], now: later, ...more });
+
+test('Given a launch file written less than ten minutes ago, when the sweep runs, then it is kept, though its run is unknown (another hive\'s fresh launch); an old one is removed', async (t) => {
+  const s = sweepFloor(t, []);
+  const fresh = s.file('r-other-hive', 1);
+  fs.writeFileSync(fresh, '{}');
+  assert.deepEqual((await sweep(s, { now: () => Date.now() + 5 * 60_000 })).removed, []);
+  assert.ok(fs.existsSync(fresh));
+  assert.deepEqual((await sweep(s)).removed, [fresh]);
+});
+
+test('Given a live process that names a finished run\'s launch file through another spelling of the folder, when the sweep runs, then the file is kept', async (t) => {
+  const s = sweepFloor(t, [['r-done', 'done', 1]]);
+  const p = s.file('r-done', 1);
+  fs.writeFileSync(p, '{}');
+  const link = path.join(s.f.base, 'linked-settings');
+  fs.symlinkSync(s.dir, link);
+  const table = async () => [{ pid: 4242, parentPid: 1, pgid: 4242, commandLine: `claude -p --settings ${path.join(link, path.basename(p))} --setting-sources ` }];
+  const r = await sweep(s, { processTable: table });
+  assert.deepEqual(r.removed, []);
+  assert.ok(fs.existsSync(p));
+});
+
+test('Given a live process that names a finished run\'s launch file in any form, when the sweep runs, then the file is kept; a longer name that only contains it, or no mention, does not keep it', async (t) => {
+  const s = sweepFloor(t, [['r-done', 'done', 1]]);
+  const p = s.file('r-done', 1);
+  const name = path.basename(p);
+  const spaced = path.join(s.f.base, 'Application Support', 'seat-settings', name);
+  const kept = {
+    'separate, raw': `claude -p --settings ${p} --setting-sources `,
+    'separate, single-quoted': `claude -p --settings '${p}' --setting-sources `,
+    'separate, double-quoted': `claude -p --settings "${p}" --setting-sources `,
+    'equals, raw': `claude -p --settings=${p} --setting-sources `,
+    'equals, quoted': `claude -p --settings="${p}"`,
+    'a folder with spaces': `claude -p --settings ${spaced} -x`,
+    'a trailing separator before it': `claude -p --settings ${s.dir}//${name}`,
+    'a later positional': `claude -p --settings /x/other.json do-it ${name}`,
+    'under another flag': `claude -p --settings /x/other.json --note /tmp/${name}`,
+  };
+  for (const [form, commandLine] of Object.entries(kept)) {
+    fs.writeFileSync(p, '{}');
+    const r = await sweep(s, { processTable: async () => [{ pid: 1, parentPid: 0, pgid: 1, commandLine: 'launchd' }, { pid: 4242, parentPid: 1, pgid: 4242, commandLine }] });
+    assert.deepEqual(r.removed, [], form);
+    assert.ok(fs.existsSync(p), form);
+  }
+  const removed = {
+    'a longer name that ends in it': `claude --settings /x/pre${name}`,
+    'a longer name that contains it': `claude --settings /x/${name}.bak`,
+    'another digest': `claude --settings /x/launch-${'0'.repeat(64)}.json`,
+    'no mention': 'claude -p --settings /x/other.json',
+  };
+  for (const [form, commandLine] of Object.entries(removed)) {
+    fs.writeFileSync(p, '{}');
+    const r = await sweep(s, { processTable: async () => [{ pid: 4242, parentPid: 1, pgid: 4242, commandLine }] });
+    assert.deepEqual(r.removed, [p], form);
+  }
+});
+
+test('Given a link and a folder named as launch files, when the sweep runs, then neither is removed', async (t) => {
+  const s = sweepFloor(t, []);
+  const target = path.join(s.f.base, 'outside.json');
+  fs.writeFileSync(target, '{}');
+  const link = s.file('r-link', 1);
+  fs.symlinkSync(target, link);
+  const folder = s.file('r-folder', 1);
+  fs.mkdirSync(folder);
+  const r = await sweep(s);
+  assert.deepEqual(r.removed, []);
+  assert.ok(fs.lstatSync(link).isSymbolicLink());
+  assert.ok(fs.statSync(folder).isDirectory());
+  assert.ok(fs.existsSync(target));
+});
+
+test('Given a run still going at its second attempt, when the sweep runs, then its first attempt\'s file is kept with the second\'s', async (t) => {
+  const s = sweepFloor(t, [['r-again', 'running', 2]]);
+  for (const n of [1, 2]) fs.writeFileSync(s.file('r-again', n), '{}');
+  assert.deepEqual((await sweep(s)).removed, []);
+});
+
+test('Given a hive folder that cannot be resolved, when the sweep runs, then it removes nothing and returns the reason rather than throwing', async (t) => {
+  const s = sweepFloor(t, [['r-done', 'done', 1]]);
+  const p = s.file('r-done', 1);
+  fs.writeFileSync(p, '{}');
+  const r = await sweep(s, { hiveRoot: path.join(s.f.base, 'no-such-hive') });
+  assert.deepEqual(r.removed, []);
+  assert.match(r.error, /could not be named.*no-such-hive/);
   assert.ok(fs.existsSync(p));
 });

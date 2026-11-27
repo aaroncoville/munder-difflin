@@ -32,9 +32,12 @@ export function seatSettingsDigest(hiveRoot: string, agentId: string): string {
   return createHash('sha256').update(`${real}\0${agentId}`).digest('hex');
 }
 
-/** The seat's settings file in `dir`, its name `prefix` then the digest; refuses when no folder is set. */
+/** The seat's settings file in `dir`, its name `prefix` then the digest; refuses when no folder is set, and a prefix
+ *  that is not up to 32 lowercase letters, digits and dashes (so never a path separator or a dot), which could name a
+ *  file outside the folder or one writeSeatSettings would not write. */
 export function seatSettingsFile(dir: string | null, hiveRoot: string, agentId: string, prefix = ''): string {
   if (!dir) throw new SeatSettingsRefused('no seat settings folder is set, and the file is never written into the hive');
+  if (!/^[a-z0-9-]{0,32}$/.test(prefix)) throw new SeatSettingsRefused(`the settings file prefix ${JSON.stringify(prefix)} is not up to 32 lowercase letters, digits and dashes`);
   return join(dir, `${prefix}${seatSettingsDigest(hiveRoot, agentId)}.json`);
 }
 

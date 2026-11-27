@@ -18,7 +18,7 @@
  * refused before anything runs: the run fails with that reason rather than run without the folder it was written for.
  */
 import { lstatSync, readdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { headlessLaunchSettingsFile, LAUNCH_SETTINGS_PREFIX } from '../headlessSeat';
 import { holds } from '../hookRuntime';
 import { runHeadlessStream as realRunHeadlessStream, type HeadlessCost, type HeadlessStreamOptions, type HeadlessStreamResult } from '../headlessStream';
@@ -68,6 +68,11 @@ export interface LaunchSettingsSweep {
   error: string | null;
 }
 
+/** A launch settings file younger than this is never removed. The folder is shared by every hive, while the sweep
+ *  knows one hive's runs, and a launch's file is written just before its CLI starts: a fresh file of another hive (or
+ *  one whose run row is a moment behind it) would otherwise look unknown and unused. */
+export const LAUNCH_SETTINGS_MIN_AGE_MS = 10 * 60_000;
+
 /** Run states in which a launch's settings file may still be read by its CLI. */
 const OPEN_STATES: ReadonlyArray<StoredRun['state']> = ['claimed', 'running', 'ran'];
 
@@ -77,12 +82,15 @@ const OPEN_STATES: ReadonlyArray<StoredRun['state']> = ['claimed', 'running', 'r
  *
  * Only files named as a launch's own (LAUNCH_SETTINGS_PREFIX) are looked at; a seat's shared settings file is never
  * touched. Each is matched to its run through core.db (every attempt of every run, by the name the adapter gives its
- * launch). A file is removed only when its run is over or unknown to core.db, and no running process's command line
- * names it (one read of the process table): an orphaned CLI may still be reading it. When the folder or the table
- * cannot be read, nothing is removed.
+ * launch). A file is removed only when it is a regular file at least LAUNCH_SETTINGS_MIN_AGE_MS old, its run is over
+ * or unknown to core.db, and its name appears in no running process's command line (one read of the process table):
+ * an orphaned CLI may still be reading it. When the folder, the hive
+ * or the table cannot be read, nothing is removed and the error says why.
  */
 export async function sweepLaunchSettings(o: {
   store: SchedulerStore; settingsDir: string; hiveRoot: string; processTable?: () => Promise<GroupProcRow[]>;
+  /** The wall clock (epoch ms), for the files' age. */
+  now?: () => number;
 }): Promise<LaunchSettingsSweep> {
   const out: LaunchSettingsSweep = { removed: [], kept: [], error: null };
   let names: string[];
@@ -94,10 +102,14 @@ export async function sweepLaunchSettings(o: {
   }
   if (!names.length) return out;
   const stateOf = new Map<string, StoredRun['state']>();
-  for (const run of o.store.runs()) {
-    for (let n = 1; n <= Math.max(1, run.attempt); n++) {
-      stateOf.set(headlessLaunchSettingsFile(o.settingsDir, o.hiveRoot, run.snapshot.agentId, `${run.id}.a${n}`), run.state);
+  try {
+    for (const run of o.store.runs()) {
+      for (let n = 1; n <= Math.max(1, run.attempt); n++) {
+        stateOf.set(basename(headlessLaunchSettingsFile(o.settingsDir, o.hiveRoot, run.snapshot.agentId, `${run.id}.a${n}`)), run.state);
+      }
     }
+  } catch (e) {
+    return { ...out, error: `the runs' launch settings files could not be named, so none was removed: ${(e as Error).message}` };
   }
   let rows: GroupProcRow[];
   try {
@@ -105,13 +117,21 @@ export async function sweepLaunchSettings(o: {
   } catch (e) {
     return { ...out, error: `the process table could not be read, so no launch settings file was removed: ${(e as Error).message}` };
   }
-  const named = (file: string): boolean => rows.some((r) => ` ${r.commandLine} `.includes(` --settings ${file} `));
+  // By the file's name anywhere on any command line, whatever the flag form, quoting, folder spelling or position: the
+  // name holds a digest no other file shares, and a process table gives no reliable way to split arguments. Erring
+  // this way only keeps a small private file a while longer; a file removed from under a running CLI cannot be put
+  // back. The name must stand as a whole token, so a longer name that merely contains it does not count.
+  const named = (name: string): boolean => {
+    const token = new RegExp(`(?<![A-Za-z0-9._-])${name.replace(/[.]/g, '\\.')}(?![A-Za-z0-9._-])`);
+    return rows.some((r) => token.test(r.commandLine));
+  };
+  const now = (o.now ?? Date.now)();
   for (const name of names) {
     const file = join(o.settingsDir, name);
-    const state = stateOf.get(file);
-    let regular = false;
-    try { regular = lstatSync(file).isFile(); } catch { continue; }
-    if (!regular || (state !== undefined && OPEN_STATES.includes(state)) || named(file)) {
+    const state = stateOf.get(name);
+    let st;
+    try { st = lstatSync(file); } catch { continue; }
+    if (!st.isFile() || now - st.mtimeMs < LAUNCH_SETTINGS_MIN_AGE_MS || (state !== undefined && OPEN_STATES.includes(state)) || named(name)) {
       out.kept.push(file);
       continue;
     }
