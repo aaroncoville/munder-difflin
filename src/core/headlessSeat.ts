@@ -49,7 +49,7 @@ import { probeProcessGroups, type GroupProcRow } from './processGroups';
 import { hookCommandFor, overlaps, rootOverlap, verifyHookRuntime, type StagedHookRuntime } from './hookRuntime';
 import { CLAUDE_FILE_WRITE_TOOLS, isPlainObject, launchPlaces } from './launchLine';
 import { privateDirsReach } from './privateDirs';
-import { writeSeatSettings } from './seatSettings';
+import { seatSettingsFile, writeSeatSettings } from './seatSettings';
 import { ownFolder, SCOPED_SANDBOX_PINS, seatWriteRoots } from './writeRoots';
 
 /** Backend switches on the shared keep-list that a headless seat does not pass. Each needs its provider's own
@@ -158,6 +158,19 @@ export interface HeadlessSeatOptions {
    *  path its launch line names belongs to this launch and no other one of the agent's; the file is removed when the
    *  run ends. Without it, every headless launch of the agent shares one settings file. */
   launchKey?: string;
+}
+
+/** How a launch's own settings file is named apart from every seat's shared one in the private folder, so that one
+ *  left behind (by a caller that died while its CLI ran) can be told from them. */
+export const LAUNCH_SETTINGS_PREFIX = 'launch-';
+
+function launchSettingsKey(agentId: string, launchKey: string): string {
+  return `headless:${agentId}:launch:${launchKey}`;
+}
+
+/** Where the launch keyed `launchKey` of the agent's headless seat has its own settings file. */
+export function headlessLaunchSettingsFile(settingsDir: string, hiveRoot: string, agentId: string, launchKey: string): string {
+  return seatSettingsFile(settingsDir, hiveRoot, launchSettingsKey(agentId, launchKey), LAUNCH_SETTINGS_PREFIX);
 }
 
 /** The default time between SIGTERM and SIGKILL for a run that timed out. */
@@ -324,8 +337,10 @@ export function buildHeadlessLaunch(o: HeadlessSeatOptions): HeadlessLaunch {
   if (excess) throw new HeadlessSeatRefused(`the owner's ${excess.why} would widen the seat beyond its roots${excess.root ? `: ${excess.root}` : ''}`);
   const settings = headlessSeatSettings(roots, hookCommandFor(o.hookRuntime, true), o.enabledPlugins);
   // Its own file name, so it never replaces the settings of the same agent's interactive seat.
-  const settingsKey = o.launchKey === undefined ? `headless:${o.agentId}` : `headless:${o.agentId}:launch:${o.launchKey}`;
-  const settingsFile = writeSeatSettings(o.settingsDir, o.hiveRoot, settingsKey, JSON.stringify(settings, null, 2));
+  const content = JSON.stringify(settings, null, 2);
+  const settingsFile = o.launchKey === undefined
+    ? writeSeatSettings(o.settingsDir, o.hiveRoot, `headless:${o.agentId}`, content)
+    : writeSeatSettings(o.settingsDir, o.hiveRoot, launchSettingsKey(o.agentId, o.launchKey), content, LAUNCH_SETTINGS_PREFIX);
   const argv = [o.cliPath ?? 'claude', '-p', '--output-format', 'json', '--settings', settingsFile, '--setting-sources', HEADLESS_SETTING_SOURCES];
   // MCP servers are not settings: the owner's global config (~/.claude.json) and plugins declare them, and an empty
   // --setting-sources does not stop those. --strict-mcp-config with no --mcp-config starts none.
