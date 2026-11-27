@@ -741,6 +741,18 @@ function sleeper(t) {
   return p;
 }
 
+test('Given a process table in which only the scheduler itself holds the run\'s settings argument, when it resumes the run, then it does not adopt itself', LIMIT, async (t) => {
+  const f = floor(t);
+  const store = open(t, f);
+  store.putTask(taskDef(f), at(0, 6));
+  leftRunning(store, f, { runner_marker: '--settings /s/x.json ' });
+  const { runner } = stub(f);
+  const table = async () => [{ pid: process.pid, parentPid: 1, pgid: process.pid, commandLine: `node sched.js --settings /s/x.json x` }];
+  await new Scheduler({ store, hiveRoot: f.hiveRoot, runner, now: () => at(1, 7, 25), processTable: table }).tick();
+  assert.equal(calls(f).length, 1, 'counted as gone and started again');
+  assert.equal(store.run('r-x').attempt, 2);
+});
+
 test('Given an adopted process, when it is recorded, then its start time is recorded with it', LIMIT, async (t) => {
   const f = floor(t);
   const store = open(t, f);
@@ -753,5 +765,16 @@ test('Given an adopted process, when it is recorded, then its start time is reco
   assert.equal(store.run('r-x').runner.pid, p.pid);
   assert.equal(store.run('r-x').runner.started, 'test:started-at-1');
   assert.match(report.skipped[0].reason, /still running/);
+});
+
+test('Given a live runner recorded with no process group and another host name, when a scheduler resumes the run, then it is judged alive on this machine and not started again', LIMIT, async (t) => {
+  const f = floor(t);
+  const store = open(t, f);
+  store.putTask(taskDef(f), at(0, 6));
+  const p = sleeper(t);
+  leftRunning(store, f, { runner_pid: p.pid, runner_host: 'renamed.local' });
+  const report = await new Scheduler({ store, hiveRoot: f.hiveRoot, runner: stub(f).runner, now: () => at(1, 7, 25) }).tick();
+  assert.equal(calls(f).length, 0);
+  assert.match(report.skipped[0].reason, new RegExp(`pid ${p.pid}.*still running`));
 });
 
