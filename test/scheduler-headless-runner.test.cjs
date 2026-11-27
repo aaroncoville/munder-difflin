@@ -203,6 +203,27 @@ test('Given a live process that names a finished run\'s launch file through anot
   assert.deepEqual((await sweep(s, { processTable: elsewhere })).removed, [p], 'a name outside the --settings argument does not count');
 });
 
+test('Given a link and a folder named as launch files, when the sweep runs, then neither is removed', async (t) => {
+  const s = sweepFloor(t, []);
+  const target = path.join(s.f.base, 'outside.json');
+  fs.writeFileSync(target, '{}');
+  const link = s.file('r-link', 1);
+  fs.symlinkSync(target, link);
+  const folder = s.file('r-folder', 1);
+  fs.mkdirSync(folder);
+  const r = await sweep(s);
+  assert.deepEqual(r.removed, []);
+  assert.ok(fs.lstatSync(link).isSymbolicLink());
+  assert.ok(fs.statSync(folder).isDirectory());
+  assert.ok(fs.existsSync(target));
+});
+
+test('Given a run still going at its second attempt, when the sweep runs, then its first attempt\'s file is kept with the second\'s', async (t) => {
+  const s = sweepFloor(t, [['r-again', 'running', 2]]);
+  for (const n of [1, 2]) fs.writeFileSync(s.file('r-again', n), '{}');
+  assert.deepEqual((await sweep(s)).removed, []);
+});
+
 test('Given a hive folder that cannot be resolved, when the sweep runs, then it removes nothing and returns the reason rather than throwing', async (t) => {
   const s = sweepFloor(t, [['r-done', 'done', 1]]);
   const p = s.file('r-done', 1);
