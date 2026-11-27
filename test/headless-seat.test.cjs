@@ -917,3 +917,14 @@ test('Given a launch key, when the seat runs, then its own settings file is name
   assert.ok(path.basename(keyed.settingsFile).startsWith(H.LAUNCH_SETTINGS_PREFIX));
   assert.ok(!path.basename(shared.settingsFile).startsWith(H.LAUNCH_SETTINGS_PREFIX));
 });
+
+test('Given a settings file prefix that is not a plain name fragment, when the path is made or the file written, then it is refused and nothing is written', (t) => {
+  const f = floor(t);
+  const { seatSettingsFile, writeSeatSettings } = loadTs('src/core/seatSettings.ts');
+  for (const p of ['../escape-', 'a/b-', 'a\\b-', '.hidden-', 'UPPER-', 'x'.repeat(33)]) {
+    assert.throws(() => seatSettingsFile(f.settingsDir, f.hiveRoot, 'ag1', p), /prefix/, p);
+    assert.throws(() => writeSeatSettings(f.settingsDir, f.hiveRoot, 'ag1', '{}', p), /prefix/, p);
+  }
+  assert.ok(fs.readdirSync(path.dirname(f.settingsDir)).every((n) => !n.includes('escape')));
+  assert.equal(path.basename(seatSettingsFile(f.settingsDir, f.hiveRoot, 'ag1', 'launch-')).slice(0, 7), 'launch-');
+});
