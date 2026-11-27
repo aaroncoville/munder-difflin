@@ -87,3 +87,11 @@ test('Given the scheduler with the adapter, when a task runs, then exactly one c
   assert.equal(ledgerRows(f).length, 2);
   assert.equal(mail(f).length, 1);
 });
+
+test('Given a job, when the adapter runs it, then the seat reports the CLI it starts to the job\'s onProcess', async (t) => {
+  const f = floor(t);
+  const s = fakeStream();
+  const seen = [];
+  await R.headlessStreamRunner(seat(f), { runHeadlessStream: async (o) => { o.onSpawn({ pid: 4242, pgid: 4242 }); return s.fn(o); } })({ ...job(f), onProcess: (p) => seen.push(p) });
+  assert.deepEqual(seen, [{ pid: 4242, pgid: 4242 }]);
+});

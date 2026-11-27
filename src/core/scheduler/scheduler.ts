@@ -11,10 +11,24 @@
  * run uses that snapshot whatever is edited later.
  *
  * Lease. Only the holder of the task's lease (lease.ts) claims or runs it, and the holder heartbeats while its runner
- * works. A live holder on this host is never taken over; a dead one's run is resumed by the next holder: a run whose
- * runner had not finished ("claimed" or "running") is run again, and one whose runner had finished ("ran", its outcome
- * stored) is finished off without calling the runner again. The lease is released when the task's turn ends, however it
- * ends.
+ * works. A live holder on this host is never taken over; a dead one's run is resumed by the next holder. A run whose
+ * runner had finished ("ran", its outcome stored) is finished off without calling the runner again. One that was
+ * "claimed" is started. The lease is released when the task's turn ends, however it ends.
+ *
+ * Resume, not repeat. A run found "running" belonged to a scheduler that died while its runner worked, and the process
+ * that runner started (the headless CLI, detached into a process group of its own) may still be running and spending.
+ * So the runner reports that process as soon as it starts (RunJob.onProcess), and its pid, process group, host and
+ * start time are stored on the run row. A later scheduler judges that record by the file lock's own rule
+ * (fileLock.ts isStaleHolder: a pid on this host that is running, and not proven by its start time to be another
+ * process, is alive), and also asks whether anything is left in the process group:
+ *  - still running: the run is not started again. The task is skipped with a reason naming the process, the same
+ *    "hung" report a live lease holder gets; the run goes on once the process has ended. Stopping a stuck one is the
+ *    operator's call.
+ *  - gone, or never reported: the attempt counts. The runner is started again only while fewer than MAX_RUN_ATTEMPTS
+ *    attempts have been made; after that the run is marked failed with the reason.
+ * The record is written in the same synchronous turn as the spawn, with no await between, so only a kill landing
+ * between those two calls leaves a running CLI unrecorded; that run then counts as an attempt, so at most
+ * MAX_RUN_ATTEMPTS CLIs can ever be started for one run.
  *
  * Side effects, keyed by the run id. A finished run gets at most one cost-ledger row and one done mail, however often
  * it is resumed:
@@ -27,18 +41,21 @@
  *    delivered message under the same name, perhaps with a prefix) are searched for that id: in that order, because
  *    mail moves from the first to the second, so a message the router moves in between is still seen.
  * One window is left: a crash after the runner's process has ended but before its outcome is stored (one synchronous
- * SQLite write) leaves the run "running", so it is run again; the ledger then has one row, for the second turn.
+ * SQLite write) leaves the run "running" with a process that is gone, so it counts as an interrupted attempt and is
+ * run again while attempts remain; the ledger then has one row, for the second turn.
  *
  * A runner that throws marks the run failed with its reason; it writes no cost row and no mail, and is not retried.
  */
 import { createHash } from 'node:crypto';
 import { closeSync, fstatSync, openSync, readdirSync, readSync, statSync } from 'node:fs';
+import { hostname } from 'node:os';
 import { join } from 'node:path';
+import { defaultStartTime, isStaleHolder } from '../fileLock';
 import type { HeadlessRun } from '../headlessSeat';
 import { appendCostLedgerRow, COST_LEDGER_FILE } from '../costLedgerFile';
 import { headlessCostRow, headlessDoneMessage, writeOutboxMessage } from '../headlessStream';
 import { leaseStatus, ownsLease, releaseLease, renewLease, takeLease, type HeldLease, type LeaseStatus } from './lease';
-import type { SchedulerStore, StoredRun } from './store';
+import type { RunnerProcess, SchedulerStore, StoredRun } from './store';
 import { slotAtOrBefore, type ScheduledTask, type Slot } from './task';
 
 /** What a runner is given: the run, the definition frozen at claim, and the cap to pass as --max-budget-usd. */
@@ -48,6 +65,9 @@ export interface RunJob {
   slot: string;
   snapshot: ScheduledTask;
   maxBudgetUsd: number;
+  /** The runner calls this as soon as it has started the process that does the work (the headless CLI), with its
+   *  pid and the process group it leads, before awaiting anything: see the header. */
+  onProcess: (proc: { pid: number; pgid: number | null }) => void;
 }
 
 /** What a runner returns: the finished headless run, and whether its output is in place. */
@@ -71,6 +91,12 @@ export interface SchedulerHooks {
 
 export const DEFAULT_LEASE_MS = 120_000;
 
+/** How many times one run's runner may be started before a run interrupted again is marked failed. */
+export const MAX_RUN_ATTEMPTS = 2;
+
+/** The longest one process start-time read may take (it runs ps on macOS). */
+const START_READ_MS = 500;
+
 export interface SchedulerOptions {
   store: SchedulerStore;
   /** The hive the cost ledger and the seats' outboxes are in. */
@@ -90,8 +116,9 @@ export interface SchedulerOptions {
 export interface TickReport {
   /** Runs this tick took to an end, or left failed. */
   ran: Array<{ taskId: string; runId: string; slot: string; state: StoredRun['state'] }>;
-  /** Tasks with work to do whose lease someone else holds, and who. */
-  skipped: Array<{ taskId: string; reason: string; holder: LeaseStatus }>;
+  /** Tasks with work to do that were left alone, and why: their lease is someone else's (holder), the process an
+   *  earlier runner started for their run is still running (runner), or this scheduler is already running them. */
+  skipped: Array<{ taskId: string; reason: string; holder?: LeaseStatus; runner?: RunnerProcess }>;
   /** Tasks whose turn stopped on an error; their run is left to resume on a later tick. */
   errors: Array<{ taskId: string; error: string }>;
 }
@@ -129,6 +156,16 @@ function ledgerHasRun(ledger: string, runId: string, from: number): boolean {
     });
   } finally {
     closeSync(fd);
+  }
+}
+
+/** Whether process group `pgid` still has a member: signal 0 to the group, where EPERM means one exists. */
+function groupHasMember(pgid: number): boolean {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'EPERM';
   }
 }
 
@@ -196,6 +233,13 @@ export class Scheduler {
     const lease = took.lease;
     try {
       let run = this.openRun(taskId);
+      if (run && run.state === 'running' && run.runner) {
+        const why = this.survivor(run, run.runner);
+        if (why) {
+          report.skipped.push({ taskId, reason: why, runner: run.runner });
+          return;
+        }
+      }
       if (!run) {
         run = this.claim(taskId, createdAt, lease);
         if (!run) return;
@@ -208,6 +252,35 @@ export class Scheduler {
     } finally {
       releaseLease(this.store, lease);
     }
+  }
+
+  /** Why the process an earlier attempt's runner started must be waited for, or null when it is gone. Judged by the
+   *  file lock's rule for a recorded holder, with no age: a pid on this host that is running, and not proven by its
+   *  start time to be another process, is alive. A record from another host cannot be checked and counts as gone. A
+   *  group that still has a member counts as running too, since the CLI's own subprocesses join it. */
+  private survivor(run: StoredRun, p: RunnerProcess): string | null {
+    const startTime = this.o.startTime ?? defaultStartTime;
+    const cliAlive = !isStaleHolder({ pid: p.pid, host: p.host, started: p.started ?? undefined }, Number.POSITIVE_INFINITY,
+      { staleMs: 0, startTime: (pid) => startTime(pid, START_READ_MS) });
+    const groupAlive = !cliAlive && p.host === hostname() && p.pgid !== null && p.pgid > 1 && groupHasMember(p.pgid);
+    if (!cliAlive && !groupAlive) return null;
+    const what = cliAlive ? `its runner's process (pid ${p.pid}${p.pgid === null ? '' : `, group ${p.pgid}`})` : `a process in its runner's group ${p.pgid}`;
+    return `task ${run.taskId}: run ${run.id} was started by a scheduler that has since stopped, and ${what} on ${p.host} is still running; `
+      + 'it is not started again, and the run goes on once that process has ended: if it is stuck, stopping it frees the run';
+  }
+
+  /** Records the runner's process on the run row; see the header. The start time is read after, off the spawn path. */
+  private recordRunner(run: StoredRun, lease: HeldLease, proc: { pid: number; pgid: number | null }): void {
+    try {
+      this.guarded(lease, 'UPDATE scheduler_runs SET runner_pid = ?, runner_pgid = ?, runner_host = ? WHERE id = ?', proc.pid, proc.pgid, hostname(), run.id);
+    } catch { return; /* the lease is gone; the next holder judges the run without it */ }
+    setImmediate(() => {
+      const started = (this.o.startTime ?? defaultStartTime)(proc.pid, START_READ_MS);
+      if (started === null) return;
+      try {
+        this.guarded(lease, 'UPDATE scheduler_runs SET runner_started = ? WHERE id = ? AND runner_pid = ?', started, run.id, proc.pid);
+      } catch { /* as above */ }
+    });
   }
 
   /** Claims the due slot, freezing the task's definition as it is stored now; null when there is none to claim. */
@@ -237,12 +310,21 @@ export class Scheduler {
   private async execute(claimed: StoredRun, lease: HeldLease): Promise<StoredRun['state']> {
     let run = claimed;
     if (run.state === 'claimed' || run.state === 'running') {
+      if (run.attempt >= MAX_RUN_ATTEMPTS) {
+        this.guarded(lease, "UPDATE scheduler_runs SET state = 'failed', failure = ?, ended_at = ? WHERE id = ?",
+          `the run was interrupted after each of its ${run.attempt} attempts (the scheduler stopped while its runner worked); it is not started again`, this.now(), run.id);
+        return 'failed';
+      }
       this.hooks.beforeRunnerStart?.();
-      this.guarded(lease, "UPDATE scheduler_runs SET state = 'running', attempt = attempt + 1, started_at = ? WHERE id = ?", this.now(), run.id);
+      this.guarded(lease, "UPDATE scheduler_runs SET state = 'running', attempt = attempt + 1, started_at = ?, runner_pid = NULL, runner_pgid = NULL, runner_host = NULL, runner_started = NULL WHERE id = ?", this.now(), run.id);
       const beat = setInterval(() => { try { renewLease(this.store, lease, this.now()); } catch { /* the next beat tries again */ } }, this.heartbeatMs);
       let outcome: RunnerOutcome;
       try {
-        outcome = await this.o.runner({ runId: run.id, taskId: run.taskId, slot: run.slot, snapshot: run.snapshot, maxBudgetUsd: run.snapshot.maxBudgetUsd });
+        const started = run;
+        outcome = await this.o.runner({
+          runId: run.id, taskId: run.taskId, slot: run.slot, snapshot: run.snapshot, maxBudgetUsd: run.snapshot.maxBudgetUsd,
+          onProcess: (proc) => this.recordRunner(started, lease, proc),
+        });
         if (!outcome || typeof outcome !== 'object' || !outcome.run) throw new Error('the runner returned no run');
       } catch (e) {
         this.guarded(lease, "UPDATE scheduler_runs SET state = 'failed', failure = ?, ended_at = ? WHERE id = ?", `the runner failed: ${(e as Error).message}`, this.now(), run.id);
@@ -311,7 +393,7 @@ export interface SchedulerStatus {
   /** Every lease, with its holder and whether it is held, hung (expired, holder alive) or stale. */
   leases: LeaseStatus[];
   /** Runs claimed but not yet done or failed. */
-  openRuns: Array<Pick<StoredRun, 'id' | 'taskId' | 'slot' | 'state' | 'attempt'>>;
+  openRuns: Array<Pick<StoredRun, 'id' | 'taskId' | 'slot' | 'state' | 'attempt' | 'runner'>>;
 }
 
 /** What the scheduler is doing, for a caller to read: a hung holder shows as a lease in state "hung". */
@@ -319,6 +401,6 @@ export function schedulerStatus(store: SchedulerStore, o: { now?: number; startT
   return {
     leases: leaseStatus(store, o.now ?? Date.now(), { startTime: o.startTime }),
     openRuns: store.runs().filter((r) => r.state !== 'done' && r.state !== 'failed')
-      .map((r) => ({ id: r.id, taskId: r.taskId, slot: r.slot, state: r.state, attempt: r.attempt })),
+      .map((r) => ({ id: r.id, taskId: r.taskId, slot: r.slot, state: r.state, attempt: r.attempt, runner: r.runner })),
   };
 }

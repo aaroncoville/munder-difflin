@@ -375,3 +375,83 @@ test('Given a scheduler run in a process whose home is a temporary folder, when 
   assert.equal(fs.existsSync(defaultDb) ? fs.statSync(defaultDb).mtimeMs : null, defaultDbBefore, 'the default core.db is untouched');
   exactlyOnce(f, open(t, f));
 });
+
+// --- a run whose runner's process outlives its scheduler --------------------------------------------------------------
+
+const isAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+const cliPids = (file) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map(Number) : []);
+
+async function gone(pid, ms = 10_000) {
+  const end = Date.now() + ms;
+  while (isAlive(pid)) {
+    if (Date.now() > end) throw new Error(`pid ${pid} is still running`);
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
+test('Given a scheduler killed while the detached CLI it started keeps running, when schedulers restart three times, then the CLI is never started again beside it and each restart reports it; once it has ended, the run goes on', LIMIT, async (t) => {
+  const f = floor(t);
+  const store = open(t, f);
+  store.putTask(taskDef(f), at(0, 6));
+  const cliLog = path.join(f.base, 'cli.log');
+  t.after(() => { for (const pid of cliPids(cliLog)) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } } });
+  const opts = { dbPath: f.dbPath, hiveRoot: f.hiveRoot, calls: f.calls, cliLog, now: at(1, 7, 20), mode: 'detached', cliMs: 60_000 };
+  const first = child(t, opts);
+  await waitFor(cliLog);
+  const end = Date.now() + 10_000;
+  while (!runsOf(store)[0]?.runner) { if (Date.now() > end) throw new Error('the CLI was never recorded'); await new Promise((r) => setTimeout(r, 20)); }
+  const [cli] = cliPids(cliLog);
+  assert.equal(runsOf(store)[0].runner.pid, cli, 'the run row names the CLI the runner started');
+  assert.equal(runsOf(store)[0].runner.pgid, cli);
+  process.kill(first.pid, 'SIGKILL');
+  await first.exited;
+  assert.ok(isAlive(cli), 'the detached CLI outlived its scheduler');
+  for (let i = 0; i < 3; i++) {
+    const again = await child(t, { ...opts, now: at(1, 7, 25 + i) }).exited;
+    assert.equal(again.code, 0, again.err);
+    const report = JSON.parse(again.out);
+    assert.equal(report.ran.length, 0);
+    assert.equal(report.skipped.length, 1);
+    assert.equal(report.skipped[0].runner.pid, cli);
+    assert.match(report.skipped[0].reason, new RegExp(`pid ${cli}.*still running.*not started again`));
+  }
+  assert.equal(calls(f).length, 1, 'the runner was called once');
+  assert.deepEqual(cliPids(cliLog), [cli], 'one CLI was ever started');
+  const status = schedulerStatus(store, { now: at(1, 7, 30) });
+  assert.equal(status.openRuns[0].runner.pid, cli);
+  assert.equal(status.openRuns[0].attempt, 1);
+
+  process.kill(cli, 'SIGKILL');
+  await gone(cli);
+  const last = await child(t, { ...opts, now: at(1, 7, 40), cliMs: 50 }).exited;
+  assert.equal(last.code, 0, last.err);
+  assert.equal(calls(f).length, 2, 'started again once its CLI was gone');
+  assert.equal(cliPids(cliLog).length, 2);
+  const run = exactlyOnce(f, store);
+  assert.equal(run.attempt, 2);
+});
+
+test('Given a scheduler killed while its runner worked, twice, when a scheduler restarts a third time, then the run is marked failed and its runner is not started again', LIMIT, async (t) => {
+  const f = floor(t);
+  const store = open(t, f);
+  store.putTask(taskDef(f), at(0, 6));
+  for (let i = 0; i < 2; i++) {
+    const started = path.join(f.base, `started-${i}`);
+    const c = child(t, { dbPath: f.dbPath, hiveRoot: f.hiveRoot, calls: f.calls, started, now: at(1, 7, 20 + i), mode: 'hang' });
+    await waitFor(started);
+    process.kill(c.pid, 'SIGKILL');
+    await c.exited;
+  }
+  assert.equal(calls(f).length, 2);
+  const { runner } = stub(f);
+  const report = await new Scheduler({ store, hiveRoot: f.hiveRoot, runner, now: () => at(1, 7, 30) }).tick();
+  assert.equal(calls(f).length, 2, 'not started a third time');
+  const [run] = runsOf(store);
+  assert.equal(run.state, 'failed');
+  assert.equal(run.attempt, 2);
+  assert.match(run.failure, /interrupted after each of its 2 attempts/);
+  assert.deepEqual(report.ran.map((r) => r.state), ['failed']);
+  assert.equal(ledgerRows(f).length, 1, 'no cost row');
+  assert.equal(mail(f).length, 0, 'no mail');
+});
+

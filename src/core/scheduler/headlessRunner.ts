@@ -7,6 +7,10 @@
  * cost row and done message are switched off through its `effects` option, because the scheduler writes both, keyed
  * by the run id, so that a resumed run cannot repeat them. The adapter itself writes nothing in the hive.
  *
+ * The CLI's pid and process group are handed to the scheduler as soon as it starts (the seat's onSpawn, the job's
+ * onProcess), so a scheduler that dies while the CLI runs leaves a record the next one can check before starting
+ * another.
+ *
  * A definition naming a root the seat could not write (outside the seat's write roots for that working folder) is
  * refused before anything runs: the run fails with that reason rather than run without the folder it was written for.
  */
@@ -16,7 +20,7 @@ import { seatWriteRoots } from '../writeRoots';
 import type { Runner } from './scheduler';
 
 /** What a seat needs besides the task definition. */
-export type HeadlessRunnerSeat = Omit<HeadlessStreamOptions, 'prompt' | 'agentId' | 'model' | 'maxBudgetUsd' | 'cwd' | 'outputFile' | 'timeoutMs' | 'effects'>;
+export type HeadlessRunnerSeat = Omit<HeadlessStreamOptions, 'prompt' | 'agentId' | 'model' | 'maxBudgetUsd' | 'cwd' | 'outputFile' | 'timeoutMs' | 'effects' | 'onSpawn'>;
 
 export interface HeadlessRunnerDeps {
   runHeadlessStream: (o: HeadlessStreamOptions) => Promise<HeadlessStreamResult>;
@@ -35,6 +39,7 @@ export function headlessStreamRunner(seat: HeadlessRunnerSeat, deps: HeadlessRun
       prompt: s.prompt, agentId: s.agentId, model: s.model, cwd: s.cwd, outputFile: s.outputFile,
       maxBudgetUsd: job.maxBudgetUsd,
       ...(s.timeoutMs === undefined ? {} : { timeoutMs: s.timeoutMs }),
+      onSpawn: job.onProcess,
       effects: { recordCost: () => LEFT_TO_SCHEDULER, publish: () => '' },
     });
     return { run: result.run, done: result.done, doneReason: result.doneReason };

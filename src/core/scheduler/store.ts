@@ -77,6 +77,10 @@ const MIGRATIONS: readonly string[] = [
      cost_reason TEXT,
      mail_state TEXT,
      mail_id TEXT,
+     runner_pid INTEGER,
+     runner_pgid INTEGER,
+     runner_host TEXT,
+     runner_started TEXT,
      UNIQUE (task_id, slot)
    );
    CREATE TABLE scheduler_leases (
@@ -163,7 +167,13 @@ export interface StoredRun {
   /** The done mail: null (not yet), 'pending' (being written, as mailId), 'sent', or 'none' (the run is not done). */
   mailState: string | null;
   mailId: string | null;
+  /** The process the current attempt's runner started (the headless CLI), as recorded when it started: its pid, the
+   *  process group it leads, the host, and its start time once read. Null when the runner reported none. */
+  runner: RunnerProcess | null;
 }
+
+/** A runner's process, recorded so that a later scheduler can tell whether it is still running. */
+export interface RunnerProcess { pid: number; pgid: number | null; host: string; started: string | null }
 
 type Row = Record<string, unknown>;
 
@@ -176,6 +186,8 @@ function toRun(r: Row): StoredRun {
     startedAt: num(r.started_at), endedAt: num(r.ended_at), outcome: r.outcome === null ? null : JSON.parse(String(r.outcome)),
     failure: (r.failure as string | null) ?? null, costState: (r.cost_state as string | null) ?? null, costFrom: num(r.cost_from),
     costReason: (r.cost_reason as string | null) ?? null, mailState: (r.mail_state as string | null) ?? null, mailId: (r.mail_id as string | null) ?? null,
+    runner: r.runner_pid === null || r.runner_pid === undefined ? null
+      : { pid: Number(r.runner_pid), pgid: num(r.runner_pgid), host: String(r.runner_host), started: (r.runner_started as string | null) ?? null },
   };
 }
 
