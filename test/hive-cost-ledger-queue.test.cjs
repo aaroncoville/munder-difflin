@@ -164,3 +164,44 @@ test('rows queued for two hive folders (around a switch of hive) each go to thei
   assert.deepEqual(agents(first), ['a']);
   assert.deepEqual(agents(second), ['b']);
 });
+
+test('the cost rows\' write status tells the window once a failure has lasted, not at its first attempt, and clears on recovery', async (t) => {
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'md-cost-status-')));
+  const seen = [];
+  const hive = new HiveManager(() => home, (channel, payload) => { if (channel === 'hive:costLedgerStatus') seen.push(payload); });
+  hive.ensureHive();
+  t.after(async () => { hive.flushCostLedger(0); await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
+  const ledger = path.join(hive.root(), 'cost-ledger.jsonl');
+  assert.deepEqual(hive.costLedgerStatus(), { failing: null, seq: 0 });
+  const outside = path.join(home, 'outside.jsonl');
+  fs.writeFileSync(outside, '');
+  fs.symlinkSync(outside, ledger);
+  hive.appendCostLedger(sample('a'));
+  hive.appendCostLedger(sample('b'));
+  assert.deepEqual(hive.costLedgerStatus(), { failing: null, seq: 0 }, 'one failed attempt is not yet a fault');
+  assert.equal(seen.length, 0);
+  assert.ok(await until(() => seen.length === 1, 3000), 'the window is told once the failure has lasted');
+  const status = hive.costLedgerStatus();
+  assert.match(status.failing ?? '', /ELOOP|link/);
+  assert.deepEqual(seen[0], status);
+  fs.rmSync(ledger);
+  assert.equal(hive.flushCostLedger(), 0);
+  assert.deepEqual(hive.costLedgerStatus(), { failing: null, seq: 2 });
+  assert.deepEqual(seen.at(-1), { failing: null, seq: 2 });
+  assert.equal(seen.length, 2);
+});
+
+test('brief contention for the lock tells the window nothing', (t) => {
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'md-cost-brief-')));
+  const seen = [];
+  const hive = new HiveManager(() => home, (channel, payload) => { if (channel === 'hive:costLedgerStatus') seen.push(payload); });
+  hive.ensureHive();
+  t.after(async () => { hive.flushCostLedger(0); await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
+  const ledger = path.join(hive.root(), 'cost-ledger.jsonl');
+  heldBy(`${ledger}.lock`);
+  hive.appendCostLedger(sample('a'));
+  fs.rmSync(`${ledger}.lock`);
+  assert.equal(hive.flushCostLedger(), 0);
+  assert.deepEqual(agents(ledger), ['a']);
+  assert.deepEqual(seen, [], 'nothing reached the window');
+});

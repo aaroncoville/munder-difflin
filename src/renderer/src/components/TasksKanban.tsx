@@ -162,6 +162,23 @@ export function TasksKanban() {
   // A refusal (a busy or unreadable ledger) brings the card back and says why.
   const taskWriteError = useStore((s) => s.taskWriteError);
   const setTaskWriteError = useStore((s) => s.setTaskWriteError);
+  // The app's own cost rows not being written (a linked ledger, a volume without hard links, a lock that never frees)
+  // is shown on the same notice line until they are written again; it is not the user's to close.
+  // It listens before it asks, and keeps whichever status is newest by its sequence number, so an answer to the opening
+  // question that is older than an event already heard never overwrites it.
+  const [costLedgerFailing, setCostLedgerFailing] = useState<{ failing: string | null; seq: number } | null>(null);
+  useEffect(() => {
+    let live = true;
+    let newest = -1;
+    const take = (s: { failing: string | null; seq: number } | null | undefined): void => {
+      if (!live || !s || s.seq < newest) return;
+      newest = s.seq;
+      setCostLedgerFailing(s);
+    };
+    const stop = window.cth.onHiveCostLedgerStatus?.(take);
+    void window.cth.hiveCostLedgerStatus?.().then(take, () => {});
+    return () => { live = false; stop?.(); };
+  }, []);
   const dismissTask = useCallback(async (task: HiveTask) => {
     setTasks((prev) => prev.filter((t) => t.id !== task.id)); // optimistic
     try {
@@ -225,6 +242,14 @@ export function TasksKanban() {
               color: 'var(--cth-ink-500)', fontFamily: 'var(--cth-font-ui)', fontSize: 12, lineHeight: 1
             }}
           >✕</button>
+        </div>
+      )}
+
+      {costLedgerFailing?.failing && (
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 12, color: 'var(--cth-coral)', padding: '6px 10px 0' }}>
+          {/* The reason is the main process's own text (English, with paths): isolated, so it keeps its own direction
+              inside a right-to-left sentence. */}
+          <span style={{ flex: 1, minWidth: 0 }}>{t('kanban.costRowsNotSaved')} <bdi dir="ltr">{costLedgerFailing.failing}</bdi></span>
         </div>
       )}
 

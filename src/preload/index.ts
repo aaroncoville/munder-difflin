@@ -780,6 +780,14 @@ const api = {
     ipcRenderer.invoke('hive:setAgentHold', id, hold),
   hiveBoard: (): Promise<string> => ipcRenderer.invoke('hive:board'),
   hiveTasks: (): Promise<unknown> => ipcRenderer.invoke('hive:tasks'),
+  /** Whether the app's cost rows are being written to cost-ledger.jsonl: why not (null when they are). */
+  hiveCostLedgerStatus: (): Promise<{ failing: string | null; seq: number }> => ipcRenderer.invoke('hive:costLedgerStatus'),
+  /** Told when the app's cost rows start failing to be written, and when they are written again. */
+  onHiveCostLedgerStatus: (cb: (s: { failing: string | null; seq: number }) => void): (() => void) => {
+    const listener = (_e: IpcRendererEvent, payload: { failing: string | null; seq: number }) => cb(payload);
+    ipcRenderer.on('hive:costLedgerStatus', listener);
+    return () => ipcRenderer.removeListener('hive:costLedgerStatus', listener);
+  },
   hiveLog: (n?: number): Promise<unknown[]> => ipcRenderer.invoke('hive:log', n ?? 200),
   hiveMemory: (id: string): Promise<string> => ipcRenderer.invoke('hive:memory', id),
   hiveInbox: (id: string): Promise<HiveMessage[]> => ipcRenderer.invoke('hive:inbox', id),

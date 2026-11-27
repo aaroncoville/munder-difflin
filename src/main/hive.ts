@@ -471,6 +471,9 @@ function putBackFields(now: RegistryAgent, before: RegistryAgent, wrote: Registr
 /** How long an app write to tasks.json waits for another holder of its lock. It runs on the main thread. */
 const TASK_LEDGER_WAIT_MS = 250;
 
+/** Whether the app's cost rows are being written (HiveManager.costLedgerStatus). */
+export interface CostLedgerStatus { failing: string | null; seq: number }
+
 /** How long, when the app quits, writing the queued cost rows may take in all, lock waits included. */
 const COST_LEDGER_QUIT_WITHIN_MS = 1000;
 
@@ -4229,8 +4232,27 @@ export class HiveManager {
       if (e.kind === 'dropped') console.warn(`[hive] cost row queue full: dropped ${e.count} oldest row(s)`);
       const { kind, ...rest } = e;
       this.appendLog({ event: `cost-ledger-append-${kind}`, ...rest });
+      // The window hears of a failure only once it has lasted (brief contention for the lock is not a fault), and
+      // of the recovery at once.
+      if (e.kind === 'lasting' || (e.kind === 'recovered' && this.costLedgerFailing !== null)) {
+        this.costLedgerFailing = e.kind === 'lasting' ? e.reason : null;
+        this.costLedgerSeq++;
+        try { this.emit?.('hive:costLedgerStatus', this.costLedgerStatus()); } catch { /* a window that is gone */ }
+      }
     },
   });
+
+  /** Why the app's cost rows are not being written, while they are not; null while they are. */
+  private costLedgerFailing: string | null = null;
+  /** Counts the changes of costLedgerFailing the window is told about, so it can tell an older status from a newer. */
+  private costLedgerSeq = 0;
+
+  /** Whether the app's cost rows are being written: why not (null when they are), and `seq`, which grows with each
+   *  change. The window is sent this ('hive:costLedgerStatus') when a failure has lasted and when the rows are
+   *  written again; it keeps the status with the highest `seq` it has seen. */
+  costLedgerStatus(): CostLedgerStatus {
+    return { failing: this.costLedgerFailing, seq: this.costLedgerSeq };
+  }
 
   /** For quitting: write the queued cost rows now, within `withinMs` in all (lock waits included). Rows still queued
    *  then are reported to log.jsonl. Returns how many are left. */
