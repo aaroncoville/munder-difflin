@@ -136,9 +136,11 @@ export function verifyHookRuntime(rt: StagedHookRuntime): void {
   }
 }
 
-/** The hook command for this runtime: quoted on POSIX, bare on Windows where Codex's shell stack drops quotes (the path was checked to need none). */
+/** The hook command for this runtime: quoted on POSIX, bare on Windows where Codex's shell stack drops quotes (the path was checked to need none).
+ *  The quoted (shell) form starts with `exec`, so the shell the CLI runs it in is replaced by the hook rather than left
+ *  as its parent, and the hook's parent pid is the process that started the hook. */
 export function hookCommandFor(rt: StagedHookRuntime, quoted: boolean): string {
-  return quoted ? `"${rt.launcher}" "${rt.shim}"` : `${rt.launcher} ${rt.shim}`;
+  return quoted ? `exec "${rt.launcher}" "${rt.shim}"` : `${rt.launcher} ${rt.shim}`;
 }
 
 /** A write root an agent's sandbox is given, and where it came from; path null = could not be read or understood. */
