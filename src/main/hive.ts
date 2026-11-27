@@ -4816,6 +4816,11 @@ process.stdin.on('end', () => {
   // A scoped spawn's own token (set by the app per spawn), so the app judges this call by that spawn's policy.
   if (process.env.HIVE_SPAWN_TOKEN) payload.hive_spawn = process.env.HIVE_SPAWN_TOKEN;
   else delete payload.hive_spawn;
+  // The process that started this hook, for a command call's heavy-job slot: the app judges it from its own process
+  // listing. Only this pid is sent; the shim starts no process. A value the payload carried is dropped.
+  delete payload.hook_ppid;
+  delete payload.hook_ppid_command;
+  if (payload.hook_event_name === 'PreToolUse' && payload.tool_input && typeof payload.tool_input.command === 'string') payload.hook_ppid = process.ppid;
   const sock = process.env.HIVE_SOCK;
   if (isStatus) {
     // Status-line mode: Claude Code pipes the session status JSON (incl.

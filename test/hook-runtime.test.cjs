@@ -98,7 +98,7 @@ test('the runtime is staged private, from the app\'s own text, and new Claude an
   const codex = tomlCommands(fs.readFileSync(path.join(hive.installCodexHooks(path.join(root, 'agents/x1'), away, 'x1'), 'config.toml'), 'utf8'));
   assert.equal(claude.length, 11);
   assert.equal(codex.length, 8);
-  const expected = `"${launcher}" "${shim}"`;
+  const expected = `exec "${launcher}" "${shim}"`;
   for (const c of claude) assert.ok(c === expected || c === `${expected} --status`, c);
   for (const c of codex) assert.equal(c, expected);
 

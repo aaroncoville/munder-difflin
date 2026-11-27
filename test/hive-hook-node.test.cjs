@@ -94,7 +94,8 @@ function runtimeFor(t, hive, dir) {
   return { launcher: path.join(rt, POSIX ? 'hive-node' : 'hive-node.cmd'), shim: path.join(rt, 'cth-hook.cjs') };
 }
 
-const usesLauncher = (cmd, launcher) => cmd.startsWith(launcher) || cmd.startsWith(`"${launcher}"`);
+/** The command runs the launcher: as its first word, or after `exec` (the shell form replaces its shell). */
+const usesLauncher = (cmd, launcher) => { const c = cmd.replace(/^exec /, ''); return c.startsWith(launcher) || c.startsWith(`"${launcher}"`); };
 
 async function run(cmd, env) {
   return new Promise((resolve) => {

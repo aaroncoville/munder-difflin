@@ -34,6 +34,7 @@ test('a Slack card the ledger refused is reported on the task board', async () =
   assert.equal(added.length, 1);
   const shown = useStore.getState().taskWriteError;
   assert.ok(shown.includes(BUSY), `the main process's reason must reach the board; got: ${JSON.stringify(shown)}`);
+  assert.ok(shown.includes(`\u2068${BUSY}\u2069`), 'the reason is isolated (FSI \u2026 PDI) in its right-to-left sentence');
   assert.ok(shown.includes('please rotate the staging keys'), 'the notice names the message');
 });
 

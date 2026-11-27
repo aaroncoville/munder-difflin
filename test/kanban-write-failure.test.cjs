@@ -49,6 +49,8 @@ test('a card the ledger would not remove comes back, and the board says why', as
   assert.deepEqual(deletes, ['K-1']);
   assert.ok(card(view.tree, 'K-1'), 'the card is back on the board');
   assert.ok(shown(view.tree).includes(BUSY), `the main process's reason must be on screen; got:\n${shown(view.tree)}`);
+  assert.ok(shown(view.tree).includes(`\u2068${BUSY}\u2069`), 'the reason is isolated (FSI \u2026 PDI), so it keeps its own direction in a right-to-left sentence');
+  assert.ok(shown(view.tree).includes('\u2068ship the thing\u2069'), 'and so is the card title');
   assert.ok(shown(view.tree).includes('ship the thing'), 'the message names the card');
 });
 

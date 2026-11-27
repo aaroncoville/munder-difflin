@@ -18,6 +18,8 @@
  * MIT, Copyright (c) 2026 Richard J Tindell II), which ported them from guppyos (MIT).
  */
 import { execFile } from 'node:child_process';
+import { hostname } from 'node:os';
+import { isStaleHolder } from './fileLock';
 import { carriesCommand, classifyGradle, classifyMaven, classifyPackageExtras, classifyPlaywright, classifyWorker, E2E_SCRIPT, RUN_PREFIXES, unwrapGroup } from './heavyJobRules';
 
 export type HeavyKind = 'install' | 'build' | 'suite' | 'bench';
@@ -279,14 +281,31 @@ export interface HeavyCall {
   pid?: number;
   /** Consecutive watcher scans that found no job for this call. */
   misses: number;
+  /** The process that started the call's hook (the hook's parent pid, as the shim sent it), until a scan judges it:
+   *  dropped, bound to a seat (`seat`), or confirmed as a holder in its own right (no seat above it). Absent when the
+   *  hook did not say (an older hook, another provider). */
+  holder?: HookHolder;
+  /** The seat whose terminal the call's hook runs under, when the call's own agent id has none (a subagent): the call is
+   *  looked for in that seat's process tree, and freed when that terminal exits. */
+  seat?: string;
+  /** How many scans had started when the call took its slot: only a scan started after it may confirm its holder. */
+  takenAtScan: number;
 }
 
-export interface ProcRow { pid: number; parentPid: number; commandLine: string }
+/** The process that started a call's hook: its pid, when the call took its slot (`takenAt`, the lock's clock), and,
+ *  once a scan has confirmed it (`confirmed`), its start time as the listing gives it. Only a confirmed holder may free
+ *  a slot. */
+export interface HookHolder { pid: number; takenAt: number; takenAtMono: number; started: string | null; confirmed: boolean }
+
+/** A process listing row; `started` is its start time where the listing gives one, as text and (`startedAt`) as ms. */
+export interface ProcRow { pid: number; parentPid: number; commandLine: string; started?: string; startedAt?: number }
 export interface HeavyLockDeps {
   limit: () => HeavyLimit;
   /** How many of the held and reserved slots may be test suites. Absent = no limit beyond `limit`. */
   suiteLimit?: () => HeavyLimit;
   now?: () => number;
+  /** A monotonic clock (ms), to tell when the wall clock was changed. Default: performance.now. */
+  monotonic?: () => number;
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (t: unknown) => void;
   /** The PTY root pid of each agent. */
@@ -308,21 +327,25 @@ export const HEAVY_RESERVE_MS = 5 * 60_000;
 const COMMAND_KEEP = 200;
 
 export type HeavyDecision = { allow: true; acquired: boolean } | { allow: false; reason: string };
-type ReleaseReason = 'posttool' | 'turn-end' | 'process-exit' | 'pty-exit' | 'ttl';
+type ReleaseReason = 'posttool' | 'turn-end' | 'process-exit' | 'pty-exit' | 'ttl' | 'holder-exit';
 const clock = (ms: number): string => `${new Date(ms).toISOString().slice(11, 19)}Z`;
 
 export class HeavyJobLock {
   private readonly calls = new Map<number, HeavyCall>();
   private nextKey = 1;
+  /** Scans started so far. */
+  private scansStarted = 0;
   private readonly queue: Array<{ agentId: string; kind: HeavyKind; since: number }> = [];
   private readonly reservations = new Map<string, { kind: HeavyKind; until: number; queuedSince?: number }>();
   private timer: unknown = null;
   private readonly now: () => number;
+  private readonly monotonic: () => number;
   private readonly setTimer: (fn: () => void, ms: number) => unknown;
   private readonly clearTimer: (t: unknown) => void;
 
   constructor(private readonly d: HeavyLockDeps) {
     this.now = d.now ?? Date.now;
+    this.monotonic = d.monotonic ?? (() => performance.now());
     this.setTimer = d.setTimer ?? ((fn, ms) => { const t = setTimeout(fn, ms); (t as { unref?: () => void }).unref?.(); return t; });
     this.clearTimer = d.clearTimer ?? ((t) => clearTimeout(t as NodeJS.Timeout));
   }
@@ -348,7 +371,9 @@ export class HeavyJobLock {
   }
 
   /** PreToolUse: a heavy call from `agentId`. Take a slot, or queue it. */
-  acquire(agentId: string, cls: HeavyClass, command: string, callId: string, background: boolean, session?: string): HeavyDecision {
+  /** `hookPid`: the CLI that asked, as the hook shim found it, when it said. Recorded as it is: no process is read
+   *  here (this runs on the app's main thread); its start time is filled in by the next scan. */
+  acquire(agentId: string, cls: HeavyClass, command: string, callId: string, background: boolean, session?: string, hookPid?: number): HeavyDecision {
     const limit = this.d.limit();
     if (limit === 'off' || !cls.heavy || !cls.kind) {
       if (limit === 'off') this.dropWaiting(agentId);
@@ -362,10 +387,12 @@ export class HeavyJobLock {
     if (!reserved && this.calls.size + this.reservations.size >= limit) return this.refuse(agentId, cls, limit);
     const now = this.now();
     const key = this.nextKey++;
-    this.calls.set(key, { key, agentId, callId, kind: cls.kind, label: cls.why ?? cls.kind, command: command.slice(0, COMMAND_KEEP), why: cls.why, session, since: now, touched: now, background, posted: false, seen: false, misses: 0 });
+    const holder: HookHolder | null = hookPid !== undefined && Number.isSafeInteger(hookPid) && hookPid > 1 ? { pid: hookPid, takenAt: now, takenAtMono: this.monotonic(), started: null, confirmed: false } : null;
+    this.calls.set(key, { key, agentId, callId, kind: cls.kind, label: cls.why ?? cls.kind, command: command.slice(0, COMMAND_KEEP), why: cls.why, session, since: now, touched: now, background, posted: false, seen: false, misses: 0, takenAtScan: this.scansStarted, ...(holder ? { holder } : {}) });
     // How long the agent queued for this slot, for the usage log (measure only).
     const waitMs = reserved && reservation?.queuedSince !== undefined ? now - reservation.queuedSince : undefined;
-    this.log({ kind: 'heavy-lock', action: 'acquire', agentId, heavyKind: cls.kind, job: cls.why, background, limit, reserved, ...(waitMs !== undefined ? { waitMs } : {}) });
+    this.log({ kind: 'heavy-lock', action: 'acquire', agentId, heavyKind: cls.kind, job: cls.why, background, limit, reserved, ...(waitMs !== undefined ? { waitMs } : {}),
+      ...(holder ? { holderPid: holder.pid } : {}) });
     this.arm();
     return { allow: true, acquired: true };
   }
@@ -427,7 +454,7 @@ export class HeavyJobLock {
   /** The agent's PTY exited: its jobs are gone with it, and it is no longer waiting. */
   agentGone(agentId: string): void {
     this.dropWaiting(agentId);
-    for (const c of this.callsOf(agentId)) this.release(c.key, 'pty-exit');
+    for (const c of [...this.calls.values()]) if (c.agentId === agentId || c.seat === agentId) this.release(c.key, 'pty-exit');
     this.serve();
   }
 
@@ -507,6 +534,7 @@ export class HeavyJobLock {
   async scan(): Promise<void> {
     this.expire();
     if (!this.calls.size || !this.d.probe || !this.d.roots) return;
+    const scanNo = ++this.scansStarted;
     let procs: ProcRow[];
     try { procs = await this.d.probe(); } catch { return; }
     const parent = new Map(procs.map((p) => [p.pid, p.parentPid]));
@@ -516,6 +544,50 @@ export class HeavyJobLock {
       while (cur !== undefined && !seen.includes(cur)) { seen.push(cur); cur = parent.get(cur); }
       return seen;
     };
+    // The process that started a call's hook is judged from this one listing, and only by a scan begun after the call
+    // took its slot (an earlier listing can show a helper that ran the hook just then). It is dropped, and the call is
+    // judged as one whose hook gave no pid, when the listing does not show it or shows it started after the call took
+    // its slot (another process now has that pid); START_SLACK_MS allows for the listing's whole-second times. Under a
+    // seat's terminal, the call is bound to that seat: looked for in its tree and freed when it exits, with no holder
+    // of its own. With no seat above it (a headless caller), it is the call's holder: freed when it has exited, or,
+    // once the call is older than HOLDER_STALE_MS, its pid shows another start time (fileLock.ts isStaleHolder); never
+    // on age. A listing that cannot be read judges no one.
+    const listedRow = new Map(procs.map((p) => [p.pid, p]));
+    const startOf = (pid: number): string | null => listedRow.get(pid)?.started ?? null;
+    const nameOf = (row: ProcRow): string => ((row.commandLine.split(/\s+/)[0] ?? '').split('/').pop() ?? '').slice(0, 64);
+    const bounds = { staleMs: HOLDER_STALE_MS, startTime: startOf };
+    const host = hostname();
+    for (const c of [...this.calls.values()]) {
+      const h = c.holder;
+      if (!h) continue;
+      if (!h.confirmed) {
+        if (scanNo <= c.takenAtScan) continue;
+        const row = listedRow.get(h.pid);
+        // A wall clock changed since the slot was taken makes the start-time comparison meaningless (a pid reused after
+        // the clock was set back would pass it): the two clocks' intervals since then disagree.
+        const clockMoved = Math.abs((this.now() - h.takenAt) - (this.monotonic() - h.takenAtMono)) > CLOCK_SKEW_MS;
+        const drop = clockMoved ? 'the wall clock changed' : !row ? 'not listed' : row.startedAt !== undefined && row.startedAt > h.takenAt + START_SLACK_MS ? 'started after the slot was taken' : null;
+        if (drop || !row) {
+          c.holder = undefined;
+          this.log({ kind: 'heavy-lock', action: 'holder-dropped', agentId: c.agentId, holderPid: h.pid, ...(row ? { holderCommand: nameOf(row) } : {}), rule: drop });
+          continue;
+        }
+        const seatRoot = [h.pid, ...lineage(h.pid)].find((p) => rootOf.has(p));
+        if (seatRoot !== undefined) {
+          c.holder = undefined;
+          c.seat = rootOf.get(seatRoot);
+          this.log({ kind: 'heavy-lock', action: 'holder-bound', agentId: c.agentId, holderPid: h.pid, holderCommand: nameOf(row), seat: c.seat, rule: 'under a seat terminal' });
+          continue;
+        }
+        h.confirmed = true;
+        h.started = row.started ?? null;
+        this.log({ kind: 'heavy-lock', action: 'holder-confirmed', agentId: c.agentId, holderPid: h.pid, holderCommand: nameOf(row), rule: 'no seat terminal above it' });
+        continue;
+      }
+      if (h.started === null) h.started = startOf(h.pid);
+      if (isStaleHolder({ pid: h.pid, host, started: h.started ?? undefined }, this.now() - c.since, bounds)) this.release(c.key, 'holder-exit');
+    }
+    if (!this.calls.size) return;
     const ownerOf = (pid: number): string | null => {
       for (const p of [pid, ...lineage(pid)]) { const a = rootOf.get(p); if (a) return a; }
       return null;
@@ -526,6 +598,15 @@ export class HeavyJobLock {
       const a = ownerOf(p.pid);
       if (a) under.set(a, [...(under.get(a) ?? []), p]);
     }
+    // A call from an agent id with no terminal of its own (a subagent) is looked for in the tree of the seat it was
+    // bound to, or under its confirmed holder.
+    const agents = new Set(rootOf.values());
+    const candidates = (c: HeavyCall): ProcRow[] => {
+      if (agents.has(c.agentId)) return under.get(c.agentId) ?? [];
+      if (c.seat !== undefined) return under.get(c.seat) ?? [];
+      if (c.holder?.confirmed) { const cli = c.holder.pid; return procs.filter((p) => p.pid !== cli && lineage(p.pid).includes(cli)); }
+      return [];
+    };
     const listed = new Set(procs.map((p) => p.pid));
     const claimed = new Set<number>();
     for (const c of this.calls.values()) if (c.pid !== undefined && listed.has(c.pid)) claimed.add(c.pid);
@@ -533,7 +614,7 @@ export class HeavyJobLock {
       if (!this.calls.has(c.key)) continue;
       if (c.pid === undefined || !listed.has(c.pid)) {
         c.pid = undefined;
-        const matches = (under.get(c.agentId) ?? []).filter((p) => !claimed.has(p.pid) && !lineage(p.pid).some((a) => claimed.has(a))
+        const matches = candidates(c).filter((p) => !claimed.has(p.pid) && !lineage(p.pid).some((a) => claimed.has(a))
           && (carriesCommand(p.commandLine, c.command, c.command.length >= COMMAND_KEEP) || (!!c.why && classifyCommand(p.commandLine).why === c.why)));
         const mine = new Set(matches.map((p) => p.pid));
         c.pid = matches.find((p) => !lineage(p.pid).some((a) => mine.has(a)))?.pid;
@@ -551,7 +632,7 @@ export class HeavyJobLock {
 
 // — the hook boundary —
 
-interface HeavyHookPayload { tool_name?: string; tool_input?: unknown; tool_use_id?: unknown; notification_type?: string; tool_session_id?: string }
+interface HeavyHookPayload { tool_name?: string; tool_input?: unknown; tool_use_id?: unknown; notification_type?: string; tool_session_id?: string; hook_ppid?: unknown }
 
 
 /** The id that pairs a call's PreToolUse with its PostToolUse: the provider's tool-use id when it
@@ -567,7 +648,8 @@ function heavyCallId(p: HeavyHookPayload): string {
 export function gateHeavyCall(lock: HeavyJobLock, agentId: string, p: HeavyHookPayload): string | null {
   const cls = classifyHeavy(p.tool_name, p.tool_input);
   if (!cls.heavy) return null;
-  const d = lock.acquire(agentId, cls, commandFromToolInput(p.tool_input) ?? '', heavyCallId(p), isBackground(p.tool_input), p.tool_session_id);
+  const d = lock.acquire(agentId, cls, commandFromToolInput(p.tool_input) ?? '', heavyCallId(p), isBackground(p.tool_input), p.tool_session_id,
+    typeof p.hook_ppid === 'number' ? p.hook_ppid : undefined);
   return d.allow ? null : d.reason;
 }
 
@@ -591,12 +673,24 @@ export function heavySlotNotice(kind: HeavyKind, until: number): { subject: stri
 
 // — process listing —
 
-/** Parse `ps -axo pid=,ppid=,command=`. */
+/** A slot's CLI that is still running is asked whether it is the same process only once the call is this old. */
+export const HOLDER_STALE_MS = 30_000;
+/** How much later than a slot was taken a listed start time may be and still be the process that started its hook:
+ *  the listing's start times are whole seconds. */
+export const START_SLACK_MS = 1000;
+/** How far the wall and monotonic intervals since a slot was taken may differ before the wall clock is taken to have
+ *  been changed, and the hook's parent is dropped. */
+export const CLOCK_SKEW_MS = 2000;
+
+/** Parse `ps -axo pid=,ppid=,lstart=,command=` (or the same without lstart). */
 export function parsePsOutput(out: string): ProcRow[] {
   const rows: ProcRow[] = [];
   for (const line of out.split('\n')) {
-    const m = /^\s*(\d+)\s+(\d+)\s+(.*?)\s*$/.exec(line);
-    if (m) rows.push({ pid: Number(m[1]), parentPid: Number(m[2]), commandLine: m[3] });
+    // lstart, under LC_ALL=C: "Thu Nov 27 05:02:11 2026".
+    const m = /^\s*(\d+)\s+(\d+)\s+(?:([A-Z][a-z]{2} [A-Z][a-z]{2} [ \d]\d \d\d:\d\d:\d\d \d{4})\s+)?(.*?)\s*$/.exec(line);
+    // The listing is read with TZ=UTC (probeProcesses), so its start times are UTC.
+    const startedAt = m?.[3] ? Date.parse(`${m[3]} UTC`) : NaN;
+    if (m) rows.push({ pid: Number(m[1]), parentPid: Number(m[2]), commandLine: m[4], ...(m[3] ? { started: `ps:${m[3]}` } : {}), ...(Number.isFinite(startedAt) ? { startedAt } : {}) });
   }
   return rows;
 }
@@ -607,7 +701,8 @@ export function parsePsOutput(out: string): ProcRow[] {
 export function probeProcesses(): Promise<ProcRow[]> {
   const options = { windowsHide: true, timeout: 10_000, maxBuffer: 16 * 1024 * 1024 };
   if (process.platform !== 'win32') {
-    return new Promise((resolve, reject) => execFile('ps', ['-axo', 'pid=,ppid=,command='], options, (err, stdout) => {
+    const env = { ...process.env, LC_ALL: 'C', TZ: 'UTC' };
+    return new Promise((resolve, reject) => execFile('ps', ['-axo', 'pid=,ppid=,lstart=,command='], { ...options, env }, (err, stdout) => {
       if (err) return reject(err);
       const rows = parsePsOutput(stdout);
       if (rows.length) resolve(rows); else reject(new Error('Process probe returned no rows'));

@@ -205,3 +205,23 @@ test('brief contention for the lock tells the window nothing', (t) => {
   assert.deepEqual(agents(ledger), ['a']);
   assert.deepEqual(seen, [], 'nothing reached the window');
 });
+
+test('a failure after a recovery reaches the window again', async (t) => {
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'md-cost-again-')));
+  const seen = [];
+  const hive = new HiveManager(() => home, (channel, payload) => { if (channel === 'hive:costLedgerStatus') seen.push(payload); });
+  hive.ensureHive();
+  t.after(async () => { hive.flushCostLedger(0); await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
+  const ledger = path.join(hive.root(), 'cost-ledger.jsonl');
+  const outside = path.join(home, 'outside.jsonl');
+  fs.writeFileSync(outside, '');
+  const fail = async (agent) => { fs.rmSync(ledger, { force: true }); fs.symlinkSync(outside, ledger); hive.appendCostLedger(sample(agent)); };
+  await fail('a');
+  assert.ok(await until(() => seen.length === 1), 'the first failure reached the window');
+  fs.rmSync(ledger);
+  assert.equal(hive.flushCostLedger(), 0);
+  assert.equal(seen.length, 2, 'and its recovery');
+  await fail('b');
+  assert.ok(await until(() => seen.length === 3), `the second failure reached the window too: ${JSON.stringify(seen)}`);
+  assert.match(seen[2].failing ?? '', /ELOOP|link/);
+});
