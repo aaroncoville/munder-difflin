@@ -60,6 +60,7 @@ import { selectBroadcastTargets } from '../shared/broadcast';
 import { preferredAgentRole } from '../shared/agentRole';
 import { updateTaskLedgerFile } from '../core/taskLedgerFile';
 import { appendCostLedgerRows } from '../core/costLedgerFile';
+import { defaultStartTime } from '../core/fileLock';
 import { CostLedgerQueue } from '../core/costLedgerQueue';
 import { expandTilde } from './fs';
 import { refreshMineIgnoresOnce } from './hiveMineIgnore';
@@ -4207,6 +4208,9 @@ export class HiveManager {
     this.costQueue.push({ root, row });
   }
 
+  /** Reads a process's start time when the app takes the cost ledger's lock; a test can put its own reader here. */
+  costLedgerStartTime: (pid: number, timeoutMs: number) => string | null = defaultStartTime;
+
   /** The app's cost rows waiting for the ledger lock. Failures and recoveries go to log.jsonl, once each. */
   private readonly costQueue = new CostLedgerQueue({
     // The leading rows for one hive folder, under one hold of its lock. startReadMs: the push path does not wait for
@@ -4217,7 +4221,7 @@ export class HiveManager {
       const root = batch[0].root;
       let n = 1;
       while (n < batch.length && batch[n].root === root) n++;
-      appendCostLedgerRows(root, batch.slice(0, n).map((i) => i.row), 'app cost rows', { lockWaitMs: waitMs, startReadMs: COST_LEDGER_START_READ_MS });
+      appendCostLedgerRows(root, batch.slice(0, n).map((i) => i.row), 'app cost rows', { lockWaitMs: waitMs, startReadMs: COST_LEDGER_START_READ_MS, startTime: this.costLedgerStartTime });
       return n;
     },
     report: (e) => {

@@ -16,9 +16,10 @@ export const LEDGER_LOCK_WAIT_MS = 5000;
 const LEDGER_LOCK_STALE_MS = 30_000;
 
 /** Test seams, the wait for the lock (default LEDGER_LOCK_WAIT_MS), and the budget for each start-time read (see
- *  FileLockOptions.startReadMs). */
+ *  FileLockOptions.startReadMs) and what reads it (default defaultStartTime). */
 export interface CostLedgerIo {
   writeSync?: typeof writeSync; lockWaitMs?: number; startReadMs?: number; link?: (existingPath: string, newPath: string) => void;
+  startTime?: (pid: number, timeoutMs: number) => string | null;
   hooks?: FileLockHooks & { afterLock?: () => void; afterOpen?: () => void };
 }
 
@@ -47,7 +48,7 @@ export function appendCostLedgerRows(hiveRoot: string, rows: readonly object[], 
   try {
     own = acquireFileLock(lock, {
       waitMs: io.lockWaitMs ?? LEDGER_LOCK_WAIT_MS, staleMs: LEDGER_LOCK_STALE_MS, retryMs: 10,
-      startTime: defaultStartTime, startReadMs: io.startReadMs, link: io.link ?? linkSync, hooks: io.hooks ?? {},
+      startTime: io.startTime ?? defaultStartTime, startReadMs: io.startReadMs, link: io.link ?? linkSync, hooks: io.hooks ?? {},
       name: COST_LEDGER_FILE, disabled,
       timeout: (l, waitedMs, holder) => new Error(`could not lock ${l} within ${waitedMs} ms: held by ${holder}`),
     });

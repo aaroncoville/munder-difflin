@@ -135,3 +135,32 @@ test('pushing a row breaks an old lock whose pid another running process now has
   hive.appendCostLedger(sample('a'));
   assert.deepEqual(agents(ledger), ['a']);
 });
+
+test('pushing a row reads start times within its own budget, so it breaks an old lock whose pid another process now has (no ps needed)', (t) => {
+  const { hive, ledger } = floor(t);
+  // Start times as the reader would give them: this process started at "ps:this process"; a reader given no budget
+  // is never asked.
+  hive.costLedgerStartTime = (pid, timeoutMs) => (pid === process.pid && timeoutMs > 0 ? 'ps:this process' : null);
+  heldBy(`${ledger}.lock`, { started: 'ps:an earlier process', acquiredAt: new Date(Date.now() - 3_600_000).toISOString() });
+  hive.appendCostLedger(sample('a'));
+  assert.deepEqual(agents(ledger), ['a']);
+});
+
+test('rows queued for two hive folders (around a switch of hive) each go to their own folder\'s ledger', (t) => {
+  const homes = [0, 1].map(() => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'md-cost-switch-'))));
+  let current = homes[0];
+  const hive = new HiveManager(() => current);
+  t.after(async () => { hive.flushCostLedger(0); await allCommitsIdle(); for (const h of homes) fs.rmSync(h, { recursive: true, force: true }); });
+  hive.ensureHive();
+  const first = path.join(hive.root(), 'cost-ledger.jsonl');
+  heldBy(`${first}.lock`);
+  hive.appendCostLedger(sample('a'));
+  current = homes[1];
+  hive.ensureHive();
+  const second = path.join(hive.root(), 'cost-ledger.jsonl');
+  hive.appendCostLedger(sample('b'));
+  fs.rmSync(`${first}.lock`);
+  assert.equal(hive.flushCostLedger(), 0);
+  assert.deepEqual(agents(first), ['a']);
+  assert.deepEqual(agents(second), ['b']);
+});
