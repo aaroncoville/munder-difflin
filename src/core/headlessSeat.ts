@@ -205,10 +205,12 @@ export class HeadlessSeatRefused extends Error {
 /** Allow rules for each file-writing tool inside each root, and nowhere else. Under the default dontAsk mode a call
  *  nothing allows is refused, the file tools writing inside the seat's own roots included, so without these a
  *  headless seat cannot write its output file. `//` starts an absolute path in a rule. A root with a character a rule
- *  would read as a wildcard or as the rule's end is refused rather than allowed more widely than meant. */
+ *  would read as a wildcard or as the rule's end is refused rather than allowed more widely than meant, and so is one
+ *  with a character the app's own rule reader (editRuleFolder) does not understand: `$`, `%` or a backtick, read as a
+ *  substitution, or a line break. */
 export function headlessWriteRules(roots: string[]): string[] {
   for (const r of roots) {
-    if (!isAbsolute(r) || /[*?[\]{}()\\]/.test(r)) throw new HeadlessSeatRefused(`the seat root ${r} cannot be written as a permission rule`);
+    if (!isAbsolute(r) || /[*?[\]{}()\\$%`\n\r]/.test(r)) throw new HeadlessSeatRefused(`the seat root ${r} cannot be written as a permission rule`);
   }
   return CLAUDE_FILE_WRITE_TOOLS.flatMap((tool) => roots.map((r) => `${tool}(/${r}/**)`));
 }

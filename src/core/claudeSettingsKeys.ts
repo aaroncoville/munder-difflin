@@ -49,7 +49,7 @@ export const CLAUDE_SETTINGS_KEYS: Readonly<Record<string, SettingsKey>> = {
   'permissions.denyInsteadOfPrompting': r('boolean', 'it turns a prompt into a refusal and allows nothing'),
   'permissions.disableAutoMode': r('enum', 'its one value removes auto mode', ['disable']),
   'permissions.disableBypassPermissionsMode': r('enum', 'its one value removes bypass mode', ['disable']),
-  'permissions.workingDirectoriesAsGiven': r('strings', 'it only stops links being followed, and the CLI reads it from --settings alone'),
+  'permissions.workingDirectoriesAsGiven': r('strings', 'it adds no working directory and allows nothing: a listed one is taken as written, so a link that later stands in its place gains no access; the CLI reads it from --settings alone'),
   'permissions.workingDirectoriesExclude': r('strings', 'it only counts paths as outside the working directories'),
   sandbox: j('object', 'its keys are judged one by one'),
   'sandbox.allowAppleEvents': j('boolean', 'true lets sandboxed commands launch applications outside the sandbox'),

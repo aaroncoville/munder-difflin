@@ -154,7 +154,13 @@ function schemaOf(mod, from, to, scope, builder, depth = 0) {
     const close = matchEnd(src, open);
     if (close < 0 || close > to) throw new Unresolved(`an unbalanced call to ${name}`);
     if (name === builder && src[open + 1] === '{') return { object: [open + 1, matchEnd(src, open + 1)], scope };
-    if (mod.builders.has(name)) return { leaf: true };
+    if (mod.builders.has(name)) {
+      // A leaf, unless its arguments build an object schema inline (a union or a wrapper of one), whose keys would
+      // be settings keys this reader cannot place.
+      const objectIn = new RegExp(`(^|[^\\w$])${builder.replace(/\$/g, '\\$')}\\(\\{`);
+      if (objectIn.test(src.slice(open + 1, close))) throw new Unresolved(`a call to ${name} whose arguments build an object schema`);
+      return { leaf: true };
+    }
     if (close !== open + 1) throw new Unresolved(`a call to ${name}, which is neither a builder nor a schema defined in the module`);
     return schemaOf(mod, definitionOf(mod, name), mod.src.length, new Map(), builder, depth + 1);
   }

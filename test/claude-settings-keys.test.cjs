@@ -79,5 +79,6 @@ test('the reader refuses to guess: anything in a schema object it cannot resolve
     ['a shorthand property', bundle(SIGV4, NET, FS.replace('allowWrite:', 'shorty,allowWrite:'), ITEM, CRED, SANDBOX, PERMS)],
     ['a call to a local function', bundle(SIGV4, NET, FS.replace('allowWrite:P(o())', 'allowWrite:mk(1)'), ITEM, CRED, SANDBOX, PERMS)],
     ['an unknown local variable', bundle(SIGV4.replace('let e=', 'let f='), NET, FS, ITEM, CRED, SANDBOX, PERMS)],
+    ['an imported builder call holding an object schema', bundle(SIGV4, NET, FS.replace('allowWrite:', 'wrapped:Te([u({deep:M()})]).optional(),allowWrite:'), ITEM, CRED, SANDBOX, PERMS)],
   ]) assert.ok(settingsKeyPaths(text).error, `${what} was not an error`);
 });

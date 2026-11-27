@@ -142,9 +142,10 @@ const idOf = (card: unknown): unknown => (isObject(card) ? card.id : undefined);
 
 /**
  * Whether a string shows anything: not only whitespace and characters that render as nothing (zero-width
- * spaces and joiners, the BOM, soft hyphens, fillers), which trim() keeps.
+ * spaces and joiners, the BOM, soft hyphens, fillers, and the blank braille cell U+2800, which is neither
+ * whitespace nor default-ignorable), which trim() keeps.
  */
-const shows = (s: string): boolean => s.replace(/[\s\p{Default_Ignorable_Code_Point}]/gu, '') !== '';
+const shows = (s: string): boolean => s.replace(/[\s\p{Default_Ignorable_Code_Point}\u2800]/gu, '') !== '';
 
 /**
  * Refuses a patch that breaks a rule the ledger's other writers rely on: a card keeps its id; once

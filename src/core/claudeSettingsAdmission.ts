@@ -138,10 +138,20 @@ const denyEntriesOnly: Judge = (v, path) => ((v as unknown[]).every((e) => isPla
 /** Second-level labels that registries hand out under a two-letter country code (co.uk, com.au, gov.br …). Not the
  *  public suffix list: a wildcard under a suffix not named here is admitted. */
 const GENERIC_SECOND_LEVEL = new Set(['ac', 'co', 'com', 'edu', 'go', 'gob', 'gov', 'mil', 'ne', 'net', 'nic', 'or', 'org']);
+/** Suffixes under which a hosting service or registry gives each customer a name of its own, so a wildcard over one
+ *  matches every other customer's hosts too. A short list of well-known ones, not the public suffix list: a wildcard
+ *  under a shared suffix not named here is admitted. */
+const SHARED_HOSTING_SUFFIXES = new Set([
+  'github.io', 'gitlab.io', 'pages.dev', 'workers.dev', 'netlify.app', 'vercel.app', 'herokuapp.com', 'fly.dev', 'onrender.com',
+  'web.app', 'firebaseapp.com', 'appspot.com', 'azurewebsites.net', 'blob.core.windows.net', 'cloudfront.net',
+  's3.amazonaws.com', 'blogspot.com', 'ngrok.io', 'ngrok-free.app', 'glitch.me',
+  'uk.com', 'us.com', 'eu.com', 'cn.com', 'de.com', 'jpn.com', 'za.com',
+]);
 
 /** Whether an allowedDomains entry matches every domain or every domain under a public suffix. A ':port' suffix is
  *  dropped first (it only narrows the entry to one port). A wildcard is understood only as one leading '*.' label;
- *  anywhere else the entry is too wide. '*.<tld>' and '*.<generic second level>.<country code>' are too wide. */
+ *  anywhere else the entry is too wide. '*.<tld>', '*.<generic second level>.<country code>' and '*.<shared hosting
+ *  suffix>' are too wide. */
 function domainTooWide(entry: string): boolean {
   const host = entry.trim().replace(/:\d+$/, '').toLowerCase();
   if (!host.includes('*')) return false;
@@ -150,6 +160,7 @@ function domainTooWide(entry: string): boolean {
   if (rest.includes('*')) return true;
   const labels = rest.split('.').filter(Boolean);
   if (labels.length <= 1) return true;
+  if (SHARED_HOSTING_SUFFIXES.has(labels.join('.'))) return true;
   return labels.length === 2 && labels[1].length === 2 && GENERIC_SECOND_LEVEL.has(labels[0]);
 }
 

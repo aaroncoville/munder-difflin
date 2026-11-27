@@ -456,6 +456,36 @@ test('Given an output file last written before the run started, when the output 
   assert.equal(S.checkHeadlessOutput(s.ctx, out, { notBefore: Date.now() - 1000 }).done, true);
 });
 
+test('Given an output file whose name starts with two dots, inside a root, when the output is checked, then the run is done', (t) => {
+  const s = seat(t);
+  const out = path.join(s.cwd, '..notes.md');
+  fs.writeFileSync(out, 'findings\n');
+  const r = S.checkHeadlessOutput(s.ctx, out);
+  assert.equal(r.done, true, r.reason);
+});
+
+test('Given a file system that keeps whole seconds, when an output file written in the run\'s first second is checked, then the run is done', (t) => {
+  const s = seat(t);
+  const out = path.join(s.cwd, 'out.md');
+  fs.writeFileSync(out, 'x\n');
+  const second = Math.floor(Date.now() / 1000) - 5;
+  // The file's time as such a file system keeps it: the second it was written in, rounded down.
+  fs.utimesSync(out, second, second);
+  assert.equal(S.checkHeadlessOutput(s.ctx, out, { notBefore: second * 1000 + 700 }).done, true);
+  assert.equal(S.checkHeadlessOutput(s.ctx, out, { notBefore: (second + 1) * 1000 }).done, false, 'a file from the second before is still refused');
+});
+
+test('Given a checked output file emptied in place before the message, when it is re-checked, then it no longer counts', (t) => {
+  const s = seat(t);
+  const out = path.join(s.cwd, 'out.md');
+  fs.writeFileSync(out, 'findings\n');
+  const r = S.checkHeadlessOutput(s.ctx, out);
+  assert.equal(r.done, true);
+  assert.equal(S.sameOutputFile(out, r.file), null);
+  fs.truncateSync(out, 0);
+  assert.match(S.sameOutputFile(out, r.file) ?? '', /empty/);
+});
+
 // The ledger lock is the shared file lock (fileLock.ts), so it keeps that lock's guarantees: a volume without hard
 // links refuses it (no append), a live lock that replaced a stale one while it was being broken is never removed,
 // and the holder confirms the lock is still its own immediately before it appends.
@@ -483,6 +513,32 @@ test('Given a stale lock replaced by a live holder\'s lock just as it is broken,
   assert.equal(c.costRecorded, false);
   assert.equal(fs.readFileSync(lock, 'utf8'), live, 'the live holder\'s lock is still in place');
   assert.equal(fs.existsSync(h.ledger), false, 'and nothing was appended beside it');
+});
+
+test('Given a ledger lock whose pid is one process.kill refuses as an argument, when it is old, then it is broken by age and the row lands', (t) => {
+  for (const pid of [2 ** 31, Number.MAX_SAFE_INTEGER]) {
+    const h = hive(t);
+    const lock = `${h.ledger}.lock`;
+    const hourAgo = new Date(Date.now() - 3_600_000);
+    fs.writeFileSync(lock, JSON.stringify({ pid, host: os.hostname(), acquiredAt: hourAgo.toISOString(), token: 'x' }));
+    fs.utimesSync(lock, hourAgo, hourAgo);
+    const c = S.recordHeadlessCost(h.root, 'ag1', run(), 5, { lockWaitMs: 300 });
+    assert.equal(c.costRecorded, true, `pid ${pid}: ${c.costReason}`);
+    assert.equal(parseAll(h.ledger).length, 1);
+  }
+});
+
+test('Given the lock is taken from the holder after the ledger is opened, when it is about to write, then the second check finds the lock is not its own and appends nothing', (t) => {
+  const h = hive(t);
+  fs.writeFileSync(h.ledger, '');
+  const lock = `${h.ledger}.lock`;
+  const other = JSON.stringify({ pid: process.pid, host: os.hostname(), acquiredAt: new Date().toISOString(), token: 'someone-else' });
+  const afterOpen = () => { fs.rmSync(lock); fs.writeFileSync(lock, other); };
+  const c = S.recordHeadlessCost(h.root, 'ag1', run(), 5, { hooks: { afterOpen } });
+  assert.equal(c.costRecorded, false);
+  assert.match(c.costReason, /cost-ledger\.jsonl\.lock no longer holds this writer's record/);
+  assert.equal(fs.readFileSync(h.ledger, 'utf8'), '', 'nothing was appended');
+  assert.equal(fs.readFileSync(lock, 'utf8'), other, 'the other holder\'s lock is left alone');
 });
 
 test('Given the lock is taken from the holder after it acquired it, when it is about to append, then it checks, finds the lock is not its own, and appends nothing', (t) => {

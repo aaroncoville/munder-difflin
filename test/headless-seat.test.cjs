@@ -257,8 +257,8 @@ test('Given a scoped seat, when the seat runs, then the settings allow each file
   assert.deepEqual(s.permissions.deny ?? [], []);
 });
 
-test('Given a root whose name a rule would read as a wildcard or a rule end, when the write rules are made, then it is refused', () => {
-  for (const r of ['/w/a*b', '/w/a?b', '/w/[ab]', '/w/{a,b}', '/w/a)b', 'relative/w']) {
+test('Given a root whose name a rule would read as a wildcard, a rule end or a substitution, or that holds a newline, when the write rules are made, then it is refused', () => {
+  for (const r of ['/w/a*b', '/w/a?b', '/w/[ab]', '/w/{a,b}', '/w/a)b', 'relative/w', '/w/$HOME', '/w/%HOME%', '/w/a`b', '/w/a\nb']) {
     assert.throws(() => H.headlessWriteRules([r]), /permission rule/, r);
   }
   assert.deepEqual(H.headlessWriteRules(['/w/x']).filter((x) => x.startsWith('Write(')), ['Write(//w/x/**)']);
@@ -707,6 +707,20 @@ test('Given a CLI that exits normally leaving a subprocess in its own group, whe
   assert.equal(r.swept, 1, 'the subprocess seen while the CLI ran was signalled after it exited');
   const p = pids();
   assert.ok(await allGone([p.grandchild]), `the subprocess is gone: ${JSON.stringify(p)}`);
+});
+
+test('Given a CLI that exits while a subprocess no signal reaches keeps its stdout open, when the drain time passes, then the pipes are closed and the run resolves with its result', HANG_LIMIT, async (t) => {
+  const f = floor(t);
+  // Its own group, and a process table that never shows it: neither the after-exit sweep nor the group signal stops
+  // it, so only the drain cutoff ends the wait for the pipe.
+  const pids = hanging(t, f, { ignoreTerm: false, detach: true, keepPipes: true, print: `${JSON.stringify(SUCCESS)}\n`, exitAfterMs: 200 });
+  const started = Date.now();
+  const r = await H.runHeadlessSeat(f.opts({ processTable: async () => [], processPollMs: 100 }));
+  const took = Date.now() - started;
+  assert.equal(r.ok, true, r.error);
+  assert.equal(r.totalCostUsd, 0.0042);
+  assert.ok(took < 3000, `it resolved ${took} ms after the start, not on the drain cutoff`);
+  assert.ok(alive(pids().grandchild), 'the pipe holder was not stopped, so the drain alone ended the wait');
 });
 
 test('Given a pid seen as a subprocess that shows another command once the CLI has exited, when the run ends, then that pid is not signalled', HANG_LIMIT, async (t) => {

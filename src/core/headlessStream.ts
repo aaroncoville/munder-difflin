@@ -23,7 +23,7 @@
  */
 import { closeSync, constants, fstatSync, fsyncSync, ftruncateSync, linkSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, rmSync, writeSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { basename, isAbsolute, join, relative } from 'node:path';
+import { basename, isAbsolute, join, relative, sep } from 'node:path';
 import { parseHeadlessOutput, runHeadlessSeat, type HeadlessRun, type HeadlessSeatOptions } from './headlessSeat';
 import { acquireFileLock, confirmFileLock, defaultStartTime, releaseFileLock, type FileLockHooks, type OwnLock } from './fileLock';
 import { isPlainObject } from './launchLine';
@@ -106,7 +106,7 @@ const LEDGER_LOCK_STALE_MS = 30_000;
  *  only this row's own bytes. `io` is for tests. */
 export function recordHeadlessCost(hiveRoot: string, agentId: string, run: HeadlessRun, now = Date.now(), io: {
   writeSync?: typeof writeSync; lockWaitMs?: number; link?: (existingPath: string, newPath: string) => void;
-  hooks?: FileLockHooks & { afterLock?: () => void };
+  hooks?: FileLockHooks & { afterLock?: () => void; afterOpen?: () => void };
 } = {}): HeadlessCost {
   const { row, reason } = headlessCostRow(agentId, run, now);
   if (!row) return { costRecorded: false, costReason: reason, row: null };
@@ -135,6 +135,7 @@ export function recordHeadlessCost(hiveRoot: string, agentId: string, run: Headl
       if (last[0] !== 0x0a) lead = '\n';
     }
     const line = Buffer.from(`${lead}${JSON.stringify(row)}\n`, 'utf8');
+    io.hooks?.afterOpen?.();
     confirm();
     try {
       writeAllSync(fd, ledger, line, io.writeSync);
@@ -185,7 +186,7 @@ export interface HeadlessDoneCheck {
 
 const inside = (root: string, p: string): boolean => {
   const rel = relative(root, p);
-  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 };
 
 /** Whether the run's output file is in place: see above. Never throws. The file is read through one descriptor
@@ -217,20 +218,22 @@ export function checkHeadlessOutput(seat: HeadlessSeatPlace, outputFile: string 
     const roots = seatWriteRoots({ root: seat.hiveRoot, agentId: seat.agentId, isGod: seat.isGod === true, cwd: seat.cwd });
     const realRoots = roots.flatMap((r) => { try { return [realpathSync(r)]; } catch { return []; } });
     if (!realRoots.some((r) => inside(r, real))) return no(`the output file ${outputFile} is outside the seat's write roots`);
-    if (hooks.notBefore !== undefined && st.mtimeMs < hooks.notBefore) return no(`the output file ${outputFile} was last written before the run started`);
+    // A file system that keeps whole seconds rounds a time down, so the start is rounded down the same way.
+    if (hooks.notBefore !== undefined && st.mtimeMs < Math.floor(hooks.notBefore / 1000) * 1000) return no(`the output file ${outputFile} was last written before the run started`);
     return { done: true, reason: null, file: { dev: st.dev, ino: st.ino } };
   } finally {
     closeSync(fd);
   }
 }
 
-/** Null when `outputFile` is still the file the done-check judged (same device and inode, not a link) with one name;
- *  else why not. */
+/** Null when `outputFile` is still the file the done-check judged (same device and inode, not a link) with one name,
+ *  and not empty; else why not. */
 export function sameOutputFile(outputFile: string, file: { dev: number; ino: number }): string | null {
   let st;
   try { st = lstatSync(outputFile); } catch { return `the output file ${outputFile} is no longer there`; }
   if (st.dev !== file.dev || st.ino !== file.ino) return `the output file ${outputFile} is no longer the file that was checked`;
   if (st.nlink !== 1) return `the output file ${outputFile} has more than one name (${st.nlink} hard links)`;
+  if (st.size === 0) return `the output file ${outputFile} is empty`;
   return null;
 }
 
