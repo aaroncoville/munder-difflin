@@ -272,6 +272,16 @@ export interface HeadlessStreamOptions extends HeadlessSeatOptions {
   outputFile: string;
   /** Called just before the done message is published, after the done-check. Not for production use. */
   beforePublish?: () => void;
+  /** Writers to use instead of the stream's own ledger append and outbox write, for a caller that records the cost
+   *  and sends the done message itself (a scheduler that keys both by its run id, so a retry cannot repeat them). */
+  effects?: HeadlessStreamEffects;
+}
+
+export interface HeadlessStreamEffects {
+  /** Records the finished run's cost, in place of recordHeadlessCost. */
+  recordCost?: (run: HeadlessRun) => HeadlessCost;
+  /** Publishes the done message and returns its id, in place of writeOutboxMessage. */
+  publish?: (msg: OutboxMessage) => string;
 }
 
 export interface HeadlessStreamResult {
@@ -290,7 +300,7 @@ export interface HeadlessStreamResult {
  *  throws before anything runs or is written. */
 export async function runHeadlessStream(o: HeadlessStreamOptions): Promise<HeadlessStreamResult> {
   const run = await runHeadlessSeat(o);
-  const cost = recordHeadlessCost(o.hiveRoot, o.agentId, run);
+  const cost = o.effects?.recordCost ? o.effects.recordCost(run) : recordHeadlessCost(o.hiveRoot, o.agentId, run);
   const check: HeadlessDoneCheck = run.ok
     ? checkHeadlessOutput({ hiveRoot: o.hiveRoot, agentId: o.agentId, isGod: o.isGod, cwd: o.cwd }, o.outputFile, { notBefore: run.startedAt })
     : { done: false, reason: `the run did not succeed: ${run.error ?? `the CLI reported ${run.subtype ?? 'an error'}`}` };
@@ -301,7 +311,8 @@ export async function runHeadlessStream(o: HeadlessStreamOptions): Promise<Headl
   const still = check.file ? sameOutputFile(o.outputFile, check.file) : 'the output file was not identified';
   if (still) { result.done = false; result.doneReason = still; return result; }
   try {
-    result.messageId = writeOutboxMessage(o.hiveRoot, o.agentId, headlessDoneMessage(o.agentId, run, o.outputFile, cost));
+    const msg = headlessDoneMessage(o.agentId, run, o.outputFile, cost);
+    result.messageId = o.effects?.publish ? o.effects.publish(msg) : writeOutboxMessage(o.hiveRoot, o.agentId, msg);
   } catch (e) {
     result.messageError = (e as Error).message;
   }

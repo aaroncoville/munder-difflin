@@ -213,3 +213,24 @@ for (const [name, change, why] of [
     assert.deepEqual(fs.readdirSync(f.outbox), []);
   });
 }
+
+test('Given writers supplied by the caller, when a done run is streamed, then they record the cost and publish the message, and the stream writes nothing in the hive itself', async (t) => {
+  const f = floor(t, { stdout: `${JSON.stringify(SUCCESS)}\n`, writes: { 'report.md': 'the report\n' } });
+  const before = snapshot(f.hiveRoot);
+  const costs = [];
+  const published = [];
+  const s = await S.runHeadlessStream(f.opts({
+    effects: {
+      recordCost: (run) => { costs.push(run); return { costRecorded: true, costReason: null, row: null }; },
+      publish: (msg) => { published.push(msg); return 'caller-id'; },
+    },
+  }));
+  assert.equal(s.done, true);
+  assert.equal(costs.length, 1);
+  assert.equal(costs[0], s.run, 'the cost writer is given the finished run');
+  assert.equal(published.length, 1);
+  assert.equal(published[0].act, 'done');
+  assert.ok(published[0].body.includes(path.join(f.cwd, 'report.md')));
+  assert.equal(s.messageId, 'caller-id');
+  assert.deepEqual(diff(before, snapshot(f.hiveRoot)), { added: [], changed: [], removed: [] });
+});

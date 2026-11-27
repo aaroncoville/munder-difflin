@@ -414,6 +414,23 @@ test('Given the CLI prints a success result and exits 0, when the seat runs, the
   assert.ok(r.settingsFile.startsWith(f.settingsDir));
 });
 
+test('Given a caller that asks to be told when the CLI starts, when the seat runs, then it is told once, before the run ends, the CLI\'s pid and the group it leads', async (t) => {
+  const f = floor(t, { stdout: JSON.stringify(SUCCESS) + '\n' });
+  const seen = [];
+  let ended = false;
+  const r = await H.runHeadlessSeat(f.opts({ onSpawn: (cli) => seen.push({ ...cli, ended }) })).finally(() => { ended = true; });
+  assert.equal(r.ok, true);
+  const pid = f.record().pid;
+  assert.deepEqual(seen, [{ pid, pgid: process.platform === 'win32' ? null : pid, ended: false }]);
+});
+
+test('Given a spawn callback that throws, when the seat runs, then the run goes on as before', async (t) => {
+  const f = floor(t, { stdout: JSON.stringify(SUCCESS) + '\n' });
+  const r = await H.runHeadlessSeat(f.opts({ onSpawn: () => { throw new Error('boom'); } }));
+  assert.equal(r.ok, true);
+  assert.equal(r.totalCostUsd, 0.0042);
+});
+
 test('Given the CLI stops on its budget and exits 1, when the seat runs, then the run is not ok and the cost it reported is kept', async (t) => {
   const out = { ...SUCCESS, subtype: 'error_max_budget_usd', is_error: true, result: undefined, total_cost_usd: 0.051 };
   const f = floor(t, { stdout: JSON.stringify(out), stderr: 'budget exceeded', exitCode: 1 });
