@@ -19,8 +19,9 @@
  * that runner started (the headless CLI, detached into a process group of its own) may still be running and spending.
  * So the runner reports that process as soon as it starts (RunJob.onProcess), and its pid, process group, host and
  * start time are stored on the run row. A later scheduler judges that record by the file lock's own rule
- * (fileLock.ts isStaleHolder: a pid on this host that is running, and not proven by its start time to be another
- * process, is alive), and also asks whether anything is left in the process group:
+ * (fileLock.ts isStaleHolder: a pid that is running, and not proven by its start time to be another process, is
+ * alive; asked on this machine whatever host name was recorded, since core.db is local to it), and also asks whether
+ * anything is left in the process group:
  *  - still running: the run is not started again. The task is skipped with a reason naming the process, the same
  *    "hung" report a live lease holder gets; the run goes on once the process has ended. Stopping a stuck one is the
  *    operator's call.
@@ -268,14 +269,16 @@ export class Scheduler {
   }
 
   /** Why the process an earlier attempt's runner started must be waited for, or null when it is gone. Judged by the
-   *  file lock's rule for a recorded holder, with no age: a pid on this host that is running, and not proven by its
-   *  start time to be another process, is alive. A record from another host cannot be checked and counts as gone. A
-   *  group that still has a member counts as running too, since the CLI's own subprocesses join it. */
+   *  file lock's rule for a recorded holder, with no age: a pid that is running, and not proven by its start time to
+   *  be another process, is alive. core.db is local to this machine, so the pid is asked about here whatever host
+   *  name was recorded with it: macOS changes its host name with the network, and a recorded name that differs says
+   *  nothing about the process. A group that still has a member counts as running too, since the CLI's own
+   *  subprocesses join it. */
   private survivor(run: StoredRun, p: RunnerProcess): string | null {
     const startTime = this.o.startTime ?? defaultStartTime;
-    const cliAlive = !isStaleHolder({ pid: p.pid, host: p.host, started: p.started ?? undefined }, Number.POSITIVE_INFINITY,
+    const cliAlive = !isStaleHolder({ pid: p.pid, host: hostname(), started: p.started ?? undefined }, Number.POSITIVE_INFINITY,
       { staleMs: 0, startTime: (pid) => startTime(pid, START_READ_MS) });
-    const groupAlive = !cliAlive && p.host === hostname() && p.pgid !== null && p.pgid > 1 && groupHasMember(p.pgid);
+    const groupAlive = !cliAlive && p.pgid !== null && p.pgid > 1 && groupHasMember(p.pgid);
     if (!cliAlive && !groupAlive) return null;
     const what = cliAlive ? `its runner's process (pid ${p.pid}${p.pgid === null ? '' : `, group ${p.pgid}`})` : `a process in its runner's group ${p.pgid}`;
     return `task ${run.taskId}: run ${run.id} was started by a scheduler that has since stopped, and ${what} on ${p.host} is still running; `

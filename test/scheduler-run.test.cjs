@@ -552,3 +552,24 @@ test('Given a scheduler killed and then its CLI, while a subprocess the CLI star
   assert.equal(calls(f).length, 2, 'started again once the group was empty');
   exactlyOnce(f, store);
 });
+
+test('Given a live survivor recorded under a host name the machine no longer has, when a scheduler restarts, then it is still not started again', LIMIT, async (t) => {
+  const f = floor(t);
+  const store = open(t, f);
+  store.putTask(taskDef(f), at(0, 6));
+  const cliLog = path.join(f.base, 'cli.log');
+  t.after(() => { for (const pid of cliPids(cliLog)) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } } });
+  const opts = { dbPath: f.dbPath, hiveRoot: f.hiveRoot, calls: f.calls, cliLog, now: at(1, 7, 20), mode: 'detached', cliMs: 60_000 };
+  const first = child(t, opts);
+  const end = Date.now() + 10_000;
+  while (!runsOf(store)[0]?.runner) { if (Date.now() > end) throw new Error('the CLI was never recorded'); await new Promise((r) => setTimeout(r, 20)); }
+  process.kill(first.pid, 'SIGKILL');
+  await first.exited;
+  // As after the machine took another name on another network.
+  store.db.prepare('UPDATE scheduler_runs SET runner_host = ?').run('renamed.local');
+  const again = await within(child(t, { ...opts, now: at(1, 7, 35) }).exited, 10_000, 'a restart did not return: it started the runner again beside the survivor');
+  assert.equal(again.code, 0, again.err);
+  assert.match(JSON.parse(again.out).skipped[0].reason, /still running/);
+  assert.equal(calls(f).length, 1);
+  assert.equal(cliPids(cliLog).length, 1);
+});
