@@ -84,8 +84,8 @@ const OPEN_STATES: ReadonlyArray<StoredRun['state']> = ['claimed', 'running', 'r
  * touched. Each is matched to its run through core.db (every attempt of every run, by the name the adapter gives its
  * launch). A file is removed only when it is a regular file at least LAUNCH_SETTINGS_MIN_AGE_MS old, its run is over
  * or unknown to core.db, and no running process's command line names it after --settings (one read of the process
- * table), however that process spelled the folder: an orphaned CLI may still be reading it. When the folder or the
- * table cannot be read, nothing is removed.
+ * table), however that process spelled the folder: an orphaned CLI may still be reading it. When the folder, the hive
+ * or the table cannot be read, nothing is removed and the error says why.
  */
 export async function sweepLaunchSettings(o: {
   store: SchedulerStore; settingsDir: string; hiveRoot: string; processTable?: () => Promise<GroupProcRow[]>;
@@ -102,10 +102,14 @@ export async function sweepLaunchSettings(o: {
   }
   if (!names.length) return out;
   const stateOf = new Map<string, StoredRun['state']>();
-  for (const run of o.store.runs()) {
-    for (let n = 1; n <= Math.max(1, run.attempt); n++) {
-      stateOf.set(basename(headlessLaunchSettingsFile(o.settingsDir, o.hiveRoot, run.snapshot.agentId, `${run.id}.a${n}`)), run.state);
+  try {
+    for (const run of o.store.runs()) {
+      for (let n = 1; n <= Math.max(1, run.attempt); n++) {
+        stateOf.set(basename(headlessLaunchSettingsFile(o.settingsDir, o.hiveRoot, run.snapshot.agentId, `${run.id}.a${n}`)), run.state);
+      }
     }
+  } catch (e) {
+    return { ...out, error: `the runs' launch settings files could not be named, so none was removed: ${(e as Error).message}` };
   }
   let rows: GroupProcRow[];
   try {

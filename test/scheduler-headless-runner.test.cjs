@@ -203,3 +203,12 @@ test('Given a live process that names a finished run\'s launch file through anot
   assert.deepEqual((await sweep(s, { processTable: elsewhere })).removed, [p], 'a name outside the --settings argument does not count');
 });
 
+test('Given a hive folder that cannot be resolved, when the sweep runs, then it removes nothing and returns the reason rather than throwing', async (t) => {
+  const s = sweepFloor(t, [['r-done', 'done', 1]]);
+  const p = s.file('r-done', 1);
+  fs.writeFileSync(p, '{}');
+  const r = await sweep(s, { hiveRoot: path.join(s.f.base, 'no-such-hive') });
+  assert.deepEqual(r.removed, []);
+  assert.match(r.error, /could not be named.*no-such-hive/);
+  assert.ok(fs.existsSync(p));
+});
