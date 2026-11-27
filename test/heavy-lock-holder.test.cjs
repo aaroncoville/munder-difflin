@@ -32,12 +32,12 @@ const gone = async (p) => { p.kill('SIGKILL'); await new Promise((r) => (p.exitC
  *  its CLI at 500 under it. `world.rows` holds the other processes; each started at `world.started.get(pid)` (ms). */
 function rig() {
   const logs = [];
-  const world = { now: 1_000_000, reads: 0, rows: [], started: new Map(), fail: false, hang: false };
+  const world = { now: 1_000_000, mono: 0, reads: 0, rows: [], started: new Map(), fail: false, hang: false, roots: [{ agentId: 'god', pid: 100 }] };
   const l = new HeavyJobLock({
-    limit: () => 64, now: () => world.now,
+    limit: () => 64, now: () => world.now, monotonic: () => world.mono,
     setTimer: () => ({}), clearTimer: () => {},
     log: (r) => logs.push(r),
-    roots: () => [{ agentId: 'god', pid: 100 }],
+    roots: () => world.roots,
     probe: async () => {
       world.reads++;
       if (world.hang) return new Promise(() => {});
@@ -229,4 +229,43 @@ test('the process listing reads each start time as text and in ms (UTC), and lin
     { pid: 10, parentPid: 1, commandLine: '/bin/zsh -c npm test', started: 'ps:Thu Nov 27 05:02:11 2026', startedAt: Date.UTC(2026, 10, 27, 5, 2, 11) },
     { pid: 11, parentPid: 10, commandLine: 'npm test' },
   ]);
+});
+
+// — a wall clock that moved between the slot and the scan —
+
+test('a wall clock set back, a reused pid under another seat: the holder is dropped, and that seat\'s exit frees nothing of this slot', async () => {
+  const x = rig();
+  x.world.roots.push({ agentId: 'seat-b', pid: 200 });
+  take(x, 'sub-a', 600);
+  // Five seconds pass; the wall clock is set back 100 s; a new process under seat B takes pid 600, "started" before
+  // the slot was taken by the new clock.
+  x.world.mono += 5_000;
+  x.world.now = 900_000;
+  x.world.rows.push({ pid: 200, parentPid: 1, commandLine: 'zsh' }, { pid: 600, parentPid: 200, commandLine: 'claude' });
+  x.world.started.set(600, 899_000);
+  await x.l.scan();
+  assert.deepEqual(x.acts('holder-dropped').map((r) => r.rule), ['the wall clock changed']);
+  assert.equal(x.acts('holder-bound').length, 0);
+  x.l.agentGone('seat-b');
+  assert.deepEqual(x.released(), [], 'seat B\'s exit freed nothing of seat A\'s');
+  assert.equal(x.l.snapshot().length, 1);
+});
+
+test('a wall clock that jumped forward between the slot and the scan: the holder is dropped', async () => {
+  const x = rig();
+  headless(x, process.pid);
+  take(x, 'sub-1', process.pid);
+  x.world.mono += 1_000;
+  x.world.now += 600_000;
+  await x.l.scan();
+  assert.deepEqual(x.acts('holder-dropped').map((r) => r.rule), ['the wall clock changed']);
+});
+
+test('a wall clock that kept pace with the monotonic one (within 2 s): judged as usual', async () => {
+  const x = rig();
+  take(x, 'sub-1', 500);
+  x.world.mono += 10_000;
+  x.world.now += 11_900;
+  await x.l.scan();
+  assert.equal(x.acts('holder-bound').length, 1);
 });

@@ -295,7 +295,7 @@ export interface HeavyCall {
 /** The process that started a call's hook: its pid, when the call took its slot (`takenAt`, the lock's clock), and,
  *  once a scan has confirmed it (`confirmed`), its start time as the listing gives it. Only a confirmed holder may free
  *  a slot. */
-export interface HookHolder { pid: number; takenAt: number; started: string | null; confirmed: boolean }
+export interface HookHolder { pid: number; takenAt: number; takenAtMono: number; started: string | null; confirmed: boolean }
 
 /** A process listing row; `started` is its start time where the listing gives one, as text and (`startedAt`) as ms. */
 export interface ProcRow { pid: number; parentPid: number; commandLine: string; started?: string; startedAt?: number }
@@ -304,6 +304,8 @@ export interface HeavyLockDeps {
   /** How many of the held and reserved slots may be test suites. Absent = no limit beyond `limit`. */
   suiteLimit?: () => HeavyLimit;
   now?: () => number;
+  /** A monotonic clock (ms), to tell when the wall clock was changed. Default: performance.now. */
+  monotonic?: () => number;
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (t: unknown) => void;
   /** The PTY root pid of each agent. */
@@ -337,11 +339,13 @@ export class HeavyJobLock {
   private readonly reservations = new Map<string, { kind: HeavyKind; until: number; queuedSince?: number }>();
   private timer: unknown = null;
   private readonly now: () => number;
+  private readonly monotonic: () => number;
   private readonly setTimer: (fn: () => void, ms: number) => unknown;
   private readonly clearTimer: (t: unknown) => void;
 
   constructor(private readonly d: HeavyLockDeps) {
     this.now = d.now ?? Date.now;
+    this.monotonic = d.monotonic ?? (() => performance.now());
     this.setTimer = d.setTimer ?? ((fn, ms) => { const t = setTimeout(fn, ms); (t as { unref?: () => void }).unref?.(); return t; });
     this.clearTimer = d.clearTimer ?? ((t) => clearTimeout(t as NodeJS.Timeout));
   }
@@ -383,7 +387,7 @@ export class HeavyJobLock {
     if (!reserved && this.calls.size + this.reservations.size >= limit) return this.refuse(agentId, cls, limit);
     const now = this.now();
     const key = this.nextKey++;
-    const holder: HookHolder | null = hookPid !== undefined && Number.isSafeInteger(hookPid) && hookPid > 1 ? { pid: hookPid, takenAt: now, started: null, confirmed: false } : null;
+    const holder: HookHolder | null = hookPid !== undefined && Number.isSafeInteger(hookPid) && hookPid > 1 ? { pid: hookPid, takenAt: now, takenAtMono: this.monotonic(), started: null, confirmed: false } : null;
     this.calls.set(key, { key, agentId, callId, kind: cls.kind, label: cls.why ?? cls.kind, command: command.slice(0, COMMAND_KEEP), why: cls.why, session, since: now, touched: now, background, posted: false, seen: false, misses: 0, takenAtScan: this.scansStarted, ...(holder ? { holder } : {}) });
     // How long the agent queued for this slot, for the usage log (measure only).
     const waitMs = reserved && reservation?.queuedSince !== undefined ? now - reservation.queuedSince : undefined;
@@ -559,7 +563,10 @@ export class HeavyJobLock {
       if (!h.confirmed) {
         if (scanNo <= c.takenAtScan) continue;
         const row = listedRow.get(h.pid);
-        const drop = !row ? 'not listed' : row.startedAt !== undefined && row.startedAt > h.takenAt + START_SLACK_MS ? 'started after the slot was taken' : null;
+        // A wall clock changed since the slot was taken makes the start-time comparison meaningless (a pid reused after
+        // the clock was set back would pass it): the two clocks' intervals since then disagree.
+        const clockMoved = Math.abs((this.now() - h.takenAt) - (this.monotonic() - h.takenAtMono)) > CLOCK_SKEW_MS;
+        const drop = clockMoved ? 'the wall clock changed' : !row ? 'not listed' : row.startedAt !== undefined && row.startedAt > h.takenAt + START_SLACK_MS ? 'started after the slot was taken' : null;
         if (drop || !row) {
           c.holder = undefined;
           this.log({ kind: 'heavy-lock', action: 'holder-dropped', agentId: c.agentId, holderPid: h.pid, ...(row ? { holderCommand: nameOf(row) } : {}), rule: drop });
@@ -671,6 +678,9 @@ export const HOLDER_STALE_MS = 30_000;
 /** How much later than a slot was taken a listed start time may be and still be the process that started its hook:
  *  the listing's start times are whole seconds. */
 export const START_SLACK_MS = 1000;
+/** How far the wall and monotonic intervals since a slot was taken may differ before the wall clock is taken to have
+ *  been changed, and the hook's parent is dropped. */
+export const CLOCK_SKEW_MS = 2000;
 
 /** Parse `ps -axo pid=,ppid=,lstart=,command=` (or the same without lstart). */
 export function parsePsOutput(out: string): ProcRow[] {
