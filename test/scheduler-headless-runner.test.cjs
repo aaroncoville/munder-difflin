@@ -165,3 +165,29 @@ test('Given a process table that cannot be read, when the sweep runs, then nothi
   assert.match(r.error, /process table could not be read.*ps refused/);
   assert.ok(fs.existsSync(p));
 });
+
+/** A settings folder with a store holding the given runs, and a writer for launch files of `AGENT`. */
+function sweepFloor(t, runs) {
+  const f = floor(t);
+  const dir = path.join(f.base, 'app', 'seat-settings');
+  fs.mkdirSync(dir, { recursive: true });
+  const store = storeWith(t, f, runs);
+  const file = (run, n) => headlessLaunchSettingsFile(dir, f.hiveRoot, AGENT, `${run}.a${n}`);
+  return { f, dir, store, file };
+}
+const sweep = (s, more = {}) => R.sweepLaunchSettings({ store: s.store, settingsDir: s.dir, hiveRoot: s.f.hiveRoot, processTable: async () => [], ...more });
+
+test('Given a live process that names a finished run\'s launch file through another spelling of the folder, when the sweep runs, then the file is kept', async (t) => {
+  const s = sweepFloor(t, [['r-done', 'done', 1]]);
+  const p = s.file('r-done', 1);
+  fs.writeFileSync(p, '{}');
+  const link = path.join(s.f.base, 'linked-settings');
+  fs.symlinkSync(s.dir, link);
+  const table = async () => [{ pid: 4242, parentPid: 1, pgid: 4242, commandLine: `claude -p --settings ${path.join(link, path.basename(p))} --setting-sources ` }];
+  const r = await sweep(s, { processTable: table });
+  assert.deepEqual(r.removed, []);
+  assert.ok(fs.existsSync(p));
+  const elsewhere = async () => [{ pid: 4242, parentPid: 1, pgid: 4242, commandLine: `claude -p --settings /x/other.json --note /tmp/${path.basename(p)} ` }];
+  assert.deepEqual((await sweep(s, { processTable: elsewhere })).removed, [p], 'a name outside the --settings argument does not count');
+});
+

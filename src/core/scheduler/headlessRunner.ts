@@ -18,7 +18,7 @@
  * refused before anything runs: the run fails with that reason rather than run without the folder it was written for.
  */
 import { lstatSync, readdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { headlessLaunchSettingsFile, LAUNCH_SETTINGS_PREFIX } from '../headlessSeat';
 import { holds } from '../hookRuntime';
 import { runHeadlessStream as realRunHeadlessStream, type HeadlessCost, type HeadlessStreamOptions, type HeadlessStreamResult } from '../headlessStream';
@@ -77,9 +77,9 @@ const OPEN_STATES: ReadonlyArray<StoredRun['state']> = ['claimed', 'running', 'r
  *
  * Only files named as a launch's own (LAUNCH_SETTINGS_PREFIX) are looked at; a seat's shared settings file is never
  * touched. Each is matched to its run through core.db (every attempt of every run, by the name the adapter gives its
- * launch). A file is removed only when its run is over or unknown to core.db, and no running process's command line
- * names it (one read of the process table): an orphaned CLI may still be reading it. When the folder or the table
- * cannot be read, nothing is removed.
+ * launch). A file is removed only when it is a regular file, its run is over or unknown to core.db, and no running process's command line names it after --settings (one read of the process
+ * table), however that process spelled the folder: an orphaned CLI may still be reading it. When the folder or the
+ * table cannot be read, nothing is removed.
  */
 export async function sweepLaunchSettings(o: {
   store: SchedulerStore; settingsDir: string; hiveRoot: string; processTable?: () => Promise<GroupProcRow[]>;
@@ -96,7 +96,7 @@ export async function sweepLaunchSettings(o: {
   const stateOf = new Map<string, StoredRun['state']>();
   for (const run of o.store.runs()) {
     for (let n = 1; n <= Math.max(1, run.attempt); n++) {
-      stateOf.set(headlessLaunchSettingsFile(o.settingsDir, o.hiveRoot, run.snapshot.agentId, `${run.id}.a${n}`), run.state);
+      stateOf.set(basename(headlessLaunchSettingsFile(o.settingsDir, o.hiveRoot, run.snapshot.agentId, `${run.id}.a${n}`)), run.state);
     }
   }
   let rows: GroupProcRow[];
@@ -105,13 +105,23 @@ export async function sweepLaunchSettings(o: {
   } catch (e) {
     return { ...out, error: `the process table could not be read, so no launch settings file was removed: ${(e as Error).message}` };
   }
-  const named = (file: string): boolean => rows.some((r) => ` ${r.commandLine} `.includes(` --settings ${file} `));
+  // By the file's name after --settings, whatever folder text comes before it (a link, a relative path): the name is a
+  // digest no other file in any folder shares.
+  const named = (name: string): boolean => rows.some((r) => {
+    const line = ` ${r.commandLine} `;
+    for (let i = line.indexOf(' --settings '); i !== -1; i = line.indexOf(' --settings ', i + 1)) {
+      const end = line.indexOf(`${name} `, i + 12);
+      const inArgument = end !== -1 && !line.slice(i + 12, end).includes(' --');
+      if (inArgument && (line[end - 1] === '/' || line[end - 1] === '\\' || end === i + 12)) return true;
+    }
+    return false;
+  });
   for (const name of names) {
     const file = join(o.settingsDir, name);
-    const state = stateOf.get(file);
-    let regular = false;
-    try { regular = lstatSync(file).isFile(); } catch { continue; }
-    if (!regular || (state !== undefined && OPEN_STATES.includes(state)) || named(file)) {
+    const state = stateOf.get(name);
+    let st;
+    try { st = lstatSync(file); } catch { continue; }
+    if (!st.isFile() || (state !== undefined && OPEN_STATES.includes(state)) || named(name)) {
       out.kept.push(file);
       continue;
     }
