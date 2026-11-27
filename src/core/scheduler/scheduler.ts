@@ -27,11 +27,13 @@
  *    operator's call.
  *  - gone, or never reported: the attempt counts. The runner is started again only while fewer than MAX_RUN_ATTEMPTS
  *    attempts have been made; after that the run is marked failed with the reason.
- * Before the process is started, the runner says what its command line will hold that no other process's does (the
- * headless seat's settings file argument), and that is written to the run row first; a runner that cannot have it
+ * Before the process is started, the runner says what its command line will hold that no other process's does: the
+ * headless seat's settings file argument, for a settings file of this run and attempt's own (headlessRunner.ts). That
+ * is written to the run row first; a runner that cannot have it
  * written does not start the process. So a crash between the start and the pid's record cannot hide the process: a
  * later scheduler that finds a "running" run with that text but no pid reads the process table once, and a process
- * holding the text is recorded and judged as above. A run whose runner gave no such text, or whose process is not
+ * (not itself) holding exactly that text is recorded and judged as above. Since the text names
+ * the run and the attempt, another task's CLI on the same seat never matches. A run whose runner gave no such text, or whose process is not
  * found, counts as an attempt, so at most MAX_RUN_ATTEMPTS processes can ever be started for one run.
  *
  * In this process, a task whose turn is still going is not started again by a second tick (a lease whose holder's
@@ -79,11 +81,14 @@ export interface RunJob {
   slot: string;
   snapshot: ScheduledTask;
   maxBudgetUsd: number;
+  /** Which attempt at the run this is (1 for the first). With runId it names this launch and no other. */
+  attempt: number;
   /** The runner calls this as soon as it has started the process that does the work (the headless CLI), with its
    *  pid and the process group it leads, before awaiting anything: see the header. */
   onProcess: (proc: { pid: number; pgid: number | null }) => void;
   /** The runner calls this just before it starts that process, with text its command line will hold and no other
-   *  process's will (the headless seat's settings file argument): see the header. If it throws, the runner must not
+   *  process's will, naming this run and attempt (the headless seat's settings file argument for a launch keyed by
+   *  run id and attempt): see the header. If it throws, the runner must not
    *  start the process. */
   onLaunch: (marker: string) => void;
 }
@@ -400,7 +405,7 @@ export class Scheduler {
       try {
         const started = run;
         outcome = await this.o.runner({
-          runId: run.id, taskId: run.taskId, slot: run.slot, snapshot: run.snapshot, maxBudgetUsd: run.snapshot.maxBudgetUsd,
+          runId: run.id, taskId: run.taskId, slot: run.slot, snapshot: run.snapshot, maxBudgetUsd: run.snapshot.maxBudgetUsd, attempt: run.attempt + 1,
           onProcess: (proc) => this.recordRunner(started, lease, proc, problem),
           onLaunch: (marker) => this.guarded(lease, 'UPDATE scheduler_runs SET runner_marker = ? WHERE id = ?', marker, started.id),
         });

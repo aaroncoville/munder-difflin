@@ -111,3 +111,10 @@ test('Given a job, when the seat is about to start the CLI, then the job is told
   await R.headlessStreamRunner(seat(f), { runHeadlessStream: async (o) => { o.onLaunch({ settingsFile: '/s/headless.json', argv: [] }); return s.fn(o); } })({ ...job(f), onLaunch: (m) => seen.push(m), onProcess: () => {} });
   assert.deepEqual(seen, ['--settings /s/headless.json ']);
 });
+
+test('Given a job, when the adapter runs it, then the seat is given a launch key naming the run and the attempt, so the launch has a settings file of its own', async (t) => {
+  const f = floor(t);
+  const s = fakeStream();
+  await R.headlessStreamRunner(seat(f), { runHeadlessStream: s.fn })({ ...job(f), attempt: 2, onLaunch: () => {}, onProcess: () => {} });
+  assert.equal(s.seen[0].launchKey, 'r-abc.a2');
+});

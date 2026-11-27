@@ -389,6 +389,11 @@ function within(p, ms, what) {
     .finally(() => clearTimeout(timer));
 }
 
+/** Whether the real process table can be read here; skips the test when it cannot (inside an agent sandbox). */
+async function psRuns(t) {
+  try { await loadTs('src/core/processGroups.ts').probeProcessGroups(); return true; } catch (e) { t.skip(`ps cannot run here: ${e.message}`); return false; }
+}
+
 async function gone(pid, ms = 10_000) {
   const end = Date.now() + ms;
   while (isAlive(pid)) {
@@ -589,7 +594,8 @@ test('Given the runner\'s process cannot be recorded, when the runner reports it
   assert.equal(runsOf(store)[0].runner, null);
 });
 
-test('Given a scheduler killed after starting its CLI but before recording its pid, when a scheduler restarts, then it finds the CLI by its settings argument in the process table and does not start another; once it has ended, the run goes on', LIMIT, async (t) => {
+test('Given a scheduler killed after starting its CLI but before recording its pid, when a scheduler restarts, then it finds the CLI by its settings argument in the process table and does not start another; once it has ended, the run goes on (skipped where ps cannot run)', LIMIT, async (t) => {
+  if (!(await psRuns(t))) return;
   const f = floor(t);
   const store = open(t, f);
   store.putTask(taskDef(f), at(0, 6));
@@ -599,7 +605,7 @@ test('Given a scheduler killed after starting its CLI but before recording its p
   const first = child(t, opts);
   await waitFor(cliLog);
   const [cli] = cliPids(cliLog);
-  assert.match(runsOf(store)[0].runnerMarker, /^--settings .*\.settings\.json $/, 'what to look for was recorded before the start');
+  assert.equal(runsOf(store)[0].runnerMarker, `--settings ${cliLog}.${runsOf(store)[0].id}.a1.json `, 'what to look for, naming the run and attempt, was recorded before the start');
   assert.equal(runsOf(store)[0].runner, null, 'its pid was never recorded');
   process.kill(first.pid, 'SIGKILL');
   await first.exited;
@@ -682,3 +688,41 @@ test('Given a finished run whose done mail cannot be written, when ticks go on, 
   assert.equal(mail(f).length, 2, 'one done mail each');
   assert.equal(calls(f).length, 2, 'no runner was called again');
 });
+
+test('Given two live CLIs of the same seat, one another run\'s and one this run\'s orphan whose pid was never recorded, when a scheduler restarts, then it adopts the orphan, not the other, and never starts the run again while the orphan lives (skipped where ps cannot run)', LIMIT, async (t) => {
+  if (!(await psRuns(t))) return;
+  const f = floor(t);
+  const store = open(t, f);
+  store.putTask(taskDef(f), at(0, 6));
+  const cliLog = path.join(f.base, 'cli.log');
+  t.after(() => { for (const pid of cliPids(cliLog)) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } } });
+  // Another task's CLI on the same seat, started first, so it comes first in the process table.
+  const other = spawn(process.execPath, ['-e', `require('node:fs').appendFileSync(${JSON.stringify(cliLog)}, process.pid + '\\n'); setTimeout(() => {}, 60000);`,
+    '--', '--settings', `${cliLog}.r-another-run.a1.json`, 'x'], { detached: true, stdio: 'ignore' });
+  other.unref();
+  await waitFor(cliLog);
+  const opts = { dbPath: f.dbPath, hiveRoot: f.hiveRoot, calls: f.calls, cliLog, now: at(1, 7, 20), mode: 'detached', cliMs: 60_000, unreported: true };
+  const first = child(t, opts);
+  const end = Date.now() + 10_000;
+  while (cliPids(cliLog).length < 2) { if (Date.now() > end) throw new Error('the orphan never started'); await new Promise((r) => setTimeout(r, 20)); }
+  const orphan = cliPids(cliLog)[1];
+  process.kill(first.pid, 'SIGKILL');
+  await first.exited;
+
+  const again = await within(child(t, { ...opts, now: at(1, 7, 25) }).exited, 10_000, 'a restart did not return: it started the runner again');
+  assert.equal(again.code, 0, again.err);
+  assert.equal(runsOf(store)[0].runner.pid, orphan, 'the run\'s own orphan is adopted, not the other run\'s CLI');
+  process.kill(other.pid, 'SIGKILL');
+  await gone(other.pid);
+  const still = await within(child(t, { ...opts, now: at(1, 7, 30) }).exited, 10_000, 'a restart started the run again beside its live orphan');
+  assert.match(JSON.parse(still.out).skipped[0].reason, new RegExp(`pid ${orphan}.*still running`));
+  assert.equal(calls(f).length, 1, 'never started again while the orphan lives');
+
+  process.kill(orphan, 'SIGKILL');
+  await gone(orphan);
+  const last = await within(child(t, { ...opts, now: at(1, 7, 35), cliMs: 50 }).exited, 10_000, 'the last restart did not finish');
+  assert.equal(last.code, 0, last.err);
+  assert.equal(calls(f).length, 2);
+  exactlyOnce(f, store);
+});
+

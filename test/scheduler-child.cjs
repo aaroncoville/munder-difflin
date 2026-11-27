@@ -37,7 +37,7 @@ const runner = async (job) => {
     const script = `require('node:fs').appendFileSync(${JSON.stringify(o.cliLog)}, process.pid + '\\n'); ${sub} setTimeout(() => {}, ${Number(o.cliMs)});`;
     // With unreported, the stand-in's command line carries a settings argument as the seat's does, which the runner
     // names through job.onLaunch before starting it, and its pid is never reported: as after a crash between the two.
-    const settings = `${o.cliLog}.settings.json`;
+    const settings = `${o.cliLog}.${job.runId}.a${job.attempt}.json`;
     if (o.unreported) job.onLaunch(`--settings ${settings} `);
     const cli = spawn(process.execPath, ['-e', script, '--', '--settings', settings, 'x'], { detached: true, stdio: 'ignore' });
     if (!o.unreported) job.onProcess({ pid: cli.pid, pgid: cli.pid });
