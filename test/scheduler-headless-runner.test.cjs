@@ -122,6 +122,9 @@ test('Given a job, when the adapter runs it, then the seat is given a launch key
 const { headlessLaunchSettingsFile } = loadTs('src/core/headlessSeat.ts');
 const { seatSettingsFile } = loadTs('src/core/seatSettings.ts');
 
+/** A clock 20 minutes on, so that files written by the test are old enough to be swept. */
+const later = () => Date.now() + 20 * 60_000;
+
 /** A store holding runs in the given states, each with the attempts given. */
 function storeWith(t, f, runs) {
   const store = S.openSchedulerStore({ path: f.dbPath, hiveRoots: [f.hiveRoot] });
@@ -146,7 +149,7 @@ test('Given launch settings files a dead scheduler left, when the sweep runs, th
   };
   for (const p of Object.values(all)) fs.writeFileSync(p, '{}');
   const table = async () => [{ pid: 99999, parentPid: 1, pgid: 99999, commandLine: `claude -p --settings ${all.held} --setting-sources ` }];
-  const r = await R.sweepLaunchSettings({ store, settingsDir: dir, hiveRoot: f.hiveRoot, processTable: table });
+  const r = await R.sweepLaunchSettings({ store, settingsDir: dir, hiveRoot: f.hiveRoot, processTable: table, now: later });
   assert.equal(r.error, null);
   assert.deepEqual(r.removed.sort(), [all.done1, all.done2, all.failed, all.unknown].sort());
   for (const k of ['running', 'ran', 'held', 'again', 'seat', 'interactive']) assert.ok(fs.existsSync(all[k]), `${k} is kept`);
@@ -160,7 +163,7 @@ test('Given a process table that cannot be read, when the sweep runs, then nothi
   const store = storeWith(t, f, [['r-done', 'done', 1]]);
   const p = headlessLaunchSettingsFile(dir, f.hiveRoot, AGENT, 'r-done.a1');
   fs.writeFileSync(p, '{}');
-  const r = await R.sweepLaunchSettings({ store, settingsDir: dir, hiveRoot: f.hiveRoot, processTable: async () => { throw new Error('ps refused'); } });
+  const r = await R.sweepLaunchSettings({ store, settingsDir: dir, hiveRoot: f.hiveRoot, processTable: async () => { throw new Error('ps refused'); }, now: later });
   assert.deepEqual(r.removed, []);
   assert.match(r.error, /process table could not be read.*ps refused/);
   assert.ok(fs.existsSync(p));
@@ -175,7 +178,16 @@ function sweepFloor(t, runs) {
   const file = (run, n) => headlessLaunchSettingsFile(dir, f.hiveRoot, AGENT, `${run}.a${n}`);
   return { f, dir, store, file };
 }
-const sweep = (s, more = {}) => R.sweepLaunchSettings({ store: s.store, settingsDir: s.dir, hiveRoot: s.f.hiveRoot, processTable: async () => [], ...more });
+const sweep = (s, more = {}) => R.sweepLaunchSettings({ store: s.store, settingsDir: s.dir, hiveRoot: s.f.hiveRoot, processTable: async () => [], now: later, ...more });
+
+test('Given a launch file written less than ten minutes ago, when the sweep runs, then it is kept, though its run is unknown (another hive\'s fresh launch); an old one is removed', async (t) => {
+  const s = sweepFloor(t, []);
+  const fresh = s.file('r-other-hive', 1);
+  fs.writeFileSync(fresh, '{}');
+  assert.deepEqual((await sweep(s, { now: () => Date.now() + 5 * 60_000 })).removed, []);
+  assert.ok(fs.existsSync(fresh));
+  assert.deepEqual((await sweep(s)).removed, [fresh]);
+});
 
 test('Given a live process that names a finished run\'s launch file through another spelling of the folder, when the sweep runs, then the file is kept', async (t) => {
   const s = sweepFloor(t, [['r-done', 'done', 1]]);

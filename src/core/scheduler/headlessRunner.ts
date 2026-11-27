@@ -68,6 +68,11 @@ export interface LaunchSettingsSweep {
   error: string | null;
 }
 
+/** A launch settings file younger than this is never removed. The folder is shared by every hive, while the sweep
+ *  knows one hive's runs, and a launch's file is written just before its CLI starts: a fresh file of another hive (or
+ *  one whose run row is a moment behind it) would otherwise look unknown and unused. */
+export const LAUNCH_SETTINGS_MIN_AGE_MS = 10 * 60_000;
+
 /** Run states in which a launch's settings file may still be read by its CLI. */
 const OPEN_STATES: ReadonlyArray<StoredRun['state']> = ['claimed', 'running', 'ran'];
 
@@ -77,12 +82,15 @@ const OPEN_STATES: ReadonlyArray<StoredRun['state']> = ['claimed', 'running', 'r
  *
  * Only files named as a launch's own (LAUNCH_SETTINGS_PREFIX) are looked at; a seat's shared settings file is never
  * touched. Each is matched to its run through core.db (every attempt of every run, by the name the adapter gives its
- * launch). A file is removed only when it is a regular file, its run is over or unknown to core.db, and no running process's command line names it after --settings (one read of the process
+ * launch). A file is removed only when it is a regular file at least LAUNCH_SETTINGS_MIN_AGE_MS old, its run is over
+ * or unknown to core.db, and no running process's command line names it after --settings (one read of the process
  * table), however that process spelled the folder: an orphaned CLI may still be reading it. When the folder or the
  * table cannot be read, nothing is removed.
  */
 export async function sweepLaunchSettings(o: {
   store: SchedulerStore; settingsDir: string; hiveRoot: string; processTable?: () => Promise<GroupProcRow[]>;
+  /** The wall clock (epoch ms), for the files' age. */
+  now?: () => number;
 }): Promise<LaunchSettingsSweep> {
   const out: LaunchSettingsSweep = { removed: [], kept: [], error: null };
   let names: string[];
@@ -116,12 +124,13 @@ export async function sweepLaunchSettings(o: {
     }
     return false;
   });
+  const now = (o.now ?? Date.now)();
   for (const name of names) {
     const file = join(o.settingsDir, name);
     const state = stateOf.get(name);
     let st;
     try { st = lstatSync(file); } catch { continue; }
-    if (!st.isFile() || (state !== undefined && OPEN_STATES.includes(state)) || named(name)) {
+    if (!st.isFile() || now - st.mtimeMs < LAUNCH_SETTINGS_MIN_AGE_MS || (state !== undefined && OPEN_STATES.includes(state)) || named(name)) {
       out.kept.push(file);
       continue;
     }
