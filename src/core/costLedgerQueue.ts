@@ -3,7 +3,8 @@
  * (appendCostLedgerRows), several at a time under one hold, and the app's thread does not wait for that lock: each
  * attempt takes it only if it is free at once. When it is not, or the append fails for any other reason (a linked
  * ledger, a volume without hard links, a write that stopped short), the rows stay queued in order and the queue tries
- * again later on a timer, backing off up to the last of `retryMs`. One attempt writes at most `perTick` rows, and a
+ * again later on a timer, backing off up to the last of `retryMs`; a failure that has not cleared after `slowAfter`
+ * attempts (a linked ledger, a volume without hard links) is tried again only every `probeMs`. One attempt writes at most `perTick` rows, and a
  * longer queue is written over several timer ticks, so the thread is never held for long. A failure is reported once,
  * when it starts; a later success says the queue is writing again.
  *
@@ -15,6 +16,10 @@
 
 /** The waits before each retry after a failed attempt; the last is repeated. */
 export const COST_QUEUE_RETRY_MS = [100, 250, 500, 1000, 2000, 5000] as const;
+/** After this many failed attempts in a row, the queue tries only every COST_QUEUE_PROBE_MS. */
+export const COST_QUEUE_SLOW_AFTER = 12;
+/** The wait between attempts once a failure has not cleared. */
+export const COST_QUEUE_PROBE_MS = 60_000;
 /** The most rows the queue holds. */
 export const COST_QUEUE_CAP = 1000;
 /** The most rows one attempt on the timer writes. */
@@ -29,6 +34,8 @@ export interface CostLedgerQueueOptions {
   cap?: number;
   perTick?: number;
   retryMs?: readonly number[];
+  slowAfter?: number;
+  probeMs?: number;
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (timer: unknown) => void;
   /** A monotonic clock in milliseconds, for flush's deadline. */
@@ -43,6 +50,8 @@ export class CostLedgerQueue {
   private readonly cap: number;
   private readonly perTick: number;
   private readonly retryMs: readonly number[];
+  private readonly slowAfter: number;
+  private readonly probeMs: number;
   private readonly setTimer: (fn: () => void, ms: number) => unknown;
   private readonly clearTimer: (timer: unknown) => void;
   private readonly now: () => number;
@@ -51,6 +60,8 @@ export class CostLedgerQueue {
     this.cap = opts.cap ?? COST_QUEUE_CAP;
     this.perTick = opts.perTick ?? COST_QUEUE_PER_TICK;
     this.retryMs = opts.retryMs ?? COST_QUEUE_RETRY_MS;
+    this.slowAfter = opts.slowAfter ?? COST_QUEUE_SLOW_AFTER;
+    this.probeMs = opts.probeMs ?? COST_QUEUE_PROBE_MS;
     this.setTimer = opts.setTimer ?? ((fn, ms) => { const t = setTimeout(fn, ms); t.unref?.(); return t; });
     this.clearTimer = opts.clearTimer ?? ((t) => clearTimeout(t as NodeJS.Timeout));
     this.now = opts.now ?? (() => performance.now());
@@ -96,7 +107,7 @@ export class CostLedgerQueue {
       wrote = this.opts.append(this.rows.slice(0, max), waitMs);
     } catch (e) {
       if (this.failures++ === 0) this.opts.report({ kind: 'failing', reason: (e as Error).message, queued: this.rows.length });
-      const wait = this.retryMs[Math.min(this.failures - 1, this.retryMs.length - 1)];
+      const wait = this.failures >= this.slowAfter ? this.probeMs : this.retryMs[Math.min(this.failures - 1, this.retryMs.length - 1)];
       this.timer = this.setTimer(() => { this.timer = null; this.tick(); }, wait);
       return false;
     }

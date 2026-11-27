@@ -13,7 +13,7 @@ const { CostLedgerQueue } = loadTs('src/core/costLedgerQueue.ts');
 
 /** A queue whose timers run only when the test says, and whose append fails while `busy` is set. `step` is how many
  *  rows one append writes at most (all it is given by default), and `cost` how far the clock moves per append. */
-function rig({ cap, perTick, step = Infinity, cost = 0, failCost } = {}) {
+function rig({ cap, perTick, step = Infinity, cost = 0, failCost, probeMs, slowAfter } = {}) {
   const written = [];
   const reports = [];
   const timers = [];
@@ -30,7 +30,7 @@ function rig({ cap, perTick, step = Infinity, cost = 0, failCost } = {}) {
       return n;
     },
     report: (e) => reports.push(e),
-    cap, perTick, retryMs: [10, 20, 40],
+    cap, perTick, retryMs: [10, 20, 40], probeMs, slowAfter,
     setTimer: (fn, ms) => { const t = { fn, ms }; timers.push(t); return t; },
     clearTimer: (t) => { const i = timers.indexOf(t); if (i >= 0) timers.splice(i, 1); },
     now: () => clock.t,
@@ -142,4 +142,21 @@ test('flush behind a lock that stays held returns once its deadline has passed, 
   assert.equal(r.calls.length, 1, 'one attempt, which used the whole deadline waiting');
   assert.equal(r.clock.t, 1000);
   assert.equal(r.timers.length, 0);
+});
+
+test('a failure that does not clear drops to a slow probe, and the probe writes the rows once it can', () => {
+  const r = rig({ probeMs: 60_000, slowAfter: 5 });
+  r.state.busy = true;
+  r.q.push({ n: 1 });
+  const waits = [];
+  for (let i = 0; i < 8; i++) waits.push(r.tick());
+  // Five failures on the fast schedule (the last wait repeating), then the slow probe.
+  assert.deepEqual(waits, [10, 20, 40, 40, 60_000, 60_000, 60_000, 60_000]);
+  assert.deepEqual(r.reports.map((e) => e.kind), ['failing'], 'reported once');
+  r.state.busy = false;
+  r.tick();
+  assert.deepEqual(r.written, [1]);
+  r.state.busy = true;
+  r.q.push({ n: 2 });
+  assert.equal(r.tick(), 10, 'after a recovery, a new failure starts on the fast schedule again');
 });
