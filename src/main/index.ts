@@ -6201,6 +6201,8 @@ app.on('window-all-closed', () => {
 let analyticsFlushed = false;
 app.on('will-quit', (e) => {
   try { writeRootsDryRun.flushAll(); } catch { /* best-effort */ }
+  // Cost rows still queued for the ledger's lock: written now, or reported in log.jsonl.
+  try { hive.flushCostLedger(); } catch (err) { console.error('[hive] flushCostLedger:', err); }
   if (analyticsFlushed) return;
   analyticsFlushed = true;
   e.preventDefault();

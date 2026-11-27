@@ -456,6 +456,20 @@ test('Given an output file last written before the run started, when the output 
   assert.equal(S.checkHeadlessOutput(s.ctx, out, { notBefore: Date.now() - 1000 }).done, true);
 });
 
+test('Given a file system that keeps fractions of a second, when an output file written shortly before the run started is checked, then the run is not done', (t) => {
+  const s = seat(t);
+  const out = path.join(s.cwd, 'out.md');
+  fs.writeFileSync(out, 'x\n');
+  const second = Math.floor(Date.now() / 1000) - 5;
+  // Written 300 ms into a second, the run starting 400 ms later in the same second: the time is exact, so the
+  // start is not rounded down.
+  fs.utimesSync(out, second + 0.3, second + 0.3);
+  const r = S.checkHeadlessOutput(s.ctx, out, { notBefore: second * 1000 + 700 });
+  assert.equal(r.done, false);
+  assert.match(r.reason, /before the run started/);
+  assert.equal(S.checkHeadlessOutput(s.ctx, out, { notBefore: second * 1000 + 200 }).done, true, 'written after the run started');
+});
+
 test('Given an output file whose name starts with two dots, inside a root, when the output is checked, then the run is done', (t) => {
   const s = seat(t);
   const out = path.join(s.cwd, '..notes.md');

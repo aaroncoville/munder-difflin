@@ -160,7 +160,10 @@ function domainTooWide(entry: string): boolean {
   if (rest.includes('*')) return true;
   const labels = rest.split('.').filter(Boolean);
   if (labels.length <= 1) return true;
-  if (SHARED_HOSTING_SUFFIXES.has(labels.join('.'))) return true;
+  // A wildcard over a listed suffix, or over a domain above one ('*.amazonaws.com' holds 's3.amazonaws.com'), takes
+  // in every tenant of that suffix.
+  const domain = labels.join('.');
+  if ([...SHARED_HOSTING_SUFFIXES].some((x) => x === domain || x.endsWith(`.${domain}`))) return true;
   return labels.length === 2 && labels[1].length === 2 && GENERIC_SECOND_LEVEL.has(labels[0]);
 }
 

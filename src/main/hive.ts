@@ -59,6 +59,9 @@ import { MCP_CATALOG } from '../shared/mcpCatalog';
 import { selectBroadcastTargets } from '../shared/broadcast';
 import { preferredAgentRole } from '../shared/agentRole';
 import { updateTaskLedgerFile } from '../core/taskLedgerFile';
+import { appendCostLedgerRows } from '../core/costLedgerFile';
+import { defaultStartTime } from '../core/fileLock';
+import { CostLedgerQueue } from '../core/costLedgerQueue';
 import { expandTilde } from './fs';
 import { refreshMineIgnoresOnce } from './hiveMineIgnore';
 import { carryHiveGitDir, excludeLine, hiveGitDirFor, hiveRepoPresent, SET_ASIDE_PREFIX, settleHiveGitDir, writeGitfile, writeMarker } from '../core/hiveGitDir';
@@ -467,6 +470,12 @@ function putBackFields(now: RegistryAgent, before: RegistryAgent, wrote: Registr
 
 /** How long an app write to tasks.json waits for another holder of its lock. It runs on the main thread. */
 const TASK_LEDGER_WAIT_MS = 250;
+
+/** How long, when the app quits, writing the queued cost rows may take in all, lock waits included. */
+const COST_LEDGER_QUIT_WITHIN_MS = 1000;
+
+/** The most each process start-time read may take when the app takes the cost ledger's lock. */
+const COST_LEDGER_START_READ_MS = 100;
 
 /** `text` as one sh word that sh takes literally: in single quotes, each `'` written as `'\''`. */
 function shSingleQuote(text: string): string {
@@ -1451,8 +1460,8 @@ export class HiveManager {
     // while being broken, and the temporary files a writer renames or links into place (taskLedgerFile.ts). Each
     // lives for milliseconds, but a commit can land while another process holds the lock, and a writer that dies
     // leaves its temporary copy of the whole ledger behind.
-    // `cost-ledger.jsonl.lock*`, `.cost-ledger.jsonl.lock.tmp-*`: the same lock (fileLock.ts) around a headless run's
-    // cost row (headlessStream.ts), its set-aside copies and its temporary record.
+    // `cost-ledger.jsonl.lock*`, `.cost-ledger.jsonl.lock.tmp-*`: the same lock (fileLock.ts) around each cost row,
+    // a headless run's or the app's (costLedgerFile.ts), its set-aside copies and its temporary record.
     const want = ['fleet.json', 'hooks.sock', 'cost-ledger.jsonl', 'crashes/', '.DS_Store', 'usage/', ...AGENT_ALLOWLIST_IGNORE_LINES, `${SET_ASIDE_PREFIX}*/`,
       'tasks.json.lock', 'tasks.json.lock.stale-*', '.tasks.json.tmp-*', '.tasks.json.lock.tmp-*',
       'cost-ledger.jsonl.lock', 'cost-ledger.jsonl.lock.stale-*', '.cost-ledger.jsonl.lock.tmp-*'];
@@ -4173,8 +4182,9 @@ export class HiveManager {
    * at the hive ROOT, so `mempalace mine` (which only scans per-agent dirs) never
    * ingests it — no palace noise, no MINE_IGNORE entry needed.
    *
-   * Like appendLog: append to disk now (durable immediately), let it ride the
-   * next natural commit. Best-effort — never throws into the beat.
+   * Written under the ledger's lock when it is free, else queued and written
+   * later (never around the lock); it rides the next natural commit. Never
+   * throws into the beat.
    */
   appendCostLedger(sample: AgentUsageSample): void {
     const root = this.root();
@@ -4193,7 +4203,44 @@ export class HiveManager {
       model: sample.model,
       usd: sample.usd
     };
-    try { appendFileSync(join(root, 'cost-ledger.jsonl'), JSON.stringify(row) + '\n', 'utf8'); } catch { /* noop */ }
+    // Only ever under the ledger's lock, which headless runs hold for their own rows, and without waiting for it here
+    // on the main thread: a row that cannot be written now is queued and written later (CostLedgerQueue).
+    this.costQueue.push({ root, row });
+  }
+
+  /** Reads a process's start time when the app takes the cost ledger's lock; a test can put its own reader here. */
+  costLedgerStartTime: (pid: number, timeoutMs: number) => string | null = defaultStartTime;
+
+  /** The app's cost rows waiting for the ledger lock. Failures and recoveries go to log.jsonl, once each. */
+  private readonly costQueue = new CostLedgerQueue({
+    // The leading rows for one hive folder, under one hold of its lock. startReadMs: the push path does not wait for
+    // the lock, but still reads start times, so this process's lock records carry one and a leftover lock whose pid
+    // another process now has can be judged.
+    append: (items, waitMs) => {
+      const batch = items as ReadonlyArray<{ root: string; row: object }>;
+      const root = batch[0].root;
+      let n = 1;
+      while (n < batch.length && batch[n].root === root) n++;
+      appendCostLedgerRows(root, batch.slice(0, n).map((i) => i.row), 'app cost rows', { lockWaitMs: waitMs, startReadMs: COST_LEDGER_START_READ_MS, startTime: this.costLedgerStartTime });
+      return n;
+    },
+    report: (e) => {
+      if (e.kind === 'failing') console.warn(`[hive] cost rows are queued: ${e.reason}`);
+      if (e.kind === 'dropped') console.warn(`[hive] cost row queue full: dropped ${e.count} oldest row(s)`);
+      const { kind, ...rest } = e;
+      this.appendLog({ event: `cost-ledger-append-${kind}`, ...rest });
+    },
+  });
+
+  /** For quitting: write the queued cost rows now, within `withinMs` in all (lock waits included). Rows still queued
+   *  then are reported to log.jsonl. Returns how many are left. */
+  flushCostLedger(withinMs = COST_LEDGER_QUIT_WITHIN_MS): number {
+    const left = this.costQueue.flush(withinMs);
+    if (left > 0) {
+      console.error(`[hive] ${left} cost row(s) could not be written to cost-ledger.jsonl`);
+      this.appendLog({ event: 'cost-ledger-unflushed', rows: left });
+    }
+    return left;
   }
 
   // — json + atomic io —
