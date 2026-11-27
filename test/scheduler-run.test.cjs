@@ -497,3 +497,19 @@ test('Given a CLI run that did not succeed, when the run ends, then it is stored
   assert.deepEqual(schedulerStatus(store, { now: at(1, 7, 21) }).openRuns, []);
 });
 
+test('Given a lease taken over while the runner worked, when the runner returns, then nothing more is written for the run', LIMIT, async (t) => {
+  const f = floor(t);
+  const store = open(t, f);
+  store.putTask(taskDef(f), at(0, 6));
+  const runner = async () => {
+    store.db.prepare('UPDATE scheduler_leases SET token = ?').run('another-holder');
+    return { run: headlessRun(), done: true, doneReason: null };
+  };
+  const report = await new Scheduler({ store, hiveRoot: f.hiveRoot, runner, now: () => at(1, 7, 20) }).tick();
+  const [run] = runsOf(store);
+  assert.equal(run.state, 'running', 'the outcome was not stored by a holder that lost the lease');
+  assert.equal(run.outcome, null);
+  assert.match(report.errors[0].error, /taken over/);
+  assert.equal(ledgerRows(f).length, 1, 'no cost row');
+  assert.equal(mail(f).length, 0, 'no mail');
+});
