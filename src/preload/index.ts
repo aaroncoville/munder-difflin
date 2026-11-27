@@ -781,10 +781,10 @@ const api = {
   hiveBoard: (): Promise<string> => ipcRenderer.invoke('hive:board'),
   hiveTasks: (): Promise<unknown> => ipcRenderer.invoke('hive:tasks'),
   /** Whether the app's cost rows are being written to cost-ledger.jsonl: why not (null when they are). */
-  hiveCostLedgerStatus: (): Promise<{ failing: string | null; queued: number }> => ipcRenderer.invoke('hive:costLedgerStatus'),
+  hiveCostLedgerStatus: (): Promise<{ failing: string | null; seq: number }> => ipcRenderer.invoke('hive:costLedgerStatus'),
   /** Told when the app's cost rows start failing to be written, and when they are written again. */
-  onHiveCostLedgerStatus: (cb: (s: { failing: string | null; queued: number }) => void): (() => void) => {
-    const listener = (_e: IpcRendererEvent, payload: { failing: string | null; queued: number }) => cb(payload);
+  onHiveCostLedgerStatus: (cb: (s: { failing: string | null; seq: number }) => void): (() => void) => {
+    const listener = (_e: IpcRendererEvent, payload: { failing: string | null; seq: number }) => cb(payload);
     ipcRenderer.on('hive:costLedgerStatus', listener);
     return () => ipcRenderer.removeListener('hive:costLedgerStatus', listener);
   },
