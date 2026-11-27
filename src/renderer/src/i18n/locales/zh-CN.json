@@ -1188,7 +1188,7 @@
     "dismissAria": "忽略任务",
     "dismissNotSaved": "未能移除\"{{title}}\"：{{error}}",
     "closeNotice": "关闭此消息",
-    "costRowsNotSaved": "成本记录未写入 cost-ledger.jsonl（{{count}} 条等待中），在此问题解决前不会记录花费：{{error}}",
+    "costRowsNotSaved": "成本记录未写入 cost-ledger.jsonl，在此问题解决前不会记录花费：",
     "moveNotSaved": "未能移动\"{{title}}\"：{{error}}",
     "slackCardNotSaved": "Slack 消息\"{{title}}\"未能添加到看板，因此工作完成时不会在其会话中回复：{{error}}",
     "taskTitle": "任务",

@@ -164,11 +164,19 @@ export function TasksKanban() {
   const setTaskWriteError = useStore((s) => s.setTaskWriteError);
   // The app's own cost rows not being written (a linked ledger, a volume without hard links, a lock that never frees)
   // is shown on the same notice line until they are written again; it is not the user's to close.
-  const [costLedgerFailing, setCostLedgerFailing] = useState<{ failing: string | null; queued: number } | null>(null);
+  // It listens before it asks, and keeps whichever status is newest by its sequence number, so an answer to the opening
+  // question that is older than an event already heard never overwrites it.
+  const [costLedgerFailing, setCostLedgerFailing] = useState<{ failing: string | null; seq: number } | null>(null);
   useEffect(() => {
     let live = true;
-    void window.cth.hiveCostLedgerStatus?.().then((s) => { if (live) setCostLedgerFailing(s); }, () => {});
-    const stop = window.cth.onHiveCostLedgerStatus?.((s) => setCostLedgerFailing(s));
+    let newest = -1;
+    const take = (s: { failing: string | null; seq: number } | null | undefined): void => {
+      if (!live || !s || s.seq < newest) return;
+      newest = s.seq;
+      setCostLedgerFailing(s);
+    };
+    const stop = window.cth.onHiveCostLedgerStatus?.(take);
+    void window.cth.hiveCostLedgerStatus?.().then(take, () => {});
     return () => { live = false; stop?.(); };
   }, []);
   const dismissTask = useCallback(async (task: HiveTask) => {
@@ -239,7 +247,9 @@ export function TasksKanban() {
 
       {costLedgerFailing?.failing && (
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 12, color: 'var(--cth-coral)', padding: '6px 10px 0' }}>
-          <span style={{ flex: 1, minWidth: 0 }}>{t('kanban.costRowsNotSaved', { error: costLedgerFailing.failing, count: costLedgerFailing.queued })}</span>
+          {/* The reason is the main process's own text (English, with paths): isolated, so it keeps its own direction
+              inside a right-to-left sentence. */}
+          <span style={{ flex: 1, minWidth: 0 }}>{t('kanban.costRowsNotSaved')} <bdi dir="ltr">{costLedgerFailing.failing}</bdi></span>
         </div>
       )}
 
