@@ -22,18 +22,22 @@ export interface CostLedgerIo {
   hooks?: FileLockHooks & { afterLock?: () => void; afterOpen?: () => void };
 }
 
-/** Append `row` to `<hiveRoot>/cost-ledger.jsonl` as one line, whole or not at all (appendCostLedgerRows). */
+/** Append `row` to `<hiveRoot>/cost-ledger.jsonl` as one line (appendCostLedgerRows). */
 export function appendCostLedgerRow(hiveRoot: string, row: object, disabled: string, io: CostLedgerIo = {}): void {
   appendCostLedgerRows(hiveRoot, [row], disabled, io);
 }
 
-/** Append `rows` to `<hiveRoot>/cost-ledger.jsonl`, one line each, all or none; throws when they were not appended.
- *  The ledger's lock is held once for the whole batch, which is written in one piece and flushed once, and it is
- *  confirmed to be still this writer's immediately before appending; a volume without hard links cannot hold it, so
- *  nothing is appended there (`disabled` names what stops, in that error). A ledger whose last line has no newline (a
- *  writer that stopped part-way) gets one first, so the rows start on a line of their own. The bytes are written in
- *  full (writeAllSync); a write that stops short is undone, by cutting the ledger back to where it was when what
- *  follows that point is only this batch's own bytes. */
+/** Append `rows` to `<hiveRoot>/cost-ledger.jsonl`, one line each; throws when they were not appended. The ledger's
+ *  lock is held once for the whole batch, which is written in one piece and flushed once, and it is confirmed to be
+ *  still this writer's immediately before appending; a volume without hard links cannot hold it, so nothing is
+ *  appended there (`disabled` names what stops, in that error).
+ *
+ *  The ledger's contract. Each row is appended at most once, never twice. A write error is undone: the bytes are
+ *  written in full (writeAllSync), and a write that stops short is cut back to where the ledger was, when what follows
+ *  that point is only this batch's own bytes, so then none of the batch is appended. A process killed part-way runs
+ *  no undo: it may leave some of the batch's rows and one torn fragment, and its other rows are lost. A ledger whose
+ *  last line has no newline gets one before the next rows, so such a fragment stays alone on its line and no later
+ *  row is damaged; every reader of the ledger skips a line that does not parse. */
 export function appendCostLedgerRows(hiveRoot: string, rows: readonly object[], disabled: string, io: CostLedgerIo = {}): void {
   if (rows.length === 0) return;
   const ledger = join(hiveRoot, COST_LEDGER_FILE);
