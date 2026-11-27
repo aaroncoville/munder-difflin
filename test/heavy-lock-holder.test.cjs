@@ -214,3 +214,14 @@ test('a listing that was already being read when the slot was taken does not con
   assert.ok(!x.logs.some((r) => r.action === 'holder-confirmed'), 'the in-flight listing did not confirm the helper');
 });
 
+test('a listing that cannot be read is not taken for an empty one: an unconfirmed holder is kept for the next scan', async () => {
+  const x = rig();
+  x.world.clis.add(process.pid); x.world.started.set(process.pid, 'ps:Mon 09:00');
+  take(x, 'sub-1', process.pid);
+  x.world.fail = true;
+  await x.l.scan();
+  x.world.fail = false;
+  await x.l.scan();
+  assert.ok(x.logs.some((r) => r.action === 'holder-confirmed'), JSON.stringify(x.logs.map((r) => r.action)));
+  assert.ok(!x.logs.some((r) => r.action === 'holder-dropped'));
+});
