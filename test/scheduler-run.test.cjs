@@ -482,3 +482,18 @@ test('Given a task whose turn is still going in this scheduler, when its lease l
   exactlyOnce(f, store);
 });
 
+test('Given a CLI run that did not succeed, when the run ends, then it is stored failed with the CLI\'s reason, and its cost is still recorded once', LIMIT, async (t) => {
+  const f = floor(t);
+  const store = open(t, f);
+  store.putTask(taskDef(f), at(0, 6));
+  const runner = async () => ({ run: headlessRun(0.01, { ok: false, outcome: 'failed', exitCode: 1, error: 'the CLI exited 1: usage limit reached' }), done: false, doneReason: 'the run did not succeed' });
+  const report = await new Scheduler({ store, hiveRoot: f.hiveRoot, runner, now: () => at(1, 7, 20) }).tick();
+  const [run] = runsOf(store);
+  assert.equal(run.state, 'failed');
+  assert.match(run.failure, /usage limit reached/);
+  assert.deepEqual(report.ran.map((r) => r.state), ['failed']);
+  assert.equal(rowsFor(f, run.id).length, 1, 'its cost is recorded');
+  assert.equal(mail(f).length, 0, 'no done mail');
+  assert.deepEqual(schedulerStatus(store, { now: at(1, 7, 21) }).openRuns, []);
+});
+

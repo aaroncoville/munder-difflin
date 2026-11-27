@@ -47,7 +47,9 @@
  * SQLite write) leaves the run "running" with a process that is gone, so it counts as an interrupted attempt and is
  * run again while attempts remain; the ledger then has one row, for the second turn.
  *
- * A runner that throws marks the run failed with its reason; it writes no cost row and no mail, and is not retried.
+ * A runner that throws marks the run failed with its reason; it writes no cost row and no mail, and is not retried. A
+ * run whose CLI did not succeed (a usage limit, a budget stop, an error) gets its cost row as any other, and is marked
+ * failed with the CLI's reason, never done.
  */
 import { createHash } from 'node:crypto';
 import { closeSync, fstatSync, openSync, readdirSync, readSync, statSync } from 'node:fs';
@@ -349,6 +351,12 @@ export class Scheduler {
     }
     this.recordCost(run, lease);
     this.sendDoneMail(this.store.run(run.id) as StoredRun, lease);
+    const cli = (run.outcome as RunnerOutcome).run;
+    if (!cli.ok) {
+      const why = cli.error ?? `the CLI ended ${cli.outcome}${cli.subtype ? ` (${cli.subtype})` : ''}`;
+      this.guarded(lease, "UPDATE scheduler_runs SET state = 'failed', failure = ?, ended_at = ? WHERE id = ?", `the run did not succeed: ${why}`, this.now(), run.id);
+      return 'failed';
+    }
     this.guarded(lease, "UPDATE scheduler_runs SET state = 'done', ended_at = ? WHERE id = ?", this.now(), run.id);
     return 'done';
   }
