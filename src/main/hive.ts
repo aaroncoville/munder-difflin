@@ -59,7 +59,6 @@ import { MCP_CATALOG } from '../shared/mcpCatalog';
 import { selectBroadcastTargets } from '../shared/broadcast';
 import { preferredAgentRole } from '../shared/agentRole';
 import { updateTaskLedgerFile } from '../core/taskLedgerFile';
-import { appendCostLedgerRow } from '../core/costLedgerFile';
 import { expandTilde } from './fs';
 import { refreshMineIgnoresOnce } from './hiveMineIgnore';
 import { carryHiveGitDir, excludeLine, hiveGitDirFor, hiveRepoPresent, SET_ASIDE_PREFIX, settleHiveGitDir, writeGitfile, writeMarker } from '../core/hiveGitDir';
@@ -468,9 +467,6 @@ function putBackFields(now: RegistryAgent, before: RegistryAgent, wrote: Registr
 
 /** How long an app write to tasks.json waits for another holder of its lock. It runs on the main thread. */
 const TASK_LEDGER_WAIT_MS = 250;
-
-/** How long an app append to cost-ledger.jsonl waits for another holder of its lock. It runs on the main thread. */
-const COST_LEDGER_WAIT_MS = 250;
 
 /** `text` as one sh word that sh takes literally: in single quotes, each `'` written as `'\''`. */
 function shSingleQuote(text: string): string {
@@ -1456,7 +1452,7 @@ export class HiveManager {
     // lives for milliseconds, but a commit can land while another process holds the lock, and a writer that dies
     // leaves its temporary copy of the whole ledger behind.
     // `cost-ledger.jsonl.lock*`, `.cost-ledger.jsonl.lock.tmp-*`: the same lock (fileLock.ts) around a headless run's
-    // or the app's cost row (costLedgerFile.ts), its set-aside copies and its temporary record.
+    // cost row (headlessStream.ts), its set-aside copies and its temporary record.
     const want = ['fleet.json', 'hooks.sock', 'cost-ledger.jsonl', 'crashes/', '.DS_Store', 'usage/', ...AGENT_ALLOWLIST_IGNORE_LINES, `${SET_ASIDE_PREFIX}*/`,
       'tasks.json.lock', 'tasks.json.lock.stale-*', '.tasks.json.tmp-*', '.tasks.json.lock.tmp-*',
       'cost-ledger.jsonl.lock', 'cost-ledger.jsonl.lock.stale-*', '.cost-ledger.jsonl.lock.tmp-*'];
@@ -4197,11 +4193,6 @@ export class HiveManager {
       model: sample.model,
       usd: sample.usd
     };
-    // Under the ledger's lock, which headless runs hold for their own rows, so the two cannot interleave. This is the
-    // only durable cost record, so a row is not dropped for want of the lock: when it cannot be had within the main
-    // thread's short wait (a stuck holder, or a volume without hard links, where headless rows are not written at
-    // all), the row is appended as before the lock existed.
-    try { appendCostLedgerRow(root, row, 'locked app cost rows', { lockWaitMs: COST_LEDGER_WAIT_MS }); return; } catch { /* below */ }
     try { appendFileSync(join(root, 'cost-ledger.jsonl'), JSON.stringify(row) + '\n', 'utf8'); } catch { /* noop */ }
   }
 
