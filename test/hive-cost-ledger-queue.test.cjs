@@ -1,0 +1,91 @@
+'use strict';
+
+// HiveManager.appendCostLedger writes the app's cost rows only under cost-ledger.jsonl.lock, the lock headless runs
+// hold for their own rows, and never waits for it on the app's thread: a row it cannot write now is queued and
+// written later, never appended around the lock. A linked ledger is refused, not written through. Rows still queued
+// when the app quits are flushed, or reported when they cannot be.
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const loadTs = require('./load-ts.cjs');
+const { allCommitsIdle } = loadTs('src/core/hiveCommit.ts');
+const { HiveManager } = loadTs('src/main/hive.ts');
+const { recordHeadlessCost } = loadTs('src/core/headlessStream.ts');
+
+function floor(t) {
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'md-cost-queue-')));
+  const hive = new HiveManager(() => home);
+  hive.ensureHive();
+  t.after(async () => { hive.flushCostLedger(0); await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
+  return { hive, home, root: hive.root(), ledger: path.join(hive.root(), 'cost-ledger.jsonl') };
+}
+
+const sample = (agentId) => ({ agentId, sessionId: 's1', ts: 1, input: 1, output: 2, cacheRead: 0, cacheCreation: 0, model: 'm', usd: 0.01 });
+const lines = (file) => fs.readFileSync(file, 'utf8').split('\n').filter(Boolean);
+const agents = (file) => lines(file).map((l) => JSON.parse(l).agent_id);
+const logged = (root) => (fs.existsSync(path.join(root, 'log.jsonl')) ? lines(path.join(root, 'log.jsonl')).map((l) => JSON.parse(l)) : []);
+const until = async (ok, ms = 3000) => { const end = Date.now() + ms; while (!ok() && Date.now() < end) await new Promise((r) => setTimeout(r, 20)); return ok(); };
+
+const RUN = {
+  ok: true, outcome: 'success', exitCode: 0, signal: null, result: 'ok', sessionId: 'sess-h', totalCostUsd: 0.5, subtype: 'success',
+  error: null, stdout: `${JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'ok', session_id: 'sess-h', total_cost_usd: 0.5, usage: {} })}\n`,
+  stderr: '', argv: ['claude', '-p', '--model', 'haiku', 'x'], cwd: '/w', settingsFile: '/s.json', outputFile: null, timedOut: false, killSignal: null,
+};
+
+test('a free lock: the app row is written at once, on a line of its own after an unterminated tail', (t) => {
+  const { hive, ledger } = floor(t);
+  fs.writeFileSync(ledger, '{"agent_id":"x","usd":1}');
+  hive.appendCostLedger(sample('a'));
+  assert.deepEqual(agents(ledger), ['x', 'a']);
+  assert.equal(fs.existsSync(`${ledger}.lock`), false);
+});
+
+test('an app row arriving while a headless row is part-way written under the lock waits for it, and every line parses', async (t) => {
+  const { hive, root, ledger } = floor(t);
+  let calls = 0;
+  // The headless append writes its row 12 bytes at a time; after its first write, the app appends a row.
+  const writeSync = (fd, buf, off, len) => {
+    const n = fs.writeSync(fd, buf, off, Math.min(12, len));
+    if (calls++ === 0) hive.appendCostLedger(sample('app'));
+    return n;
+  };
+  const c = recordHeadlessCost(root, 'ag1', RUN, 5, { writeSync });
+  assert.equal(c.costRecorded, true, c.costReason);
+  assert.deepEqual(agents(ledger), ['ag1'], 'the app row was not written into the headless row');
+  assert.ok(await until(() => agents(ledger).length === 2), 'the queued app row is written once the lock is free');
+  assert.deepEqual(agents(ledger), ['ag1', 'app']);
+});
+
+test('a linked ledger: the app row is not written through the link, stays queued, and the failure is logged once', async (t) => {
+  const { hive, home, root, ledger } = floor(t);
+  const outside = path.join(home, 'outside.jsonl');
+  fs.writeFileSync(outside, '');
+  fs.symlinkSync(outside, ledger);
+  hive.appendCostLedger(sample('a'));
+  hive.appendCostLedger(sample('b'));
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(fs.readFileSync(outside, 'utf8'), '', 'nothing reached the link\'s target');
+  const failing = logged(root).filter((e) => e.event === 'cost-ledger-append-failing');
+  assert.equal(failing.length, 1, JSON.stringify(logged(root)));
+  assert.equal(failing[0].queued, 1);
+  fs.rmSync(ledger);
+  assert.equal(hive.flushCostLedger(0), 0);
+  assert.deepEqual(agents(ledger), ['a', 'b']);
+  assert.ok(logged(root).some((e) => e.event === 'cost-ledger-append-recovered'));
+});
+
+test('quitting with rows queued behind a held lock: they are flushed once it is free, and reported when they cannot be', (t) => {
+  const { hive, root, ledger } = floor(t);
+  const lock = `${ledger}.lock`;
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, host: os.hostname(), acquiredAt: new Date().toISOString(), token: 'held' }));
+  hive.appendCostLedger(sample('a'));
+  assert.equal(fs.existsSync(ledger), false, 'nothing was written around the lock');
+  assert.equal(hive.flushCostLedger(50), 1);
+  assert.ok(logged(root).some((e) => e.event === 'cost-ledger-unflushed' && e.rows === 1), JSON.stringify(logged(root)));
+  fs.rmSync(lock);
+  assert.equal(hive.flushCostLedger(50), 0);
+  assert.deepEqual(agents(ledger), ['a']);
+});

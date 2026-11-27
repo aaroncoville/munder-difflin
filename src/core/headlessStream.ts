@@ -18,8 +18,7 @@
  * Like every service outside the app, this only writes files: one append, never a commit. The row is appended whole
  * or not at all, on a line of its own, never through a link, and headless writers take turns through a lock file
  * beside the ledger (cost-ledger.jsonl.lock, the same file lock as tasks.json's), which exists only while one of
- * them appends. The app's own rows are
- * appended without that lock, each in a single append.
+ * them appends. The app's own rows take the same lock (costLedgerFile.ts), queued until it is free.
  */
 import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, realpathSync, rmSync, writeSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
