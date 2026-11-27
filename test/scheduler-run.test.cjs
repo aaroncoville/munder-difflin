@@ -790,3 +790,15 @@ test('Given a clock put right to before the task was first stored, after a tick 
   assert.deepEqual(report.ahead.map((a) => a.slot), ['2026-11-28T07:19']);
   assert.deepEqual(schedulerStatus(store, { now: clock.now }).ahead.map((a) => a.slot), ['2026-11-28T07:19']);
 });
+
+test('Given a run whose first attempt was interrupted, when it is started again, then the runner is told it is attempt 2, so its launch is named apart from attempt 1\'s', LIMIT, async (t) => {
+  const f = floor(t);
+  const store = open(t, f);
+  store.putTask(taskDef(f), at(0, 6));
+  leftRunning(store, f);
+  const attempts = [];
+  const runner = async (job) => { attempts.push(job.attempt); return { run: headlessRun(), done: true, doneReason: null }; };
+  await new Scheduler({ store, hiveRoot: f.hiveRoot, runner, now: () => at(1, 7, 25) }).tick();
+  assert.deepEqual(attempts, [2]);
+  assert.equal(store.run('r-x').attempt, 2);
+});

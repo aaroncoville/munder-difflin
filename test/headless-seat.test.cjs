@@ -907,3 +907,13 @@ test('Given a launch key that is not a plain name, when the launch is built, the
   const f = floor(t);
   for (const k of ['', 'a/b', 'a b', '../x', 'x'.repeat(129)]) assert.throws(() => H.buildHeadlessLaunch(f.opts({ launchKey: k })), /launch key/, k);
 });
+
+test('Given a launch key, when the seat runs, then its own settings file is named apart from the shared one, at the path headlessLaunchSettingsFile gives', async (t) => {
+  const f = floor(t, { stdout: JSON.stringify(SUCCESS) + '\n' });
+  const seen = [];
+  const keyed = await H.runHeadlessSeat(f.opts({ launchKey: 'r-9.a1', onLaunch: (l) => seen.push(l.settingsFile) }));
+  const shared = await H.runHeadlessSeat(f.opts());
+  assert.equal(seen[0], H.headlessLaunchSettingsFile(f.settingsDir, f.hiveRoot, 'ag1', 'r-9.a1'));
+  assert.ok(path.basename(keyed.settingsFile).startsWith(H.LAUNCH_SETTINGS_PREFIX));
+  assert.ok(!path.basename(shared.settingsFile).startsWith(H.LAUNCH_SETTINGS_PREFIX));
+});

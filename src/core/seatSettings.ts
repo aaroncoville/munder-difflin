@@ -32,10 +32,10 @@ export function seatSettingsDigest(hiveRoot: string, agentId: string): string {
   return createHash('sha256').update(`${real}\0${agentId}`).digest('hex');
 }
 
-/** The seat's settings file in `dir`; refuses when no folder is set. */
-export function seatSettingsFile(dir: string | null, hiveRoot: string, agentId: string): string {
+/** The seat's settings file in `dir`, its name `prefix` then the digest; refuses when no folder is set. */
+export function seatSettingsFile(dir: string | null, hiveRoot: string, agentId: string, prefix = ''): string {
   if (!dir) throw new SeatSettingsRefused('no seat settings folder is set, and the file is never written into the hive');
-  return join(dir, `${seatSettingsDigest(hiveRoot, agentId)}.json`);
+  return join(dir, `${prefix}${seatSettingsDigest(hiveRoot, agentId)}.json`);
 }
 
 /** Refuses unless the target is absent or a regular file (never a link, a folder or a pipe). */
@@ -50,8 +50,8 @@ export function checkSeatSettingsTarget(file: string): void {
 }
 
 /** Make the folder private, check the target, and write `content` there without following a link. Returns the path. */
-export function writeSeatSettings(dir: string | null, hiveRoot: string, agentId: string, content: string): string {
-  const file = seatSettingsFile(dir, hiveRoot, agentId);
+export function writeSeatSettings(dir: string | null, hiveRoot: string, agentId: string, content: string, prefix = ''): string {
+  const file = seatSettingsFile(dir, hiveRoot, agentId, prefix);
   const folder = dir as string;
   try { ensurePrivateDir(folder, hiveRoot); } catch (e) { throw new SeatSettingsRefused(`the seat settings folder ${folder}: ${(e as Error).message}`); }
   checkSeatSettingsTarget(file);

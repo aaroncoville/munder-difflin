@@ -118,3 +118,50 @@ test('Given a job, when the adapter runs it, then the seat is given a launch key
   await R.headlessStreamRunner(seat(f), { runHeadlessStream: s.fn })({ ...job(f), attempt: 2, onLaunch: () => {}, onProcess: () => {} });
   assert.equal(s.seen[0].launchKey, 'r-abc.a2');
 });
+
+const { headlessLaunchSettingsFile } = loadTs('src/core/headlessSeat.ts');
+const { seatSettingsFile } = loadTs('src/core/seatSettings.ts');
+
+/** A store holding runs in the given states, each with the attempts given. */
+function storeWith(t, f, runs) {
+  const store = S.openSchedulerStore({ path: f.dbPath, hiveRoots: [f.hiveRoot] });
+  t.after(() => store.close());
+  for (const [id, state, attempt] of runs) {
+    store.db.prepare(`INSERT INTO scheduler_runs (id, task_id, slot, slot_at, state, snapshot, claimed_at, attempt) VALUES (?, 'daily-scan', ?, 1, ?, ?, 1, ?)`)
+      .run(id, `slot-${id}`, state, JSON.stringify(taskDef(f)), attempt);
+  }
+  return store;
+}
+
+test('Given launch settings files a dead scheduler left, when the sweep runs, then only those of runs that are over or unknown, named by no running process, are removed; seat files and files a run may still need are kept', async (t) => {
+  const f = floor(t);
+  const dir = path.join(f.base, 'app', 'seat-settings');
+  fs.mkdirSync(dir, { recursive: true });
+  const store = storeWith(t, f, [['r-done', 'done', 2], ['r-failed', 'failed', 1], ['r-running', 'running', 1], ['r-ran', 'ran', 1], ['r-held', 'done', 1], ['r-again', 'running', 2]]);
+  const file = (run, n) => headlessLaunchSettingsFile(dir, f.hiveRoot, AGENT, `${run}.a${n}`);
+  const all = {
+    done1: file('r-done', 1), done2: file('r-done', 2), failed: file('r-failed', 1), unknown: file('r-gone', 1),
+    running: file('r-running', 1), ran: file('r-ran', 1), held: file('r-held', 1), again: file('r-again', 2),
+    seat: seatSettingsFile(dir, f.hiveRoot, `headless:${AGENT}`), interactive: seatSettingsFile(dir, f.hiveRoot, AGENT),
+  };
+  for (const p of Object.values(all)) fs.writeFileSync(p, '{}');
+  const table = async () => [{ pid: 99999, parentPid: 1, pgid: 99999, commandLine: `claude -p --settings ${all.held} --setting-sources ` }];
+  const r = await R.sweepLaunchSettings({ store, settingsDir: dir, hiveRoot: f.hiveRoot, processTable: table });
+  assert.equal(r.error, null);
+  assert.deepEqual(r.removed.sort(), [all.done1, all.done2, all.failed, all.unknown].sort());
+  for (const k of ['running', 'ran', 'held', 'again', 'seat', 'interactive']) assert.ok(fs.existsSync(all[k]), `${k} is kept`);
+  for (const k of ['done1', 'done2', 'failed', 'unknown']) assert.ok(!fs.existsSync(all[k]), `${k} is removed`);
+});
+
+test('Given a process table that cannot be read, when the sweep runs, then nothing is removed and it says why', async (t) => {
+  const f = floor(t);
+  const dir = path.join(f.base, 'app', 'seat-settings');
+  fs.mkdirSync(dir, { recursive: true });
+  const store = storeWith(t, f, [['r-done', 'done', 1]]);
+  const p = headlessLaunchSettingsFile(dir, f.hiveRoot, AGENT, 'r-done.a1');
+  fs.writeFileSync(p, '{}');
+  const r = await R.sweepLaunchSettings({ store, settingsDir: dir, hiveRoot: f.hiveRoot, processTable: async () => { throw new Error('ps refused'); } });
+  assert.deepEqual(r.removed, []);
+  assert.match(r.error, /process table could not be read.*ps refused/);
+  assert.ok(fs.existsSync(p));
+});
