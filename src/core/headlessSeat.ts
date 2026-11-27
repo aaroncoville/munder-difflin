@@ -142,6 +142,11 @@ export interface HeadlessSeatOptions {
   /** How often, while the CLI runs, its subprocesses are recorded for the sweep after it exits. Defaults to
    *  HEADLESS_PROCESS_POLL_MS. */
   processPollMs?: number;
+  /** Called once, synchronously, as soon as the CLI has been started, before anything else is awaited: with its pid
+   *  and the process group it leads (null where there are no process groups). For a caller that must be able to find
+   *  the CLI again if the caller itself dies, since the CLI is detached and outlives it. An error it throws is
+   *  ignored. */
+  onSpawn?: (cli: { pid: number; pgid: number | null }) => void;
 }
 
 /** The default time between SIGTERM and SIGKILL for a run that timed out. */
@@ -447,6 +452,9 @@ export function runHeadlessSeat(o: HeadlessSeatOptions): Promise<HeadlessRun> {
       // detached: the CLI leads a new process group, which its own children join unless they start their own.
       child = spawn(launch.argv[0], launch.argv.slice(1), { cwd: launch.cwd, env: launch.env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
     } catch (e) { finish(null, null, (e as Error).message); return; }
+    if (child.pid !== undefined && o.onSpawn) {
+      try { o.onSpawn({ pid: child.pid, pgid: process.platform === 'win32' ? null : child.pid }); } catch { /* the caller's to report */ }
+    }
     const cliRunning = (): boolean => child.exitCode === null && child.signalCode === null;
     /** One read of the process table, abandoned after PROCESS_TABLE_TIMEOUT_MS; null (and sweepError) when it fails. */
     const read = (): Promise<GroupProcRow[] | null> => new Promise((res) => {

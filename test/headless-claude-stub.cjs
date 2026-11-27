@@ -15,7 +15,7 @@ let settings = null;
 if (at !== -1 && argv[at + 1]) {
   try { settings = fs.readFileSync(argv[at + 1], 'utf8'); } catch (e) { settings = `unreadable: ${e.message}`; }
 }
-fs.writeFileSync(path.join(__dirname, 'record.json'), JSON.stringify({ argv, env: { ...process.env }, cwd: process.cwd(), settings }));
+fs.writeFileSync(path.join(__dirname, 'record.json'), JSON.stringify({ pid: process.pid, argv, env: { ...process.env }, cwd: process.cwd(), settings }));
 
 const canned = JSON.parse(fs.readFileSync(path.join(__dirname, 'canned.json'), 'utf8'));
 // canned.writes: { "<path relative to the working folder>": "<content>" }, written as the run's own output.
