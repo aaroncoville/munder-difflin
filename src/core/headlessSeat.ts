@@ -43,7 +43,8 @@ import { homedir } from 'node:os';
 import { isAbsolute } from 'node:path';
 import { CLAUDE_CONFIG_KEEP } from './claudeEnv';
 import { claudeSettingsExcess, MANAGED_CLAUDE_SETTINGS } from './claudeSettingsAdmission';
-import { probeProcesses, type ProcRow } from './heavyJob';
+import { type ProcRow } from './heavyJob';
+import { probeProcessGroups, type GroupProcRow } from './processGroups';
 import { hookCommandFor, overlaps, rootOverlap, verifyHookRuntime, type StagedHookRuntime } from './hookRuntime';
 import { CLAUDE_FILE_WRITE_TOOLS, isPlainObject, launchPlaces } from './launchLine';
 import { privateDirsReach } from './privateDirs';
@@ -135,8 +136,9 @@ export interface HeadlessSeatOptions {
   timeoutMs?: number;
   /** How long a timed-out run's process group has between SIGTERM and SIGKILL. Defaults to HEADLESS_KILL_GRACE_MS. */
   killGraceMs?: number;
-  /** Reads the process table (pid and parent pid of every process) for the subprocess sweep; defaults to `ps`. */
-  processTable?: () => Promise<ProcRow[]>;
+  /** Reads the process table (pid, parent pid and, where there are groups, the process group of every process) for
+   *  the subprocess sweep; defaults to `ps` (probeProcessGroups). */
+  processTable?: () => Promise<GroupProcRow[]>;
   /** How often, while the CLI runs, its subprocesses are recorded for the sweep after it exits. Defaults to
    *  HEADLESS_PROCESS_POLL_MS. */
   processPollMs?: number;
@@ -394,7 +396,7 @@ export function runHeadlessSeat(o: HeadlessSeatOptions): Promise<HeadlessRun> {
   const launch = buildHeadlessLaunch(o);
   const spawn = o.spawn ?? nodeSpawn;
   const grace = o.killGraceMs ?? HEADLESS_KILL_GRACE_MS;
-  const readTable = o.processTable ?? probeProcesses;
+  const readTable = o.processTable ?? probeProcessGroups;
   const pollMs = o.processPollMs ?? HEADLESS_PROCESS_POLL_MS;
   return new Promise<HeadlessRun>((resolveRun) => {
     const limit = o.maxOutputBytes ?? HEADLESS_MAX_OUTPUT_BYTES;
@@ -447,11 +449,11 @@ export function runHeadlessSeat(o: HeadlessSeatOptions): Promise<HeadlessRun> {
     } catch (e) { finish(null, null, (e as Error).message); return; }
     const cliRunning = (): boolean => child.exitCode === null && child.signalCode === null;
     /** One read of the process table, abandoned after PROCESS_TABLE_TIMEOUT_MS; null (and sweepError) when it fails. */
-    const read = (): Promise<ProcRow[] | null> => new Promise((res) => {
+    const read = (): Promise<GroupProcRow[] | null> => new Promise((res) => {
       let done = false;
       const fail = (why: string): void => { if (done) return; done = true; sweepError ??= why; res(null); };
       const t = setTimeout(() => fail(`the process table could not be read within ${PROCESS_TABLE_TIMEOUT_MS} ms`), PROCESS_TABLE_TIMEOUT_MS);
-      let p: Promise<ProcRow[]>;
+      let p: Promise<GroupProcRow[]>;
       try { p = Promise.resolve(readTable()); } catch (e) { p = Promise.reject(e); }
       p.then((rows) => { clearTimeout(t); if (done) return; done = true; res(rows); },
         (e: unknown) => { clearTimeout(t); fail(`the process table could not be read: ${(e as Error)?.message ?? String(e)}`); });
@@ -462,16 +464,24 @@ export function runHeadlessSeat(o: HeadlessSeatOptions): Promise<HeadlessRun> {
       for (const d of descendantsOf(rows, child.pid)) known.set(d.pid, d.commandLine);
     };
     /** Signal the CLI's group and each of its subprocesses with its group: from a fresh read, only pids the table
-     *  still shows with the command they had while the CLI ran. */
+     *  still shows with the command they had while the CLI ran. While the CLI runs, its group is its own. Once it has
+     *  exited, the group is signalled only when the same read shows the group with no leader: some process in a group
+     *  numbered as the CLI's pid, and no process with that pid. Such a group is what the CLI left behind, its late
+     *  subprocesses included, which no earlier reading saw; a group whose number was taken over shows its new leader,
+     *  and a table that cannot be read (or has no groups) shows nothing, so neither is signalled. */
     const sweep = async (sig: NodeJS.Signals): Promise<void> => {
+      const running = cliRunning();
       const rows = await read();
       const targets: number[] = [];
+      let leftBehind = false;
       if (rows) {
         record(rows);
         const now = new Map(rows.map((r) => [r.pid, r.commandLine]));
         for (const [pid, cmd] of known) if (now.get(pid) === cmd) targets.push(pid);
+        const g = child.pid;
+        leftBehind = g !== undefined && !rows.some((r) => r.pid === g) && rows.some((r) => r.pgid === g);
       }
-      signalGroup(child, sig);
+      if (running || leftBehind) signalGroup(child, sig);
       for (const pid of targets) if (signalProcess(pid, sig)) swept.add(pid);
     };
     let reading = false;

@@ -723,6 +723,49 @@ test('Given a CLI that exits while a subprocess no signal reaches keeps its stdo
   assert.ok(alive(pids().grandchild), 'the pipe holder was not stopped, so the drain alone ended the wait');
 });
 
+/** A process table that shows the CLI while it runs and, once it has exited, `after(p)` (p: the stub's pids). The
+ *  CLI's subprocess is never shown while the CLI runs, as one started after the last reading would not be. */
+function tableAfterExit(pids, after) {
+  return async () => {
+    let p;
+    try { p = pids(); } catch { return []; }
+    if (alive(p.child)) return [{ pid: p.child, parentPid: process.pid, pgid: p.child, commandLine: 'claude -p' }];
+    return after(p);
+  };
+}
+
+test('Given a CLI that exits leaving a subprocess in its group it was never seen with, when a fresh read shows the group without its leader, then the group is signalled and the subprocess is gone', HANG_LIMIT, async (t) => {
+  const f = floor(t);
+  const pids = hanging(t, f, { ignoreTerm: false, print: `${JSON.stringify(SUCCESS)}\n`, exitAfterMs: 300 });
+  const table = tableAfterExit(pids, (p) => (alive(p.grandchild) ? [{ pid: p.grandchild, parentPid: 1, pgid: p.child, commandLine: 'node -e wait' }] : []));
+  const r = await H.runHeadlessSeat(f.opts({ processTable: table, processPollMs: 100 }));
+  assert.equal(r.ok, true, r.error);
+  assert.ok(await allGone([pids().grandchild]), 'the late subprocess is gone');
+});
+
+test('Given a CLI that has exited, when a fresh read shows a process holding its pid again, then its group number is not signalled', HANG_LIMIT, async (t) => {
+  const f = floor(t);
+  const pids = hanging(t, f, { ignoreTerm: false, print: `${JSON.stringify(SUCCESS)}\n`, exitAfterMs: 300 });
+  // The number now leads another group: its leader is listed. The grandchild stands in for that group's member.
+  const table = tableAfterExit(pids, (p) => [
+    { pid: p.child, parentPid: 1, pgid: p.child, commandLine: 'some other program' },
+    { pid: p.grandchild, parentPid: p.child, pgid: p.child, commandLine: 'its helper' },
+  ]);
+  const r = await H.runHeadlessSeat(f.opts({ processTable: table, processPollMs: 100 }));
+  assert.equal(r.ok, true, r.error);
+  assert.ok(alive(pids().grandchild), 'the group that took the number over was left alone');
+});
+
+test('Given a CLI that has exited, when the process table cannot be read, then its group is not signalled and the run says the table could not be read', HANG_LIMIT, async (t) => {
+  const f = floor(t);
+  const pids = hanging(t, f, { ignoreTerm: false, print: `${JSON.stringify(SUCCESS)}\n`, exitAfterMs: 300 });
+  const table = tableAfterExit(pids, () => { throw new Error('ps: Operation not permitted'); });
+  const r = await H.runHeadlessSeat(f.opts({ processTable: table, processPollMs: 100 }));
+  assert.match(r.sweepError ?? '', /Operation not permitted/);
+  assert.equal(r.killSignal, null, 'nothing is reported as killed');
+  assert.ok(alive(pids().grandchild), 'with nothing to go on, nothing was signalled');
+});
+
 test('Given a pid seen as a subprocess that shows another command once the CLI has exited, when the run ends, then that pid is not signalled', HANG_LIMIT, async (t) => {
   const f = floor(t);
   const pids = hanging(t, f, { ignoreTerm: false, detach: true, print: `${JSON.stringify(SUCCESS)}\n`, exitAfterMs: 600 });
@@ -773,6 +816,21 @@ test('Given a CLI whose subprocess runs in its own process group, when the timeo
   assert.equal(r.swept, 1);
   const p = pids();
   assert.ok(await allGone([p.child, p.grandchild]), `no process is left behind: ${JSON.stringify(p)}`);
+});
+
+test('Given a CLI that exits 0 leaving a same-group subprocess no reading saw, with the real process table (skipped where ps cannot run), then the subprocess is gone', HANG_LIMIT, async (t) => {
+  const { probeProcessGroups } = loadTs('src/core/processGroups.ts');
+  try { await probeProcessGroups(); } catch (e) { t.skip(`ps cannot run here: ${e.message}`); return; }
+  // Exit at 300 ms under the default 2 s poll, and a subprocess started 50 ms before the exit under a 100 ms poll:
+  // neither is ever recorded, so only the after-exit group signal can stop it.
+  for (const [conf, more] of [[{ exitAfterMs: 300 }, {}], [{ exitAfterMs: 300, childAfterMs: 250 }, { processPollMs: 100 }]]) {
+    const f = floor(t);
+    const pids = hanging(t, f, { ignoreTerm: false, print: `${JSON.stringify(SUCCESS)}\n`, ...conf });
+    const r = await H.runHeadlessSeat(f.opts(more));
+    assert.equal(r.ok, true, r.error);
+    assert.equal(r.sweepError, null, String(r.sweepError));
+    assert.ok(await allGone([pids().grandchild]), `the subprocess is gone (${JSON.stringify(conf)})`);
+  }
 });
 
 test('Given a run, when it resolves, then it says when it started', async (t) => {
