@@ -14,6 +14,7 @@ const loadTs = require('./load-ts.cjs');
 const { allCommitsIdle } = loadTs('src/core/hiveCommit.ts');
 const { HiveManager } = loadTs('src/main/hive.ts');
 const { recordHeadlessCost } = loadTs('src/core/headlessStream.ts');
+const { defaultStartTime } = loadTs('src/core/fileLock.ts');
 
 function floor(t) {
   const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'md-cost-queue-')));
@@ -125,4 +126,12 @@ test('quitting with a full queue and the lock free writes every row in one go, w
   const took = performance.now() - started;
   assert.ok(took < 1000, `the flush took ${Math.round(took)} ms`);
   assert.equal(lines(ledger).length, 1000);
+});
+
+test('pushing a row breaks an old lock whose pid another running process now has (needs ps for start times)', (t) => {
+  if (defaultStartTime(process.pid, 1000) === null) { t.skip('start times cannot be read here'); return; }
+  const { hive, ledger } = floor(t);
+  heldBy(`${ledger}.lock`, { started: 'ps:an earlier process', acquiredAt: new Date(Date.now() - 3_600_000).toISOString() });
+  hive.appendCostLedger(sample('a'));
+  assert.deepEqual(agents(ledger), ['a']);
 });

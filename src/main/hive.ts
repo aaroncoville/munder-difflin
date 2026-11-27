@@ -473,6 +473,8 @@ const TASK_LEDGER_WAIT_MS = 250;
 /** How long, when the app quits, writing the queued cost rows may take in all, lock waits included. */
 const COST_LEDGER_QUIT_WITHIN_MS = 1000;
 
+/** The most each process start-time read may take when the app takes the cost ledger's lock. */
+const COST_LEDGER_START_READ_MS = 100;
 
 /** `text` as one sh word that sh takes literally: in single quotes, each `'` written as `'\''`. */
 function shSingleQuote(text: string): string {
@@ -4207,13 +4209,15 @@ export class HiveManager {
 
   /** The app's cost rows waiting for the ledger lock. Failures and recoveries go to log.jsonl, once each. */
   private readonly costQueue = new CostLedgerQueue({
-    // The leading rows for one hive folder, under one hold of its lock.
+    // The leading rows for one hive folder, under one hold of its lock. startReadMs: the push path does not wait for
+    // the lock, but still reads start times, so this process's lock records carry one and a leftover lock whose pid
+    // another process now has can be judged.
     append: (items, waitMs) => {
       const batch = items as ReadonlyArray<{ root: string; row: object }>;
       const root = batch[0].root;
       let n = 1;
       while (n < batch.length && batch[n].root === root) n++;
-      appendCostLedgerRows(root, batch.slice(0, n).map((i) => i.row), 'app cost rows', { lockWaitMs: waitMs });
+      appendCostLedgerRows(root, batch.slice(0, n).map((i) => i.row), 'app cost rows', { lockWaitMs: waitMs, startReadMs: COST_LEDGER_START_READ_MS });
       return n;
     },
     report: (e) => {
