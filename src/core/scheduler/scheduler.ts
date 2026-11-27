@@ -137,6 +137,9 @@ export interface TickReport {
   skipped: Array<{ taskId: string; reason: string; holder?: LeaseStatus; runner?: RunnerProcess }>;
   /** Tasks whose turn stopped on an error; their run is left to resume on a later tick. */
   errors: Array<{ taskId: string; error: string }>;
+  /** Tasks whose newest run is for a slot after the clock's reading: a clock that ran ahead claimed it. No earlier slot
+   *  fires after a later one, so the task runs nothing until that slot's time comes; this says so on every tick. */
+  ahead: Array<{ taskId: string; slot: string; slotAt: number; reason: string }>;
 }
 
 /** The lease was taken over while this holder was still working. */
@@ -219,7 +222,7 @@ export class Scheduler {
 
   /** Resumes every unfinished run and claims and runs every due slot, each task under its lease, all at once. */
   async tick(): Promise<TickReport> {
-    const report: TickReport = { ran: [], skipped: [], errors: [] };
+    const report: TickReport = { ran: [], skipped: [], errors: [], ahead: [] };
     await Promise.all(this.store.tasks().map((t) => this.tickTask(t.def.id, t.createdAt, report)));
     return report;
   }
@@ -242,6 +245,12 @@ export class Scheduler {
     const def = this.store.getTask(taskId);
     if (!def) return;
     const now = this.now();
+    const ahead = newestAhead(this.store, taskId, now);
+    if (ahead && slotAtOrBefore(def.schedule, now).at >= createdAt) {
+      report.ahead.push({ taskId, slot: ahead.slot, slotAt: ahead.slotAt, reason: `task ${taskId}: its newest run is for slot ${ahead.slot}, `
+        + `which lies after the clock's reading now (${new Date(now).toISOString()}), so a clock that ran ahead claimed it; no earlier slot fires `
+        + 'after a later one, so the task runs nothing until that slot\'s time comes. If the clock was wrong, removing that run lets the task go on' });
+    }
     if (!this.openRun(taskId) && !this.dueSlot(def, createdAt, now)) return;
     if (this.inFlight.has(taskId)) {
       report.skipped.push({ taskId, reason: `task ${taskId}: this scheduler is already running it` });
@@ -450,9 +459,17 @@ export class Scheduler {
   }
 }
 
+/** The task's newest run, when its slot lies after `now`. */
+function newestAhead(store: SchedulerStore, taskId: string, now: number): { slot: string; slotAt: number } | null {
+  const r = store.db.prepare('SELECT slot, slot_at FROM scheduler_runs WHERE task_id = ? ORDER BY slot_at DESC LIMIT 1').get(taskId) as Record<string, unknown> | undefined;
+  return r && Number(r.slot_at) > now ? { slot: String(r.slot), slotAt: Number(r.slot_at) } : null;
+}
+
 export interface SchedulerStatus {
   /** Every lease, with its holder and whether it is held, hung (expired, holder alive) or stale. */
   leases: LeaseStatus[];
+  /** Tasks whose newest run is for a slot after `now` (see TickReport.ahead). */
+  ahead: Array<{ taskId: string; slot: string; slotAt: number }>;
   /** Runs claimed but not yet done or failed. */
   openRuns: Array<Pick<StoredRun, 'id' | 'taskId' | 'slot' | 'state' | 'attempt' | 'runner'>>;
 }
@@ -461,6 +478,7 @@ export interface SchedulerStatus {
 export function schedulerStatus(store: SchedulerStore, o: { now?: number; startTime?: (pid: number, timeoutMs: number) => string | null } = {}): SchedulerStatus {
   return {
     leases: leaseStatus(store, o.now ?? Date.now(), { startTime: o.startTime }),
+    ahead: store.tasks().flatMap((t) => { const a = newestAhead(store, t.def.id, o.now ?? Date.now()); return a ? [{ taskId: t.def.id, ...a }] : []; }),
     openRuns: store.runs().filter((r) => r.state !== 'done' && r.state !== 'failed')
       .map((r) => ({ id: r.id, taskId: r.taskId, slot: r.slot, state: r.state, attempt: r.attempt, runner: r.runner })),
   };

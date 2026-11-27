@@ -631,3 +631,24 @@ test('Given an unrecorded runner process and a process table that cannot be read
   assert.match(report.skipped[0].reason, /process table.*could not be read.*ps is not allowed here/);
   assert.equal(store.run('r-x').attempt, 1);
 });
+
+test('Given one tick with the clock a week ahead, when the clock is put right, then every tick and the status report the slot claimed ahead of it, naming it', LIMIT, async (t) => {
+  const f = floor(t);
+  const store = open(t, f);
+  store.putTask(taskDef(f), at(0, 6));
+  const { runner } = stub(f);
+  const clock = { now: at(8, 7, 20) };
+  const s = new Scheduler({ store, hiveRoot: f.hiveRoot, runner, now: () => clock.now });
+  const wrong = await s.tick();
+  assert.deepEqual(wrong.ahead, []);
+  clock.now = at(2, 7, 20);
+  for (let i = 0; i < 2; i++) {
+    const report = await s.tick();
+    assert.equal(report.ahead.length, 1);
+    assert.equal(report.ahead[0].slot, '2026-11-28T07:19');
+    assert.match(report.ahead[0].reason, /2026-11-28T07:19.*after the clock.*runs nothing until/);
+  }
+  assert.equal(calls(f).length, 1, 'no slot fired twice or out of order');
+  assert.deepEqual(schedulerStatus(store, { now: at(2, 7, 21) }).ahead.map((a) => a.slot), ['2026-11-28T07:19']);
+  assert.deepEqual(schedulerStatus(store, { now: at(9, 7, 21) }).ahead, [], 'nothing is reported once the clock has passed it');
+});
