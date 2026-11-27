@@ -381,6 +381,14 @@ test('Given a scheduler run in a process whose home is a temporary folder, when 
 const isAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 const cliPids = (file) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map(Number) : []);
 
+/** `p`, or a failure naming `what` once `ms` have passed: a restart that started the runner again would wait for its
+ *  CLI, so this turns that into a failed assertion rather than a test that ends by its time limit. */
+function within(p, ms, what) {
+  let timer;
+  return Promise.race([p, new Promise((_, reject) => { timer = setTimeout(() => reject(new assert.AssertionError({ message: what })), ms); })])
+    .finally(() => clearTimeout(timer));
+}
+
 async function gone(pid, ms = 10_000) {
   const end = Date.now() + ms;
   while (isAlive(pid)) {
@@ -407,7 +415,7 @@ test('Given a scheduler killed while the detached CLI it started keeps running, 
   await first.exited;
   assert.ok(isAlive(cli), 'the detached CLI outlived its scheduler');
   for (let i = 0; i < 3; i++) {
-    const again = await child(t, { ...opts, now: at(1, 7, 25 + i) }).exited;
+    const again = await within(child(t, { ...opts, now: at(1, 7, 25 + i) }).exited, 10_000, 'a restart did not return: it started the runner again beside the survivor');
     assert.equal(again.code, 0, again.err);
     const report = JSON.parse(again.out);
     assert.equal(report.ran.length, 0);
@@ -512,4 +520,35 @@ test('Given a lease taken over while the runner worked, when the runner returns,
   assert.match(report.errors[0].error, /taken over/);
   assert.equal(ledgerRows(f).length, 1, 'no cost row');
   assert.equal(mail(f).length, 0, 'no mail');
+});
+
+test('Given a scheduler killed and then its CLI, while a subprocess the CLI started still runs in its group, when a scheduler restarts, then the run is not started again; once the group is empty, it is', LIMIT, async (t) => {
+  const f = floor(t);
+  const store = open(t, f);
+  store.putTask(taskDef(f), at(0, 6));
+  const cliLog = path.join(f.base, 'cli.log');
+  t.after(() => { for (const pid of cliPids(cliLog)) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } } });
+  const opts = { dbPath: f.dbPath, hiveRoot: f.hiveRoot, calls: f.calls, cliLog, now: at(1, 7, 20), mode: 'detached', cliMs: 60_000, cliChild: true };
+  const first = child(t, opts);
+  const end = Date.now() + 10_000;
+  while (cliPids(cliLog).length < 2 || !runsOf(store)[0]?.runner) { if (Date.now() > end) throw new Error('the CLI and its subprocess never started'); await new Promise((r) => setTimeout(r, 20)); }
+  const [cli, sub] = cliPids(cliLog);
+  process.kill(first.pid, 'SIGKILL');
+  await first.exited;
+  process.kill(cli, 'SIGKILL');
+  await gone(cli);
+  assert.ok(isAlive(sub), 'the subprocess outlived the CLI');
+  const again = await within(child(t, { ...opts, now: at(1, 7, 25), cliChild: false }).exited, 10_000, 'a restart did not return: it started the runner again beside the group');
+  assert.equal(again.code, 0, again.err);
+  const report = JSON.parse(again.out);
+  assert.equal(report.ran.length, 0);
+  assert.match(report.skipped[0].reason, new RegExp(`group ${cli}.*still running`));
+  assert.equal(calls(f).length, 1);
+
+  process.kill(sub, 'SIGKILL');
+  await gone(sub);
+  const last = await within(child(t, { ...opts, now: at(1, 7, 30), cliMs: 50, cliChild: false }).exited, 10_000, 'the last restart did not finish');
+  assert.equal(last.code, 0, last.err);
+  assert.equal(calls(f).length, 2, 'started again once the group was empty');
+  exactlyOnce(f, store);
 });
