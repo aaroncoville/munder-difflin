@@ -1,7 +1,9 @@
 'use strict';
 
-// The Claude hook shim the app writes (<hive>/bin/cth-hook.cjs) tells the app its parent process, as hook_ppid, so a
-// heavy-job slot can be tied to the CLI that asked for it.
+// The Claude hook shim the app writes (<hive>/bin/cth-hook.cjs) tells the app which CLI runs a command call
+// (hook_ppid, with its command name), so a heavy-job slot can be tied to it: its parent, or, when its parent is the
+// shell that ran this hook, that shell's parent. It reads that itself, so the app reads no process on its own thread.
+// A value the payload carried is never passed on.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -9,12 +11,15 @@ const fs = require('node:fs');
 const os = require('node:os');
 const net = require('node:net');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const loadTs = require('./load-ts.cjs');
 const { allCommitsIdle } = loadTs('src/core/hiveCommit.ts');
 const { HiveManager } = loadTs('src/main/hive.ts');
 
-test('the hook shim sends its parent pid with each hook', async (t) => {
+const psWorks = spawnSync('ps', ['-o', 'ppid=', '-p', String(process.pid)]).status === 0;
+
+/** The frame the real shim sends when started by `argv` with `payload` on stdin. */
+async function frame(t, argv, payload) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'md-shim-ppid-'));
   const short = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-'));
   t.after(async () => { await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); fs.rmSync(short, { recursive: true, force: true }); });
@@ -22,15 +27,35 @@ test('the hook shim sends its parent pid with each hook', async (t) => {
   hive.ensureHive();
   const shim = path.join(hive.root(), 'bin', 'cth-hook.cjs');
   const sock = path.join(short, 's');
-  let frame = '';
-  const srv = net.createServer((c) => { c.on('data', (d) => { frame += d; if (frame.includes('\n')) c.end('{}'); }); });
+  let got = '';
+  const srv = net.createServer((c) => { c.on('data', (d) => { got += d; if (got.includes('\n')) c.end('{}'); }); });
   await new Promise((r) => srv.listen(sock, r));
   t.after(() => srv.close());
   await new Promise((resolve) => {
-    const child = spawn(process.execPath, [shim], { env: { PATH: process.env.PATH, ELECTRON_RUN_AS_NODE: '1', HIVE_SOCK: sock, AGENT_ID: 'ag1' } });
+    const [cmd, ...args] = argv(shim);
+    const child = spawn(cmd, args, { env: { PATH: process.env.PATH, ELECTRON_RUN_AS_NODE: '1', HIVE_SOCK: sock, AGENT_ID: 'ag1' } });
     child.on('close', resolve);
-    child.stdin.end(JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npm test' } }));
+    child.stdin.end(JSON.stringify(payload));
   });
-  const sent = JSON.parse(frame.split('\n')[0]);
-  assert.equal(sent.hook_ppid, process.pid, 'its parent is this test process, which started it');
+  return JSON.parse(got.split('\n')[0]);
+}
+
+const BASH = { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npm test' } };
+
+test('a command call names its parent as the CLI when the parent is not the hook\'s shell', { skip: !psWorks && 'ps cannot run here' }, async (t) => {
+  const sent = await frame(t, (shim) => [process.execPath, shim], BASH);
+  assert.equal(sent.hook_ppid, process.pid, 'this test process started it');
+  assert.equal(typeof sent.hook_ppid_command, 'string');
+});
+
+test('a hook run through a shell names that shell\'s parent as the CLI', { skip: !psWorks && 'ps cannot run here' }, async (t) => {
+  // `; true` keeps the shell alive as the hook's parent (no exec of the last command).
+  const sent = await frame(t, (shim) => ['/bin/sh', '-c', `"${process.execPath}" "${shim}"; true`], BASH);
+  assert.equal(sent.hook_ppid, process.pid, 'past the shell, to this test process');
+});
+
+test('a pid the payload carried is dropped, and a call with no command sends none', async (t) => {
+  const planted = await frame(t, (shim) => [process.execPath, shim], { hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path: '/x' }, hook_ppid: 4242, hook_ppid_command: 'forged' });
+  assert.equal(Object.hasOwn(planted, 'hook_ppid'), false);
+  assert.equal(Object.hasOwn(planted, 'hook_ppid_command'), false);
 });

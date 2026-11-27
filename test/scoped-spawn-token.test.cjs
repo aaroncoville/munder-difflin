@@ -125,6 +125,6 @@ test('the shim sends its spawn token only when the app set one', async (t) => {
   await run({}, { hook_event_name: 'PreToolUse' });
   await run({}, { hook_event_name: 'PreToolUse', hive_spawn: 'planted' });
   assert.equal(frames[0].hive_spawn, 'abc', 'the app\'s token, whatever the payload said');
-  assert.deepEqual(Object.keys(frames[1]), ['hive_seat_id', 'agent_id', 'hook_event_name', 'hook_ppid'], 'no token: no hive_spawn key');
+  assert.deepEqual(Object.keys(frames[1]), ['hive_seat_id', 'agent_id', 'hook_event_name'], 'no token: the frame is as before');
   assert.equal(Object.hasOwn(frames[2], 'hive_spawn'), false, 'a planted token is dropped');
 });

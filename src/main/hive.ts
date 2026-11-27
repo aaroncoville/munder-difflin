@@ -4816,9 +4816,29 @@ process.stdin.on('end', () => {
   // A scoped spawn's own token (set by the app per spawn), so the app judges this call by that spawn's policy.
   if (process.env.HIVE_SPAWN_TOKEN) payload.hive_spawn = process.env.HIVE_SPAWN_TOKEN;
   else delete payload.hive_spawn;
-  // This hook's parent process: the CLI, or the shell it ran the hook in. The app keeps it with a heavy-job slot, so
-  // the slot is freed if that CLI exits with the call still open.
-  payload.hook_ppid = process.ppid;
+  // The CLI that runs a command call, for the app's heavy-job slot, so the slot can be freed if that CLI exits with
+  // the call still open: this hook's parent, or, when the parent is the shell that ran this hook (its command names
+  // this file), that shell's parent. Read here, in this short-lived process, so the app reads no process on its own
+  // thread. Sent only when it could be read; whatever the payload carried is dropped.
+  delete payload.hook_ppid;
+  delete payload.hook_ppid_command;
+  if (payload.hook_event_name === 'PreToolUse' && payload.tool_input && typeof payload.tool_input.command === 'string' && process.platform !== 'win32') {
+    try {
+      const cp = require('child_process');
+      const read = (pid) => {
+        const out = cp.execFileSync('ps', ['-o', 'ppid=,command=', '-p', String(pid)], { encoding: 'utf8', timeout: 300, stdio: ['ignore', 'pipe', 'ignore'] });
+        const m = /^\\s*(\\d+)\\s+(.*?)\\s*$/.exec(out.split('\\n')[0] || '');
+        return m ? { ppid: Number(m[1]), command: m[2] } : null;
+      };
+      let pid = process.ppid;
+      let row = read(pid);
+      if (row && /cth-hook\\.cjs/.test(row.command)) { pid = row.ppid; row = read(pid); }
+      if (row && pid > 1) {
+        payload.hook_ppid = pid;
+        payload.hook_ppid_command = (row.command.split(/\\s+/)[0] || '').split('/').pop().slice(0, 64);
+      }
+    } catch (_) {}
+  }
   const sock = process.env.HIVE_SOCK;
   if (isStatus) {
     // Status-line mode: Claude Code pipes the session status JSON (incl.
