@@ -886,3 +886,24 @@ test('Given a CLI that exits just before its timeout while the after-exit sweep 
   assert.equal(r.ok, true, r.error);
   assert.equal(r.totalCostUsd, 0.0042);
 });
+
+test('Given launch keys, when the seat runs, then each launch has a settings file of its own in the private folder, removed when its run ends; without a key the shared file is used', async (t) => {
+  const f = floor(t, { stdout: JSON.stringify(SUCCESS) + '\n' });
+  const seen = [];
+  const a = await H.runHeadlessSeat(f.opts({ launchKey: 'r-1.a1', onLaunch: (l) => seen.push(fs.existsSync(l.settingsFile)) }));
+  const b = await H.runHeadlessSeat(f.opts({ launchKey: 'r-1.a2' }));
+  const shared = await H.runHeadlessSeat(f.opts());
+  assert.equal(path.dirname(a.settingsFile), f.settingsDir);
+  assert.notEqual(a.settingsFile, b.settingsFile);
+  assert.notEqual(a.settingsFile, shared.settingsFile);
+  assert.deepEqual(seen, [true], 'the file was there for the CLI');
+  assert.equal(fs.existsSync(a.settingsFile), false, 'removed when its run ended');
+  assert.equal(fs.existsSync(b.settingsFile), false);
+  assert.equal(fs.existsSync(shared.settingsFile), true, 'the shared file is kept');
+  assert.equal(f.record().argv[f.record().argv.indexOf('--settings') + 1], shared.settingsFile);
+});
+
+test('Given a launch key that is not a plain name, when the launch is built, then it is refused', (t) => {
+  const f = floor(t);
+  for (const k of ['', 'a/b', 'a b', '../x', 'x'.repeat(129)]) assert.throws(() => H.buildHeadlessLaunch(f.opts({ launchKey: k })), /launch key/, k);
+});
