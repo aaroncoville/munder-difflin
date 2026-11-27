@@ -652,3 +652,33 @@ test('Given one tick with the clock a week ahead, when the clock is put right, t
   assert.deepEqual(schedulerStatus(store, { now: at(2, 7, 21) }).ahead.map((a) => a.slot), ['2026-11-28T07:19']);
   assert.deepEqual(schedulerStatus(store, { now: at(9, 7, 21) }).ahead, [], 'nothing is reported once the clock has passed it');
 });
+
+test('Given a finished run whose done mail cannot be written, when ticks go on, then it is reported and shown in the status, later slots still run, and once the write can succeed it is finished once', LIMIT, async (t) => {
+  const f = floor(t);
+  const store = open(t, f);
+  store.putTask(taskDef(f), at(0, 6));
+  const seat = path.dirname(f.outbox);
+  fs.rmSync(seat, { recursive: true });
+  const { runner } = stub(f);
+  const clock = { now: at(1, 7, 20) };
+  const s = new Scheduler({ store, hiveRoot: f.hiveRoot, runner, now: () => clock.now });
+  const first = await s.tick();
+  const [stuck] = runsOf(store);
+  assert.equal(stuck.state, 'ran');
+  assert.match(first.errors[0].error, new RegExp(`run ${stuck.id}: its cost row or done mail could not be written`));
+  assert.match(schedulerStatus(store, { now: clock.now }).openRuns[0].effectsError, /could not be written/);
+
+  clock.now = at(2, 7, 20);
+  await s.tick();
+  assert.equal(calls(f).length, 2, 'the next day\'s slot ran although the first run is still unfinished');
+
+  fs.mkdirSync(f.outbox, { recursive: true });
+  clock.now = at(2, 7, 25);
+  await s.tick();
+  const runs = runsOf(store);
+  assert.deepEqual(runs.map((r) => r.state), ['done', 'done']);
+  assert.equal(runs[0].effectsError, null);
+  for (const r of runs) assert.equal(rowsFor(f, r.id).length, 1, 'one cost row each');
+  assert.equal(mail(f).length, 2, 'one done mail each');
+  assert.equal(calls(f).length, 2, 'no runner was called again');
+});

@@ -47,6 +47,10 @@
  *    and the id; after, "sent". Before writing, the seat's outbox and then outbox/.sent (where the router files a
  *    delivered message under the same name, perhaps with a prefix) are searched for that id: in that order, because
  *    mail moves from the first to the second, so a message the router moves in between is still seen.
+ * A run whose cost row or done mail cannot be written (the ledger or the seat's outbox refuses it) stays "ran" with
+ * the reason stored and shown in the status, is reported on each tick, and is tried again; it does not hold up the
+ * task's later slots. A clock that ran ahead and claimed a future slot is reported on each tick until that slot's time.
+ *
  * One window is left: a crash after the runner's process has ended but before its outcome is stored (one synchronous
  * SQLite write) leaves the run "running" with a process that is gone, so it counts as an interrupted attempt and is
  * run again while attempts remain; the ledger then has one row, for the second turn.
@@ -227,9 +231,15 @@ export class Scheduler {
     return report;
   }
 
+  /** The task's run whose runner has not finished, if any: the one run a task's turn starts or resumes. */
   private openRun(taskId: string): StoredRun | null {
-    const open = this.store.runs(taskId).filter((r) => r.state === 'claimed' || r.state === 'running' || r.state === 'ran');
+    const open = this.store.runs(taskId).filter((r) => r.state === 'claimed' || r.state === 'running');
     return open[0] ?? null;
+  }
+
+  /** The task's runs whose runner has finished but whose cost row or done mail is still to be written. */
+  private unfinished(taskId: string): StoredRun[] {
+    return this.store.runs(taskId).filter((r) => r.state === 'ran');
   }
 
   /** The slot to claim now, if any: the latest one at or before now, if it falls after the task was first stored and
@@ -251,7 +261,7 @@ export class Scheduler {
         + `which lies after the clock's reading now (${new Date(now).toISOString()}), so a clock that ran ahead claimed it; no earlier slot fires `
         + 'after a later one, so the task runs nothing until that slot\'s time comes. If the clock was wrong, removing that run lets the task go on' });
     }
-    if (!this.openRun(taskId) && !this.dueSlot(def, createdAt, now)) return;
+    if (!this.openRun(taskId) && !this.unfinished(taskId).length && !this.dueSlot(def, createdAt, now)) return;
     if (this.inFlight.has(taskId)) {
       report.skipped.push({ taskId, reason: `task ${taskId}: this scheduler is already running it` });
       return;
@@ -263,7 +273,12 @@ export class Scheduler {
     }
     const lease = took.lease;
     this.inFlight.add(taskId);
+    const problem = (error: string): void => { report.errors.push({ taskId, error }); };
     try {
+      for (const done of this.unfinished(taskId)) {
+        const end = this.finish(done, lease, problem);
+        if (end !== 'ran') report.ran.push({ taskId, runId: done.id, slot: done.slot, state: end });
+      }
       let run = this.openRun(taskId);
       if (run && run.state === 'running' && !run.runner && run.runnerMarker) {
         const why = await this.adoptUnrecorded(run, lease);
@@ -285,7 +300,7 @@ export class Scheduler {
         if (!run) return;
         this.hooks.afterClaim?.();
       }
-      const end = await this.execute(run, lease, (error) => report.errors.push({ taskId, error }));
+      const end = await this.execute(run, lease, problem);
       report.ran.push({ taskId, runId: run.id, slot: run.slot, state: end });
     } catch (e) {
       report.errors.push({ taskId, error: (e as Error).message });
@@ -400,16 +415,36 @@ export class Scheduler {
       this.hooks.afterRunnerResult?.();
       run = this.store.run(run.id) as StoredRun;
     }
-    this.recordCost(run, lease);
-    this.sendDoneMail(this.store.run(run.id) as StoredRun, lease);
+    return this.finish(run, lease, problem);
+  }
+
+  /** Writes a finished run's cost row and done mail, once each, and ends it done or failed. When either cannot be
+   *  written, the run stays "ran" with the reason stored (effects_error, shown in the status) and reported, and is
+   *  tried again on later ticks; it no longer holds up the task's later slots. */
+  private finish(ran: StoredRun, lease: HeldLease, problem: (error: string) => void): StoredRun['state'] {
+    const run = ran;
+    try {
+      this.writeEffects(run, lease);
+    } catch (e) {
+      if (e instanceof LeaseLost) throw e;
+      const why = `run ${run.id}: its cost row or done mail could not be written (${(e as Error).message}); its turn has been paid for, so it is tried again on each tick, and the task's later slots go on meanwhile`;
+      this.guarded(lease, 'UPDATE scheduler_runs SET effects_error = ? WHERE id = ?', why, run.id);
+      problem(why);
+      return 'ran';
+    }
     const cli = (run.outcome as RunnerOutcome).run;
     if (!cli.ok) {
       const why = cli.error ?? `the CLI ended ${cli.outcome}${cli.subtype ? ` (${cli.subtype})` : ''}`;
-      this.guarded(lease, "UPDATE scheduler_runs SET state = 'failed', failure = ?, ended_at = ? WHERE id = ?", `the run did not succeed: ${why}`, this.now(), run.id);
+      this.guarded(lease, "UPDATE scheduler_runs SET state = 'failed', failure = ?, effects_error = NULL, ended_at = ? WHERE id = ?", `the run did not succeed: ${why}`, this.now(), run.id);
       return 'failed';
     }
-    this.guarded(lease, "UPDATE scheduler_runs SET state = 'done', ended_at = ? WHERE id = ?", this.now(), run.id);
+    this.guarded(lease, "UPDATE scheduler_runs SET state = 'done', effects_error = NULL, ended_at = ? WHERE id = ?", this.now(), run.id);
     return 'done';
+  }
+
+  private writeEffects(run: StoredRun, lease: HeldLease): void {
+    this.recordCost(run, lease);
+    this.sendDoneMail(this.store.run(run.id) as StoredRun, lease);
   }
 
   /** At most one ledger row for the run: see the header. Throws when the append fails, leaving the run to resume. */
@@ -471,7 +506,7 @@ export interface SchedulerStatus {
   /** Tasks whose newest run is for a slot after `now` (see TickReport.ahead). */
   ahead: Array<{ taskId: string; slot: string; slotAt: number }>;
   /** Runs claimed but not yet done or failed. */
-  openRuns: Array<Pick<StoredRun, 'id' | 'taskId' | 'slot' | 'state' | 'attempt' | 'runner'>>;
+  openRuns: Array<Pick<StoredRun, 'id' | 'taskId' | 'slot' | 'state' | 'attempt' | 'runner' | 'effectsError'>>;
 }
 
 /** What the scheduler is doing, for a caller to read: a hung holder shows as a lease in state "hung". */
@@ -480,6 +515,6 @@ export function schedulerStatus(store: SchedulerStore, o: { now?: number; startT
     leases: leaseStatus(store, o.now ?? Date.now(), { startTime: o.startTime }),
     ahead: store.tasks().flatMap((t) => { const a = newestAhead(store, t.def.id, o.now ?? Date.now()); return a ? [{ taskId: t.def.id, ...a }] : []; }),
     openRuns: store.runs().filter((r) => r.state !== 'done' && r.state !== 'failed')
-      .map((r) => ({ id: r.id, taskId: r.taskId, slot: r.slot, state: r.state, attempt: r.attempt, runner: r.runner })),
+      .map((r) => ({ id: r.id, taskId: r.taskId, slot: r.slot, state: r.state, attempt: r.attempt, runner: r.runner, effectsError: r.effectsError })),
   };
 }
