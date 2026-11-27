@@ -471,6 +471,9 @@ function putBackFields(now: RegistryAgent, before: RegistryAgent, wrote: Registr
 /** How long an app write to tasks.json waits for another holder of its lock. It runs on the main thread. */
 const TASK_LEDGER_WAIT_MS = 250;
 
+/** Whether the app's cost rows are being written (HiveManager.costLedgerStatus). */
+export interface CostLedgerStatus { failing: string | null; queued: number }
+
 /** How long, when the app quits, writing the queued cost rows may take in all, lock waits included. */
 const COST_LEDGER_QUIT_WITHIN_MS = 1000;
 
@@ -4229,8 +4232,21 @@ export class HiveManager {
       if (e.kind === 'dropped') console.warn(`[hive] cost row queue full: dropped ${e.count} oldest row(s)`);
       const { kind, ...rest } = e;
       this.appendLog({ event: `cost-ledger-append-${kind}`, ...rest });
+      if (kind === 'failing' || kind === 'recovered') {
+        this.costLedgerFailing = e.kind === 'failing' ? e.reason : null;
+        try { this.emit?.('hive:costLedgerStatus', this.costLedgerStatus()); } catch { /* a window that is gone */ }
+      }
     },
   });
+
+  /** Why the app's cost rows are not being written, while they are not; null while they are. */
+  private costLedgerFailing: string | null = null;
+
+  /** Whether the app's cost rows are being written: why not (null when they are), and how many wait. The window is
+   *  sent this ('hive:costLedgerStatus') when the rows start failing and when they are written again. */
+  costLedgerStatus(): CostLedgerStatus {
+    return { failing: this.costLedgerFailing, queued: this.costQueue.size };
+  }
 
   /** For quitting: write the queued cost rows now, within `withinMs` in all (lock waits included). Rows still queued
    *  then are reported to log.jsonl. Returns how many are left. */

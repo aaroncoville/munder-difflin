@@ -164,3 +164,28 @@ test('rows queued for two hive folders (around a switch of hive) each go to thei
   assert.deepEqual(agents(first), ['a']);
   assert.deepEqual(agents(second), ['b']);
 });
+
+test('the cost rows\' write status says when appends are failing and why, is sent to the window once, and clears on recovery', (t) => {
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'md-cost-status-')));
+  const seen = [];
+  const hive = new HiveManager(() => home, (channel, payload) => { if (channel === 'hive:costLedgerStatus') seen.push(payload); });
+  hive.ensureHive();
+  t.after(async () => { hive.flushCostLedger(0); await allCommitsIdle(); fs.rmSync(home, { recursive: true, force: true }); });
+  const ledger = path.join(hive.root(), 'cost-ledger.jsonl');
+  assert.deepEqual(hive.costLedgerStatus(), { failing: null, queued: 0 });
+  const outside = path.join(home, 'outside.jsonl');
+  fs.writeFileSync(outside, '');
+  fs.symlinkSync(outside, ledger);
+  hive.appendCostLedger(sample('a'));
+  hive.appendCostLedger(sample('b'));
+  const status = hive.costLedgerStatus();
+  assert.match(status.failing ?? '', /ELOOP|link/);
+  assert.equal(status.queued, 2);
+  assert.equal(seen.length, 1, 'the window was told of the failure once');
+  assert.equal(seen[0].failing, status.failing);
+  fs.rmSync(ledger);
+  assert.equal(hive.flushCostLedger(), 0);
+  assert.deepEqual(hive.costLedgerStatus(), { failing: null, queued: 0 });
+  assert.deepEqual(seen.at(-1), { failing: null, queued: 0 });
+  assert.equal(seen.length, 2);
+});

@@ -3857,6 +3857,7 @@ ipcMain.handle('hive:setAgentHold', (_evt, id: unknown, hold: unknown) => {
 });
 ipcMain.handle('hive:board', () => hive.board());
 ipcMain.handle('hive:tasks', () => hive.tasks());
+ipcMain.handle('hive:costLedgerStatus', () => hive.costLedgerStatus());
 ipcMain.handle('hive:log', (_evt, n: unknown) => hive.logTail(typeof n === 'number' ? n : 200));
 ipcMain.handle('hive:memory', (_evt, id: unknown) => hive.memory(hive.checkAgentId(id)));
 ipcMain.handle('hive:inbox', (_evt, id: unknown) => hive.inbox(hive.checkAgentId(id)));
