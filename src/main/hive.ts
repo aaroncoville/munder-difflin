@@ -59,7 +59,7 @@ import { MCP_CATALOG } from '../shared/mcpCatalog';
 import { selectBroadcastTargets } from '../shared/broadcast';
 import { preferredAgentRole } from '../shared/agentRole';
 import { updateTaskLedgerFile } from '../core/taskLedgerFile';
-import { appendCostLedgerRow } from '../core/costLedgerFile';
+import { appendCostLedgerRows } from '../core/costLedgerFile';
 import { CostLedgerQueue } from '../core/costLedgerQueue';
 import { expandTilde } from './fs';
 import { refreshMineIgnoresOnce } from './hiveMineIgnore';
@@ -470,8 +470,9 @@ function putBackFields(now: RegistryAgent, before: RegistryAgent, wrote: Registr
 /** How long an app write to tasks.json waits for another holder of its lock. It runs on the main thread. */
 const TASK_LEDGER_WAIT_MS = 250;
 
-/** How long, when the app quits, writing each queued cost row may wait for the ledger's lock. */
-const COST_LEDGER_QUIT_WAIT_MS = 1000;
+/** How long, when the app quits, writing the queued cost rows may take in all, lock waits included. */
+const COST_LEDGER_QUIT_WITHIN_MS = 1000;
+
 
 /** `text` as one sh word that sh takes literally: in single quotes, each `'` written as `'\''`. */
 function shSingleQuote(text: string): string {
@@ -4206,9 +4207,14 @@ export class HiveManager {
 
   /** The app's cost rows waiting for the ledger lock. Failures and recoveries go to log.jsonl, once each. */
   private readonly costQueue = new CostLedgerQueue({
-    append: (item, waitMs) => {
-      const { root, row } = item as { root: string; row: object };
-      appendCostLedgerRow(root, row, 'app cost rows', { lockWaitMs: waitMs });
+    // The leading rows for one hive folder, under one hold of its lock.
+    append: (items, waitMs) => {
+      const batch = items as ReadonlyArray<{ root: string; row: object }>;
+      const root = batch[0].root;
+      let n = 1;
+      while (n < batch.length && batch[n].root === root) n++;
+      appendCostLedgerRows(root, batch.slice(0, n).map((i) => i.row), 'app cost rows', { lockWaitMs: waitMs });
+      return n;
     },
     report: (e) => {
       if (e.kind === 'failing') console.warn(`[hive] cost rows are queued: ${e.reason}`);
@@ -4218,10 +4224,10 @@ export class HiveManager {
     },
   });
 
-  /** Write the queued cost rows now, waiting up to `waitMs` for the lock on each; for quitting. Rows still queued
-   *  are reported to log.jsonl. Returns how many are left. */
-  flushCostLedger(waitMs = COST_LEDGER_QUIT_WAIT_MS): number {
-    const left = this.costQueue.flush(waitMs);
+  /** For quitting: write the queued cost rows now, within `withinMs` in all (lock waits included). Rows still queued
+   *  then are reported to log.jsonl. Returns how many are left. */
+  flushCostLedger(withinMs = COST_LEDGER_QUIT_WITHIN_MS): number {
+    const left = this.costQueue.flush(withinMs);
     if (left > 0) {
       console.error(`[hive] ${left} cost row(s) could not be written to cost-ledger.jsonl`);
       this.appendLog({ event: 'cost-ledger-unflushed', rows: left });

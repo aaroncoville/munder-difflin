@@ -72,7 +72,7 @@ test('a linked ledger: the app row is not written through the link, stays queued
   assert.equal(failing.length, 1, JSON.stringify(logged(root)));
   assert.equal(failing[0].queued, 1);
   fs.rmSync(ledger);
-  assert.equal(hive.flushCostLedger(0), 0);
+  assert.equal(hive.flushCostLedger(), 0);
   assert.deepEqual(agents(ledger), ['a', 'b']);
   assert.ok(logged(root).some((e) => e.event === 'cost-ledger-append-recovered'));
 });
@@ -88,4 +88,41 @@ test('quitting with rows queued behind a held lock: they are flushed once it is 
   fs.rmSync(lock);
   assert.equal(hive.flushCostLedger(50), 0);
   assert.deepEqual(agents(ledger), ['a']);
+});
+
+const heldBy = (lock, more = {}) => fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, host: os.hostname(), acquiredAt: new Date().toISOString(), token: 'held', ...more }));
+
+test('pushing a row never waits for a held lock', (t) => {
+  const { hive, ledger } = floor(t);
+  heldBy(`${ledger}.lock`);
+  const started = performance.now();
+  for (let i = 0; i < 5; i++) hive.appendCostLedger(sample(`a${i}`));
+  const took = performance.now() - started;
+  assert.ok(took < 100, `five pushes behind a held lock took ${Math.round(took)} ms`);
+  assert.equal(fs.existsSync(ledger), false);
+});
+
+test('quitting with a full queue behind a held lock returns within the quit deadline and reports every row left', (t) => {
+  const { hive, root, ledger } = floor(t);
+  heldBy(`${ledger}.lock`);
+  for (let i = 0; i < 1000; i++) hive.appendCostLedger(sample(`a${i}`));
+  const started = performance.now();
+  const left = hive.flushCostLedger();
+  const took = performance.now() - started;
+  assert.equal(left, 1000);
+  assert.ok(took < 1300, `the flush took ${Math.round(took)} ms`);
+  assert.ok(logged(root).some((e) => e.event === 'cost-ledger-unflushed' && e.rows === 1000));
+});
+
+test('quitting with a full queue and the lock free writes every row in one go, well within the deadline', (t) => {
+  const { hive, ledger } = floor(t);
+  const lock = `${ledger}.lock`;
+  heldBy(lock);
+  for (let i = 0; i < 1000; i++) hive.appendCostLedger(sample(`a${i}`));
+  fs.rmSync(lock);
+  const started = performance.now();
+  assert.equal(hive.flushCostLedger(), 0);
+  const took = performance.now() - started;
+  assert.ok(took < 1000, `the flush took ${Math.round(took)} ms`);
+  assert.equal(lines(ledger).length, 1000);
 });
