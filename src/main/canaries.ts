@@ -25,7 +25,7 @@ import { existsSync, lstatSync, openSync, readFileSync, readSync, fstatSync, clo
 import { join } from 'node:path';
 
 export type CanaryFeature =
-  | 'memory-search' | 'memory-wakeup' | 'kg-search' | 'hook-socket'
+  | 'memory-search' | 'memory-wakeup' | 'memory-from-sandbox' | 'kg-search' | 'hook-socket'
   | 'helpers-intact' | 'node-on-path' | 'model-matches-launch';
 
 export type HelperProblem = 'missing' | 'not-regular' | 'not-executable' | 'stale' | 'modified';
@@ -37,6 +37,8 @@ export interface CanaryResult {
   ms: number;
   /** An enum or code only, e.g. 'off', 'refused-422', 'timeout', 'no-hits'. */
   detail?: string;
+  /** A short fixed sentence where the detail needs one, e.g. that a result was judged rather than measured. */
+  note?: string;
   /** For a probe not judged because the machine slept: which rule said so. */
   rule?: SleptRule;
   hits?: number;
@@ -84,6 +86,9 @@ export interface Helper {
 export interface CanaryDeps {
   /** Memory probes and whether they may run (see memoryCanary); `wing` is the owner tag agents send. */
   memory: MemoryCanary | null;
+  /** The sandbox block of the settings the app generates for a Claude seat (seatSandboxSettings), on a platform where
+   *  that sandbox takes effect; empty where it does not. Absent: taken as unsandboxed. */
+  seatSettings?: { sandbox?: { enabled?: boolean } };
   /** In-process knowledge-graph search; null when the graph is off. */
   kg: { search: (q: string, limit: number) => unknown[] } | null;
   /** The hook socket and this app's instance id; null without a hive root. */
@@ -187,6 +192,20 @@ export function memoryCanary(
     search: (q, o) => localRecall(url, bank, q, 5, o.wing),
     wakeUp: (w) => localRecall(url, bank, WAKE_UP_QUERY, WAKE_UP_RESULTS, w)
   };
+}
+
+/**
+ * Whether agents can reach the memory server from their seats. The probes above run in the app's own process, which no
+ * sandbox confines; agents run the hive-memory shim inside their seat's OS sandbox. The shim connects straight to the
+ * server's URL, and that sandbox refuses a direct connection to loopback (it admits only its own proxy, which the
+ * shim does not use); no setting the app writes admits one. A canary pass starts no process, so it cannot run the
+ * shim in a seat's sandbox: this judges the path from the seat settings instead, and a judged result is never a
+ * failure. A change to the shim's network path or to the seat's network settings must change this too.
+ */
+export function memoryFromSandbox(m: MemoryCanary | null, seat: { sandbox?: { enabled?: boolean } } | undefined): Omit<CanaryResult, 'feature' | 'ms'> {
+  if (m?.plan !== 'probe') return { ok: null, detail: m?.plan ?? 'off' };
+  if (seat?.sandbox?.enabled !== true) return { ok: true, detail: 'judged-from-seat-settings' };
+  return { ok: null, detail: 'judged-unreachable-from-sandbox', note: 'not reachable from a sandboxed seat (judged from seat settings, not measured)' };
 }
 
 /** Hits in a rendered recall: one per non-empty line that starts a result. */
@@ -344,6 +363,7 @@ export async function runCanaries(d: CanaryDeps): Promise<CanaryResult[]> {
   return [
     await timed('memory-search', async () => (m?.plan === 'probe' ? judgeRecall(await m.search(PROBE, { wing: m.wing })) : { ok: null, detail: m?.plan ?? 'off' })),
     await timed('memory-wakeup', async () => (m?.plan === 'probe' ? judgeRecall(await m.wakeUp(m.wing)) : { ok: null, detail: m?.plan ?? 'off' })),
+    await timed('memory-from-sandbox', async () => memoryFromSandbox(m, d.seatSettings)),
     await timed('kg-search', async () => {
       if (!d.kg) return { ok: null, detail: 'off' };
       const hits = d.kg.search(PROBE, 1).length;

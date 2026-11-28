@@ -37,14 +37,14 @@ import {
 } from './git';
 import { linkWorktreeDeps, unlinkWorktreeDeps } from './worktreeDeps';
 import { saveAskAttachment } from './askAttachments';
-import { HiveManager, type AgentMeta, type HiveMessage, type HiveTask } from './hive';
+import { HiveManager, seatSandboxSettings, type AgentMeta, type HiveMessage, type HiveTask } from './hive';
 import { serialTaskWrites } from './taskLedgerResult';
 import { archiveOrphanedAgents as archiveOrphans } from './orphanSweep';
 import { runCanaries, memoryCanary, SuspendFlag } from './canaries';
 import { TurnTracker, diffTasks, type UsageIds } from '../core/usageEvents';
 import { loadUsageSecret, usageRef } from '../core/usageRef';
 import { UsageLog, recordFromRenderer } from '../core/usageLog';
-import { ScopedRootsRefused, WriteRootsDryRun, seatGate, spawnLaunchFacts, type SpawnRecord } from '../core/writeRoots';
+import { ScopedRootsRefused, SANDBOXED_PLATFORMS, WriteRootsDryRun, seatGate, spawnLaunchFacts, type SpawnRecord } from '../core/writeRoots';
 import { writeWeeklyDigest } from '../core/usageDigest';
 import { HookServer } from './hooks';
 import { HeavyJobLock, heavyLimit, heavySlotNotice, probeProcesses } from '../core/heavyJob';
@@ -5711,6 +5711,9 @@ async function runCanaryPass(): Promise<void> {
     // Decided from the saved settings and the live backend's id; the backend itself
     // is never asked (even its status may spawn its CLI).
     memory: memoryCanary(memory, migrateMemorySettings(readConfig()), godId),
+    // What a seat's sandbox allows, from the code that writes its settings. A seat always has writable dirs (its own
+    // folder at least), so the hive root stands in for them; the sandbox takes effect only where the OS has one.
+    seatSettings: SANDBOXED_PLATFORMS.has(process.platform) ? seatSandboxSettings([root], readConfig().scopedRoots === true) : {},
     kg: knowledge.active() ? { search: (q, limit) => knowledge.search(q, limit) } : null,
     hook: sock ? { sock, instance: hookServer.instance() } : null,
     helpers: hive.installedHelpers(),

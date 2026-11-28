@@ -52,7 +52,7 @@ const shape = oneOf(['done-ack', 'option', 'short', 'sentence', 'long']);
 const status = oneOf(CARD_STATUSES);
 const view = oneOf(VIEWS);
 const lockKind = oneOf(['suite', 'build']);
-const canaryFeature = oneOf(['memory-search', 'memory-wakeup', 'kg-search', 'hook-socket', 'helpers-intact', 'node-on-path', 'model-matches-launch']);
+const canaryFeature = oneOf(['memory-search', 'memory-wakeup', 'memory-from-sandbox', 'kg-search', 'hook-socket', 'helpers-intact', 'node-on-path', 'model-matches-launch']);
 /** Error codes a canary probe can report (Node errno names). */
 const ERRNO_CODES = [
   'ENOENT', 'ECONNREFUSED', 'ECONNRESET', 'ECONNABORTED', 'ETIMEDOUT', 'EACCES', 'EPERM', 'EPIPE', 'EHOSTUNREACH',
@@ -60,7 +60,8 @@ const ERRNO_CODES = [
 ];
 const CANARY_CODES = [
   'off', 'not-probed-spawn', 'not-probed-remote', 'not-probed-switching', 'not-loopback', 'no-hits', 'redirect', 'error', 'closed',
-  'timeout', 'bad-reply', 'other-instance', 'wrong-pong', 'threw', 'no-root', 'not-found', 'host-slept'
+  'timeout', 'bad-reply', 'other-instance', 'wrong-pong', 'threw', 'no-root', 'not-found', 'host-slept',
+  'judged-unreachable-from-sandbox', 'judged-from-seat-settings'
 ];
 /** A canary's failure code: a known code, an HTTP refusal or a known errno name; anything else is 'other'. */
 const canaryCode = (v: unknown): string | null => {
