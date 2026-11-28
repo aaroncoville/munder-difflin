@@ -74,3 +74,20 @@ test('a feature that is off stays off while the flag is set', async (t) => {
   const r = await run(t, { power });
   assert.deepEqual(verdict(r['memory-search']), [null, 'off', undefined]);
 });
+
+test('canaries that never leave the app do not clear the flag: a second background-wake pass is still not judged', async (t) => {
+  const power = new C.SuspendFlag();
+  power.suspend();
+  // The knowledge graph, helper and launch checks run in the app's own process and pass while the service is frozen.
+  const pass = () => run(t, { ...probes(5_000), kg: { search: () => [1] }, power });
+  assert.equal((await pass())['kg-search'].ok, true, 'an in-process canary passed during the first pass');
+  const second = await pass();
+  assert.deepEqual(verdict(second['memory-search']), [null, 'host-slept', 'suspend flag']);
+  assert.deepEqual(verdict(second['memory-wakeup']), [null, 'host-slept', 'suspend flag']);
+});
+
+test('a suspend while a probe is in flight, cleared again before it ends, still marks that probe', async (t) => {
+  const power = new C.SuspendFlag();
+  const r = await run(t, { ...probes(5_000, undefined, () => { power.suspend(); power.clear(); }), power });
+  assert.deepEqual(verdict(r['memory-search']), [null, 'host-slept', 'suspend flag']);
+});
