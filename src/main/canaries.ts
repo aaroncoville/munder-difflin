@@ -32,15 +32,41 @@ export type HelperProblem = 'missing' | 'not-regular' | 'not-executable' | 'stal
 
 export interface CanaryResult {
   feature: CanaryFeature;
-  /** null = the feature is off on this install, so there was nothing to check. */
+  /** null = nothing was judged: the feature is off on this install, or the machine slept during the probe. */
   ok: boolean | null;
   ms: number;
   /** An enum or code only, e.g. 'off', 'refused-422', 'timeout', 'no-hits'. */
   detail?: string;
+  /** For a probe not judged because the machine slept: which rule said so. */
+  rule?: SleptRule;
   hits?: number;
   problems?: Record<string, HelperProblem>;
   checked?: number;
   mismatched?: string[];
+}
+
+/** Why a probe was taken to have slept: it ended long after its own limit, or the system reported a suspend. */
+export type SleptRule = 'ran past its limit' | 'suspend flag';
+
+/** How long after its limit a probe may end and still have run awake. The limit's timer cannot fire while the
+ *  machine sleeps, so a probe ending well past it was suspended, whichever clock Node's timers follow. */
+const PAST_LIMIT_MS = 10_000;
+
+/**
+ * The system's suspend state, from Electron's powerMonitor. A suspend sets it; a resume, an unlock, the user becoming
+ * active, or any probe that succeeds clears it, so a missed resume cannot keep the canaries unjudged once the service
+ * answers again. A probe in flight at a suspend, or run while the flag is set (a background wake after a suspend,
+ * which sends no resume), is not judged.
+ */
+export class SuspendFlag {
+  private suspends = 0;
+  private set = false;
+  suspend(): void { this.suspends++; this.set = true; }
+  clear(): void { this.set = false; }
+  /** A mark to pass to sleptSince. */
+  mark(): number { return this.suspends; }
+  /** Whether a suspend came after `mark`, or the flag is set now. */
+  sleptSince(mark: number): boolean { return this.set || this.suspends !== mark; }
 }
 
 interface TextResult { ok: boolean; output: string; error?: string }
@@ -69,6 +95,8 @@ export interface CanaryDeps {
   launches: Map<string, Seen>;
   ledgerPath: string;
   timeoutMs?: number;
+  /** The system's suspend state, where Electron's powerMonitor reports it. Absent: only the past-limit rule applies. */
+  power?: SuspendFlag;
   now?: () => number;
 }
 
@@ -288,6 +316,7 @@ export async function runCanaries(d: CanaryDeps): Promise<CanaryResult[]> {
   const limit = d.timeoutMs ?? 20_000;
   const timed = async (feature: CanaryFeature, f: () => Promise<Omit<CanaryResult, 'feature' | 'ms'>>): Promise<CanaryResult> => {
     const t0 = now();
+    const mark = d.power?.mark();
     let timer: NodeJS.Timeout | undefined;
     const timeout = new Promise<Omit<CanaryResult, 'feature' | 'ms'>>((res) => {
       // Not unref'd: a hung probe must still end at the limit. It is always cleared below.
@@ -295,10 +324,19 @@ export async function runCanaries(d: CanaryDeps): Promise<CanaryResult[]> {
     });
     try {
       const r = await Promise.race([f(), timeout]);
-      return { feature, ms: now() - t0, ...r };
+      return judged(feature, now() - t0, r, mark);
     } catch {
-      return { feature, ok: false, ms: now() - t0, detail: 'threw' };
+      return judged(feature, now() - t0, { ok: false, detail: 'threw' }, mark);
     } finally { if (timer) clearTimeout(timer); }
+  };
+  // A pass can start in a brief background wake and end after the machine has slept again, and a local service may be
+  // frozen while it sleeps, so a probe that slept is not judged: ok null, detail 'host-slept', and the rule that said so.
+  const judged = (feature: CanaryFeature, ms: number, r: Omit<CanaryResult, 'feature' | 'ms'>, mark: number | undefined): CanaryResult => {
+    const rule: SleptRule | null = r.ok === null ? null : ms > limit + PAST_LIMIT_MS ? 'ran past its limit'
+      : r.ok === false && d.power && mark !== undefined && d.power.sleptSince(mark) ? 'suspend flag' : null;
+    if (rule) return { feature, ok: null, ms, detail: 'host-slept', rule };
+    if (r.ok === true) d.power?.clear();
+    return { feature, ms, ...r };
   };
   const m = d.memory;
   return [

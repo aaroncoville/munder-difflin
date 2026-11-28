@@ -40,7 +40,7 @@ import { saveAskAttachment } from './askAttachments';
 import { HiveManager, type AgentMeta, type HiveMessage, type HiveTask } from './hive';
 import { serialTaskWrites } from './taskLedgerResult';
 import { archiveOrphanedAgents as archiveOrphans } from './orphanSweep';
-import { runCanaries, memoryCanary } from './canaries';
+import { runCanaries, memoryCanary, SuspendFlag } from './canaries';
 import { TurnTracker, diffTasks, type UsageIds } from '../core/usageEvents';
 import { loadUsageSecret, usageRef } from '../core/usageRef';
 import { UsageLog, recordFromRenderer } from '../core/usageLog';
@@ -5696,6 +5696,8 @@ let canaryTimer: ReturnType<typeof setInterval> | null = null;
 let canaryFirst: ReturnType<typeof setTimeout> | null = null;
 /** Launch model per agent this run, for the model-matches-launch canary. */
 const canaryLaunches = new Map<string, { model: string; ts: number }>();
+/** The system's suspend state for the canaries: a probe that slept is not judged. */
+const canaryPower = new SuspendFlag();
 
 /** Run the feature canaries and log one `canary` line each. Measure only, and
  *  nothing under the hive root is executed: backends are probed in-process and
@@ -5714,6 +5716,7 @@ async function runCanaryPass(): Promise<void> {
     helpers: hive.installedHelpers(),
     pathDirs: withHiveRuntimeFallback(process.env.PATH ?? '', root).split(delimiter).filter(Boolean),
     launches: canaryLaunches,
+    power: canaryPower,
     ledgerPath: join(root, 'cost-ledger.jsonl')
   });
   for (const r of results) hive.appendLog({ kind: 'canary', ...r });
@@ -6126,6 +6129,15 @@ app.whenReady().then(() => {
   powerMonitor.on('unlock-screen', () => onSystemResume('unlock-screen'));
   powerMonitor.on('suspend', () => { lastSuspendAt = Date.now(); console.log('[power] suspend — system sleeping'); });
   powerMonitor.on('lock-screen', () => { lastSuspendAt = Date.now(); console.log('[power] lock-screen'); });
+  // The canaries' suspend flag, and a log line for each event so the log shows whether a background wake sends a resume.
+  const canaryPowerEvent = (event: string, set: boolean): void => {
+    if (set) canaryPower.suspend(); else canaryPower.clear();
+    if (hive.root()) hive.appendLog({ kind: 'power', event });
+  };
+  powerMonitor.on('suspend', () => canaryPowerEvent('suspend', true));
+  powerMonitor.on('resume', () => canaryPowerEvent('resume', false));
+  powerMonitor.on('unlock-screen', () => canaryPowerEvent('unlock-screen', false));
+  powerMonitor.on('user-did-become-active', () => canaryPowerEvent('user-did-become-active', false));
   // Installed in both window modes: Electron's default menu would name the app
   // from app.name. "New Floor" is added only when multiple floors are on.
   installAppMenu();
