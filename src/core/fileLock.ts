@@ -19,8 +19,10 @@
  *   other machine id                              by age, after `staleMs`
  *   no machine id, or the writer has none         by host name, as for a record before machine ids
  *
- * A dead holder from before a rename therefore waits `staleMs`, as another machine's would. A stale lock is renamed aside and removed only if it is still the very file judged stale (device,
- * inode and token); otherwise it is put back. A volume that cannot make hard links cannot hold this lock, so
+ * A dead holder from before a rename therefore waits `staleMs`, as another machine's would.
+ *
+ * A stale lock is renamed aside and removed only if it is still the very file judged stale (device, inode and
+ * token); otherwise it is put back. A volume that cannot make hard links cannot hold this lock, so
  * taking it fails there, saying so. A holder confirms the lock is still its own (confirmFileLock) immediately
  * before it writes.
  */
