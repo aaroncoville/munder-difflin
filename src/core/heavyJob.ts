@@ -106,6 +106,8 @@ function segments(cmd: string): string[] {
 const SHELL_DEPTH = 3;
 /** Shell keywords that may come before a command in one segment. */
 const SHELL_KEYWORDS = new Set(['if', 'then', 'elif', 'else', 'do', 'while', 'until', '!']);
+/** sudo flags that take their value as the next argument. */
+const SUDO_VALUE_FLAGS = new Set(['-u', '-g', '-h', '-p', '-C', '-U', '-r', '-t', '-T', '-D', '-R']);
 /** xargs flags that take their value as the next argument. */
 const XARGS_VALUE_FLAGS = new Set(['-n', '-L', '-P', '-s', '-I', '-J', '-R', '-d', '-E', '-a']);
 const WRAPPERS = new Set(['bash', 'sh', 'zsh', 'cmd', 'cmd.exe', 'powershell', 'powershell.exe', 'pwsh', 'pwsh.exe', 'bash.exe']);
@@ -166,11 +168,20 @@ function leading(ws: string[]): string[] {
     if (w === 'cd' || w === 'pushd') return []; // `cd x` alone is its own segment
     // Shell keywords before a command: `if npm test; then npm test; fi`, `while x; do npm test; done`, `! npm test`.
     if (SHELL_KEYWORDS.has(w)) { i++; continue; }
-    // A loop's or a case's own line names values, not a command to run.
-    if (w === 'for' || w === 'select' || w === 'case') return [];
-    // `command -v x` and `command -V x` only look a command up.
-    if (w === 'command') { if (ws[i + 1] === '-v' || ws[i + 1] === '-V') return []; i++; while (ws[i] === '-p') i++; continue; }
-    if (w === 'exec') { i++; while (i < ws.length && /^-[cl]+$|^-a$/.test(ws[i])) { if (ws[i] === '-a') i++; i++; } continue; }
+    // A case runs the command after its first pattern (`case x in x) npm test;; esac`); each later arm starts
+    // with its pattern (`*) npm test`). A case with no arm on this line runs nothing here.
+    if (w === 'case') { const arm = ws.findIndex((a, k) => k > i && /\)$/.test(a)); if (arm < 0) return []; i = arm + 1; continue; }
+    if (/^[^()]*\)$/.test(w)) { i++; continue; }
+    // `command -v x` and `command -V x` only look a command up, whatever follows; `--` ends the flags of exec.
+    if (w === 'command') {
+      i++;
+      for (; i < ws.length && ws[i].startsWith('-'); i++) { if (/[vV]/.test(ws[i])) return []; }
+      continue;
+    }
+    if (w === 'exec') { i++; while (i < ws.length && /^-[cl]+$|^-a$|^--$/.test(ws[i])) { if (ws[i] === '-a') i++; if (ws[i] === '--') { i++; break; } i++; } continue; }
+    // sudo runs the command after its own flags; coproc runs the command after it.
+    if (w === 'sudo') { i++; while (i < ws.length && ws[i].startsWith('-')) { if (ws[i] === '--') { i++; break; } if (SUDO_VALUE_FLAGS.has(ws[i])) i++; i++; } continue; }
+    if (w === 'coproc') { i++; continue; }
     // xargs runs the command after its own flags, with more arguments added.
     if (w === 'xargs') {
       i++;
@@ -208,7 +219,7 @@ function classifyWords(ws0: string[], depth: number): HeavyClass {
   const args = ws.slice(1);
   // A shell wrapper, nested up to SHELL_DEPTH deep: bash -c "...", cmd /c ..., powershell -Command ...
   // eval runs its arguments as a command line.
-  if (bin === 'eval') return depth < SHELL_DEPTH ? classifyCommand(args.join(' '), depth + 1) : { heavy: false };
+  if (bin === 'eval') return depth < SHELL_DEPTH ? classifyCommand((args[0] === '--' ? args.slice(1) : args).join(' '), depth + 1) : { heavy: false };
   if (WRAPPERS.has(bin) && depth < SHELL_DEPTH) {
     // -c also comes bundled with other flags, as in the login shell's -lc.
     const k = args.findIndex((a) => /^(-[a-z]*c|\/\/?c|\/\/?k|-command)$/i.test(a));

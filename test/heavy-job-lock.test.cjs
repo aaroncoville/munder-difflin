@@ -633,3 +633,14 @@ test('a redirection with no space before it, and a here-string, are redirections
   ]) assert.equal(classifyCommand(cmd).heavy, false, cmd);
   assert.equal(classifyCommand('node --test <<< "x" test/*.test.cjs').kind, 'suite', 'a glob after a here-string');
 });
+
+test('a suite after --, sudo, coproc or in a case arm counts as a suite; command -v with more words stays light', () => {
+  for (const cmd of [
+    'command -- npm test', 'exec -- npm test', 'eval -- npm test', 'command -p -- npm test',
+    'sudo npm test', 'sudo -u ci -E npm test', 'coproc npm test',
+    'case x in x) npm test;; esac', 'case "$1" in a|b) echo; ;; *) npm test ;; esac'
+  ]) assert.equal(classifyCommand(cmd).kind, 'suite', cmd);
+  for (const cmd of ['command -v npm test', 'command -V -- npm test', 'case npm in test) echo ;; esac']) {
+    assert.equal(classifyCommand(cmd).heavy, false, cmd);
+  }
+});
