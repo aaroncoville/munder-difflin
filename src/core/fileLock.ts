@@ -4,10 +4,22 @@
  *
  * The lock holds its holder's pid, host, machine id (machineId.ts), process start time, acquisition time and a
  * random token, and is created by hard-linking a complete record to its name, so it never exists without its
- * record. A holder on this machine (the same machine id, whatever the host was called; by host name for a record
- * with no machine id, or a writer that cannot read its own) that is still running (the same process, by start time where that can be read) is never broken,
- * however old its lock; one that has exited is. A lock whose holder cannot be identified is stale after
- * `staleMs`. A stale lock is renamed aside and removed only if it is still the very file judged stale (device,
+ * record. A holder on this host that is still running (the same process, by start time where that can be read)
+ * is never broken, however old its lock; one that has exited is. A lock whose holder cannot be identified is stale
+ * after `staleMs`.
+ *
+ * Which records are this host's (see whereHeld). A host name can change (macOS renames a host when another
+ * machine on the network has its name), and a machine id can be copied with the app data folder to another
+ * machine (a restore, a migration). So a matching id only protects a holder; it never condemns one by itself:
+ *
+ *   record                                        judged
+ *   same machine id, same host name               by pid and start time: running is never broken
+ *   same machine id, other host name              never broken while a process with that pid and start time runs
+ *                                                 here; otherwise by age, after `staleMs`
+ *   other machine id                              by age, after `staleMs`
+ *   no machine id, or the writer has none         by host name, as for a record before machine ids
+ *
+ * A dead holder from before a rename therefore waits `staleMs`, as another machine's would. A stale lock is renamed aside and removed only if it is still the very file judged stale (device,
  * inode and token); otherwise it is put back. A volume that cannot make hard links cannot hold this lock, so
  * taking it fails there, saying so. A holder confirms the lock is still its own (confirmFileLock) immediately
  * before it writes.
@@ -188,13 +200,16 @@ export interface StaleBounds {
 export interface HolderRecord { pid?: unknown; host?: unknown; machine?: unknown; started?: unknown }
 
 /**
- * Whether a holder record was written on this machine. Two machine ids decide it, whatever the host was called
- * when it was written: macOS renames a host when another machine on the network has its name. A record without
- * one (an older writer), or a writer that cannot read its own, falls back to the host name.
+ * Where a holder record was written, by the table in the header: 'here' (this host), 'renamed' (this machine's
+ * id under another host name: this host renamed, or a copy of the id on another machine), or 'elsewhere'.
  */
-export function onThisMachine(record: HolderRecord, machine: string | null | undefined): boolean {
-  if (typeof record.machine === 'string' && machine) return record.machine === machine;
-  return record.host === hostname();
+export function whereHeld(record: HolderRecord, machine: string | null | undefined): 'here' | 'renamed' | 'elsewhere' {
+  const sameHost = record.host === hostname();
+  if (typeof record.machine === 'string' && machine) {
+    if (record.machine !== machine) return 'elsewhere';
+    return sameHost ? 'here' : 'renamed';
+  }
+  return sameHost ? 'here' : 'elsewhere';
 }
 
 /**
@@ -209,7 +224,16 @@ export function onThisMachine(record: HolderRecord, machine: string | null | und
  * once, because whether the pid is alive is asked every time.
  */
 export function isStaleHolder(record: HolderRecord | null, ageMs: number, bounds: StaleBounds, owners: Map<string, boolean | null> = new Map()): boolean {
-  if (!record || !onThisMachine(record, bounds.machine) || !usablePid(record.pid)) return ageMs > bounds.staleMs;
+  const where = record ? whereHeld(record, bounds.machine) : 'elsewhere';
+  if (!record || where === 'elsewhere' || !usablePid(record.pid)) return ageMs > bounds.staleMs;
+  if (where === 'renamed') {
+    // Kept for good only while a process here is the one that wrote the record; otherwise by age.
+    if (ageMs <= bounds.staleMs) return false;
+    if (!alive(record.pid)) return true;
+    const key = `${record.pid} ${String(record.started)}`;
+    if (!owners.has(key)) owners.set(key, sameProcess(record.pid, record.started, bounds.startTime));
+    return owners.get(key) !== true;
+  }
   if (!alive(record.pid)) return true;
   // A fresh lock with a running holder is never broken, so there is no need yet to ask which process it is.
   if (ageMs <= bounds.staleMs) return false;
@@ -311,7 +335,7 @@ export function acquireFileLock(lock: string, opts: FileLockOptions): OwnLock {
         }
       }
       if (performance.now() >= deadline) {
-        const pid = last?.record && onThisMachine(last.record, machine) ? last.record.pid : undefined;
+        const pid = last?.record && whereHeld(last.record, machine) === 'here' ? last.record.pid : undefined;
         const advice = typeof pid === 'number'
           ? `; if that process is stuck, stopping it frees the lock; if pid ${pid} is not a hive process, deleting ${lock} by hand frees it`
           : '';

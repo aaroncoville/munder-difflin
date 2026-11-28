@@ -44,6 +44,48 @@ test('a live holder recorded under a host name this machine no longer has, with 
   assert.equal(JSON.parse(fs.readFileSync(lock, 'utf8')).token, 'theirs');
 });
 
+// An id file can be copied to a second machine (a restore, a migration), so this machine's id under another host
+// name only protects a holder this machine can see running; it never condemns one by itself.
+test('this machine\'s id under another host name, with no such process here, is judged by age, not broken at once', (t) => {
+  const dir = place(t);
+  const gone = 2 ** 22 + 12345; // a pid no process has here
+  const fresh = path.join(dir, 'fresh.lock');
+  fs.writeFileSync(fresh, JSON.stringify({ pid: gone, host: 'other-mac.local', machine: MINE, started: started(gone), acquiredAt: new Date(Date.now() - 1000).toISOString(), token: 'theirs' }));
+  assert.equal(taken(fresh, { machine: MINE, staleMs: 30_000 }), false, 'a second old: kept, as another machine\'s holder is');
+  const old = path.join(dir, 'old.lock');
+  fs.writeFileSync(old, JSON.stringify({ pid: gone, host: 'other-mac.local', machine: MINE, started: started(gone), acquiredAt: new Date(Date.now() - 10 * 60_000).toISOString(), token: 'theirs' }));
+  assert.equal(taken(old, { machine: MINE, staleMs: 30_000 }), true, 'older than staleMs: broken');
+});
+
+test('this machine\'s id under another host name, where the pid runs another process, is judged by age', (t) => {
+  const dir = place(t);
+  const fresh = path.join(dir, 'fresh.lock');
+  holdLock(fresh, { host: 'other-mac.local', machine: MINE, started: 'ps:another process', acquiredAt: new Date(Date.now() - 1000).toISOString() });
+  assert.equal(taken(fresh, { machine: MINE, staleMs: 30_000 }), false, 'a second old: kept');
+  const old = path.join(dir, 'old.lock');
+  holdLock(old, { host: 'other-mac.local', machine: MINE, started: 'ps:another process' });
+  assert.equal(taken(old, { machine: MINE, staleMs: 30_000 }), true, 'older than staleMs: broken');
+});
+
+test('this machine\'s id under another host name, where the start time cannot be read, is judged by age', (t) => {
+  const lock = path.join(place(t), 'file.lock');
+  holdLock(lock, { host: 'other-mac.local', machine: MINE });
+  assert.equal(taken(lock, { machine: MINE, staleMs: 30_000, startTime: () => null }), true, 'not shown to be the same process: broken once old');
+});
+
+test('a writer that times out names the holder\'s pid as one to stop only when the holder is on this host', (t) => {
+  const dir = place(t);
+  const message = (record) => {
+    const lock = path.join(dir, `${record.machine}-${record.host}.lock`);
+    holdLock(lock, record);
+    try { acquireFileLock(lock, opts({ machine: MINE, staleMs: 30 * 60_000 })); } catch (e) { return e.message; }
+    return 'taken';
+  };
+  assert.match(message({ host: os.hostname(), machine: MINE }), /stopping it frees the lock/);
+  assert.doesNotMatch(message({ host: os.hostname(), machine: OTHER }), /stopping it frees the lock/, 'another machine\'s holder');
+  assert.doesNotMatch(message({ host: 'other-mac.local', machine: MINE }), /stopping it frees the lock/, 'this id under another host name');
+});
+
 test('a holder with another machine\'s id is judged by age, as a holder on another host always was', (t) => {
   const lock = path.join(place(t), 'file.lock');
   holdLock(lock, { host: os.hostname(), machine: OTHER });
