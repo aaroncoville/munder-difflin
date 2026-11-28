@@ -298,6 +298,27 @@ function classifyWords(ws0: string[], depth: number): HeavyClass {
   return { heavy: false };
 }
 
+/** The command with each line continuation (a backslash, then a line break) removed outside single quotes, as the
+ *  shell removes it before reading the line: `npm run build && \` then `npm test` is one line. An escaped
+ *  backslash before a line break is not a continuation. */
+function joinContinuations(cmd: string): string {
+  let out = '';
+  let single = false;
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i];
+    if (single) { out += c; if (c === "'") single = false; continue; }
+    if (c === "'") { single = true; out += c; continue; }
+    if (c === '\\') {
+      if (cmd[i + 1] === '\n') { i++; continue; }
+      out += cmd.slice(i, i + 2);
+      i++;
+      continue;
+    }
+    out += c;
+  }
+  return out;
+}
+
 /**
  * Classify a command line: heavy if any segment it runs is heavy. A line that runs a test suite anywhere is a
  * suite, whatever heavy job comes before it: `npm run build && npm run test:focused` holds its slot as long as
@@ -305,7 +326,7 @@ function classifyWords(ws0: string[], depth: number): HeavyClass {
  */
 export function classifyCommand(cmd: string, depth = 0): HeavyClass {
   // A heredoc body is text, not commands, however much it looks like them.
-  const text = cmd.replace(/<<-?\s*['"]?(\w+)['"]?[^\n]*\n[\s\S]*?\n\s*\1\b/g, '');
+  const text = joinContinuations(cmd.replace(/<<-?\s*['"]?(\w+)['"]?[^\n]*\n[\s\S]*?\n\s*\1\b/g, ''));
   let first: HeavyClass | null = null;
   const seen = (c: HeavyClass): boolean => {
     if (c.heavy && !first) first = c;

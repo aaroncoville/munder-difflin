@@ -687,3 +687,15 @@ test('the | of >| is part of the redirection, not a pipe', () => {
   assert.equal(classifyCommand('echo x >| npm test').heavy, false, '>| writes to a file named npm; test is an argument of echo');
   assert.equal(classifyCommand('npm test >| out.log').kind, 'suite');
 });
+
+test('a line continuation joins the next line to the command, as the shell does', () => {
+  for (const cmd of [
+    'npm run build && \\\nnpm test',
+    'npm run build && \\\nnpm run test:focused 2>&1 | tail -5',
+    'npm run build; \\\nnpm test',
+    'cd x && \\\n  npm test',
+    'CI=1 \\\nnpm test'
+  ]) assert.equal(classifyCommand(cmd).kind, 'suite', JSON.stringify(cmd));
+  assert.equal(classifyCommand('node --test \\\n  test/a.test.cjs \\\n  2>&1').heavy, false, 'a single-file run split over lines');
+  assert.equal(classifyCommand("echo 'a \\\nnpm' test").heavy, false, 'inside single quotes a backslash and a line break are text');
+});
