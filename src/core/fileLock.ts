@@ -2,9 +2,10 @@
  * An exclusive lock file for one writer at a time across processes: the lock taken around every update of
  * `hive/tasks.json` (taskLedgerFile.ts, whose header gives the rules this keeps), usable for any file.
  *
- * The lock holds its holder's pid, host, process start time, acquisition time and a random token, and is
- * created by hard-linking a complete record to its name, so it never exists without its record. A holder on
- * this host that is still running (the same process, by start time where that can be read) is never broken,
+ * The lock holds its holder's pid, host, machine id (machineId.ts), process start time, acquisition time and a
+ * random token, and is created by hard-linking a complete record to its name, so it never exists without its
+ * record. A holder on this machine (the same machine id, whatever the host was called; by host name for a record
+ * with no machine id, or a writer that cannot read its own) that is still running (the same process, by start time where that can be read) is never broken,
  * however old its lock; one that has exited is. A lock whose holder cannot be identified is stale after
  * `staleMs`. A stale lock is renamed aside and removed only if it is still the very file judged stale (device,
  * inode and token); otherwise it is put back. A volume that cannot make hard links cannot hold this lock, so
@@ -16,6 +17,7 @@ import { randomBytes } from 'node:crypto';
 import { closeSync, existsSync, fstatSync, linkSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { basename, dirname, join } from 'node:path';
+import { machineId } from './machineId';
 
 /** Points inside lock acquisition where a test can pause one writer while another runs. */
 export interface FileLockHooks {
@@ -28,8 +30,11 @@ export interface FileLockHooks {
 export interface FileLockOptions {
   /** How long to wait for another holder before giving up. */
   waitMs: number;
-  /** A lock from another host, or with no readable record, is stale after this. */
+  /** A lock from another machine, or with no readable record, is stale after this. */
   staleMs: number;
+  /** This installation's id (machineId), recorded in the lock and compared with a holder's; null when it cannot
+   *  be read. Default: machineId(). */
+  machine?: string | null;
   /** Pause between attempts to take the lock. */
   retryMs: number;
   /** When process `pid` started, or null when that cannot be read within `timeoutMs` (defaultStartTime). */
@@ -49,7 +54,7 @@ export interface FileLockOptions {
   timeout: (lock: string, waitedMs: number, holder: string) => Error;
 }
 
-interface LockRecord { pid?: unknown; host?: unknown; started?: unknown; acquiredAt?: unknown; token?: unknown }
+interface LockRecord { pid?: unknown; host?: unknown; machine?: unknown; started?: unknown; acquiredAt?: unknown; token?: unknown }
 
 const sleeper = new Int32Array(new SharedArrayBuffer(4));
 function sleep(ms: number): void {
@@ -172,10 +177,25 @@ function sameProcess(pid: number, started: unknown, startTime: (pid: number) => 
   return now === started;
 }
 
-export interface StaleBounds { staleMs: number; startTime: (pid: number) => string | null }
+export interface StaleBounds {
+  staleMs: number;
+  startTime: (pid: number) => string | null;
+  /** This installation's id, to compare with a record's own. Absent or null: judged by host name alone. */
+  machine?: string | null;
+}
 
 /** Who holds a lock, as its record says: the pid, host and process start time it was taken with. */
-export interface HolderRecord { pid?: unknown; host?: unknown; started?: unknown }
+export interface HolderRecord { pid?: unknown; host?: unknown; machine?: unknown; started?: unknown }
+
+/**
+ * Whether a holder record was written on this machine. Two machine ids decide it, whatever the host was called
+ * when it was written: macOS renames a host when another machine on the network has its name. A record without
+ * one (an older writer), or a writer that cannot read its own, falls back to the host name.
+ */
+export function onThisMachine(record: HolderRecord, machine: string | null | undefined): boolean {
+  if (typeof record.machine === 'string' && machine) return record.machine === machine;
+  return record.host === hostname();
+}
 
 /**
  * Whether a holder recorded `ageMs` ago may be broken, by the rule in the header: a holder on this host that is
@@ -189,7 +209,7 @@ export interface HolderRecord { pid?: unknown; host?: unknown; started?: unknown
  * once, because whether the pid is alive is asked every time.
  */
 export function isStaleHolder(record: HolderRecord | null, ageMs: number, bounds: StaleBounds, owners: Map<string, boolean | null> = new Map()): boolean {
-  if (!record || record.host !== hostname() || !usablePid(record.pid)) return ageMs > bounds.staleMs;
+  if (!record || !onThisMachine(record, bounds.machine) || !usablePid(record.pid)) return ageMs > bounds.staleMs;
   if (!alive(record.pid)) return true;
   // A fresh lock with a running holder is never broken, so there is no need yet to ask which process it is.
   if (ageMs <= bounds.staleMs) return false;
@@ -258,7 +278,8 @@ export function acquireFileLock(lock: string, opts: FileLockOptions): OwnLock {
     return left > 0 ? opts.startTime(pid, left) : null;
   };
   const started = readStart(process.pid);
-  const body = JSON.stringify({ pid: process.pid, host: hostname(), ...(started === null ? {} : { started }), acquiredAt: new Date().toISOString(), token });
+  const machine = opts.machine === undefined ? machineId() : opts.machine;
+  const body = JSON.stringify({ pid: process.pid, host: hostname(), ...(machine ? { machine } : {}), ...(started === null ? {} : { started }), acquiredAt: new Date().toISOString(), token });
   let last: HeldLock | null = null;
   const owners = new Map<string, boolean | null>();
   const tmp = join(dirname(lock), `.${basename(lock)}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`);
@@ -284,13 +305,13 @@ export function acquireFileLock(lock: string, opts: FileLockOptions): OwnLock {
       const held = readLock(lock);
       if (held) {
         last = held;
-        if (isStale(held, { staleMs: opts.staleMs, startTime: readStart }, owners)) {
+        if (isStale(held, { staleMs: opts.staleMs, startTime: readStart, machine }, owners)) {
           opts.hooks.beforeBreak?.();
           if (breakStale(lock, held)) continue;
         }
       }
       if (performance.now() >= deadline) {
-        const pid = last?.record?.host === hostname() ? last.record.pid : undefined;
+        const pid = last?.record && onThisMachine(last.record, machine) ? last.record.pid : undefined;
         const advice = typeof pid === 'number'
           ? `; if that process is stuck, stopping it frees the lock; if pid ${pid} is not a hive process, deleting ${lock} by hand frees it`
           : '';

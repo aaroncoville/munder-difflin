@@ -1,6 +1,7 @@
 import './pinUserData';
 import { seedCodexHookTrust } from '../core/codexHookTrust';
 import { assertComputedCodexHome, CodexHomeRefused, codexSeatHome } from '../core/codexSeatHome';
+import { ensureMachineId } from '../core/machineId';
 import { applyGitCommitsSetting, gitCommitsDisabled } from './hiveGitSetting';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
 import { bundledResourcePath } from './resourcePaths';
@@ -300,6 +301,9 @@ hive.setProxyBridgeScript(bundledResourcePath('hive-proxy.cjs', {
 // The app's own data folder is one no agent may reach (privateDirs.ts); the folders inside it that the app chooses
 // register themselves as well, and so does any private folder kept elsewhere.
 registerPrivateDir(app.getPath('userData'), 'the app data folder');
+// This installation's id, made once, so a lock can tell its own holders from another machine's whatever the host is
+// called (machineId.ts). Locks only read it; without it they judge by host name.
+ensureMachineId();
 // The hive's git directory lives here, where no agent can write (an agent whose roots reach the app data folder is
 // refused), so no agent can decide what the app's git runs.
 hive.setGitDirBase(join(app.getPath('userData'), 'hive-git'));
