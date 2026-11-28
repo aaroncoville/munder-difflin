@@ -85,7 +85,7 @@ test('screens by dwell, card states, lock waits and canary failures', () => {
   assert.deepEqual(s.views, [{ view: 'command-center:human', opens: 1, dwellMs: 3 * MIN, unclosed: 0 }, { view: 'settings', opens: 0, dwellMs: MIN, unclosed: 0 }]);
   assert.deepEqual(s.stateHours, { doing: 2, blocked: 1 });
   assert.deepEqual(s.lockWaits, { suite: { n: 1, totalMs: 4 * MIN } });
-  assert.deepEqual(s.canaryFailures, { 'memory-search': { failed: 1, runs: 2, details: ['refused-422'] } });
+  assert.deepEqual(s.canaryCounts['memory-search'], { passed: 1, failed: 1, notJudged: 0, details: ['refused-422'], notJudgedDetails: [] });
 });
 
 test('the markdown names the week and carries no text beyond ids and numbers', () => {
@@ -158,7 +158,7 @@ test('id-shaped prose is printed only when the app holds it; other conversations
   const md = D.renderDigest(s, '2026-W45');
   assert.doesNotMatch(md, /ORCHID/);
   assert.match(md, /ref:a1b2c3d4e5f6/);
-  assert.deepEqual(s.canaryFailures, { 'memory-search': { failed: 1, runs: 1, details: ['other'] } });
+  assert.deepEqual(s.canaryCounts['memory-search'], { passed: 0, failed: 1, notJudged: 0, details: ['other'], notJudgedDetails: [] });
 });
 
 test('conversations are grouped by card and by ref only; a conversation value is never printed', () => {
@@ -274,7 +274,7 @@ test('L3: canary codes are a fixed list, ask times must be real, and the never-s
     ...Array.from({ length: 500 }, (_, k) => ({ ts: MON + H, kind: 'ask-filed', cardId: 'CARD-1', askKey: `CARD-1@${new Date(MON + k * 1000).toISOString()}` }))
   ]);
   const s = D.summarize({ log, ledger: [], usage: j([{ ts: MON, kind: 'ui-view', view: 'settings' }]), ownerData: true, cards: new Set(['CARD-1']), start: MON, end: MON + 7 * 86400_000 });
-  assert.deepEqual(s.canaryFailures['memory-search'].details, ['ECONNREFUSED', 'other']);
+  assert.deepEqual(s.canaryCounts['memory-search'].details, ['ECONNREFUSED', 'other']);
   const md = D.renderDigest(s, '2026-W45');
   assert.doesNotMatch(md, /EORCHID|ESECRETPROJECT|99:99/);
   assert.ok((md.match(/`CARD-1@/g) || []).length <= 50);
