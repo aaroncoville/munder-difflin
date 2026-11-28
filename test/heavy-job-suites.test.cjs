@@ -337,6 +337,12 @@ test('a build chained with a suite waits while another suite holds its slot', ()
   assert.equal(x.l.acquire('b', classifyCommand(cmd), cmd, 'b1', false).allow, false, 'its suite would run beside the other');
 });
 
+test('with no suite on the line, the first heavy job counts, whether it is in a segment or a $(...)', () => {
+  assert.deepEqual(classifyCommand('echo "$(npm run build)"'), { heavy: true, kind: 'build', why: 'npm run build' });
+  assert.equal(classifyCommand('echo $(npm ci) $(npm run build)').kind, 'install', 'the first substitution');
+  assert.equal(classifyCommand('npm run build && echo $(npm ci)').kind, 'build', 'a segment comes before a substitution');
+});
+
 test('a suite run inside a shell keyword, eval, xargs, command, exec or a nested shell counts as a suite', () => {
   for (const cmd of [
     'if npm run build; then npm test; fi',
