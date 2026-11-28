@@ -35,16 +35,25 @@ export function commandFromToolInput(input: unknown): string | null {
   return typeof v === 'string' ? v : null;
 }
 
-/** The words of a command, as a shell splits them: a word ends only at unquoted white space, so quoted and
- *  unquoted parts next to each other (`--test-name-pattern="a b"`) are one word. A quote with no partner is
- *  kept as a character. */
+/** The words of a command, as a shell splits them: a word ends only at unquoted white space or at a redirection,
+ *  so quoted and unquoted parts next to each other (`--test-name-pattern="a b"`) are one word, and `npm test>out`
+ *  is `npm`, `test`, `>`, `out`. A redirection is a word of its own, with the descriptor before it (`2>`, `&>`).
+ *  A quote with no partner is kept as a character. */
 function words(s: string): string[] {
   const out: string[] = [];
-  const re = /"((?:[^"\\]|\\.)*)"|'([^']*)'|((?:[^\s"'\\]|\\.)+)|(["'\\])|(\s+)/g;
+  const re = /"((?:[^"\\]|\\.)*)"|'([^']*)'|((?:[^\s"'\\<>]|\\.)+)|(["'\\])|(\s+)|((?:<<<|>>|<|>)&?)/g;
   let cur: string | null = null;
   let m: RegExpExecArray | null;
   while ((m = re.exec(s))) {
     if (m[5] !== undefined) { if (cur !== null) out.push(cur); cur = null; continue; }
+    if (m[6] !== undefined) {
+      // Digits or & right before the operator name the descriptor it redirects; anything else is a word before it.
+      const fd = cur !== null && /^(\d+|&)$/.test(cur) ? cur : '';
+      if (cur !== null && !fd) out.push(cur);
+      out.push(fd + m[6]);
+      cur = null;
+      continue;
+    }
     // A backslash before a shell character makes it a plain character, as the shell reads it, so a shell nested in
     // quotes (bash -c "bash -c \"npm test\"") is read with its own quotes. Other backslashes, as in a Windows
     // path, are kept.
@@ -56,8 +65,9 @@ function words(s: string): string[] {
   return out;
 }
 
-/** A redirection word: `>`, `2>>`, `&>`, `<`, with its target attached (`>out.log`, `2>&1`) or in the next word. */
-const REDIRECTION = /^(\d*|&)(>>?|<)(&?)(.*)$/;
+/** A redirection word: `>`, `2>>`, `&>`, `<`, a here-string `<<<`, with its target attached (`>&1`) or in the
+ *  next word. */
+const REDIRECTION = /^(\d*|&)(>>?|<<<|<)(&?)(.*)$/;
 
 /** The words without their redirections, which name where output goes, not what the command runs. */
 function withoutRedirections(ws: string[]): string[] {

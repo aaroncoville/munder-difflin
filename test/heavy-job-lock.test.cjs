@@ -623,3 +623,13 @@ test('a redirection and its target are not test files, so one test file with its
     ['npm ci 2>&1 | tail -3', 'install']
   ]) assert.equal(classifyCommand(cmd).kind, kind, cmd);
 });
+
+test('a redirection with no space before it, and a here-string, are redirections', () => {
+  for (const cmd of ['npm test>out.log', 'npm test<in.txt', 'npm test 2>err.log']) assert.equal(classifyCommand(cmd).kind, 'suite', cmd);
+  for (const cmd of [
+    'node --test test/a.test.cjs <<< "input data"',
+    "node --test test/a.test.cjs <<<'x y'",
+    'node --test test/a.test.cjs>out.log'
+  ]) assert.equal(classifyCommand(cmd).heavy, false, cmd);
+  assert.equal(classifyCommand('node --test <<< "x" test/*.test.cjs').kind, 'suite', 'a glob after a here-string');
+});
