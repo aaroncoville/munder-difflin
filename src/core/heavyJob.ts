@@ -51,6 +51,20 @@ function words(s: string): string[] {
   return out;
 }
 
+/** A redirection word: `>`, `2>>`, `&>`, `<`, with its target attached (`>out.log`, `2>&1`) or in the next word. */
+const REDIRECTION = /^(\d*|&)(>>?|<)(&?)(.*)$/;
+
+/** The words without their redirections, which name where output goes, not what the command runs. */
+function withoutRedirections(ws: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < ws.length; i++) {
+    const m = REDIRECTION.exec(ws[i]);
+    if (!m) { out.push(ws[i]); continue; }
+    if (m[4] === '') i++;
+  }
+  return out;
+}
+
 /** The segments a shell would run: split on ; && || | and newlines, outside quotes. */
 function segments(cmd: string): string[] {
   const out: string[] = [];
@@ -59,6 +73,8 @@ function segments(cmd: string): string[] {
     const c = cmd[i];
     if (q) { cur += c; if (c === q && cmd[i - 1] !== '\\') q = null; continue; }
     if (c === '"' || c === "'") { q = c; cur += c; continue; }
+    // The & of a redirection (2>&1, &>file, <&3) belongs to it; it neither ends a command nor puts one in the background.
+    if (c === '&' && (cmd[i - 1] === '>' || cmd[i - 1] === '<' || (cmd[i + 1] === '>' && cmd[i - 1] !== '&'))) { cur += c; continue; }
     if (c === ';' || c === '\n' || c === '|' || c === '&') {
       if (c === '&' && cmd[i + 1] !== '&' && cmd[i - 1] !== '&') { cur += ' &'; out.push(cur); cur = ''; continue; } // a lone & = background
       out.push(cur); cur = '';
@@ -233,7 +249,7 @@ export function classifyCommand(cmd: string, depth = 0): HeavyClass {
     return c.heavy && c.kind === 'suite';
   };
   for (const seg of segments(text)) {
-    const c = classifyWords(words(seg.replace(/\s&$/, '')), depth);
+    const c = classifyWords(withoutRedirections(words(seg.replace(/\s&$/, ''))), depth);
     if (seen(c)) return c;
   }
   // $(...) and backticks run outside single quotes, wherever they sit in the line.

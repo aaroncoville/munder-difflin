@@ -606,3 +606,20 @@ test('a glob or no file at all is still a suite, whatever quoted pattern comes w
     "node --test --test-name-pattern='a b' test"
   ]) assert.equal(classifyCommand(cmd).kind, 'suite', cmd);
 });
+
+test('a redirection and its target are not test files, so one test file with its output redirected stays light', () => {
+  for (const cmd of [
+    'node --test test/a.test.cjs > out.log',
+    'node --test test/a.test.cjs 2>&1 | grep x',
+    'node --test test/a.test.cjs > out.log 2>&1',
+    'node --test test/a.test.cjs 2>/dev/null',
+    'node --test test/a.test.cjs >>out.log 2> err.log',
+    'node --test test/a.test.cjs &> out.log'
+  ]) assert.equal(classifyCommand(cmd).heavy, false, cmd);
+  for (const [cmd, kind] of [
+    ['node --test test/*.test.cjs > out.log 2>&1', 'suite'],
+    ['node --test > out.log', 'suite'],
+    ['npm run test:focused > $TMPDIR/s.log 2>&1', 'suite'],
+    ['npm ci 2>&1 | tail -3', 'install']
+  ]) assert.equal(classifyCommand(cmd).kind, kind, cmd);
+});
