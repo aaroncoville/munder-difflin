@@ -54,11 +54,16 @@ export type SleptRule = 'ran past its limit' | 'suspend flag';
  *  machine sleeps, so a probe ending well past it was suspended, whichever clock Node's timers follow. */
 const PAST_LIMIT_MS = 10_000;
 
+/** The canaries whose probe reaches a service outside the app's own process. Only their success shows the machine is
+ *  awake and that service answering, so only it clears the suspend flag; the others pass while that service is frozen. */
+const REACHES_SERVICE: ReadonlySet<CanaryFeature> = new Set(['memory-search', 'memory-wakeup']);
+
 /**
  * The system's suspend state, from Electron's powerMonitor. A suspend sets it; a resume, an unlock, the user becoming
- * active, or any probe that succeeds clears it, so a missed resume cannot keep the canaries unjudged once the service
- * answers again. A probe in flight at a suspend, or run while the flag is set (a background wake after a suspend,
- * which sends no resume), is not judged.
+ * active, or a success of a probe that reaches a service outside the app (REACHES_SERVICE) clears it, so a missed
+ * resume cannot keep the canaries unjudged once that service answers again. Until then, after a missed resume, a real
+ * outage reads as host-slept. A probe in flight at a suspend, or run while the flag is set (a background wake after
+ * a suspend, which sends no resume), is not judged.
  */
 export class SuspendFlag {
   private suspends = 0;
@@ -356,7 +361,7 @@ export async function runCanaries(d: CanaryDeps): Promise<CanaryResult[]> {
     const rule: SleptRule | null = r.ok === null ? null : ms > limit + PAST_LIMIT_MS ? 'ran past its limit'
       : r.ok === false && d.power && mark !== undefined && d.power.sleptSince(mark) ? 'suspend flag' : null;
     if (rule) return { feature, ok: null, ms, detail: 'host-slept', rule };
-    if (r.ok === true) d.power?.clear();
+    if (r.ok === true && REACHES_SERVICE.has(feature)) d.power?.clear();
     return { feature, ms, ...r };
   };
   const m = d.memory;
