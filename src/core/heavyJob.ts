@@ -298,16 +298,14 @@ function classifyWords(ws0: string[], depth: number): HeavyClass {
   return { heavy: false };
 }
 
-/** The command with each line continuation (a backslash, then a line break) removed outside single quotes, as the
- *  shell removes it before reading the line: `npm run build && \` then `npm test` is one line. An escaped
- *  backslash before a line break is not a continuation. */
+/** The command with each line continuation (a backslash, then a line break) removed, as the shell removes it
+ *  before reading the line: `npm run build && \` then `npm test` is one line. An escaped backslash before a line
+ *  break is not a continuation. Quotes are not tracked: inside single quotes the shell keeps the pair as text,
+ *  but removing it there changes no quote and no word outside the quotes, so it cannot change what runs. */
 function joinContinuations(cmd: string): string {
   let out = '';
-  let single = false;
   for (let i = 0; i < cmd.length; i++) {
     const c = cmd[i];
-    if (single) { out += c; if (c === "'") single = false; continue; }
-    if (c === "'") { single = true; out += c; continue; }
     if (c === '\\') {
       if (cmd[i + 1] === '\n') { i++; continue; }
       out += cmd.slice(i, i + 2);

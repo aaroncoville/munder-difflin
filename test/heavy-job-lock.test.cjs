@@ -699,3 +699,12 @@ test('a line continuation joins the next line to the command, as the shell does'
   assert.equal(classifyCommand('node --test \\\n  test/a.test.cjs \\\n  2>&1').heavy, false, 'a single-file run split over lines');
   assert.equal(classifyCommand("echo 'a \\\nnpm' test").heavy, false, 'inside single quotes a backslash and a line break are text');
 });
+
+test('an apostrophe inside double quotes does not stop a line continuation from being joined', () => {
+  assert.equal(classifyCommand('echo "can\'t" && \\\nnpm test').kind, 'suite');
+  assert.equal(classifyCommand('npm run build && echo "can\'t" && \\\nnpm test').kind, 'suite');
+  assert.equal(classifyCommand('echo "it\'s ready"; \\\nnpm ci').kind, 'install');
+  assert.equal(classifyCommand('echo "a \\\nb" && npm test').kind, 'suite', 'a continuation inside double quotes');
+  assert.equal(classifyCommand('echo "a \\\nnpm test"').heavy, false, 'still quoted text after the join');
+  assert.equal(classifyCommand("echo 'a \\\nnpm test'").heavy, false, 'a continuation inside single quotes: still quoted text');
+});
