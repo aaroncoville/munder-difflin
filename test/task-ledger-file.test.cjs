@@ -269,7 +269,7 @@ test('where ps cannot be started, a running holder on this host is busy, and ps 
   for (const timeout of calls) assert.ok(typeof timeout === 'number' && timeout > 0 && timeout <= 100, `ps was given ${timeout} ms`);
 });
 
-test('a holder paused between its ownership check and its rename keeps the lock, so no card is lost', async (t) => {
+test('a holder paused between its ownership check and its rename keeps the lock, so no card is lost', { timeout: 120_000 }, async (t) => {
   const { dir, file, lock } = hive(t, { tasks: [{ id: 'seed' }] });
   const sync = fs.mkdtempSync(path.join(os.tmpdir(), 'md-ledger-sync-'));
   t.after(() => fs.rmSync(sync, { recursive: true, force: true }));
@@ -288,16 +288,28 @@ test('a holder paused between its ownership check and its rename keeps the lock,
   child.stderr.on('data', (d) => { err += d; });
   const done = new Promise((resolve) => child.on('exit', (code) => resolve(code)));
   t.after(() => child.kill());
-  assert.ok(await waitForFile(path.join(sync, 'a-checked'), 10_000), err);
+  // A loaded machine can take a long time to start A, so this waits for A itself, not for a set time: until A
+  // reaches its pause, or exits without reaching it. The test's own time limit bounds the wait.
+  const paused = await untilFileOrExit(path.join(sync, 'a-checked'), done);
+  assert.equal(paused, true, `A exited (${paused}) before it reached its pause: ${err}`);
   // B arrives once A's lock is past every age bound B uses.
   await new Promise((r) => setTimeout(r, 300));
-  assert.throws(() => updateTaskLedgerFile(file, (c) => [...c, { id: 'b' }],
-    { waitMs: 200, staleMs: 50, startTime: (pid) => `ps:started ${pid}` }),
-    (e) => e instanceof TaskLedgerLockTimeout
-      && new RegExp(`pid ${child.pid}\\b`).test(e.message)
-      && e.message.includes(os.hostname())
-      && /held for \d+(\.\d+)? s/.test(e.message),
-    'B is told the ledger is busy, and by whom');
+  const record = fs.readFileSync(lock, 'utf8');
+  let thrown = null;
+  try {
+    updateTaskLedgerFile(file, (c) => [...c, { id: 'b' }], { waitMs: 200, staleMs: 50, startTime: (pid) => `ps:started ${pid}` });
+  } catch (e) {
+    thrown = e;
+  }
+  // Said in full if it fails: whether A was still running, and the host A recorded against this one's, tell a
+  // holder that died apart from a host name that changed (a holder on another host is judged by age alone).
+  assert.ok(thrown instanceof TaskLedgerLockTimeout
+      && new RegExp(`pid ${child.pid}\\b`).test(thrown.message)
+      && thrown.message.includes(os.hostname())
+      && /held for \d+(\.\d+)? s/.test(thrown.message),
+    `B is told the ledger is busy, and by whom; instead ${thrown ? `it threw ${thrown.message}` : 'it took the lock'}. `
+      + `A ${child.exitCode === null && child.signalCode === null ? 'was still running' : `had exited (${child.exitCode ?? child.signalCode})`}; `
+      + `A's lock record: ${record}; this host: ${os.hostname()}`);
   fs.writeFileSync(path.join(sync, 'a-go'), '');
   assert.equal(await done, 0, err);
   assert.deepEqual(ids(file), ['seed', 'a'], "A's write landed");
@@ -398,6 +410,17 @@ function steppedWriter(t, file, sync, who, other, opts = {}) {
     go: (step) => fs.writeFileSync(path.join(sync, `${who}-go-${step}`), ''),
     reached: (step, ms = 10_000) => waitForFile(path.join(sync, `${who}-${step === 'in' ? 'in' : `at-${step}`}`), ms)
   };
+}
+
+/** Resolves true once `p` exists, or with the exit code (or signal) `exited` gives if that comes first. */
+async function untilFileOrExit(p, exited) {
+  let code;
+  exited.then((c) => { code = c; });
+  while (!fs.existsSync(p)) {
+    if (code !== undefined) return code;
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  return true;
 }
 
 async function waitForFile(p, ms) {
