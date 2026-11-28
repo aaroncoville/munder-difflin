@@ -132,13 +132,13 @@ const RECALL_TIMEOUT_MS = 10_000;
  * the shared adapter: it never follows a redirect (any 3xx is a failure), so a
  * loopback endpoint cannot send the probe anywhere else.
  */
-export function localRecall(base: string, bank: string, query: string, results: number, wing: string): Promise<TextResult> {
+export function localRecall(base: string, bank: string, query: string, results: number, wing: string, timeoutMs = RECALL_TIMEOUT_MS): Promise<TextResult> {
   return new Promise((resolve) => {
     if (!isLoopbackUrl(base)) { resolve({ ok: false, output: '', error: 'not-loopback' }); return; }
     const url = new URL(`${base.replace(/\/+$/, '')}/v1/default/banks/${encodeURIComponent(bank)}/memories/recall`);
     const body = JSON.stringify({ query, max_tokens: Math.max(1, results) * TOKENS_PER_RESULT, tags: [`owner:${wing}`] });
     const send = url.protocol === 'https:' ? httpsRequest : httpRequest;
-    const req = send(url, { method: 'POST', headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) }, timeout: RECALL_TIMEOUT_MS }, (res) => {
+    const req = send(url, { method: 'POST', headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) }, timeout: timeoutMs }, (res) => {
       const status = res.statusCode ?? 0;
       if (status >= 300 && status < 400) { res.resume(); resolve({ ok: false, output: '', error: 'redirect' }); return; }
       let data = '';
@@ -155,8 +155,10 @@ export function localRecall(base: string, bank: string, query: string, results: 
         } catch { resolve({ ok: false, output: '', error: 'bad-reply' }); }
       });
     });
-    req.on('timeout', () => req.destroy(new Error('timeout')));
-    req.on('error', () => resolve({ ok: false, output: '', error: 'error' }));
+    // A server that accepts and never answers (a frozen container) is a timeout, not a broken connection.
+    let timedOut = false;
+    req.on('timeout', () => { timedOut = true; req.destroy(new Error('timeout')); });
+    req.on('error', () => resolve({ ok: false, output: '', error: timedOut ? 'timeout' : 'error' }));
     req.end(body);
   });
 }
@@ -194,7 +196,7 @@ function countHits(output: string): number {
 
 function judgeRecall(r: TextResult): Omit<CanaryResult, 'feature' | 'ms'> {
   if (!r.ok) {
-    if (r.error === 'redirect') return { ok: false, detail: 'redirect' };
+    if (r.error === 'redirect' || r.error === 'timeout') return { ok: false, detail: r.error };
     const code = /HTTP (\d{3})/.exec(r.error ?? '');
     return { ok: false, detail: code ? `refused-${code[1]}` : 'error' };
   }
