@@ -35,12 +35,19 @@ export function commandFromToolInput(input: unknown): string | null {
   return typeof v === 'string' ? v : null;
 }
 
-/** Split a command line into words, honouring simple quotes (not a full shell parser). */
+/** The words of a command, as a shell splits them: a word ends only at unquoted white space, so quoted and
+ *  unquoted parts next to each other (`--test-name-pattern="a b"`) are one word. A quote with no partner is
+ *  kept as a character. */
 function words(s: string): string[] {
   const out: string[] = [];
-  const re = /"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g;
+  const re = /"((?:[^"\\]|\\.)*)"|'([^']*)'|([^\s"']+)|(["'])|(\s+)/g;
+  let cur: string | null = null;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(s))) out.push(m[1] ?? m[2] ?? m[3]);
+  while ((m = re.exec(s))) {
+    if (m[5] !== undefined) { if (cur !== null) out.push(cur); cur = null; continue; }
+    cur = (cur ?? '') + (m[1] ?? m[2] ?? m[3] ?? m[4]);
+  }
+  if (cur !== null) out.push(cur);
   return out;
 }
 

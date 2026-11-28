@@ -587,3 +587,22 @@ test('turnOver scoped to a session frees only that session\'s calls, and a backg
   x.l.turnOver('a');
   assert.deepEqual(x.l.snapshot().map((h) => h.background), [true], 'unscoped, as from a provider with one session');
 });
+
+test('a flag value with quoted words is one value, not test files, so one test file stays light', () => {
+  for (const cmd of [
+    'node --test --test-name-pattern="paused between its ownership check" test/a.test.cjs',
+    "node --test --test-name-pattern='a b' test/a.test.cjs",
+    'node --test --test-name-pattern "a b" test/a.test.cjs',
+    'node --test --test-name-pattern=a test/a.test.cjs',
+    'node --test --test-reporter=spec --test-skip-pattern="x y z" test/a.test.cjs test/b.test.cjs'
+  ]) assert.equal(classifyCommand(cmd).heavy, false, cmd);
+});
+
+test('a glob or no file at all is still a suite, whatever quoted pattern comes with it', () => {
+  for (const cmd of [
+    'node --test --test-name-pattern="a b" test/*.test.cjs',
+    'node --test --test-name-pattern="a b" "test/*.test.cjs"',
+    'node --test --test-name-pattern="a b"',
+    "node --test --test-name-pattern='a b' test"
+  ]) assert.equal(classifyCommand(cmd).kind, 'suite', cmd);
+});
