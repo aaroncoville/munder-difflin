@@ -316,3 +316,23 @@ test('a wide run that names one test is still a suite, and Maven and wrapper-jar
 test('watch modes, interactive sessions, stack helpers and syntax checks are not suites', () => {
   for (const cmd of NOT_A_SUITE) assert.equal(classifyCommand(cmd).heavy, false, cmd);
 });
+
+// ── a line that runs a suite after another heavy job ──────────────────────────
+
+test('a line that runs a build or an install before a suite counts as a suite', () => {
+  for (const cmd of [
+    'npm run build && npm run test:focused',
+    'npm ci && node --test test/*.test.cjs',
+    'npm run typecheck && npm run build && npm run test:focused 2>&1 | tail -5',
+    'npm run build; ./gradlew test',
+    'npm run build && echo "$(npm test)"'
+  ]) assert.equal(classifyCommand(cmd).kind, 'suite', cmd);
+  assert.equal(classifyCommand('npm run build && npm run lint').kind, 'build', 'no suite on the line: still a build');
+});
+
+test('a build chained with a suite waits while another suite holds its slot', () => {
+  const x = lock(2, 1);
+  assert.equal(x.l.acquire('a', classifyCommand('npm run test:focused'), 'npm run test:focused', 'a1', false).allow, true);
+  const cmd = 'npm run build && npm run test:focused';
+  assert.equal(x.l.acquire('b', classifyCommand(cmd), cmd, 'b1', false).allow, false, 'its suite would run beside the other');
+});

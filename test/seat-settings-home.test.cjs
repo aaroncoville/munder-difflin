@@ -151,8 +151,13 @@ test('a link planted at the target file is refused, and nothing is written throu
 test('with no seat settings folder set, a Claude spawn is refused and nothing is written into the hive', async (t) => {
   const f = floor(t, { seat: false });
   const listing = (dir) => fs.readdirSync(dir, { recursive: true }).sort();
+  // ensureHive creates the hive's repository in the background. Each listing is taken once that git work has
+  // finished, so the repository appearing in between is not mistaken for a write by the spawn, and anything
+  // the refused spawn did commit is in the second listing.
+  await f.hive.commitsSettled();
   const before = listing(f.root);
   await assert.rejects(spawn(f, 'n1'), (e) => { assert.match(e.message, /seat settings folder/i); return true; });
+  await f.hive.commitsSettled();
   assert.deepEqual(listing(f.root), before);
   assert.equal(Object.hasOwn(f.hive.registry().agents, 'n1'), false, 'no registry row');
 });
