@@ -9,6 +9,9 @@
  * two processes starting at once settle on one id and no reader sees a half-written one. An id file that is not
  * like that (a link, another owner, group or other access, other content), or one that cannot be read or made,
  * gives no id: callers then judge as they did before there was one, and never guess.
+ *
+ * On Windows a file's mode cannot show that only its owner may read it, so no id is read there, and locks keep
+ * judging by host name.
  */
 import { randomBytes } from 'node:crypto';
 import { closeSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync, constants } from 'node:fs';
