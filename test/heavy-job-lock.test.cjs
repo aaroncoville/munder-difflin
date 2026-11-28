@@ -644,3 +644,29 @@ test('a suite after --, sudo, coproc or in a case arm counts as a suite; command
     assert.equal(classifyCommand(cmd).heavy, false, cmd);
   }
 });
+
+// Every redirection operator the shell has, written out here on its own rather than taken from the matcher, so an
+// operator the matcher does not know fails this test.
+const REDIRECTIONS = ['<>', '>|', '>>', '&>>', '&>', '>&', '<&', '<<<', '<<-', '<<', '>', '<'];
+
+test('every redirection operator, with or without a descriptor and a space, leaves a single-file run light and a suite a suite', () => {
+  for (const op of REDIRECTIONS) {
+    const fds = op.startsWith('&') ? [''] : ['', '3', '{fd}'];
+    for (const fd of fds) {
+      for (const sp of [' ', '']) {
+        const r = `${fd}${op}${sp}target`;
+        assert.equal(classifyCommand(`node --test test/a.test.cjs ${r}`).heavy, false, `node --test test/a.test.cjs ${r}`);
+        assert.equal(classifyCommand(`npm test ${r}`).kind, 'suite', `npm test ${r}`);
+        assert.equal(classifyCommand(`node --test ${r} test/*.test.cjs`).kind, 'suite', `node --test ${r} test/*.test.cjs`);
+      }
+    }
+    assert.equal(classifyCommand(`npm test${op}target`).kind, 'suite', `npm test${op}target`);
+    assert.equal(classifyCommand(`node --test test/a.test.cjs${op}target`).heavy, false, `node --test test/a.test.cjs${op}target`);
+  }
+});
+
+test('sudo long flags that take a value are skipped with their value', () => {
+  for (const cmd of ['sudo --user bob npm test', 'sudo --group staff --preserve-env npm test', 'sudo --user=bob npm test', 'sudo --chdir /w -- npm test']) {
+    assert.equal(classifyCommand(cmd).kind, 'suite', cmd);
+  }
+});

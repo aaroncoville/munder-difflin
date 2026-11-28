@@ -35,20 +35,32 @@ export function commandFromToolInput(input: unknown): string | null {
   return typeof v === 'string' ? v : null;
 }
 
+/** Every redirection operator, longest first so that one is never read as two (`3<>f` is not `3<` and `>f`). The
+ *  tokenizer and withoutRedirections both read this one list. */
+const REDIRECTION_OPERATORS = ['&>>', '<<<', '<<-', '<<', '<>', '<&', '>>', '>|', '>&', '&>', '>', '<'];
+const OPERATOR = REDIRECTION_OPERATORS.map((o) => o.split('').map((c) => (c === '|' ? '\\|' : c)).join('')).join('|');
+/** A descriptor named before an operator: a number (`2>`) or a variable (`{fd}<>`). */
+const DESCRIPTOR = /^(\d+|\{[A-Za-z_][A-Za-z0-9_]*\})$/;
+/** A redirection word: an operator, with the descriptor it redirects before it. Its target is the next word. */
+const REDIRECTION = new RegExp(`^(\\d+|\\{[A-Za-z_][A-Za-z0-9_]*\\})?(?:${OPERATOR})$`);
+/** Quoted text, an unquoted run (an & is part of it unless it starts &> or &>>), a lone quote or backslash, white
+ *  space, or a redirection operator. */
+const WORD_PARTS = new RegExp(`"((?:[^"\\\\]|\\\\.)*)"|'([^']*)'|((?:[^\\s"'\\\\<>&]|&(?!>)|\\\\.)+)|(["'\\\\])|(\\s+)|(${OPERATOR})`, 'g');
+
 /** The words of a command, as a shell splits them: a word ends only at unquoted white space or at a redirection,
  *  so quoted and unquoted parts next to each other (`--test-name-pattern="a b"`) are one word, and `npm test>out`
- *  is `npm`, `test`, `>`, `out`. A redirection is a word of its own, with the descriptor before it (`2>`, `&>`).
+ *  is `npm`, `test`, `>`, `out`. A redirection is a word of its own, with the descriptor before it (`2>`, `{fd}>`).
  *  A quote with no partner is kept as a character. */
 function words(s: string): string[] {
   const out: string[] = [];
-  const re = /"((?:[^"\\]|\\.)*)"|'([^']*)'|((?:[^\s"'\\<>]|\\.)+)|(["'\\])|(\s+)|((?:<<<|>>|<|>)&?)/g;
+  const re = new RegExp(WORD_PARTS.source, 'g');
   let cur: string | null = null;
   let m: RegExpExecArray | null;
   while ((m = re.exec(s))) {
     if (m[5] !== undefined) { if (cur !== null) out.push(cur); cur = null; continue; }
     if (m[6] !== undefined) {
-      // Digits or & right before the operator name the descriptor it redirects; anything else is a word before it.
-      const fd = cur !== null && /^(\d+|&)$/.test(cur) ? cur : '';
+      // A number or a {name} right before the operator names the descriptor it redirects; anything else is a word.
+      const fd = cur !== null && DESCRIPTOR.test(cur) ? cur : '';
       if (cur !== null && !fd) out.push(cur);
       out.push(fd + m[6]);
       cur = null;
@@ -65,17 +77,12 @@ function words(s: string): string[] {
   return out;
 }
 
-/** A redirection word: `>`, `2>>`, `&>`, `<`, a here-string `<<<`, with its target attached (`>&1`) or in the
- *  next word. */
-const REDIRECTION = /^(\d*|&)(>>?|<<<|<)(&?)(.*)$/;
-
 /** The words without their redirections, which name where output goes, not what the command runs. */
 function withoutRedirections(ws: string[]): string[] {
   const out: string[] = [];
   for (let i = 0; i < ws.length; i++) {
-    const m = REDIRECTION.exec(ws[i]);
-    if (!m) { out.push(ws[i]); continue; }
-    if (m[4] === '') i++;
+    if (REDIRECTION.test(ws[i])) i++;
+    else out.push(ws[i]);
   }
   return out;
 }
@@ -90,6 +97,8 @@ function segments(cmd: string): string[] {
     if (c === '"' || c === "'") { q = c; cur += c; continue; }
     // The & of a redirection (2>&1, &>file, <&3) belongs to it; it neither ends a command nor puts one in the background.
     if (c === '&' && (cmd[i - 1] === '>' || cmd[i - 1] === '<' || (cmd[i + 1] === '>' && cmd[i - 1] !== '&'))) { cur += c; continue; }
+    // The | of >| (write even under noclobber) belongs to the redirection; it is not a pipe.
+    if (c === '|' && cmd[i - 1] === '>') { cur += c; continue; }
     if (c === ';' || c === '\n' || c === '|' || c === '&') {
       if (c === '&' && cmd[i + 1] !== '&' && cmd[i - 1] !== '&') { cur += ' &'; out.push(cur); cur = ''; continue; } // a lone & = background
       out.push(cur); cur = '';
@@ -107,7 +116,10 @@ const SHELL_DEPTH = 3;
 /** Shell keywords that may come before a command in one segment. */
 const SHELL_KEYWORDS = new Set(['if', 'then', 'elif', 'else', 'do', 'while', 'until', '!']);
 /** sudo flags that take their value as the next argument. */
-const SUDO_VALUE_FLAGS = new Set(['-u', '-g', '-h', '-p', '-C', '-U', '-r', '-t', '-T', '-D', '-R']);
+const SUDO_VALUE_FLAGS = new Set([
+  '-u', '-g', '-h', '-p', '-C', '-U', '-r', '-t', '-T', '-D', '-R',
+  '--user', '--group', '--host', '--prompt', '--close-from', '--other-user', '--role', '--type', '--command-timeout', '--chdir', '--chroot'
+]);
 /** xargs flags that take their value as the next argument. */
 const XARGS_VALUE_FLAGS = new Set(['-n', '-L', '-P', '-s', '-I', '-J', '-R', '-d', '-E', '-a']);
 const WRAPPERS = new Set(['bash', 'sh', 'zsh', 'cmd', 'cmd.exe', 'powershell', 'powershell.exe', 'pwsh', 'pwsh.exe', 'bash.exe']);
