@@ -35,16 +35,64 @@ export function commandFromToolInput(input: unknown): string | null {
   return typeof v === 'string' ? v : null;
 }
 
-/** Split a command line into words, honouring simple quotes (not a full shell parser). */
+/** Every redirection operator, longest first so that one is never read as two (`3<>f` is not `3<` and `>f`). The
+ *  tokenizer and withoutRedirections both read this one list. */
+const REDIRECTION_OPERATORS = ['&>>', '<<<', '<<-', '<<', '<>', '<&', '>>', '>|', '>&', '&>', '>', '<'];
+const OPERATOR = REDIRECTION_OPERATORS.map((o) => o.split('').map((c) => (c === '|' ? '\\|' : c)).join('')).join('|');
+/** A descriptor named before an operator: a number (`2>`) or a variable (`{fd}<>`). */
+const DESCRIPTOR = /^(\d+|\{[A-Za-z_][A-Za-z0-9_]*\})$/;
+/** A redirection word: an operator, with the descriptor it redirects before it. Its target is the next word. */
+const REDIRECTION = new RegExp(`^(\\d+|\\{[A-Za-z_][A-Za-z0-9_]*\\})?(?:${OPERATOR})$`);
+/** Quoted text, an unquoted run (an & is part of it unless it starts &> or &>>), a lone quote or backslash, white
+ *  space, or a redirection operator. */
+const WORD_PARTS = new RegExp(`"((?:[^"\\\\]|\\\\.)*)"|'([^']*)'|((?:[^\\s"'\\\\<>&]|&(?!>)|\\\\.)+)|(["'\\\\])|(\\s+)|(${OPERATOR})`, 'g');
+
+/** The words of a command, as a shell splits them: a word ends only at unquoted white space or at a redirection,
+ *  so quoted and unquoted parts next to each other (`--test-name-pattern="a b"`) are one word, and `npm test>out`
+ *  is `npm`, `test`, `>`, `out`. A redirection is a word of its own, with the descriptor before it (`2>`, `{fd}>`).
+ *  A quote with no partner is kept as a character. */
 function words(s: string): string[] {
   const out: string[] = [];
-  const re = /"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g;
+  const re = new RegExp(WORD_PARTS.source, 'g');
+  let cur: string | null = null;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(s))) out.push(m[1] ?? m[2] ?? m[3]);
+  while ((m = re.exec(s))) {
+    if (m[5] !== undefined) { if (cur !== null) out.push(cur); cur = null; continue; }
+    if (m[6] !== undefined) {
+      // A number or a {name} right before the operator names the descriptor it redirects; anything else is a word.
+      const fd = cur !== null && DESCRIPTOR.test(cur) ? cur : '';
+      if (cur !== null && !fd) out.push(cur);
+      out.push(fd + m[6]);
+      cur = null;
+      continue;
+    }
+    // A backslash before a shell character makes it a plain character, as the shell reads it, so a shell nested in
+    // quotes (bash -c "bash -c \"npm test\"") is read with its own quotes. Other backslashes, as in a Windows
+    // path, are kept.
+    const part = m[1] !== undefined ? m[1].replace(/\\(["$`])/g, '$1')
+      : m[3] !== undefined ? m[3].replace(/\\([<>|&;"'`$ ])/g, '$1') : (m[2] ?? m[4]);
+    cur = (cur ?? '') + part;
+  }
+  if (cur !== null) out.push(cur);
   return out;
 }
 
-/** The segments a shell would run: split on ; && || | and newlines, outside quotes. */
+/** The words without their redirections, which name where output goes, not what the command runs. */
+function withoutRedirections(ws: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < ws.length; i++) {
+    if (REDIRECTION.test(ws[i])) i++;
+    else out.push(ws[i]);
+  }
+  return out;
+}
+
+/**
+ * The segments a shell would run: split on ; && || | and newlines, outside quotes. A backslash outside quotes
+ * makes the next character ordinary, so `\;` and `\|` split nothing. A redirection operator from the table, at an
+ * unquoted, unescaped position, is kept whole: the & of 2>&1 or &>file does not put a command in the background,
+ * and the | of >| is not a pipe. An escaped character is never the start of one (`\>|` is `>` then a pipe).
+ */
 function segments(cmd: string): string[] {
   const out: string[] = [];
   let cur = ''; let q: string | null = null;
@@ -52,6 +100,9 @@ function segments(cmd: string): string[] {
     const c = cmd[i];
     if (q) { cur += c; if (c === q && cmd[i - 1] !== '\\') q = null; continue; }
     if (c === '"' || c === "'") { q = c; cur += c; continue; }
+    if (c === '\\') { cur += cmd.slice(i, i + 2); i++; continue; }
+    const op = REDIRECTION_OPERATORS.find((o) => cmd.startsWith(o, i));
+    if (op) { cur += op; i += op.length - 1; continue; }
     if (c === ';' || c === '\n' || c === '|' || c === '&') {
       if (c === '&' && cmd[i + 1] !== '&' && cmd[i - 1] !== '&') { cur += ' &'; out.push(cur); cur = ''; continue; } // a lone & = background
       out.push(cur); cur = '';
@@ -64,6 +115,17 @@ function segments(cmd: string): string[] {
   return out.map((s) => s.trim()).filter(Boolean);
 }
 
+/** How many shells (bash -c, eval) inside one another are read through. Deeper ones are not seen. */
+const SHELL_DEPTH = 3;
+/** Shell keywords that may come before a command in one segment. */
+const SHELL_KEYWORDS = new Set(['if', 'then', 'elif', 'else', 'do', 'while', 'until', '!']);
+/** sudo flags that take their value as the next argument. */
+const SUDO_VALUE_FLAGS = new Set([
+  '-u', '-g', '-h', '-p', '-C', '-U', '-r', '-t', '-T', '-D', '-R',
+  '--user', '--group', '--host', '--prompt', '--close-from', '--other-user', '--role', '--type', '--command-timeout', '--chdir', '--chroot'
+]);
+/** xargs flags that take their value as the next argument. */
+const XARGS_VALUE_FLAGS = new Set(['-n', '-L', '-P', '-s', '-I', '-J', '-R', '-d', '-E', '-a']);
 const WRAPPERS = new Set(['bash', 'sh', 'zsh', 'cmd', 'cmd.exe', 'powershell', 'powershell.exe', 'pwsh', 'pwsh.exe', 'bash.exe']);
 const BENCH_SCRIPT = /(mutant|mutation|replay|bench|backfill|parity|speed|stress|soak)[^\\/]*\.(c?m?js|ts)$/i;
 export const SUITE_MANY_FILES = 20;
@@ -120,6 +182,28 @@ function leading(ws: string[]): string[] {
     if (w === 'timeout' || w === 'nice') { i++; while (i < ws.length && (/^-/.test(ws[i]) || /^\d+[smhd]?$/.test(ws[i]))) i++; continue; }
     if (RUN_PREFIXES.has(w)) { i++; while (i < ws.length && (/^-/.test(ws[i]) || /^\d+$/.test(ws[i]))) i++; continue; }
     if (w === 'cd' || w === 'pushd') return []; // `cd x` alone is its own segment
+    // Shell keywords before a command: `if npm test; then npm test; fi`, `while x; do npm test; done`, `! npm test`.
+    if (SHELL_KEYWORDS.has(w)) { i++; continue; }
+    // A case runs the command after its first pattern (`case x in x) npm test;; esac`); each later arm starts
+    // with its pattern (`*) npm test`). A case with no arm on this line runs nothing here.
+    if (w === 'case') { const arm = ws.findIndex((a, k) => k > i && /\)$/.test(a)); if (arm < 0) return []; i = arm + 1; continue; }
+    if (/^[^()]*\)$/.test(w)) { i++; continue; }
+    // `command -v x` and `command -V x` only look a command up, whatever follows; `--` ends the flags of exec.
+    if (w === 'command') {
+      i++;
+      for (; i < ws.length && ws[i].startsWith('-'); i++) { if (/[vV]/.test(ws[i])) return []; }
+      continue;
+    }
+    if (w === 'exec') { i++; while (i < ws.length && /^-[cl]+$|^-a$|^--$/.test(ws[i])) { if (ws[i] === '-a') i++; if (ws[i] === '--') { i++; break; } i++; } continue; }
+    // sudo runs the command after its own flags; coproc runs the command after it.
+    if (w === 'sudo') { i++; while (i < ws.length && ws[i].startsWith('-')) { if (ws[i] === '--') { i++; break; } if (SUDO_VALUE_FLAGS.has(ws[i])) i++; i++; } continue; }
+    if (w === 'coproc') { i++; continue; }
+    // xargs runs the command after its own flags, with more arguments added.
+    if (w === 'xargs') {
+      i++;
+      while (i < ws.length && ws[i].startsWith('-')) { if (XARGS_VALUE_FLAGS.has(ws[i])) i++; i++; }
+      continue;
+    }
     break;
   }
   return ws.slice(i);
@@ -149,8 +233,10 @@ function classifyWords(ws0: string[], depth: number): HeavyClass {
   if (!ws.length) return { heavy: false };
   const bin = ws[0].replace(/\\/g, '/').split('/').pop()!.toLowerCase().replace(/\.(exe|cmd)$/, '');
   const args = ws.slice(1);
-  // One level of a shell wrapper: bash -c "...", cmd /c ..., powershell -Command ...
-  if (WRAPPERS.has(bin) && depth === 0) {
+  // A shell wrapper, nested up to SHELL_DEPTH deep: bash -c "...", cmd /c ..., powershell -Command ...
+  // eval runs its arguments as a command line.
+  if (bin === 'eval') return depth < SHELL_DEPTH ? classifyCommand((args[0] === '--' ? args.slice(1) : args).join(' '), depth + 1) : { heavy: false };
+  if (WRAPPERS.has(bin) && depth < SHELL_DEPTH) {
     // -c also comes bundled with other flags, as in the login shell's -lc.
     const k = args.findIndex((a) => /^(-[a-z]*c|\/\/?c|\/\/?k|-command)$/i.test(a));
     if (k >= 0) return classifyCommand(args.slice(k + 1).join(' '), depth + 1);
@@ -212,6 +298,25 @@ function classifyWords(ws0: string[], depth: number): HeavyClass {
   return { heavy: false };
 }
 
+/** The command with each line continuation (a backslash, then a line break) removed, as the shell removes it
+ *  before reading the line: `npm run build && \` then `npm test` is one line. An escaped backslash before a line
+ *  break is not a continuation. Quotes are not tracked: inside single quotes the shell keeps the pair as text,
+ *  but removing it there changes no quote and no word outside the quotes, so it cannot change what runs. */
+function joinContinuations(cmd: string): string {
+  let out = '';
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i];
+    if (c === '\\') {
+      if (cmd[i + 1] === '\n') { i++; continue; }
+      out += cmd.slice(i, i + 2);
+      i++;
+      continue;
+    }
+    out += c;
+  }
+  return out;
+}
+
 /**
  * Classify a command line: heavy if any segment it runs is heavy. A line that runs a test suite anywhere is a
  * suite, whatever heavy job comes before it: `npm run build && npm run test:focused` holds its slot as long as
@@ -219,14 +324,14 @@ function classifyWords(ws0: string[], depth: number): HeavyClass {
  */
 export function classifyCommand(cmd: string, depth = 0): HeavyClass {
   // A heredoc body is text, not commands, however much it looks like them.
-  const text = cmd.replace(/<<-?\s*['"]?(\w+)['"]?[^\n]*\n[\s\S]*?\n\s*\1\b/g, '');
+  const text = joinContinuations(cmd.replace(/<<-?\s*['"]?(\w+)['"]?[^\n]*\n[\s\S]*?\n\s*\1\b/g, ''));
   let first: HeavyClass | null = null;
   const seen = (c: HeavyClass): boolean => {
     if (c.heavy && !first) first = c;
     return c.heavy && c.kind === 'suite';
   };
   for (const seg of segments(text)) {
-    const c = classifyWords(words(seg.replace(/\s&$/, '')), depth);
+    const c = classifyWords(withoutRedirections(words(seg.replace(/\s&$/, ''))), depth);
     if (seen(c)) return c;
   }
   // $(...) and backticks run outside single quotes, wherever they sit in the line.

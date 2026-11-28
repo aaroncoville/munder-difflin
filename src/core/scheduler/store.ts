@@ -18,13 +18,11 @@ import { chmodSync, closeSync, mkdirSync, openSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, posix, win32 } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { appDataDir } from '../appDataDir';
 import { holds } from '../hookRuntime';
 import type { ScheduledTask } from './task';
 
 export const CORE_DB_FILE = 'core.db';
-
-/** The folder name of the app's data folder, as Electron derives userData from the package name. */
-const APP_DATA_NAME = 'munder-difflin';
 
 /** The schema version of the scheduler's tables this code writes. */
 export const SCHEDULER_SCHEMA_VERSION = 2;
@@ -112,13 +110,6 @@ export class CoreDbRefused extends Error {
     super(message);
     this.name = 'CoreDbRefused';
   }
-}
-
-/** The app's data folder for the platform, as Electron computes userData for this app. */
-function appDataDir(platform: NodeJS.Platform, env: Record<string, string | undefined>, home: string): string {
-  if (platform === 'darwin') return posix.join(home, 'Library', 'Application Support', APP_DATA_NAME);
-  if (platform === 'win32') return win32.join(env.APPDATA || win32.join(home, 'AppData', 'Roaming'), APP_DATA_NAME);
-  return posix.join(env.XDG_CONFIG_HOME || posix.join(home, '.config'), APP_DATA_NAME);
 }
 
 /** Why `path` may not hold core.db, or null. */

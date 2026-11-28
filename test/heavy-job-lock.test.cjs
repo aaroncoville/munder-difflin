@@ -587,3 +587,124 @@ test('turnOver scoped to a session frees only that session\'s calls, and a backg
   x.l.turnOver('a');
   assert.deepEqual(x.l.snapshot().map((h) => h.background), [true], 'unscoped, as from a provider with one session');
 });
+
+test('a flag value with quoted words is one value, not test files, so one test file stays light', () => {
+  for (const cmd of [
+    'node --test --test-name-pattern="paused between its ownership check" test/a.test.cjs',
+    "node --test --test-name-pattern='a b' test/a.test.cjs",
+    'node --test --test-name-pattern "a b" test/a.test.cjs',
+    'node --test --test-name-pattern=a test/a.test.cjs',
+    'node --test --test-reporter=spec --test-skip-pattern="x y z" test/a.test.cjs test/b.test.cjs'
+  ]) assert.equal(classifyCommand(cmd).heavy, false, cmd);
+});
+
+test('a glob or no file at all is still a suite, whatever quoted pattern comes with it', () => {
+  for (const cmd of [
+    'node --test --test-name-pattern="a b" test/*.test.cjs',
+    'node --test --test-name-pattern="a b" "test/*.test.cjs"',
+    'node --test --test-name-pattern="a b"',
+    "node --test --test-name-pattern='a b' test"
+  ]) assert.equal(classifyCommand(cmd).kind, 'suite', cmd);
+});
+
+test('a redirection and its target are not test files, so one test file with its output redirected stays light', () => {
+  for (const cmd of [
+    'node --test test/a.test.cjs > out.log',
+    'node --test test/a.test.cjs 2>&1 | grep x',
+    'node --test test/a.test.cjs > out.log 2>&1',
+    'node --test test/a.test.cjs 2>/dev/null',
+    'node --test test/a.test.cjs >>out.log 2> err.log',
+    'node --test test/a.test.cjs &> out.log'
+  ]) assert.equal(classifyCommand(cmd).heavy, false, cmd);
+  for (const [cmd, kind] of [
+    ['node --test test/*.test.cjs > out.log 2>&1', 'suite'],
+    ['node --test > out.log', 'suite'],
+    ['npm run test:focused > $TMPDIR/s.log 2>&1', 'suite'],
+    ['npm ci 2>&1 | tail -3', 'install']
+  ]) assert.equal(classifyCommand(cmd).kind, kind, cmd);
+});
+
+test('a redirection with no space before it, and a here-string, are redirections', () => {
+  for (const cmd of ['npm test>out.log', 'npm test<in.txt', 'npm test 2>err.log']) assert.equal(classifyCommand(cmd).kind, 'suite', cmd);
+  for (const cmd of [
+    'node --test test/a.test.cjs <<< "input data"',
+    "node --test test/a.test.cjs <<<'x y'",
+    'node --test test/a.test.cjs>out.log'
+  ]) assert.equal(classifyCommand(cmd).heavy, false, cmd);
+  assert.equal(classifyCommand('node --test <<< "x" test/*.test.cjs').kind, 'suite', 'a glob after a here-string');
+});
+
+test('a suite after --, sudo, coproc or in a case arm counts as a suite; command -v with more words stays light', () => {
+  for (const cmd of [
+    'command -- npm test', 'exec -- npm test', 'eval -- npm test', 'command -p -- npm test',
+    'sudo npm test', 'sudo -u ci -E npm test', 'coproc npm test',
+    'case x in x) npm test;; esac', 'case "$1" in a|b) echo; ;; *) npm test ;; esac'
+  ]) assert.equal(classifyCommand(cmd).kind, 'suite', cmd);
+  for (const cmd of ['command -v npm test', 'command -V -- npm test', 'case npm in test) echo ;; esac']) {
+    assert.equal(classifyCommand(cmd).heavy, false, cmd);
+  }
+});
+
+// Every redirection operator the shell has, written out here on its own rather than taken from the matcher, so an
+// operator the matcher does not know fails this test.
+const REDIRECTIONS = ['<>', '>|', '>>', '&>>', '&>', '>&', '<&', '<<<', '<<-', '<<', '>', '<'];
+
+test('every redirection operator, with or without a descriptor and a space, leaves a single-file run light and a suite a suite', () => {
+  for (const op of REDIRECTIONS) {
+    const fds = op.startsWith('&') ? [''] : ['', '3', '{fd}'];
+    for (const fd of fds) {
+      for (const sp of [' ', '']) {
+        const r = `${fd}${op}${sp}target`;
+        assert.equal(classifyCommand(`node --test test/a.test.cjs ${r}`).heavy, false, `node --test test/a.test.cjs ${r}`);
+        assert.equal(classifyCommand(`npm test ${r}`).kind, 'suite', `npm test ${r}`);
+        assert.equal(classifyCommand(`node --test ${r} test/*.test.cjs`).kind, 'suite', `node --test ${r} test/*.test.cjs`);
+      }
+    }
+    assert.equal(classifyCommand(`npm test${op}target`).kind, 'suite', `npm test${op}target`);
+    assert.equal(classifyCommand(`node --test test/a.test.cjs${op}target`).heavy, false, `node --test test/a.test.cjs${op}target`);
+  }
+});
+
+test('sudo long flags that take a value are skipped with their value', () => {
+  for (const cmd of ['sudo --user bob npm test', 'sudo --group staff --preserve-env npm test', 'sudo --user=bob npm test', 'sudo --chdir /w -- npm test']) {
+    assert.equal(classifyCommand(cmd).kind, 'suite', cmd);
+  }
+});
+
+test('an escaped redirection character is an ordinary character, so a pipe after it is still a pipe', () => {
+  assert.equal(classifyCommand('echo \\>|npm test').kind, 'suite');
+  assert.equal(classifyCommand('echo \\>|npm ci').kind, 'install');
+  assert.equal(classifyCommand('node --test test/a.test.cjs \\>|echo x').heavy, false);
+  // Each operator written with every character escaped, then a real pipe into a suite.
+  for (const op of REDIRECTIONS) {
+    const cmd = `echo ${op.split('').map((c) => `\\${c}`).join('')}|npm test`;
+    assert.equal(classifyCommand(cmd).kind, 'suite', cmd);
+  }
+  assert.equal(classifyCommand('echo \\\\>|npm test').heavy, false, 'an escaped backslash leaves the > a redirection: >| writes to a file named npm');
+});
+
+test('the | of >| is part of the redirection, not a pipe', () => {
+  assert.equal(classifyCommand('echo x >| npm test').heavy, false, '>| writes to a file named npm; test is an argument of echo');
+  assert.equal(classifyCommand('npm test >| out.log').kind, 'suite');
+});
+
+test('a line continuation joins the next line to the command, as the shell does', () => {
+  for (const cmd of [
+    'npm run build && \\\nnpm test',
+    'npm run build && \\\nnpm run test:focused 2>&1 | tail -5',
+    'npm run build; \\\nnpm test',
+    'cd x && \\\n  npm test',
+    'CI=1 \\\nnpm test'
+  ]) assert.equal(classifyCommand(cmd).kind, 'suite', JSON.stringify(cmd));
+  assert.equal(classifyCommand('node --test \\\n  test/a.test.cjs \\\n  2>&1').heavy, false, 'a single-file run split over lines');
+  assert.equal(classifyCommand("echo 'a \\\nnpm' test").heavy, false, 'inside single quotes a backslash and a line break are text');
+});
+
+test('an apostrophe inside double quotes does not stop a line continuation from being joined', () => {
+  assert.equal(classifyCommand('echo "can\'t" && \\\nnpm test').kind, 'suite');
+  assert.equal(classifyCommand('npm run build && echo "can\'t" && \\\nnpm test').kind, 'suite');
+  assert.equal(classifyCommand('echo "it\'s ready"; \\\nnpm ci').kind, 'install');
+  assert.equal(classifyCommand('echo "a \\\nb" && npm test').kind, 'suite', 'a continuation inside double quotes');
+  assert.equal(classifyCommand('echo "a \\\nnpm test"').heavy, false, 'still quoted text after the join');
+  assert.equal(classifyCommand("echo 'a \\\nnpm test'").heavy, false, 'a continuation inside single quotes: still quoted text');
+});
