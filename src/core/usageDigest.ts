@@ -52,7 +52,7 @@ const shape = oneOf(['done-ack', 'option', 'short', 'sentence', 'long']);
 const status = oneOf(CARD_STATUSES);
 const view = oneOf(VIEWS);
 const lockKind = oneOf(['suite', 'build']);
-const canaryFeature = oneOf(['memory-search', 'memory-wakeup', 'kg-search', 'hook-socket', 'helpers-intact', 'node-on-path', 'model-matches-launch']);
+const canaryFeature = oneOf(['memory-search', 'memory-wakeup', 'memory-from-sandbox', 'kg-search', 'hook-socket', 'helpers-intact', 'node-on-path', 'model-matches-launch']);
 /** Error codes a canary probe can report (Node errno names). */
 const ERRNO_CODES = [
   'ENOENT', 'ECONNREFUSED', 'ECONNRESET', 'ECONNABORTED', 'ETIMEDOUT', 'EACCES', 'EPERM', 'EPIPE', 'EHOSTUNREACH',
@@ -60,7 +60,8 @@ const ERRNO_CODES = [
 ];
 const CANARY_CODES = [
   'off', 'not-probed-spawn', 'not-probed-remote', 'not-probed-switching', 'not-loopback', 'no-hits', 'redirect', 'error', 'closed',
-  'timeout', 'bad-reply', 'other-instance', 'wrong-pong', 'threw', 'no-root', 'not-found'
+  'timeout', 'bad-reply', 'other-instance', 'wrong-pong', 'threw', 'no-root', 'not-found', 'host-slept',
+  'judged-unreachable-from-sandbox', 'judged-from-seat-settings'
 ];
 /** A canary's failure code: a known code, an HTTP refusal or a known errno name; anything else is 'other'. */
 const canaryCode = (v: unknown): string | null => {
@@ -131,7 +132,9 @@ export function summarize(i: DigestInput) {
   const usdByConversation = new Map<string, number>();
   const stateHours: Record<string, number> = {};
   const lockWaits: Record<string, { n: number; totalMs: number }> = {};
-  const canaries: Record<string, { failed: number; runs: number; details: Set<string> }> = {};
+  // A canary row is passed (ok true), failed (ok false) or not judged (ok null: the feature was off, or the machine
+  // slept); a row not judged is neither a pass nor a failure.
+  const canaries: Record<string, { passed: number; failed: number; notJudged: number; details: Set<string>; notJudgedDetails: Set<string> }> = {};
   const filed: string[] = [];
   const shapes: Record<string, number> = {};
   let answered = 0;
@@ -150,9 +153,10 @@ export function summarize(i: DigestInput) {
       if (w !== null) { const k = (lockWaits[lockKind(r.heavyKind) ?? 'other'] ??= { n: 0, totalMs: 0 }); k.n++; k.totalMs += w; }
     } else if (r.kind === 'canary') {
       const f = canaryFeature(r.feature); if (!f) continue;
-      const c = (canaries[f] ??= { failed: 0, runs: 0, details: new Set() });
-      c.runs++;
-      if (r.ok === false) { c.failed++; const d = canaryCode(r.detail); if (d) c.details.add(d); }
+      const c = (canaries[f] ??= { passed: 0, failed: 0, notJudged: 0, details: new Set(), notJudgedDetails: new Set() });
+      if (r.ok === true) c.passed++;
+      else if (r.ok === false) { c.failed++; const d = canaryCode(r.detail); if (d) c.details.add(d); }
+      else { c.notJudged++; const d = canaryCode(r.detail); if (d) c.notJudgedDetails.add(d); }
     } else if (r.kind === 'ask-filed') {
       const k = askKey(r.askKey); if (k) filed.push(k);
     } else if (r.kind === 'ask-answered') {
@@ -205,13 +209,14 @@ export function summarize(i: DigestInput) {
   }
   const unclosedOf = (view: string): number =>
     [...openViews].reduce((n, [k, c]) => (k.endsWith(`\u0000${view}`) ? n + c : n), 0);
-  const canaryFailures: Record<string, { failed: number; runs: number; details: string[] }> = {};
-  for (const [f, c] of Object.entries(canaries)) if (c.failed) canaryFailures[f] = { failed: c.failed, runs: c.runs, details: [...c.details].sort() };
+  const canaryCounts: Record<string, { passed: number; failed: number; notJudged: number; details: string[]; notJudgedDetails: string[] }> = {};
+  for (const [f, c] of Object.entries(canaries).sort(([a], [b]) => a.localeCompare(b))) {
+    canaryCounts[f] = { passed: c.passed, failed: c.failed, notJudged: c.notJudged, details: [...c.details].sort(), notJudgedDetails: [...c.notJudgedDetails].sort() };
+  }
 
   return {
-    turnsByTrigger, stateHours, lockWaits, canaryFailures, ownerData,
+    turnsByTrigger, stateHours, lockWaits, canaryCounts, ownerData,
     usdByConversation: Object.fromEntries([...usdByConversation].map(([k, v]) => [k, cents(v)])),
-    canaryFeatures: Object.keys(canaries).sort(),
     views: [...views.values()].map((v) => ({ ...v, unclosed: unclosedOf(v.view) })).sort((a, b) => b.dwellMs - a.dwellMs || b.opens - a.opens),
     asks: {
       filed: filed.length, answered, shapes,
@@ -251,8 +256,15 @@ export function renderDigest(s: ReturnType<typeof summarize>, label: string): st
   out.push('', '## Heavy-lock waits', '', '| kind | waits | total minutes |', '|---|---|---|');
   for (const [k, v] of Object.entries(s.lockWaits)) out.push(`| ${k} | ${v.n} | ${Math.round(v.totalMs / 60_000)} |`);
   out.push('', '## Canaries', '');
-  if (!Object.keys(s.canaryFailures).length) out.push(`All passed (${s.canaryFeatures.join(', ') || 'none ran'}).`);
-  for (const [k, v] of Object.entries(s.canaryFailures)) out.push(`- **${k}**: failed ${v.failed} of ${v.runs} (${v.details.join(', ') || 'no detail'})`);
+  const counts = Object.entries(s.canaryCounts);
+  // "All passed" only when nothing failed and everything was judged.
+  if (counts.every(([, v]) => v.failed === 0 && v.notJudged === 0)) out.push(`All passed (${counts.map(([k]) => k).join(', ') || 'none ran'}).`);
+  else for (const [k, v] of counts) {
+    const parts = [`${v.passed} passed`];
+    if (v.failed) parts.push(`${v.failed} failed (${v.details.join(', ') || 'no detail'})`);
+    if (v.notJudged) parts.push(`${v.notJudged} not judged (${v.notJudgedDetails.join(', ') || 'no detail'})`);
+    out.push(`- **${k}**: ${parts.join(', ')}`);
+  }
   return out.join('\n') + '\n';
 }
 

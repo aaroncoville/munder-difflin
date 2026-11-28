@@ -25,22 +25,50 @@ import { existsSync, lstatSync, openSync, readFileSync, readSync, fstatSync, clo
 import { join } from 'node:path';
 
 export type CanaryFeature =
-  | 'memory-search' | 'memory-wakeup' | 'kg-search' | 'hook-socket'
+  | 'memory-search' | 'memory-wakeup' | 'memory-from-sandbox' | 'kg-search' | 'hook-socket'
   | 'helpers-intact' | 'node-on-path' | 'model-matches-launch';
 
 export type HelperProblem = 'missing' | 'not-regular' | 'not-executable' | 'stale' | 'modified';
 
 export interface CanaryResult {
   feature: CanaryFeature;
-  /** null = the feature is off on this install, so there was nothing to check. */
+  /** null = nothing was judged: the feature is off on this install, or the machine slept during the probe. */
   ok: boolean | null;
   ms: number;
   /** An enum or code only, e.g. 'off', 'refused-422', 'timeout', 'no-hits'. */
   detail?: string;
+  /** A short fixed sentence where the detail needs one, e.g. that a result was judged rather than measured. */
+  note?: string;
+  /** For a probe not judged because the machine slept: which rule said so. */
+  rule?: SleptRule;
   hits?: number;
   problems?: Record<string, HelperProblem>;
   checked?: number;
   mismatched?: string[];
+}
+
+/** Why a probe was taken to have slept: it ended long after its own limit, or the system reported a suspend. */
+export type SleptRule = 'ran past its limit' | 'suspend flag';
+
+/** How long after its limit a probe may end and still have run awake. The limit's timer cannot fire while the
+ *  machine sleeps, so a probe ending well past it was suspended, whichever clock Node's timers follow. */
+const PAST_LIMIT_MS = 10_000;
+
+/**
+ * The system's suspend state, from Electron's powerMonitor. A suspend sets it; a resume, an unlock, the user becoming
+ * active, or any probe that succeeds clears it, so a missed resume cannot keep the canaries unjudged once the service
+ * answers again. A probe in flight at a suspend, or run while the flag is set (a background wake after a suspend,
+ * which sends no resume), is not judged.
+ */
+export class SuspendFlag {
+  private suspends = 0;
+  private set = false;
+  suspend(): void { this.suspends++; this.set = true; }
+  clear(): void { this.set = false; }
+  /** A mark to pass to sleptSince. */
+  mark(): number { return this.suspends; }
+  /** Whether a suspend came after `mark`, or the flag is set now. */
+  sleptSince(mark: number): boolean { return this.set || this.suspends !== mark; }
 }
 
 interface TextResult { ok: boolean; output: string; error?: string }
@@ -58,6 +86,9 @@ export interface Helper {
 export interface CanaryDeps {
   /** Memory probes and whether they may run (see memoryCanary); `wing` is the owner tag agents send. */
   memory: MemoryCanary | null;
+  /** The sandbox block of the settings the app generates for a Claude seat (seatSandboxSettings), on a platform where
+   *  that sandbox takes effect; empty where it does not. Absent: taken as unsandboxed. */
+  seatSettings?: { sandbox?: { enabled?: boolean } };
   /** In-process knowledge-graph search; null when the graph is off. */
   kg: { search: (q: string, limit: number) => unknown[] } | null;
   /** The hook socket and this app's instance id; null without a hive root. */
@@ -69,6 +100,8 @@ export interface CanaryDeps {
   launches: Map<string, Seen>;
   ledgerPath: string;
   timeoutMs?: number;
+  /** The system's suspend state, where Electron's powerMonitor reports it. Absent: only the past-limit rule applies. */
+  power?: SuspendFlag;
   now?: () => number;
 }
 
@@ -104,13 +137,13 @@ const RECALL_TIMEOUT_MS = 10_000;
  * the shared adapter: it never follows a redirect (any 3xx is a failure), so a
  * loopback endpoint cannot send the probe anywhere else.
  */
-export function localRecall(base: string, bank: string, query: string, results: number, wing: string): Promise<TextResult> {
+export function localRecall(base: string, bank: string, query: string, results: number, wing: string, timeoutMs = RECALL_TIMEOUT_MS): Promise<TextResult> {
   return new Promise((resolve) => {
     if (!isLoopbackUrl(base)) { resolve({ ok: false, output: '', error: 'not-loopback' }); return; }
     const url = new URL(`${base.replace(/\/+$/, '')}/v1/default/banks/${encodeURIComponent(bank)}/memories/recall`);
     const body = JSON.stringify({ query, max_tokens: Math.max(1, results) * TOKENS_PER_RESULT, tags: [`owner:${wing}`] });
     const send = url.protocol === 'https:' ? httpsRequest : httpRequest;
-    const req = send(url, { method: 'POST', headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) }, timeout: RECALL_TIMEOUT_MS }, (res) => {
+    const req = send(url, { method: 'POST', headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) }, timeout: timeoutMs }, (res) => {
       const status = res.statusCode ?? 0;
       if (status >= 300 && status < 400) { res.resume(); resolve({ ok: false, output: '', error: 'redirect' }); return; }
       let data = '';
@@ -127,8 +160,10 @@ export function localRecall(base: string, bank: string, query: string, results: 
         } catch { resolve({ ok: false, output: '', error: 'bad-reply' }); }
       });
     });
-    req.on('timeout', () => req.destroy(new Error('timeout')));
-    req.on('error', () => resolve({ ok: false, output: '', error: 'error' }));
+    // A server that accepts and never answers (a frozen container) is a timeout, not a broken connection.
+    let timedOut = false;
+    req.on('timeout', () => { timedOut = true; req.destroy(new Error('timeout')); });
+    req.on('error', () => resolve({ ok: false, output: '', error: timedOut ? 'timeout' : 'error' }));
     req.end(body);
   });
 }
@@ -159,6 +194,20 @@ export function memoryCanary(
   };
 }
 
+/**
+ * Whether agents can reach the memory server from their seats. The probes above run in the app's own process, which no
+ * sandbox confines; agents run the hive-memory shim inside their seat's OS sandbox. The shim connects straight to the
+ * server's URL, and that sandbox refuses a direct connection to loopback (it admits only its own proxy, which the
+ * shim does not use); no setting the app writes admits one. A canary pass starts no process, so it cannot run the
+ * shim in a seat's sandbox: this judges the path from the seat settings instead, and a judged result is never a
+ * failure. A change to the shim's network path or to the seat's network settings must change this too.
+ */
+export function memoryFromSandbox(m: MemoryCanary | null, seat: { sandbox?: { enabled?: boolean } } | undefined): Omit<CanaryResult, 'feature' | 'ms'> {
+  if (m?.plan !== 'probe') return { ok: null, detail: m?.plan ?? 'off' };
+  if (seat?.sandbox?.enabled !== true) return { ok: true, detail: 'judged-from-seat-settings' };
+  return { ok: null, detail: 'judged-unreachable-from-sandbox', note: 'not reachable from a sandboxed seat (judged from seat settings, not measured)' };
+}
+
 /** Hits in a rendered recall: one per non-empty line that starts a result. */
 function countHits(output: string): number {
   return output.split('\n').filter((l) => l.trim().length > 0 && !l.startsWith(' ')).length;
@@ -166,7 +215,7 @@ function countHits(output: string): number {
 
 function judgeRecall(r: TextResult): Omit<CanaryResult, 'feature' | 'ms'> {
   if (!r.ok) {
-    if (r.error === 'redirect') return { ok: false, detail: 'redirect' };
+    if (r.error === 'redirect' || r.error === 'timeout') return { ok: false, detail: r.error };
     const code = /HTTP (\d{3})/.exec(r.error ?? '');
     return { ok: false, detail: code ? `refused-${code[1]}` : 'error' };
   }
@@ -288,6 +337,7 @@ export async function runCanaries(d: CanaryDeps): Promise<CanaryResult[]> {
   const limit = d.timeoutMs ?? 20_000;
   const timed = async (feature: CanaryFeature, f: () => Promise<Omit<CanaryResult, 'feature' | 'ms'>>): Promise<CanaryResult> => {
     const t0 = now();
+    const mark = d.power?.mark();
     let timer: NodeJS.Timeout | undefined;
     const timeout = new Promise<Omit<CanaryResult, 'feature' | 'ms'>>((res) => {
       // Not unref'd: a hung probe must still end at the limit. It is always cleared below.
@@ -295,15 +345,25 @@ export async function runCanaries(d: CanaryDeps): Promise<CanaryResult[]> {
     });
     try {
       const r = await Promise.race([f(), timeout]);
-      return { feature, ms: now() - t0, ...r };
+      return judged(feature, now() - t0, r, mark);
     } catch {
-      return { feature, ok: false, ms: now() - t0, detail: 'threw' };
+      return judged(feature, now() - t0, { ok: false, detail: 'threw' }, mark);
     } finally { if (timer) clearTimeout(timer); }
+  };
+  // A pass can start in a brief background wake and end after the machine has slept again, and a local service may be
+  // frozen while it sleeps, so a probe that slept is not judged: ok null, detail 'host-slept', and the rule that said so.
+  const judged = (feature: CanaryFeature, ms: number, r: Omit<CanaryResult, 'feature' | 'ms'>, mark: number | undefined): CanaryResult => {
+    const rule: SleptRule | null = r.ok === null ? null : ms > limit + PAST_LIMIT_MS ? 'ran past its limit'
+      : r.ok === false && d.power && mark !== undefined && d.power.sleptSince(mark) ? 'suspend flag' : null;
+    if (rule) return { feature, ok: null, ms, detail: 'host-slept', rule };
+    if (r.ok === true) d.power?.clear();
+    return { feature, ms, ...r };
   };
   const m = d.memory;
   return [
     await timed('memory-search', async () => (m?.plan === 'probe' ? judgeRecall(await m.search(PROBE, { wing: m.wing })) : { ok: null, detail: m?.plan ?? 'off' })),
     await timed('memory-wakeup', async () => (m?.plan === 'probe' ? judgeRecall(await m.wakeUp(m.wing)) : { ok: null, detail: m?.plan ?? 'off' })),
+    await timed('memory-from-sandbox', async () => memoryFromSandbox(m, d.seatSettings)),
     await timed('kg-search', async () => {
       if (!d.kg) return { ok: null, detail: 'off' };
       const hits = d.kg.search(PROBE, 1).length;

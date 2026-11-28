@@ -485,6 +485,41 @@ function shSingleQuote(text: string): string {
   return `'${text.replace(/'/g, "'\\''")}'`;
 }
 
+export interface SeatSandboxSettings {
+  sandbox?: { enabled: boolean; filesystem: { allowWrite: string[] }; network?: { allowLocalBinding?: boolean }; [key: string]: unknown };
+  permissions?: { additionalDirectories: string[] };
+}
+
+/**
+ * Native OS sandbox for Bash subprocesses (macOS Seatbelt / Linux bubblewrap).
+ * Auto mode spawns with `--permission-mode bypassPermissions`, which only
+ * silences PROMPTS; the sandbox is a separate, opt-in layer that was never
+ * switched on. Verified live (claude 2.1.239): with this block, bypass mode
+ * still writes cwd and the listed dirs but `touch $HOME/x` fails with
+ * "Operation not permitted". Two layers are needed: `sandbox.filesystem`
+ * governs Bash children, `permissions.additionalDirectories` governs the
+ * Edit/Write tools; with only one the agent deadlocks on its own inbox.
+ * failIfUnavailable stays false: a platform without a sandbox (Windows)
+ * runs as before rather than refusing to spawn.
+ * Empty when there are no writable dirs.
+ */
+export function seatSandboxSettings(writableDirs: string[], scoped: boolean): SeatSandboxSettings {
+  return writableDirs.length
+    ? {
+        sandbox: {
+          enabled: true, filesystem: { allowWrite: writableDirs },
+          // Scoped roots: no rerun with the sandbox off, except the listed commands (SCOPED_UNSANDBOXED_COMMANDS),
+          // and sandboxed Bash and localhost binding pinned off (SCOPED_SANDBOX_PINS).
+          ...(scoped ? {
+            allowUnsandboxedCommands: false, excludedCommands: [...SCOPED_UNSANDBOXED_COMMANDS],
+            autoAllowBashIfSandboxed: SCOPED_SANDBOX_PINS.autoAllowBashIfSandboxed, network: { allowLocalBinding: SCOPED_SANDBOX_PINS.allowLocalBinding }
+          } : {})
+        },
+        permissions: { additionalDirectories: writableDirs }
+      }
+    : {};
+}
+
 export class HiveManager {
   /**
    * @param getHome  Lazily resolve harnessHome so the hive follows config changes.
@@ -2236,30 +2271,7 @@ export class HiveManager {
       // window. The shim prints a compact in-terminal gauge and forwards the
       // payload to the harness (agent-card context gauge, exact limit).
       ...(cmd ? { statusLine: { type: 'command', command: `${cmd} --status`, padding: 0 } } : {}),
-      // Native OS sandbox for Bash subprocesses (macOS Seatbelt / Linux bubblewrap).
-      // Auto mode spawns with `--permission-mode bypassPermissions`, which only
-      // silences PROMPTS; the sandbox is a separate, opt-in layer that was never
-      // switched on. Verified live (claude 2.1.239): with this block, bypass mode
-      // still writes cwd and the listed dirs but `touch $HOME/x` fails with
-      // "Operation not permitted". Two layers are needed: `sandbox.filesystem`
-      // governs Bash children, `permissions.additionalDirectories` governs the
-      // Edit/Write tools; with only one the agent deadlocks on its own inbox.
-      // failIfUnavailable stays false: a platform without a sandbox (Windows)
-      // runs as before rather than refusing to spawn.
-      ...(writableDirs.length
-        ? {
-            sandbox: {
-              enabled: true, filesystem: { allowWrite: writableDirs },
-              // Scoped roots: no rerun with the sandbox off, except the listed commands (SCOPED_UNSANDBOXED_COMMANDS),
-              // and sandboxed Bash and localhost binding pinned off (SCOPED_SANDBOX_PINS).
-              ...(scoped ? {
-                allowUnsandboxedCommands: false, excludedCommands: [...SCOPED_UNSANDBOXED_COMMANDS],
-                autoAllowBashIfSandboxed: SCOPED_SANDBOX_PINS.autoAllowBashIfSandboxed, network: { allowLocalBinding: SCOPED_SANDBOX_PINS.allowLocalBinding }
-              } : {})
-            },
-            permissions: { additionalDirectories: writableDirs }
-          }
-        : {}),
+      ...seatSandboxSettings(writableDirs, scoped),
       ...(cmd ? {
         hooks: {
           Stop: [entry()],

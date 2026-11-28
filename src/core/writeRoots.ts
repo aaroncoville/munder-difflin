@@ -624,7 +624,7 @@ function managedFiles(): string[] {
   return [MANAGED_SETTINGS.path, ...names.map((n) => join(drop, n))];
 }
 /** Platforms where the CLIs' OS sandbox exists. Elsewhere "enabled" settings do not sandbox anything. */
-const SANDBOXED_PLATFORMS = new Set(['darwin', 'linux']);
+export const SANDBOXED_PLATFORMS: ReadonlySet<string> = new Set(['darwin', 'linux']);
 
 /** The roots a session was given, read back from the settings files on disk, plus its cwd. */
 export function effectiveRoots(provider: string, agentDir: string, cwd: string, home: string = homedir(), launch: LaunchFacts = {}): EffectiveRoots {
