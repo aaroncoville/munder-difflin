@@ -87,7 +87,12 @@ function withoutRedirections(ws: string[]): string[] {
   return out;
 }
 
-/** The segments a shell would run: split on ; && || | and newlines, outside quotes. */
+/**
+ * The segments a shell would run: split on ; && || | and newlines, outside quotes. A backslash outside quotes
+ * makes the next character ordinary, so `\;` and `\|` split nothing. A redirection operator from the table, at an
+ * unquoted, unescaped position, is kept whole: the & of 2>&1 or &>file does not put a command in the background,
+ * and the | of >| is not a pipe. An escaped character is never the start of one (`\>|` is `>` then a pipe).
+ */
 function segments(cmd: string): string[] {
   const out: string[] = [];
   let cur = ''; let q: string | null = null;
@@ -95,10 +100,9 @@ function segments(cmd: string): string[] {
     const c = cmd[i];
     if (q) { cur += c; if (c === q && cmd[i - 1] !== '\\') q = null; continue; }
     if (c === '"' || c === "'") { q = c; cur += c; continue; }
-    // The & of a redirection (2>&1, &>file, <&3) belongs to it; it neither ends a command nor puts one in the background.
-    if (c === '&' && (cmd[i - 1] === '>' || cmd[i - 1] === '<' || (cmd[i + 1] === '>' && cmd[i - 1] !== '&'))) { cur += c; continue; }
-    // The | of >| (write even under noclobber) belongs to the redirection; it is not a pipe.
-    if (c === '|' && cmd[i - 1] === '>') { cur += c; continue; }
+    if (c === '\\') { cur += cmd.slice(i, i + 2); i++; continue; }
+    const op = REDIRECTION_OPERATORS.find((o) => cmd.startsWith(o, i));
+    if (op) { cur += op; i += op.length - 1; continue; }
     if (c === ';' || c === '\n' || c === '|' || c === '&') {
       if (c === '&' && cmd[i + 1] !== '&' && cmd[i - 1] !== '&') { cur += ' &'; out.push(cur); cur = ''; continue; } // a lone & = background
       out.push(cur); cur = '';

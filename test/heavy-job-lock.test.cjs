@@ -670,3 +670,20 @@ test('sudo long flags that take a value are skipped with their value', () => {
     assert.equal(classifyCommand(cmd).kind, 'suite', cmd);
   }
 });
+
+test('an escaped redirection character is an ordinary character, so a pipe after it is still a pipe', () => {
+  assert.equal(classifyCommand('echo \\>|npm test').kind, 'suite');
+  assert.equal(classifyCommand('echo \\>|npm ci').kind, 'install');
+  assert.equal(classifyCommand('node --test test/a.test.cjs \\>|echo x').heavy, false);
+  // Each operator written with every character escaped, then a real pipe into a suite.
+  for (const op of REDIRECTIONS) {
+    const cmd = `echo ${op.split('').map((c) => `\\${c}`).join('')}|npm test`;
+    assert.equal(classifyCommand(cmd).kind, 'suite', cmd);
+  }
+  assert.equal(classifyCommand('echo \\\\>|npm test').heavy, false, 'an escaped backslash leaves the > a redirection: >| writes to a file named npm');
+});
+
+test('the | of >| is part of the redirection, not a pipe', () => {
+  assert.equal(classifyCommand('echo x >| npm test').heavy, false, '>| writes to a file named npm; test is an argument of echo');
+  assert.equal(classifyCommand('npm test >| out.log').kind, 'suite');
+});
