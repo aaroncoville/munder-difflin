@@ -212,20 +212,29 @@ function classifyWords(ws0: string[], depth: number): HeavyClass {
   return { heavy: false };
 }
 
-/** Classify a command line: heavy if any segment it runs is heavy. */
+/**
+ * Classify a command line: heavy if any segment it runs is heavy. A line that runs a test suite anywhere is a
+ * suite, whatever heavy job comes before it: `npm run build && npm run test:focused` holds its slot as long as
+ * the suite runs, and only a suite slot keeps a second suite from starting beside it.
+ */
 export function classifyCommand(cmd: string, depth = 0): HeavyClass {
   // A heredoc body is text, not commands, however much it looks like them.
   const text = cmd.replace(/<<-?\s*['"]?(\w+)['"]?[^\n]*\n[\s\S]*?\n\s*\1\b/g, '');
+  let first: HeavyClass | null = null;
+  const seen = (c: HeavyClass): boolean => {
+    if (c.heavy && !first) first = c;
+    return c.heavy && c.kind === 'suite';
+  };
   for (const seg of segments(text)) {
     const c = classifyWords(words(seg.replace(/\s&$/, '')), depth);
-    if (c.heavy) return c;
+    if (seen(c)) return c;
   }
   // $(...) and backticks run outside single quotes, wherever they sit in the line.
   for (const m of text.replace(/'[^']*'/g, "''").matchAll(/\$\(([^()]*)\)|`([^`]*)`/g)) {
     const c = classifyCommand(m[1] ?? m[2], depth);
-    if (c.heavy) return c;
+    if (seen(c)) return c;
   }
-  return { heavy: false };
+  return first ?? { heavy: false };
 }
 
 /** Classify a tool call (any provider: the command-shaped input only). */
