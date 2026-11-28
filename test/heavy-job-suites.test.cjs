@@ -336,3 +336,25 @@ test('a build chained with a suite waits while another suite holds its slot', ()
   const cmd = 'npm run build && npm run test:focused';
   assert.equal(x.l.acquire('b', classifyCommand(cmd), cmd, 'b1', false).allow, false, 'its suite would run beside the other');
 });
+
+test('a suite run inside a shell keyword, eval, xargs, command, exec or a nested shell counts as a suite', () => {
+  for (const cmd of [
+    'if npm run build; then npm test; fi',
+    'if true; then npm run build; else npm test; fi',
+    'for f in a b; do npm test; done',
+    'while true; do npm test; done',
+    'until false; do npm test; done',
+    '! npm test',
+    'eval npm test',
+    'eval "npm run build && npm test"',
+    'xargs npm test',
+    'echo test/*.test.cjs | xargs -n 1 -P 4 node --test',
+    'command npm test',
+    'exec npm test',
+    'bash -c "bash -c \\"npm test\\""',
+    'sh -c "zsh -c \'npm run build && npm test\'"'
+  ]) assert.equal(classifyCommand(cmd).kind, 'suite', cmd);
+  for (const cmd of ['command -v npm', 'for f in npm test; do echo "$f"; done', 'xargs echo npm test', 'eval echo npm test']) {
+    assert.equal(classifyCommand(cmd).heavy, false, cmd);
+  }
+});

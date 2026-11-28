@@ -40,12 +40,17 @@ export function commandFromToolInput(input: unknown): string | null {
  *  kept as a character. */
 function words(s: string): string[] {
   const out: string[] = [];
-  const re = /"((?:[^"\\]|\\.)*)"|'([^']*)'|([^\s"']+)|(["'])|(\s+)/g;
+  const re = /"((?:[^"\\]|\\.)*)"|'([^']*)'|((?:[^\s"'\\]|\\.)+)|(["'\\])|(\s+)/g;
   let cur: string | null = null;
   let m: RegExpExecArray | null;
   while ((m = re.exec(s))) {
     if (m[5] !== undefined) { if (cur !== null) out.push(cur); cur = null; continue; }
-    cur = (cur ?? '') + (m[1] ?? m[2] ?? m[3] ?? m[4]);
+    // A backslash before a shell character makes it a plain character, as the shell reads it, so a shell nested in
+    // quotes (bash -c "bash -c \"npm test\"") is read with its own quotes. Other backslashes, as in a Windows
+    // path, are kept.
+    const part = m[1] !== undefined ? m[1].replace(/\\(["$`])/g, '$1')
+      : m[3] !== undefined ? m[3].replace(/\\([<>|&;"'`$ ])/g, '$1') : (m[2] ?? m[4]);
+    cur = (cur ?? '') + part;
   }
   if (cur !== null) out.push(cur);
   return out;
@@ -87,6 +92,12 @@ function segments(cmd: string): string[] {
   return out.map((s) => s.trim()).filter(Boolean);
 }
 
+/** How many shells (bash -c, eval) inside one another are read through. Deeper ones are not seen. */
+const SHELL_DEPTH = 3;
+/** Shell keywords that may come before a command in one segment. */
+const SHELL_KEYWORDS = new Set(['if', 'then', 'elif', 'else', 'do', 'while', 'until', '!']);
+/** xargs flags that take their value as the next argument. */
+const XARGS_VALUE_FLAGS = new Set(['-n', '-L', '-P', '-s', '-I', '-J', '-R', '-d', '-E', '-a']);
 const WRAPPERS = new Set(['bash', 'sh', 'zsh', 'cmd', 'cmd.exe', 'powershell', 'powershell.exe', 'pwsh', 'pwsh.exe', 'bash.exe']);
 const BENCH_SCRIPT = /(mutant|mutation|replay|bench|backfill|parity|speed|stress|soak)[^\\/]*\.(c?m?js|ts)$/i;
 export const SUITE_MANY_FILES = 20;
@@ -143,6 +154,19 @@ function leading(ws: string[]): string[] {
     if (w === 'timeout' || w === 'nice') { i++; while (i < ws.length && (/^-/.test(ws[i]) || /^\d+[smhd]?$/.test(ws[i]))) i++; continue; }
     if (RUN_PREFIXES.has(w)) { i++; while (i < ws.length && (/^-/.test(ws[i]) || /^\d+$/.test(ws[i]))) i++; continue; }
     if (w === 'cd' || w === 'pushd') return []; // `cd x` alone is its own segment
+    // Shell keywords before a command: `if npm test; then npm test; fi`, `while x; do npm test; done`, `! npm test`.
+    if (SHELL_KEYWORDS.has(w)) { i++; continue; }
+    // A loop's or a case's own line names values, not a command to run.
+    if (w === 'for' || w === 'select' || w === 'case') return [];
+    // `command -v x` and `command -V x` only look a command up.
+    if (w === 'command') { if (ws[i + 1] === '-v' || ws[i + 1] === '-V') return []; i++; while (ws[i] === '-p') i++; continue; }
+    if (w === 'exec') { i++; while (i < ws.length && /^-[cl]+$|^-a$/.test(ws[i])) { if (ws[i] === '-a') i++; i++; } continue; }
+    // xargs runs the command after its own flags, with more arguments added.
+    if (w === 'xargs') {
+      i++;
+      while (i < ws.length && ws[i].startsWith('-')) { if (XARGS_VALUE_FLAGS.has(ws[i])) i++; i++; }
+      continue;
+    }
     break;
   }
   return ws.slice(i);
@@ -172,8 +196,10 @@ function classifyWords(ws0: string[], depth: number): HeavyClass {
   if (!ws.length) return { heavy: false };
   const bin = ws[0].replace(/\\/g, '/').split('/').pop()!.toLowerCase().replace(/\.(exe|cmd)$/, '');
   const args = ws.slice(1);
-  // One level of a shell wrapper: bash -c "...", cmd /c ..., powershell -Command ...
-  if (WRAPPERS.has(bin) && depth === 0) {
+  // A shell wrapper, nested up to SHELL_DEPTH deep: bash -c "...", cmd /c ..., powershell -Command ...
+  // eval runs its arguments as a command line.
+  if (bin === 'eval') return depth < SHELL_DEPTH ? classifyCommand(args.join(' '), depth + 1) : { heavy: false };
+  if (WRAPPERS.has(bin) && depth < SHELL_DEPTH) {
     // -c also comes bundled with other flags, as in the login shell's -lc.
     const k = args.findIndex((a) => /^(-[a-z]*c|\/\/?c|\/\/?k|-command)$/i.test(a));
     if (k >= 0) return classifyCommand(args.slice(k + 1).join(' '), depth + 1);
